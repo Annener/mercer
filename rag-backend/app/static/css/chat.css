@@ -762,19 +762,21 @@ body {
 }
 
 .files-list {
-    max-height: 200px;
+    max-height: 380px;
     overflow-y: auto;
     background-color: white;
     border-radius: 4px;
     padding: 6px;
+    border: 1px solid #e9ecef;
 }
 
 .file-row {
-    display: flex;
+    display: grid;
+    grid-template-columns: 1fr auto auto 120px;
     align-items: center;
     gap: 10px;
-    padding: 4px 8px;
-    font-size: 13px;
+    padding: 6px 8px;
+    font-size: 12px;
     font-family: 'SF Mono', 'Consolas', monospace;
     border-bottom: 1px solid #f0f0f0;
 }
@@ -794,11 +796,20 @@ body {
     text-align: center;
 }
 
+/* Счётчик чанков */
+.file-chunks {
+    font-size: 11px;
+    color: #6a737d;
+    white-space: nowrap;
+    min-width: 90px;
+    text-align: right;
+}
+
 .file-progress {
-    width: 80px;
-    height: 6px;
+    width: 120px;
+    height: 7px;
     background-color: #e9ecef;
-    border-radius: 3px;
+    border-radius: 4px;
     overflow: hidden;
 }
 
@@ -807,6 +818,42 @@ body {
     background-color: #27ae60;
     transition: width 0.3s;
 }
+
+/* === Overall task progress bar === */
+.overall-progress {
+    height: 8px;
+    background-color: #e9ecef;
+    border-radius: 4px;
+    overflow: hidden;
+    margin: 8px 0 12px 0;
+}
+
+.overall-progress-bar {
+    height: 100%;
+    background: linear-gradient(90deg, #3498db, #27ae60);
+    border-radius: 4px;
+    transition: width 0.4s ease;
+    width: 0%;
+}
+
+/* === Stage badges === */
+.stage-badge {
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 11px;
+    font-weight: 500;
+    text-transform: lowercase;
+    white-space: nowrap;
+}
+
+.stage-parsing   { background-color: #fff3cd; color: #856404; }
+.stage-chunking  { background-color: #e8d5f5; color: #5a1e8c; }
+.stage-indexing  { background-color: #d1ecf1; color: #0c5460; }
+.stage-done      { background-color: #d4edda; color: #155724; }
+.stage-error     { background-color: #f8d7da; color: #721c24; }
+.stage-empty     { background-color: #e2e3e5; color: #383d41; }
+.stage-pending   { background-color: #f8f9fa; color: #6a737d; }
+.stage-cancelled { background-color: #e2e3e5; color: #383d41; }
 
 /* === Data table === */
 .documents-container {
