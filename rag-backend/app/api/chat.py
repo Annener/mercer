@@ -290,7 +290,7 @@ async def _generate_answer(
     if req.stream:
         stream_iterator = provider.generate_stream(messages_for_llm) if provider is not None else _fallback_stream()
         return StreamingResponse(
-            _sse_response(str(chat.id), str(user_message.id), stream_iterator, request),
+            _sse_response(str(chat.id), str(user_message.id), stream_iterator, request, hits),
             media_type="text/event-stream",
         )
 
@@ -304,11 +304,30 @@ async def _generate_answer(
     logger.info("Completed non-stream chat response: chat_id=%s message_id=%s", chat.id, assistant_message.id)
     return MessageResponse(content=content, message_id=str(assistant_message.id))
 
+def _hits_to_sources(hits: list[SearchHit]) -> list[dict]:
+    """Преобразует список SearchHit в компактный список источников для фронтенда."""
+    seen: set[tuple[str, int | None]] = set()
+    sources = []
+    for hit in hits:
+        path = hit.metadata.get("source_path") or hit.document_id or "unknown"
+        page = hit.metadata.get("page_number")
+        key = (path, page)
+        if key not in seen:
+            seen.add(key)
+            sources.append({
+                "path": path,
+                "page": page,
+                "vault_id": hit.metadata.get("vault_id") or "",
+            })
+    return sources
+
+
 async def _sse_response(
     chat_id: str,
     user_message_id: str,
     stream_iterator: AsyncIterator[str],
     request: Request,
+    hits: list[SearchHit] | None = None,
 ) -> AsyncIterator[str]:
     tokens: list[str] = []
     try:
@@ -325,6 +344,10 @@ async def _sse_response(
             user_message_id,
             assistant_message.id,
         )
+        # Отправляем источники до [DONE] чтобы фронтенд успел их обработать
+        if hits:
+            sources = _hits_to_sources(hits)
+            yield _sse_data({"sources": sources})
         yield "data: [DONE]\n\n"
     except GenerationProviderUnavailableError as exc:
         logger.warning("Streaming generation failed: chat_id=%s", chat_id, exc_info=True)
