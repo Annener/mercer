@@ -114,8 +114,11 @@ class DBManager {
     }
 
     formatDomainName(domainId) {
+        // Красивые имена для известных доменов; неизвестные отображаются как есть (id из конфига)
         const names = { 'dnd': 'D&D', 'work': 'Работа' };
-        return names[domainId] || domainId.toUpperCase();
+        if (names[domainId]) return names[domainId];
+        // Капитализация первой буквы идентификатора
+        return domainId.charAt(0).toUpperCase() + domainId.slice(1);
     }
 
     // --- Domain tabs (Управление) ---
@@ -128,6 +131,8 @@ class DBManager {
         this.domainTabsContainer.appendChild(allTab);
 
         for (const domain of this.domains) {
+            // Домен "default" — служебный фолбэк для промптов, не показываем в UI
+            if (domain.domain_id === 'default') continue;
             const count = this.allVaults.filter(v => v.domain_id === domain.domain_id).length;
             const tab = this._makeDomainTab(domain.domain_id, this.formatDomainName(domain.domain_id), count);
             this.domainTabsContainer.appendChild(tab);
