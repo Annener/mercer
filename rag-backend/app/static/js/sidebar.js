@@ -84,6 +84,8 @@ class SidebarManager {
         }
         
         for (const domain of this.domains) {
+            // Домен "default" — служебный фолбэк, в селекторе не показываем
+            if (domain.domain_id === 'default') continue;
             const opt = document.createElement('option');
             opt.value = domain.domain_id;
             let label = this.formatDomainName(domain.domain_id);
@@ -97,11 +99,10 @@ class SidebarManager {
     }
 
     formatDomainName(domainId) {
-        const names = {
-            'dnd': 'D&D',
-            'work': 'Работа',
-        };
-        return names[domainId] || domainId.toUpperCase();
+        // Красивые имена для известных доменов; новые домены из конфига отображаются как есть
+        const names = { 'dnd': 'D&D', 'work': 'Работа' };
+        if (names[domainId]) return names[domainId];
+        return domainId.charAt(0).toUpperCase() + domainId.slice(1);
     }
 
     async switchDomain(domainId) {
