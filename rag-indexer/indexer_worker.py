@@ -231,6 +231,7 @@ async def _process_file(
         task_id=task_id,
         relative_path=relative_path,
         broadcast=broadcast,
+        is_cancelled=is_cancelled,
     )
 
     await _ensure_not_cancelled(task_id, is_cancelled)
@@ -363,6 +364,7 @@ async def _process_file(
         task_id=task_id,
         file_path=relative_path,
         broadcast=broadcast,
+        is_cancelled=is_cancelled,
     )
     if len(vectors) != len(chunks):
         raise ValueError("Embedding provider returned an unexpected number of vectors.")
@@ -442,10 +444,14 @@ async def _parse_file_with_progress(
     task_id: str,
     relative_path: str,
     broadcast: BroadcastCallable,
+    is_cancelled: CancelCallable | None = None,
 ) -> dict[str, Any]:
     """
     Запускает _parse_file в потоке и параллельно каждые _PARSING_HEARTBEAT_INTERVAL
     секунд шлёт в UI heartbeat-событие stage=parsing, чтобы прогресс-бар не замирал.
+    Если is_cancelled() вернёт True — отменяет parse_task и бросает CancelledError.
+    Замечание: asyncio.to_thread дождётся завершения текущего HTTP-запроса к sidecar,
+    но следующую страницу/батч уже не запустит.
     """
     parse_task = asyncio.ensure_future(
         asyncio.to_thread(_parse_file, absolute_path, extension)
@@ -459,10 +465,17 @@ async def _parse_file_with_progress(
                     asyncio.shield(parse_task), timeout=_PARSING_HEARTBEAT_INTERVAL
                 )
             except asyncio.TimeoutError:
+                # Проверяем флаг отмены — если выставлен, прерываем парсинг немедленно
+                if is_cancelled is not None and is_cancelled(task_id):
+                    parse_task.cancel()
+                    raise asyncio.CancelledError
                 # Парсинг ещё идёт — шлём тик в UI
                 await _broadcast_chunk_progress(
                     task_id, relative_path, "parsing", broadcast=broadcast
                 )
+            except asyncio.CancelledError:
+                parse_task.cancel()
+                raise
             except Exception:
                 break  # ошибка поймается ниже при await parse_task
 
@@ -476,10 +489,12 @@ async def _embed_chunks(
     task_id: str | None = None,
     file_path: str | None = None,
     broadcast: BroadcastCallable | None = None,
+    is_cancelled: CancelCallable | None = None,
 ) -> list[list[float]]:
     """
     V3.0: кэш и embedding по chunk.metadata["embedding_text"] (обогащённый текст).
     Отправляет прогресс по чанкам каждые CHUNK_PROGRESS_REPORT_INTERVAL чанков.
+    Проверяет is_cancelled() перед каждым embed вызовом и бросает CancelledError.
     """
     vectors: list[list[float] | None] = []
     missing_texts: list[str] = []
@@ -504,6 +519,9 @@ async def _embed_chunks(
         # Embed по одному чанку — чтобы прогресс транслировался после каждого,
         # а не после окончания всего батча (fix: 8.5-минутная тишина).
         for offset, embedding_text in enumerate(missing_texts):
+            # Проверяем отмену перед каждым embed-вызовом
+            if is_cancelled is not None and task_id is not None and is_cancelled(task_id):
+                raise asyncio.CancelledError
             result = await provider.embed([embedding_text])
             if not result or not result[0]:
                 raise ValueError(f"Embedding failed for chunk index {missing_indices[offset]}")
