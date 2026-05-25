@@ -11,6 +11,13 @@ FIX v3:
   - Прогрев моделей при старте (lifespan hook)
   - streaming адаптирован под параллельный батч-парсинг:
     прогресс приходит из дочерних процессов через thread-safe callback
+
+FIX v3.1:
+  - _generate() переписан: asyncio.Queue вместо queue.SimpleQueue+run_in_executor.
+    Старая схема приводила к утечке потоков при TimeoutError: каждая истёкшая
+    итерация оставляла висячий поток заблокированный на progress_q.get().
+    Один из этих потоков перехватывал sentinel None раньше основного цикла,
+    и цикл уже никогда не получал сигнал завершения → зависание на 50+ минут.
 """
 from __future__ import annotations
 
@@ -19,7 +26,6 @@ import json
 import logging
 import logging.config
 import os
-import queue
 import tempfile
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -94,7 +100,7 @@ async def lifespan(app: FastAPI):
     logger.info("=== PDF Sidecar shutting down ===")
 
 
-app = FastAPI(title="PDF Sidecar", version="3.0.0", lifespan=lifespan)
+app = FastAPI(title="PDF Sidecar", version="3.1.0", lifespan=lifespan)
 
 
 # ---------------------------------------------------------------------------
@@ -157,6 +163,12 @@ async def parse_pdf_stream(file: UploadFile = File(...)) -> StreamingResponse:
 
     Таймаут клиента: применяется только к каждому read-chunk,
     а не ко всему запросу. Heartbeat держит соединение живым.
+
+    ВАЖНО: используем asyncio.Queue (не queue.SimpleQueue + run_in_executor).
+    Схема с SimpleQueue приводила к утечке потоков при TimeoutError — каждый
+    истёкший wait_for оставлял поток висеть на progress_q.get(). Один из них
+    перехватывал sentinel None, и основной цикл никогда не получал сигнал
+    завершения → бесконечное зависание.
     """
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are accepted.")
@@ -175,20 +187,34 @@ async def parse_pdf_stream(file: UploadFile = File(...)) -> StreamingResponse:
             tmp.write(pdf_bytes)
             tmp_path = tmp.name
 
-        # Очередь для передачи прогресс-событий из parse-потока в async-генератор
-        # Thread-safe: parse_pdf_unstructured кладёт события, генератор читает
-        progress_q: queue.SimpleQueue[dict[str, Any] | None] = queue.SimpleQueue()
+        # asyncio.Queue — единственный безопасный способ передавать события
+        # из потока (run_in_executor) в async-генератор без утечки потоков.
+        #
+        # Почему НЕ queue.SimpleQueue + run_in_executor:
+        #   При TimeoutError wait_for отменяет future-обёртку, но НЕ сам поток
+        #   заблокированный на SimpleQueue.get(). Эти потоки накапливаются и
+        #   могут перехватить sentinel None раньше основного цикла.
+        #
+        # asyncio.Queue.get() — корутина, отменяется cleanly при TimeoutError,
+        # никаких лишних потоков не создаётся.
+        progress_q: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
+        loop = asyncio.get_event_loop()
         t_start = time.monotonic()
 
         def _on_progress(page_num: int, total_pages: int, n_elements: int, has_table: bool):
-            progress_q.put({
-                "type": "progress",
-                "page": page_num,
-                "total": total_pages,
-                "elapsed": round(time.monotonic() - t_start, 1),
-                "elements": n_elements,
-                "has_table": has_table,
-            })
+            # Вызывается из потока executor — кладём событие в asyncio.Queue
+            # через thread-safe call_soon_threadsafe.
+            loop.call_soon_threadsafe(
+                progress_q.put_nowait,
+                {
+                    "type": "progress",
+                    "page": page_num,
+                    "total": total_pages,
+                    "elapsed": round(time.monotonic() - t_start, 1),
+                    "elements": n_elements,
+                    "has_table": has_table,
+                },
+            )
 
         result_holder: list[dict] = []
         error_holder: list[Exception] = []
@@ -204,35 +230,35 @@ async def parse_pdf_stream(file: UploadFile = File(...)) -> StreamingResponse:
             except Exception as exc:
                 error_holder.append(exc)
             finally:
-                # Сигнал "парсинг завершён" — None в очереди
-                progress_q.put(None)
+                # Sentinel — сигнал завершения парсинга.
+                # call_soon_threadsafe гарантирует порядок: sentinel встанет
+                # в очередь ПОСЛЕ всех progress-событий.
+                loop.call_soon_threadsafe(progress_q.put_nowait, None)
 
-        parse_future = asyncio.get_event_loop().run_in_executor(None, _run_parse)
+        parse_task = asyncio.ensure_future(
+            asyncio.to_thread(_run_parse)
+        )
 
-        # Читаем очередь и отдаём прогресс-события клиенту
-        # Цикл завершается когда получен sentinel None
-        while True:
-            # Ждём события с таймаутом чтобы не блокировать event loop
-            try:
-                event = await asyncio.wait_for(
-                    asyncio.get_event_loop().run_in_executor(None, progress_q.get),
-                    timeout=5.0,
-                )
-            except asyncio.TimeoutError:
-                # Парсинг ещё идёт, очередь пуста — отдаём keepalive пустую строку
-                # (клиент её просто игнорирует, но TCP соединение живо)
-                yield "\n"
-                continue
+        # Читаем очередь и стримим прогресс клиенту.
+        # asyncio.Queue.get() — корутина, отменяется без утечки потоков.
+        try:
+            while True:
+                try:
+                    event = await asyncio.wait_for(progress_q.get(), timeout=5.0)
+                except asyncio.TimeoutError:
+                    # Парсинг ещё идёт, очередь пуста — keepalive пустая строка
+                    yield "\n"
+                    continue
 
-            if event is None:
-                # Sentinel — парсинг завершён
-                break
+                if event is None:
+                    # Sentinel — парсинг завершён
+                    break
 
-            yield json.dumps(event, ensure_ascii=False) + "\n"
-
-        # Дожидаемся завершения future
-        await parse_future
-        Path(tmp_path).unlink(missing_ok=True)
+                yield json.dumps(event, ensure_ascii=False) + "\n"
+        finally:
+            # Дожидаемся завершения потока парсинга в любом случае
+            await parse_task
+            Path(tmp_path).unlink(missing_ok=True)
 
         if error_holder:
             logger.error("Parsing failed for %s: %s", filename, error_holder[0], exc_info=True)
@@ -244,10 +270,15 @@ async def parse_pdf_stream(file: UploadFile = File(...)) -> StreamingResponse:
 
         result = result_holder[0]
 
-        # Препроцессинг
-        for page in result.get("pages", []):
-            source_hint = f"{filename}:page_{page.get('page_number', '?')}"
-            page["text"] = preprocess(page["text"], source_hint)
+        # Препроцессинг — выносим в to_thread чтобы не блокировать event loop
+        # на больших документах
+        def _preprocess_pages(pages: list[dict]) -> list[dict]:
+            for page in pages:
+                source_hint = f"{filename}:page_{page.get('page_number', '?')}"
+                page["text"] = preprocess(page["text"], source_hint)
+            return pages
+
+        result["pages"] = await asyncio.to_thread(_preprocess_pages, result.get("pages", []))
 
         logger.info(
             "Parsed (stream) %s → %d pages, %d headings",
