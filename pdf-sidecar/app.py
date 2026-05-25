@@ -62,9 +62,12 @@ logging.config.dictConfig({
         },
     },
     "loggers": {
-        "uvicorn": {"handlers": [], "propagate": False},
-        "uvicorn.error": {"handlers": ["console", "file"], "propagate": False},
-        "uvicorn.access": {"handlers": ["console", "file"], "propagate": False},
+        # propagate=True → сообщения идут в root (console + file).
+        # handlers=[] → НЕ добавляем своих хендлеров, иначе uvicorn
+        # при log_config=None добавит ещё один и будет дубль.
+        "uvicorn": {"handlers": [], "propagate": True},
+        "uvicorn.error": {"handlers": [], "propagate": True},
+        "uvicorn.access": {"handlers": [], "propagate": True},
     },
     "root": {
         "handlers": ["console", "file"],
