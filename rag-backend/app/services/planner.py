@@ -35,8 +35,13 @@ class Planner:
     ) -> tuple[PlannerDecision, list[str]]:
         _ = history
         retrieval_strategy = "none"
-        if self.config.retrieval.enabled and vault_id:
-            retrieval_strategy = await self._strategy_for_vault(db, vault_id)
+        if self.config.retrieval.enabled:
+            if vault_id:
+                retrieval_strategy = await self._strategy_for_vault(db, vault_id)
+            elif domain_id:
+                # Чат привязан к домену (без конкретного vault) — используем semantic retrieval
+                # если в домене есть хотя бы один vault с проиндексированными чанками
+                retrieval_strategy = await self._strategy_for_domain(db, domain_id)
 
         missing_fields = self._missing_fields(query)
         pipeline_invocations = await self._pipeline_invocations(domain_id)
@@ -50,8 +55,9 @@ class Planner:
             ),
         )
         logger.info(
-            "Planner decision: vault_id=%s strategy=%s clarification_needed=%s missing_fields=%s",
+            "Planner decision: vault_id=%s domain_id=%s strategy=%s clarification_needed=%s missing_fields=%s",
             vault_id,
+            domain_id,
             decision.retrieval_strategy,
             decision.clarification_needed,
             missing_fields,
@@ -64,6 +70,29 @@ class Planner:
         if binding is not None and binding.chunk_count <= 0:
             return "none"
         return "semantic"
+
+    async def _strategy_for_domain(self, db: AsyncSession, domain_id: str) -> str:
+        """Возвращает 'semantic' если в домене есть хотя бы один vault с данными."""
+        domain_vault_ids = [
+            v.vault_id
+            for v in self.config.vaults.values()
+            if v.domain_id == domain_id and v.enabled
+        ]
+        if not domain_vault_ids:
+            return "none"
+        result = await db.execute(
+            select(VaultBinding).where(VaultBinding.vault_id.in_(domain_vault_ids))
+        )
+        bindings = result.scalars().all()
+        # Хотя бы один vault проиндексирован (chunk_count > 0)
+        for binding in bindings:
+            if binding.chunk_count > 0:
+                return "semantic"
+        # Нет ни одного binding или все пустые — всё равно пробуем semantic,
+        # т.к. binding может быть не создан, но данные могут быть в LanceDB
+        if not bindings:
+            return "semantic"
+        return "none"
 
     async def _pipeline_invocations(self, domain_id: str | None) -> list[PipelineInvocation]:
         if self.pipeline_registry is None or not self.config.pipelines.enabled:
