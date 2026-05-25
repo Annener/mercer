@@ -1,32 +1,29 @@
 """
 pdf-sidecar — FastAPI HTTP-сервер для парсинга PDF через unstructured (hi_res).
 
-Принимает PDF-файл по HTTP multipart POST /parse, возвращает JSON:
-{
-    "pages":    [{"text": str, "page_number": int}, ...],
-    "headings": [{"text": str, "page_number": int, "y0": float, "font_size": float}, ...],
-    "metadata": {"source": str, "parser": str},
-    "page_count": int
-}
+Принимает PDF-файл по HTTP multipart POST /parse или /parse/stream.
 
-Препроцессинг текста каждой страницы выполняется внутри сайдкара
-через тот же preprocessor.py что использует rag-indexer.
+/parse         — синхронный, возвращает JSON после полного завершения
+/parse/stream  — NDJSON-поток с прогресс-событиями по страницам и финальным результатом
 
-FIX v2:
-  - Логирование настроено через dictConfig чтобы не дублировать сообщения.
-    Uvicorn получает propagate=False, FileHandler добавляется только к root.
-  - /warmup endpoint: прогрев spaCy + YOLO + Table Transformer при старте.
-  - on_startup hook: автоматически вызывает /warmup при запуске сервера.
+FIX v3:
+  - Логирование через dictConfig (нет дублей)
+  - Прогрев моделей при старте (lifespan hook)
+  - streaming адаптирован под параллельный батч-парсинг:
+    прогресс приходит из дочерних процессов через thread-safe callback
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import logging.config
 import os
+import queue
 import tempfile
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 import uvicorn
 from fastapi import FastAPI, File, HTTPException, UploadFile
@@ -41,15 +38,7 @@ PORT = int(os.getenv("PDF_SIDECAR_PORT", "8765"))
 _LOG_FILE = Path(__file__).parent / "logs" / "sidecar.log"
 
 # ---------------------------------------------------------------------------
-# Настройка логирования — ОДИН раз, без дублей
-# ---------------------------------------------------------------------------
-# Проблема: uvicorn.run() вызывает logging.basicConfig() и добавляет свои
-# handlers к root logger. Затем наш basicConfig добавляет ещё handlers.
-# Итог — каждое сообщение идёт через 2-4 handler → дубли в логе.
-#
-# Решение: настраиваем всё через dictConfig ДО создания app/uvicorn.
-# uvicorn.loggers (uvicorn, uvicorn.access, uvicorn.error) получают
-# propagate=False чтобы не всплывать к root.
+# Логирование — без дублей
 # ---------------------------------------------------------------------------
 logging.config.dictConfig({
     "version": 1,
@@ -73,8 +62,6 @@ logging.config.dictConfig({
         },
     },
     "loggers": {
-        # Uvicorn управляет своими логгерами сам — отключаем propagate
-        # чтобы они НЕ шли к root handler (иначе дубли)
         "uvicorn": {"handlers": [], "propagate": False},
         "uvicorn.error": {"handlers": ["console", "file"], "propagate": False},
         "uvicorn.access": {"handlers": ["console", "file"], "propagate": False},
@@ -89,13 +76,11 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Lifespan: прогрев моделей при старте
+# Lifespan: прогрев моделей
 # ---------------------------------------------------------------------------
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Прогреваем модели один раз при старте чтобы первый запрос не ждал."""
-    import asyncio
     logger.info("=== PDF Sidecar starting up — warming up models ===")
     try:
         await asyncio.to_thread(warmup_models)
@@ -106,7 +91,7 @@ async def lifespan(app: FastAPI):
     logger.info("=== PDF Sidecar shutting down ===")
 
 
-app = FastAPI(title="PDF Sidecar", version="2.0.0", lifespan=lifespan)
+app = FastAPI(title="PDF Sidecar", version="3.0.0", lifespan=lifespan)
 
 
 # ---------------------------------------------------------------------------
@@ -120,10 +105,7 @@ async def health() -> dict[str, str]:
 
 @app.post("/parse")
 async def parse_pdf(file: UploadFile = File(...)) -> JSONResponse:
-    """
-    Принимает PDF multipart/form-data, парсит через unstructured hi_res,
-    возвращает постраничный текст с заголовками.
-    """
+    """Синхронный парсинг — возвращает JSON после полного завершения."""
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are accepted.")
 
@@ -138,23 +120,22 @@ async def parse_pdf(file: UploadFile = File(...)) -> JSONResponse:
         tmp_path = tmp.name
 
     try:
-        result = parse_pdf_unstructured(tmp_path, source_name=file.filename)
+        result = await asyncio.to_thread(
+            parse_pdf_unstructured, tmp_path, file.filename
+        )
     except Exception as exc:
         logger.error("Parsing failed for %s: %s", file.filename, exc, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Parse error: {exc}") from exc
     finally:
         Path(tmp_path).unlink(missing_ok=True)
 
-    # Препроцессинг текста каждой страницы
     for page in result.get("pages", []):
         source_hint = f"{file.filename}:page_{page.get('page_number', '?')}"
         page["text"] = preprocess(page["text"], source_hint)
 
     logger.info(
         "Parsed %s → %d pages, %d headings",
-        file.filename,
-        result.get("page_count", 0),
-        len(result.get("headings", [])),
+        file.filename, result.get("page_count", 0), len(result.get("headings", [])),
     )
     return JSONResponse(content=result)
 
@@ -162,14 +143,17 @@ async def parse_pdf(file: UploadFile = File(...)) -> JSONResponse:
 @app.post("/parse/stream")
 async def parse_pdf_stream(file: UploadFile = File(...)) -> StreamingResponse:
     """
-    Streaming-версия /parse.
+    Streaming парсинг — NDJSON поток:
+      {"type":"progress","page":N,"total":M,"elapsed":X,"elements":K,"has_table":bool}
+      {"type":"result", ...полный результат...}
+      {"type":"error",  "detail":"..."}
 
-    Возвращает NDJSON-поток (Newline-Delimited JSON):
-      {"type":"progress","page":N,"total":M,"elapsed":X}   — по мере парсинга страниц
-      {"type":"result", ...полный результат...}             — в конце
+    Прогресс-события генерируются:
+      - В single-pass режиме (маленькие PDF): по одной после каждой страницы
+      - В параллельном режиме: пачками после завершения каждого батча
 
-    Это решает проблему таймаутов: клиент получает данные непрерывно
-    во время парсинга, а не ждёт полного завершения.
+    Таймаут клиента: применяется только к каждому read-chunk,
+    а не ко всему запросу. Heartbeat держит соединение живым.
     """
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are accepted.")
@@ -179,68 +163,80 @@ async def parse_pdf_stream(file: UploadFile = File(...)) -> StreamingResponse:
         raise HTTPException(status_code=400, detail="Empty file received.")
 
     logger.info("Received PDF (stream): %s (%d bytes)", file.filename, len(pdf_bytes))
-
     filename = file.filename
 
     async def _generate():
-        import asyncio
         import time
 
         with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
             tmp.write(pdf_bytes)
             tmp_path = tmp.name
 
-        progress_events: list[dict] = []
-        result_holder: list[dict] = []
-        error_holder: list[Exception] = []
+        # Очередь для передачи прогресс-событий из parse-потока в async-генератор
+        # Thread-safe: parse_pdf_unstructured кладёт события, генератор читает
+        progress_q: queue.SimpleQueue[dict[str, Any] | None] = queue.SimpleQueue()
         t_start = time.monotonic()
 
-        def _progress_callback(page_num: int, total_pages: int, n_elements: int, has_table: bool):
-            """Вызывается из parser.py при завершении каждой страницы."""
-            elapsed = time.monotonic() - t_start
-            progress_events.append({
+        def _on_progress(page_num: int, total_pages: int, n_elements: int, has_table: bool):
+            progress_q.put({
                 "type": "progress",
                 "page": page_num,
                 "total": total_pages,
-                "elapsed": round(elapsed, 1),
+                "elapsed": round(time.monotonic() - t_start, 1),
                 "elements": n_elements,
                 "has_table": has_table,
             })
 
+        result_holder: list[dict] = []
+        error_holder: list[Exception] = []
+
         def _run_parse():
             try:
-                res = parse_pdf_unstructured(tmp_path, source_name=filename,
-                                             progress_callback=_progress_callback)
+                res = parse_pdf_unstructured(
+                    tmp_path,
+                    source_name=filename,
+                    progress_callback=_on_progress,
+                )
                 result_holder.append(res)
             except Exception as exc:
                 error_holder.append(exc)
+            finally:
+                # Сигнал "парсинг завершён" — None в очереди
+                progress_q.put(None)
 
         parse_future = asyncio.get_event_loop().run_in_executor(None, _run_parse)
 
-        last_sent_idx = 0
-        # Пока парсинг идёт — шлём прогресс-события по мере их появления
-        while not parse_future.done():
-            await asyncio.sleep(0.5)
-            while last_sent_idx < len(progress_events):
-                ev = progress_events[last_sent_idx]
-                yield json.dumps(ev, ensure_ascii=False) + "\n"
-                last_sent_idx += 1
+        # Читаем очередь и отдаём прогресс-события клиенту
+        # Цикл завершается когда получен sentinel None
+        while True:
+            # Ждём события с таймаутом чтобы не блокировать event loop
+            try:
+                event = await asyncio.wait_for(
+                    asyncio.get_event_loop().run_in_executor(None, progress_q.get),
+                    timeout=5.0,
+                )
+            except asyncio.TimeoutError:
+                # Парсинг ещё идёт, очередь пуста — отдаём keepalive пустую строку
+                # (клиент её просто игнорирует, но TCP соединение живо)
+                yield "\n"
+                continue
 
-        # Убеждаемся что future завершился (поднимает исключение если было)
+            if event is None:
+                # Sentinel — парсинг завершён
+                break
+
+            yield json.dumps(event, ensure_ascii=False) + "\n"
+
+        # Дожидаемся завершения future
         await parse_future
-
-        # Отправляем оставшиеся события прогресса
-        while last_sent_idx < len(progress_events):
-            ev = progress_events[last_sent_idx]
-            yield json.dumps(ev, ensure_ascii=False) + "\n"
-            last_sent_idx += 1
-
         Path(tmp_path).unlink(missing_ok=True)
 
         if error_holder:
             logger.error("Parsing failed for %s: %s", filename, error_holder[0], exc_info=True)
-            yield json.dumps({"type": "error", "detail": str(error_holder[0])},
-                             ensure_ascii=False) + "\n"
+            yield json.dumps(
+                {"type": "error", "detail": str(error_holder[0])},
+                ensure_ascii=False,
+            ) + "\n"
             return
 
         result = result_holder[0]
@@ -252,9 +248,7 @@ async def parse_pdf_stream(file: UploadFile = File(...)) -> StreamingResponse:
 
         logger.info(
             "Parsed (stream) %s → %d pages, %d headings",
-            filename,
-            result.get("page_count", 0),
-            len(result.get("headings", [])),
+            filename, result.get("page_count", 0), len(result.get("headings", [])),
         )
 
         result["type"] = "result"
@@ -273,7 +267,5 @@ if __name__ == "__main__":
         host="0.0.0.0",
         port=PORT,
         log_level=LOG_LEVEL.lower(),
-        # Отключаем uvicorn access log formatter — он добавляет свой handler
-        # к uvicorn.access логгеру поверх нашего dictConfig
         log_config=None,
     )
