@@ -3,24 +3,26 @@ PDF-парсер для pdf-sidecar.
 
 Использует unstructured partition_pdf с strategy='hi_res'.
 Весь файл парсится за один вызов — постраничное разбиение не применяется,
-чтобы не потерять контекст между страницами (заголовки, продолжения текста).
+чтобы не потерять контекст между страницами.
 
-GPU-поддержка (Apple Silicon MPS):
-  - Table Transformer (PyTorch): патчится через monkey-patch load_agent,
-    передавая device='mps' вместо дефолтного 'cpu'.
-  - YOLO layout detection (ONNX Runtime): патчится провайдер-список:
-    добавляется CoreMLExecutionProvider перед CPUExecutionProvider,
-    что даёт ускорение на Apple Silicon через ANE/GPU.
+GPU-поддержка (Apple Silicon):
+  - Table Transformer (PyTorch): monkey-patch load_agent → device='mps'.
+  - YOLO layout detection (ONNX Runtime): CoreMLExecutionProvider если доступен
+    (доступен при наличии onnxruntime>=1.17.0 на macOS arm64 с brew).
 
-Логирование:
-  - Прогресс по страницам через callback на PageLayout.analyze (каждые N страниц).
-  - Детальные INFO/DEBUG сообщения: размер файла, кол-во страниц, время на страницу,
-    ETA, статистика элементов.
+Прогресс:
+  - Хук на PageLayout.from_image — вызывается после каждой страницы.
+  - progress_callback(page_num, total_pages, n_elements, has_table) если передан.
+  - INFO-логи по каждой странице: [hi_res] Page N/M — X elements.
+
+Прогрев (warmup_models):
+  - Вызывается при старте сервера.
+  - Скачивает и инициализирует spaCy, YOLO, Table Transformer.
+  - Первый запрос после прогрева не тратит время на инициализацию.
 
 Таблицы:
   - infer_table_structure=True → table-transformer читает структуру.
   - text_as_html → конвертируем в Markdown через stdlib HTMLParser.
-  - Fallback: plain text элемента если HTML недоступен.
 """
 from __future__ import annotations
 
@@ -28,11 +30,11 @@ import logging
 import re
 import time
 from collections import defaultdict
-from typing import Any
+from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
-# Минимальные категории заголовков
+# Категории заголовков
 _HEADING_CATEGORIES = {"Title", "Header", "SectionHeader"}
 
 # Категории обычного текста
@@ -40,6 +42,12 @@ _TEXT_CATEGORIES = {
     "NarrativeText", "Text", "ListItem", "Table", "FigureCaption",
     "Footer", "EmailAddress", "UncategorizedText", "Formula",
 }
+
+# Глобальный флаг: были ли уже применены GPU-патчи
+_GPU_PATCHES_APPLIED = False
+
+# Глобальный флаг: был ли уже выполнен прогрев
+_WARMUP_DONE = False
 
 
 # ---------------------------------------------------------------------------
@@ -49,9 +57,14 @@ _TEXT_CATEGORIES = {
 def _apply_mps_patches() -> str:
     """
     Патчит unstructured_inference для использования Apple Silicon MPS/CoreML.
+    Применяется только один раз (идемпотентно).
 
     Возвращает строку с описанием применённых патчей (для лога).
     """
+    global _GPU_PATCHES_APPLIED
+    if _GPU_PATCHES_APPLIED:
+        return "already applied"
+
     patches: list[str] = []
 
     # --- 1. Table Transformer: передаём device='mps' ---
@@ -92,7 +105,6 @@ def _apply_mps_patches() -> str:
         def _patched_yolo_initialize(self, model_path: str, label_map: dict):
             self.model_path = model_path
             available = _C.get_available_providers()
-            # CoreML = Apple ANE/GPU через ONNX Runtime
             ordered = [
                 "TensorrtExecutionProvider",
                 "CUDAExecutionProvider",
@@ -103,7 +115,7 @@ def _apply_mps_patches() -> str:
             logger.info(
                 "YOLO ONNX providers selected: %s (available: %s)",
                 providers,
-                [p for p in available if "CPU" not in p or "CPU" == p],
+                available,
             )
             self.model = onnxruntime.InferenceSession(
                 model_path, providers=providers
@@ -112,37 +124,106 @@ def _apply_mps_patches() -> str:
 
         UnstructuredYoloXModel.initialize = _patched_yolo_initialize
 
-        # Проверяем что CoreML доступен
         avail = _C.get_available_providers()
         if "CoreMLExecutionProvider" in avail:
             patches.append("YOLO→CoreML+CPU")
         else:
-            patches.append("YOLO→CPU (CoreML unavailable, install onnxruntime-silicon)")
+            patches.append("YOLO→CPU (CoreML unavailable)")
 
     except Exception as exc:
         logger.warning("CoreML patch for YOLO failed: %s", exc)
         patches.append(f"YOLO patch FAILED: {exc}")
 
+    _GPU_PATCHES_APPLIED = True
     return ", ".join(patches)
+
+
+# ---------------------------------------------------------------------------
+# Прогрев моделей (вызывается при старте сервера)
+# ---------------------------------------------------------------------------
+
+def warmup_models() -> None:
+    """
+    Инициализирует все модели заранее чтобы первый запрос не тратил время на:
+      - скачивание/инициализацию spaCy (en_core_web_sm)
+      - скачивание/инициализацию YOLO ONNX модели
+      - загрузку Table Transformer на MPS
+
+    Вызывается один раз при старте через lifespan hook в app.py.
+    """
+    global _WARMUP_DONE
+    if _WARMUP_DONE:
+        logger.debug("warmup_models: already done, skipping")
+        return
+
+    t0 = time.monotonic()
+    logger.info("[warmup] Starting model warmup...")
+
+    # Применяем GPU-патчи до загрузки моделей
+    patch_report = _apply_mps_patches()
+    logger.info("[warmup] GPU patches: [%s]", patch_report)
+
+    # 1. spaCy — скачивает en_core_web_sm если нет
+    try:
+        from unstructured.nlp.tokenize import get_tokenizer  # type: ignore[import]
+        _ = get_tokenizer()
+        logger.info("[warmup] spaCy tokenizer: OK (%.1fs)", time.monotonic() - t0)
+    except Exception as exc:
+        logger.warning("[warmup] spaCy warmup failed: %s", exc)
+
+    # 2. YOLO ONNX модель — скачивает yolox_l0.05.onnx если нет
+    try:
+        from unstructured_inference.models.yolox import UnstructuredYoloXModel  # type: ignore[import]
+        from unstructured_inference.models.base import get_model  # type: ignore[import]
+        model = get_model()  # загружает дефолтную модель (YOLO)
+        logger.info("[warmup] YOLO layout model: OK (%.1fs)", time.monotonic() - t0)
+    except Exception as exc:
+        logger.warning("[warmup] YOLO warmup failed: %s", exc)
+
+    # 3. Table Transformer — загружает модель на MPS/CPU
+    try:
+        from unstructured_inference.models import tables as _tables_mod  # type: ignore[import]
+        _tables_mod.load_agent()
+        logger.info("[warmup] Table Transformer: OK (%.1fs)", time.monotonic() - t0)
+    except Exception as exc:
+        logger.warning("[warmup] Table Transformer warmup failed: %s", exc)
+
+    elapsed = time.monotonic() - t0
+    logger.info("[warmup] All models ready in %.1fs", elapsed)
+    _WARMUP_DONE = True
 
 
 # ---------------------------------------------------------------------------
 # Публичная точка входа
 # ---------------------------------------------------------------------------
 
-def parse_pdf_unstructured(path: str, source_name: str = "") -> dict[str, Any]:
+ProgressCallback = Callable[[int, int, int, bool], None]
+
+
+def parse_pdf_unstructured(
+    path: str,
+    source_name: str = "",
+    progress_callback: Optional[ProgressCallback] = None,
+) -> dict[str, Any]:
     """
     Парсит PDF через unstructured hi_res.
     Весь файл — одним вызовом partition_pdf (контекст между страницами не теряется).
+
+    Args:
+        path: путь к PDF файлу
+        source_name: имя файла для логов/метаданных
+        progress_callback: функция (page_num, total_pages, n_elements, has_table)
+                           вызывается после каждой страницы (из потока парсинга)
     """
     source_name = source_name or path
     t_start = time.monotonic()
 
-    # Применяем GPU-патчи до первого импорта unstructured
+    # GPU-патчи применяются идемпотентно — можно вызывать сколько угодно раз
     patch_report = _apply_mps_patches()
-    logger.info("GPU patches applied: [%s]", patch_report)
+    if patch_report != "already applied":
+        logger.info("GPU patches applied: [%s]", patch_report)
 
-    result = _parse_hi_res(path, source_name, t_start)
+    result = _parse_hi_res(path, source_name, t_start, progress_callback)
 
     elapsed = time.monotonic() - t_start
     page_count = result.get("page_count", 0)
@@ -162,7 +243,12 @@ def parse_pdf_unstructured(path: str, source_name: str = "") -> dict[str, Any]:
 # hi_res парсинг
 # ---------------------------------------------------------------------------
 
-def _parse_hi_res(path: str, source_name: str, t_start: float) -> dict[str, Any]:
+def _parse_hi_res(
+    path: str,
+    source_name: str,
+    t_start: float,
+    progress_callback: Optional[ProgressCallback],
+) -> dict[str, Any]:
     from unstructured.partition.pdf import partition_pdf  # type: ignore[import]
 
     logger.info(
@@ -171,8 +257,9 @@ def _parse_hi_res(path: str, source_name: str, t_start: float) -> dict[str, Any]
         _file_size_mb(path),
     )
 
-    # Патчим PageLayout.get_elements для получения прогресса постранично
-    _install_page_progress_hook(source_name, t_start)
+    # Устанавливаем прогресс-хук на PageLayout.from_image
+    # (вызывается ровно один раз per страница в DocumentLayout.from_file)
+    _install_page_progress_hook(source_name, t_start, progress_callback)
 
     try:
         elements = partition_pdf(
@@ -194,72 +281,95 @@ def _parse_hi_res(path: str, source_name: str, t_start: float) -> dict[str, Any]
 
 
 # ---------------------------------------------------------------------------
-# Прогресс-хук на уровне PageLayout
+# Прогресс-хук: патчим PageLayout.from_image
+# ---------------------------------------------------------------------------
+# DocumentLayout.from_file итерирует страницы и для каждой вызывает
+# PageLayout.from_image(image, number=i+1, ...).
+# Это единственное надёжное место где можно перехватить завершение страницы.
 # ---------------------------------------------------------------------------
 
-_PROGRESS_HOOK_INSTALLED = False
-_ORIGINAL_GET_ELEMENTS = None
+_ORIGINAL_FROM_IMAGE = None
+_HOOK_INSTALLED = False
 
 
-def _install_page_progress_hook(source_name: str, t_start: float) -> None:
-    """
-    Monkey-patch PageLayout.get_elements чтобы логировать прогресс
-    каждый раз когда unstructured заканчивает обработку очередной страницы.
-    """
-    global _PROGRESS_HOOK_INSTALLED, _ORIGINAL_GET_ELEMENTS
-    if _PROGRESS_HOOK_INSTALLED:
+def _install_page_progress_hook(
+    source_name: str,
+    t_start: float,
+    progress_callback: Optional[ProgressCallback],
+) -> None:
+    global _ORIGINAL_FROM_IMAGE, _HOOK_INSTALLED
+    if _HOOK_INSTALLED:
         return
+
     try:
-        from unstructured_inference.inference.layout import PageLayout
+        from unstructured_inference.inference.layout import PageLayout  # type: ignore[import]
 
-        _ORIGINAL_GET_ELEMENTS = PageLayout.get_elements
-        _page_counters: dict[str, list] = {"count": [], "last_log": [0.0]}
+        _ORIGINAL_FROM_IMAGE = PageLayout.from_image.__func__ if hasattr(
+            PageLayout.from_image, '__func__') else None
 
-        def _hooked_get_elements(self, *args, **kwargs):
-            result = _ORIGINAL_GET_ELEMENTS(self, *args, **kwargs)
+        # Запоминаем оригинальный метод через __wrapped__ трюк
+        _orig = PageLayout.from_image
 
-            page_num = getattr(self, "number", len(_page_counters["count"]) + 1)
-            _page_counters["count"].append(page_num)
-            n_done = len(_page_counters["count"])
+        # Счётчик страниц — замыкание, т.к. total неизвестен заранее
+        # (from_file сначала конвертирует все страницы в картинки, потом по одной)
+        _state: dict[str, Any] = {"count": 0, "last_log": 0.0}
+
+        @classmethod  # type: ignore[misc]
+        def _hooked_from_image(cls, image, number=1, **kwargs):
+            page = _orig.__func__(cls, image, number=number, **kwargs)
+
+            _state["count"] += 1
+            n_done = _state["count"]
             elapsed = time.monotonic() - t_start
 
-            # Логируем каждую страницу — это важная информация о прогрессе
-            n_elements = len(result) if result is not None else 0
+            # Подсчёт элементов на странице
+            elements = getattr(page, "elements", None) or []
+            n_elements = len(list(elements))
             has_table = any(
                 getattr(e, "category", "") == "Table"
-                for e in (result or [])
+                for e in (elements or [])
             )
+
             speed = n_done / elapsed if elapsed > 0 else 0
             logger.info(
                 "[hi_res] Page %d done — %d elements%s — elapsed %.1fs (%.2f p/s)",
-                page_num,
+                number,
                 n_elements,
                 " [TABLE]" if has_table else "",
                 elapsed,
                 speed,
             )
 
-            return result
+            if progress_callback is not None:
+                try:
+                    # total_pages неизвестен здесь, передаём 0
+                    progress_callback(number, 0, n_elements, has_table)
+                except Exception as cb_exc:
+                    logger.debug("progress_callback error: %s", cb_exc)
 
-        PageLayout.get_elements = _hooked_get_elements
-        _PROGRESS_HOOK_INSTALLED = True
-        logger.debug("Page progress hook installed on PageLayout.get_elements")
+            return page
+
+        PageLayout.from_image = _hooked_from_image
+        _HOOK_INSTALLED = True
+        logger.debug("Page progress hook installed on PageLayout.from_image")
+
     except Exception as exc:
         logger.debug("Could not install page progress hook: %s", exc)
 
 
 def _remove_page_progress_hook() -> None:
-    global _PROGRESS_HOOK_INSTALLED, _ORIGINAL_GET_ELEMENTS
-    if not _PROGRESS_HOOK_INSTALLED or _ORIGINAL_GET_ELEMENTS is None:
+    global _ORIGINAL_FROM_IMAGE, _HOOK_INSTALLED
+    if not _HOOK_INSTALLED:
         return
     try:
-        from unstructured_inference.inference.layout import PageLayout
-        PageLayout.get_elements = _ORIGINAL_GET_ELEMENTS
+        from unstructured_inference.inference.layout import PageLayout  # type: ignore[import]
+        if _ORIGINAL_FROM_IMAGE is not None:
+            PageLayout.from_image = classmethod(_ORIGINAL_FROM_IMAGE)
     except Exception:
         pass
     finally:
-        _PROGRESS_HOOK_INSTALLED = False
-        _ORIGINAL_GET_ELEMENTS = None
+        _HOOK_INSTALLED = False
+        _ORIGINAL_FROM_IMAGE = None
 
 
 # ---------------------------------------------------------------------------
@@ -305,7 +415,6 @@ def _elements_to_result(elements: list[Any], source_name: str, parser: str) -> d
         else:
             pages_text[page_number].append(text)
 
-    # Статистика элементов
     logger.info(
         "Element categories: %s",
         ", ".join(f"{k}={v}" for k, v in sorted(categories_seen.items())),
@@ -348,11 +457,6 @@ def _extract_y0(element: Any) -> float:
 
 
 def _table_to_markdown(element: Any, table_index: int = 0) -> str:
-    """
-    Конвертирует Table-элемент в Markdown.
-    Использует text_as_html если доступен (infer_table_structure=True).
-    Fallback → plain text.
-    """
     try:
         meta = getattr(element, "metadata", None)
         if meta is not None:
@@ -369,7 +473,6 @@ def _table_to_markdown(element: Any, table_index: int = 0) -> str:
 
 
 def _html_table_to_md(html: str) -> str:
-    """HTML <table> → Markdown. Без внешних зависимостей (stdlib HTMLParser)."""
     from html.parser import HTMLParser
 
     class _TableParser(HTMLParser):
