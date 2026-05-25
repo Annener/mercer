@@ -60,49 +60,36 @@
     <div class="modal modal-lg" id="db-mgmt-modal" style="display: none;">
         <div class="modal-content modal-content-lg">
             <div class="modal-header">
-                <h3>Управление хранилищем</h3>
+                <h3>Хранилище</h3>
                 <button id="db-mgmt-close-btn" class="btn-close" title="Закрыть">✕</button>
             </div>
 
             <div class="tabs">
                 <button class="tab active" data-tab="manage">Управление</button>
-                <button class="tab" data-tab="search">Текстовый поиск</button>
+                <button class="tab" data-tab="search">Поиск</button>
             </div>
 
             <!-- Вкладка "Управление" -->
             <div class="tab-content active" data-tab="manage">
-                <div class="mgmt-toolbar">
-                    <div class="form-group-inline">
-                        <label for="mgmt-domain-select">Домен:</label>
-                        <select id="mgmt-domain-select">
-                            <option value="">Все домены</option>
-                        </select>
-                    </div>
-                    <div class="form-group-inline">
-                        <label for="mgmt-search-input">Поиск:</label>
-                        <input type="text" id="mgmt-search-input" placeholder="vault или файл...">
-                    </div>
-                </div>
 
                 <!-- Прогресс индексации -->
-                <div id="mgmt-progress-block" class="progress-block" style="display: none;">
-                    <div class="progress-header">
-                        <strong>Задача: <span id="mgmt-task-id">—</span></strong>
-                        <span id="mgmt-task-status" class="status-badge status-running">running</span>
+                <div id="mgmt-progress-block" class="progress-block2" style="display: none;">
+                    <div class="progress-block2-top">
+                        <span id="mgmt-task-status" class="status-badge status-running">запуск</span>
+                        <span class="progress-block2-files">Файлов: <b><span id="mgmt-files-done">0</span></b> / <span id="mgmt-files-total">0</span></span>
+                        <span class="progress-block2-pct"><span id="mgmt-progress-pct">0</span>%</span>
                         <button id="mgmt-cancel-btn" class="btn btn-sm btn-danger">Отменить</button>
-                    </div>
-                    <div class="progress-summary">
-                        Файлов: <span id="mgmt-files-done">0</span> / <span id="mgmt-files-total">0</span>
-                        &nbsp;·&nbsp;
-                        Чанков: <span id="mgmt-progress-pct">0</span>%
                     </div>
                     <div class="overall-progress">
                         <div class="overall-progress-bar" id="mgmt-overall-bar"></div>
                     </div>
-                    <div id="mgmt-files-list" class="files-list"></div>
+                    <div id="mgmt-files-list" class="files-list2"></div>
                 </div>
 
-                <!-- Список доменов с раскрывающимися vault'ами -->
+                <!-- Табы по доменам -->
+                <div id="mgmt-domain-tabs" class="domain-tabs"></div>
+
+                <!-- Список vault'ов -->
                 <div id="mgmt-vaults-container" class="vaults-container">
                     <div class="empty-state">Загрузка...</div>
                 </div>
@@ -110,22 +97,27 @@
 
             <!-- Вкладка "Поиск" -->
             <div class="tab-content" data-tab="search">
-                <div class="search-form">
-                    <div class="form-group-inline">
-                        <label for="search-domain-select">Домен:</label>
-                        <select id="search-domain-select"></select>
-                    </div>
-                    <input type="text" id="search-query-input" placeholder="Введите текст для поиска...">
-                    <div class="form-group-inline">
-                        <label for="search-limit">Limit:</label>
-                        <input type="number" id="search-limit" value="20" min="1" max="200">
-                    </div>
+                <div class="search-form2">
+                    <select id="search-domain-select" class="search-domain-sel"></select>
+                    <input type="text" id="search-query-input" placeholder="Введите текст..." class="search-query-inp">
+                    <input type="number" id="search-limit" value="20" min="1" max="200" class="search-limit-inp">
                     <button id="search-btn" class="btn btn-primary">Найти</button>
                 </div>
                 <div id="search-results" class="search-results">
                     <div class="empty-state">Результаты поиска появятся здесь</div>
                 </div>
             </div>
+        </div>
+    </div>
+
+    <!-- Модальное окно деталей чанка -->
+    <div class="modal" id="chunk-detail-modal" style="display: none;">
+        <div class="modal-content chunk-detail-modal-content">
+            <div class="modal-header">
+                <span></span>
+                <button id="chunk-detail-close" class="btn-close" title="Закрыть">✕</button>
+            </div>
+            <div id="chunk-detail-content" class="chunk-detail-body"></div>
         </div>
     </div>
 
