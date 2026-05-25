@@ -63,6 +63,10 @@ _AVG_WORD_LEN_CHARS = 6
 # Как часто отправлять прогресс по чанкам (каждые N чанков)
 CHUNK_PROGRESS_REPORT_INTERVAL = 10
 
+# Интервал отправки «heartbeat» прогресса на стадии parsing (секунды).
+# Во время парсинга PDF sidecar работает долго — без тиков UI не обновляется.
+_PARSING_HEARTBEAT_INTERVAL = 3.0
+
 
 async def run() -> None:
     raise NotImplementedError("Use run_indexing(task_id, vault_id, force_reindex) from the API service.")
@@ -220,8 +224,12 @@ async def _process_file(
     await update_file_status(task_id, relative_path, "parsing", 10)
     await _broadcast_chunk_progress(task_id, relative_path, "parsing", broadcast=broadcast)
 
-    parsed = await asyncio.to_thread(
-        _parse_file, absolute_path, str(file_info.get("extension", ""))
+    parsed = await _parse_file_with_progress(
+        absolute_path,
+        str(file_info.get("extension", "")),
+        task_id=task_id,
+        relative_path=relative_path,
+        broadcast=broadcast,
     )
 
     await _ensure_not_cancelled(task_id, is_cancelled)
@@ -424,6 +432,39 @@ def _parse_file(path: str, extension: str) -> dict[str, Any]:
     raise ValueError(f"Unsupported file extension: {extension}")
 
 
+async def _parse_file_with_progress(
+    absolute_path: str,
+    extension: str,
+    task_id: str,
+    relative_path: str,
+    broadcast: BroadcastCallable,
+) -> dict[str, Any]:
+    """
+    Запускает _parse_file в потоке и параллельно каждые _PARSING_HEARTBEAT_INTERVAL
+    секунд шлёт в UI heartbeat-событие stage=parsing, чтобы прогресс-бар не замирал.
+    """
+    parse_task = asyncio.ensure_future(
+        asyncio.to_thread(_parse_file, absolute_path, extension)
+    )
+
+    # Для не-PDF heartbeat не нужен — парсинг быстрый
+    if extension == ".pdf":
+        while not parse_task.done():
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(parse_task), timeout=_PARSING_HEARTBEAT_INTERVAL
+                )
+            except asyncio.TimeoutError:
+                # Парсинг ещё идёт — шлём тик в UI
+                await _broadcast_chunk_progress(
+                    task_id, relative_path, "parsing", broadcast=broadcast
+                )
+            except Exception:
+                break  # ошибка поймается ниже при await parse_task
+
+    return await parse_task
+
+
 async def _embed_chunks(
     chunks: list[Any],
     embedding_model: EmbeddingModelConfig,
@@ -452,9 +493,11 @@ async def _embed_chunks(
         else:
             vectors.append(cached)
 
+    # Количество чанков с кэш-попаданием — они уже «обработаны» до начала embed
+    cached_count = len(chunks) - len(missing_texts)
+
     if missing_texts:
         embedded = await provider.embed(missing_texts)
-        processed_count = 0
         for offset, vector in enumerate(embedded):
             if not vector:
                 raise ValueError(f"Embedding failed for chunk index {missing_indices[offset]}")
@@ -470,14 +513,19 @@ async def _embed_chunks(
                 provider.dimensions,
                 vector,
             )
-            processed_count += 1
 
-            # Прогресс по чанкам
+            # processed_count = уже закэшированные + только что обработанные
+            processed_count = cached_count + offset + 1
+
+            # Прогресс по чанкам каждые N или на последнем
             if (
                 broadcast is not None
                 and task_id is not None
                 and file_path is not None
-                and processed_count % CHUNK_PROGRESS_REPORT_INTERVAL == 0
+                and (
+                    processed_count % CHUNK_PROGRESS_REPORT_INTERVAL == 0
+                    or processed_count == len(chunks)
+                )
             ):
                 await _broadcast_chunk_progress(
                     task_id,
