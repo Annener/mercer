@@ -7,8 +7,13 @@ import httpx
 
 from embedding.base_provider import EmbeddingProvider, ProviderUnavailableError
 
-
 logger = logging.getLogger(__name__)
+
+# Максимум параллельных запросов к Ollama.
+# Ollama однопоточна по inference — больше 1 параллельного запроса не ускоряет сам inference,
+# но позволяет pipeline (следующий запрос готовится пока текущий обрабатывается).
+# 3-4 — хороший баланс: Ollama успевает принять следующий запрос без простоя.
+_OLLAMA_CONCURRENCY = 4
 
 
 class OllamaEmbeddingProvider(EmbeddingProvider):
@@ -31,8 +36,21 @@ class OllamaEmbeddingProvider(EmbeddingProvider):
         return self._dimensions
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
+        """
+        Параллельная версия embed: отправляет до _OLLAMA_CONCURRENCY запросов одновременно.
+
+        Порядок результатов соответствует порядку входных текстов.
+        Semaphore ограничивает параллелизм чтобы не перегружать Ollama.
+        """
+        semaphore = asyncio.Semaphore(_OLLAMA_CONCURRENCY)
+
+        async def _embed_with_sem(client: httpx.AsyncClient, text: str) -> list[float]:
+            async with semaphore:
+                return await self._embed_one(client, text)
+
         async with httpx.AsyncClient(timeout=self.timeout) as client:
-            return [await self._embed_one(client, text) for text in texts]
+            tasks = [_embed_with_sem(client, text) for text in texts]
+            return list(await asyncio.gather(*tasks))
 
     async def _embed_one(self, client: httpx.AsyncClient, text: str) -> list[float]:
         last_unavailable: Exception | None = None
