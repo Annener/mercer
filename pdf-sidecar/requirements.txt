@@ -1,5 +1,6 @@
 # pdf-sidecar dependencies
-# Устанавливать в venv: python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt
+# Требует Python 3.11–3.13 (unstructured-inference несовместим с 3.14+)
+# Установка: python3.13 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt
 
 # Web-сервер
 fastapi>=0.111.0
@@ -9,30 +10,20 @@ python-multipart>=0.0.9
 # Основной парсер
 unstructured[pdf]>=0.14.0
 
-# Зависимости unstructured[pdf] (указаны явно для воспроизводимости):
-# - pdfminer.six         — fast-стратегия и извлечение текста
-# - pdf2image            — рендеринг страниц в изображения (OCR-путь)
-# - pillow               — обработка изображений
-# - pytesseract          — OCR обёртка над tesseract
-# - unstructured-inference — layout model (detectron2) для hi_res
-# - detectron2           — устанавливается отдельно (см. README)
-# - torch                — нужен для detectron2
-
 # Явные пины для стабильности
 pdfminer.six>=20221105
 pdf2image>=1.17.0
 pillow>=10.0.0
 pytesseract>=0.3.10
 
-# ONNX Runtime для Apple Silicon (CoreML Execution Provider).
-# Заменяет стандартный onnxruntime, добавляет CoreMLExecutionProvider
-# для ускорения YOLO layout detection через Apple Neural Engine / GPU.
-# Совместим с onnxruntime API 1:1 — импорты не меняются.
-# Документация: https://onnxruntime.ai/docs/execution-providers/CoreML-ExecutionProvider.html
-onnxruntime-silicon>=1.17.0
+# ONNX Runtime — стандартный пакет.
+# На macOS arm64 НЕ включает CoreMLExecutionProvider (нужна кастомная сборка).
+# YOLO layout detection работает на CPU через стандартный onnxruntime.
+# Table Transformer ускоряется через PyTorch MPS (Apple Silicon GPU) — см. parser.py.
+# Примечание: onnxruntime-silicon (CoreML) не имеет wheel для Python 3.12/3.13.
+onnxruntime>=1.17.0
 
-# Для корректного парсинга HTML-таблиц из unstructured
-# (опционально, stdlib HTMLParser используется как fallback)
+# Для корректного парсинга HTML-таблиц из unstructured (lxml ускоряет HTMLParser)
 lxml>=5.0.0
 
 # Утилиты
