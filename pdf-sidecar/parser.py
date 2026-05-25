@@ -24,7 +24,8 @@ embedded модель обрабатывает чанки с overlap, котор
 
   - Table Transformer (PyTorch): monkey-patch load_agent → device='mps'
   - YOLO layout detection: CoreMLExecutionProvider если доступен
-  - Модель: yolox_quantized (INT8, ~1.5–2× быстрее yolox при сопоставимом качестве)
+  - Модель: yolox (FP32, лучшее качество распознавания структуры)
+    yolox_quantized деградирует на русских PDF — все элементы становятся UncategorizedText
 
 ## DPI
 
@@ -69,14 +70,22 @@ _TEXT_CATEGORIES = {
 # Image и FigureCaption — намеренно НЕ включены
 
 # Параметры батчинга
-_MIN_BATCH_SIZE = 5     # минимум страниц в батче (меньше — overhead > выигрыш)
-_MAX_BATCH_SIZE = 20    # максимум (больше — теряем параллелизм)
+_MIN_BATCH_SIZE = 8     # минимум страниц в батче (меньше — overhead > выигрыш)
+_MAX_BATCH_SIZE = 30    # максимум страниц в батче
+
+# Максимальное количество параллельных процессов.
+# НЕ равно cpu_count: 8 процессов на M3 Pro перегружают систему (kernel_task 97%).
+# Оставляем ресурсы для CoreML/ANE и Tesseract внутри процессов.
+_MAX_WORKERS = int(os.getenv("PDF_SIDECAR_MAX_WORKERS", "4"))
 
 # DPI рендеринга — 200 достаточно для YOLO (640px) и Tesseract
 _RENDER_DPI = int(os.getenv("PDF_RENDER_DPI", "200"))
 
-# Модель YOLO — quantized быстрее при сопоставимом качестве
-_YOLO_MODEL = os.getenv("UNSTRUCTURED_HI_RES_MODEL_NAME", "yolox_quantized")
+# Модель YOLO.
+# yolox_quantized даёт ~1.5× ускорение, но деградирует на русских PDF:
+# все элементы классифицируются как UncategorizedText, заголовки и таблицы теряются.
+# yolox (FP32) — дефолт, лучшее качество.
+_YOLO_MODEL = os.getenv("UNSTRUCTURED_HI_RES_MODEL_NAME", "yolox")
 
 # Глобальные флаги — применяются внутри каждого процесса
 _GPU_PATCHES_APPLIED = False
@@ -267,7 +276,10 @@ def _make_batches(total_pages: int) -> list[tuple[int, int]]:
      200 страниц, 10 CPU → batch=20 → 10 батчей [1-20, 21-40, ..., 181-200]
     """
     cpu_count = os.cpu_count() or 4
-    raw_batch = math.ceil(total_pages / cpu_count)
+    # Целевое количество батчей = MAX_WORKERS (чтобы все воркеры были заняты).
+    # Размер батча = ceil(pages / workers), зажатый в [MIN, MAX].
+    target_workers = min(_MAX_WORKERS, cpu_count)
+    raw_batch = math.ceil(total_pages / target_workers)
     batch_size = max(_MIN_BATCH_SIZE, min(_MAX_BATCH_SIZE, raw_batch))
 
     batches: list[tuple[int, int]] = []
@@ -454,7 +466,12 @@ def _parse_parallel(
         all_elements: list[dict[str, Any]] = []
         completed = 0
 
-        with ProcessPoolExecutor(max_workers=n_workers) as executor:
+        actual_workers = min(n_workers, _MAX_WORKERS)
+        logger.info(
+            "[hi_res] ProcessPoolExecutor: %d batches, %d workers (MAX_WORKERS=%d)",
+            n_workers, actual_workers, _MAX_WORKERS,
+        )
+        with ProcessPoolExecutor(max_workers=actual_workers) as executor:
             futures = {
                 executor.submit(
                     _parse_batch_worker,
