@@ -31,6 +31,21 @@ if (window.marked) {
 }
 
 /**
+ * Преобразует GitHub-стиль callouts ([!NOTE], [!TIP] и т.д.) в хуманный блокцитат.
+ * marked не понимает GH-callout-синтаксис и рендерит `[!NOTE]` как простой текст.
+ */
+const CALLOUT_LABELS = { NOTE: 'Заметка', TIP: 'Совет', IMPORTANT: 'Важно', WARNING: 'Предупреждение', CAUTION: 'Осторожно' };
+
+function preprocessMarkdown(text) {
+    if (!text) return text;
+    // Стрипаем [!TYPE] в начале блокцитата и заменяем на хуманный заголовок
+    return text.replace(/^>\s*\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]\s*/gm, (_, type) => {
+        const label = CALLOUT_LABELS[type] || type;
+        return `> **${label}:** `;
+    });
+}
+
+/**
  * Превращает markdown-текст в безопасный HTML.
  * Для user-сообщений не используем (там plain text).
  */
@@ -40,11 +55,13 @@ function renderMarkdown(text) {
         // Fallback если CDN не загрузился
         return escapeHtml(text).replace(/\n/g, '<br>');
     }
-    const rawHtml = marked.parse(text);
-    // DOMPurify защищает от XSS (LLM мог выдать <script> или onerror=)
+    const rawHtml = marked.parse(preprocessMarkdown(text));
+    // DOMPurify: разрешаем эмоджи (unicode) и target для ссылок
     return DOMPurify.sanitize(rawHtml, {
-        ADD_ATTR: ['target'],  // разрешаем target для ссылок
-        ADD_TAGS: ['iframe'],  // если LLM вдруг вставит
+        ADD_ATTR: ['target'],
+        FORBID_TAGS: ['script', 'style', 'iframe'],
+        ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto|ftp):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i,
+        FORCE_BODY: false,
     });
 }
 
@@ -186,9 +203,10 @@ class ChatManager {
         let fullContent = '';
         let pendingContent = '';  // буфер для debounced рендера
         let pendingSources = null; // источники из SSE
+        let streamDone = false;
 
         try {
-            while (true) {
+            while (!streamDone) {
                 const { done, value } = await reader.read();
                 if (done) break;
 
@@ -198,7 +216,12 @@ class ChatManager {
                 for (const line of lines) {
                     if (!line.startsWith('data: ')) continue;
                     const data = line.slice(6).trim();
-                    if (data === '[DONE]') break;
+
+                    // [DONE] — ставим флаг, но НЕ break: в том же чанке могут быть sources
+                    if (data === '[DONE]') {
+                        streamDone = true;
+                        continue;
+                    }
 
                     try {
                         const parsed = JSON.parse(data);
