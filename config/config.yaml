@@ -1,0 +1,121 @@
+# vaults - document stores available to the platform.
+vaults:
+  dnd-main:
+    # Unique vault identifier used by APIs and chat sessions.
+    vault_id: "dnd-main"
+    # Domain profile used for prompts and routing.
+    domain_id: "dnd"
+    # Container path to mounted source documents.
+    path: "/data/vaults/dnd"
+    # Disabled vaults stay in config but are ignored by runtime features.
+    enabled: true
+  work:
+    # Unique vault identifier used by APIs and chat sessions.
+    vault_id: "work"
+    # Domain profile used for prompts and routing.
+    domain_id: "work"
+    # Container path to mounted source documents.
+    path: "/data/vaults/work"
+    # Example disabled vault.
+    enabled: false
+
+# embedding_models - providers used to generate vector embeddings.
+embedding_models:
+  nomic-local:
+    # Stable model identifier referenced by vault binding.
+    model_id: "nomic-local"
+    # Supported values: ollama, openai_compatible.
+    provider: "ollama"
+    # Provider-specific model name.
+    model_name: "dengcao/Qwen3-Embedding-4B:Q4_K_M"
+    # Provider base URL visible from inside the container.
+    base_url: "http://host.docker.internal:11434"
+    # Expected vector dimensions; must be positive.
+    dimensions: 2560
+    # Disabled models stay in config but are not selected automatically.
+    enabled: true
+    # Request timeout for embedding calls.
+    timeout_seconds: 30
+    # Retry count for transient provider failures.
+    max_retries: 3
+
+# generation_models - OpenAI-compatible LLM providers.
+generation_models:
+  deepseek:
+    # Stable model identifier referenced by chat services.
+    model_id: "openrouter/deepseek/deepseek-chat-v3.1"
+    # V1 generation provider support is openai_compatible only.
+    provider: "openai_compatible"
+    # Provider base URL visible from inside the container.
+    base_url: "https://openai.api.proxyapi.ru/v1"
+    # Environment variable name containing the API key.
+    api_key_env: "OPENAI_API_KEY"
+    # Disabled models stay in config but are not selected automatically.
+    enabled: true
+    # Request timeout for generation calls.
+    timeout_seconds: 60
+
+# reranker - optional reranking provider.
+reranker:
+  # Whether reranker use is enabled.
+  enabled: false
+  # Provider identifier, null when disabled.
+  provider: null
+  # Provider base URL, null when disabled.
+  base_url: null
+  # Provider-specific model name, null when disabled.
+  model_name: null
+
+# chat - chat behavior settings.
+chat:
+  # Max clarification turns; valid range is 1..10.
+  max_clarification_turns: 3
+  # Whether answers are streamed by default.
+  stream_answers: true
+  # Whether chat title generation is enabled.
+  auto_title: true
+
+# retrieval - search behavior settings.
+retrieval:
+  # Whether retrieval is enabled for chat answers.
+  enabled: true
+  # Number of chunks to retrieve; valid range is 1..100.
+  top_k: 10
+  # Whether reranker is used after retrieval.
+  reranker_enabled: false
+
+# chunking - indexer chunking behavior.
+chunking:
+  # Enables regex-based entity extraction during chunking.
+  chunk_size: 2000  # Максимальное количество слов в одном чанке
+  overlap: 64      # Перекрытие соседних чанков (в словах)
+  entity_aware_mode: true
+
+# pipelines - hot-reloaded executable pipeline blocks.
+pipelines:
+  # Whether pipeline loading and hot reload are enabled.
+  enabled: true
+  # Container path with domain pipeline folders.
+  path: "/app/pipelines"
+  # Polling interval for pipeline changes.
+  reload_interval_seconds: 2.0
+  # Debounce delay after detecting changes.
+  debounce_seconds: 2.0
+
+# ui - backend-hosted admin UI settings.
+ui:
+  # Enable the minimal DB management page at /db/ui.
+  db_management_enabled: true
+
+# validation_rules - numeric ranges exposed to UI controls.
+validation_rules:
+  reranker.top_k_before_rerank:
+    # Minimum UI value.
+    min: 5
+    # Maximum UI value.
+    max: 50
+  reranker.top_n_after_rerank:
+    # Minimum UI value.
+    min: 1
+    # Maximum UI value.
+    max: 15

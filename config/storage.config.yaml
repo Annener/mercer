@@ -1,0 +1,15 @@
+# lancedb - local vector storage settings.
+lancedb:
+  # Container path for LanceDB data files.
+  data_path: "/data/lancedb"
+  # Cache size budget in megabytes.
+  cache_size_mb: 256
+
+# Host bound by the storage API inside the container.
+host: "0.0.0.0"
+
+# HTTP port used by db-api-server.
+port: 8080
+
+# Logging level for storage service.
+log_level: "INFO"

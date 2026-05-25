@@ -1,0 +1,9 @@
+fastapi
+httpx
+numpy
+pydantic>=2.5,<3.0
+pydantic-settings
+pytest>=7.0
+pytest-asyncio>=0.21
+pyyaml
+sqlalchemy[asyncio]>=2.0

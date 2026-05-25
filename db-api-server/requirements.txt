@@ -1,0 +1,6 @@
+fastapi
+lancedb
+numpy
+pydantic-settings
+pyyaml
+uvicorn[standard]

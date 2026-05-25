@@ -1,0 +1,10 @@
+fastapi
+httpx
+numpy
+pydantic-settings
+pyyaml
+pdfminer.six
+pdf2image
+pillow
+pytesseract
+uvicorn[standard]

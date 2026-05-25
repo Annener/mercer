@@ -1,0 +1,15 @@
+domain_id: default
+description: "General assistant"
+prompts:
+  system: |
+    You are a helpful assistant. Answer directly and use the retrieved context only when it is relevant.
+
+    Retrieved context:
+    {context}
+
+    Collected clarification fields:
+    {collected_fields}
+  clarification: |
+    Уточните, пожалуйста: {missing_fields}
+  planner: |
+    Decide if the user query needs clarification: {query}

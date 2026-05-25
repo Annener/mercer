@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MattMercer — RAG Chat Platform</title>
+    <link rel="stylesheet" href="/static/css/chat.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github.min.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <h2>MattMercer</h2>
+                <button id="db-mgmt-btn" class="btn btn-secondary btn-full btn-sidebar-secondary">⚙️ Управление хранилищем</button>
+                <div class="domain-selector">
+                    <label for="domain-select">Домен:</label>
+                    <select id="domain-select" class="domain-select"></select>
+                </div>
+                <button id="new-chat-btn" class="btn btn-primary btn-full">+ Новая беседа</button>
+            </div>
+            <div class="chat-list" id="chat-list"></div>
+        </aside>
+
+        <!-- Main Chat Area -->
+        <main class="chat-main">
+            <div class="chat-header" id="chat-header">
+                <h3 id="chat-title">Выберите чат или создайте новый</h3>
+            </div>
+            <div class="messages-container" id="messages-container">
+                <div class="welcome-message" id="welcome-message">
+                    <h3>Добро пожаловать в MattMercer</h3>
+                    <p>Создайте новый чат или выберите существующий из списка слева</p>
+                </div>
+            </div>
+            <div class="input-area" id="input-area" style="display: none;">
+                <textarea id="message-input" placeholder="Введите сообщение..." rows="1"></textarea>
+                <button id="send-btn" class="btn btn-send">Отправить</button>
+            </div>
+        </main>
+    </div>
+
+    <!-- Модальное окно переименования -->
+    <div class="modal" id="rename-modal" style="display: none;">
+        <div class="modal-content">
+            <h3>Переименовать чат</h3>
+            <div class="form-group">
+                <label for="rename-input">Новое название:</label>
+                <input type="text" id="rename-input" maxlength="255">
+            </div>
+            <div class="modal-actions">
+                <button id="rename-confirm-btn" class="btn btn-primary">Сохранить</button>
+                <button id="rename-cancel-btn" class="btn btn-secondary">Отмена</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Модальное окно управления хранилищем -->
+    <div class="modal modal-lg" id="db-mgmt-modal" style="display: none;">
+        <div class="modal-content modal-content-lg">
+            <div class="modal-header">
+                <h3>Управление хранилищем</h3>
+                <button id="db-mgmt-close-btn" class="btn-close" title="Закрыть">✕</button>
+            </div>
+
+            <div class="tabs">
+                <button class="tab active" data-tab="manage">Управление</button>
+                <button class="tab" data-tab="search">Текстовый поиск</button>
+            </div>
+
+            <!-- Вкладка "Управление" -->
+            <div class="tab-content active" data-tab="manage">
+                <div class="mgmt-toolbar">
+                    <div class="form-group-inline">
+                        <label for="mgmt-domain-select">Домен:</label>
+                        <select id="mgmt-domain-select">
+                            <option value="">Все домены</option>
+                        </select>
+                    </div>
+                    <div class="form-group-inline">
+                        <label for="mgmt-search-input">Поиск:</label>
+                        <input type="text" id="mgmt-search-input" placeholder="vault или файл...">
+                    </div>
+                </div>
+
+                <!-- Прогресс индексации -->
+                <div id="mgmt-progress-block" class="progress-block" style="display: none;">
+                    <div class="progress-header">
+                        <strong>Задача: <span id="mgmt-task-id">—</span></strong>
+                        <span id="mgmt-task-status" class="status-badge status-running">running</span>
+                        <button id="mgmt-cancel-btn" class="btn btn-sm btn-danger">Отменить</button>
+                    </div>
+                    <div class="progress-summary">
+                        Обработано: <span id="mgmt-files-done">0</span> / <span id="mgmt-files-total">0</span>
+                        (<span id="mgmt-progress-pct">0</span>%)
+                    </div>
+                    <div id="mgmt-files-list" class="files-list"></div>
+                </div>
+
+                <!-- Список доменов с раскрывающимися vault'ами -->
+                <div id="mgmt-vaults-container" class="vaults-container">
+                    <div class="empty-state">Загрузка...</div>
+                </div>
+            </div>
+
+            <!-- Вкладка "Поиск" -->
+            <div class="tab-content" data-tab="search">
+                <div class="search-form">
+                    <div class="form-group-inline">
+                        <label for="search-domain-select">Домен:</label>
+                        <select id="search-domain-select"></select>
+                    </div>
+                    <input type="text" id="search-query-input" placeholder="Введите текст для поиска...">
+                    <div class="form-group-inline">
+                        <label for="search-limit">Limit:</label>
+                        <input type="number" id="search-limit" value="20" min="1" max="200">
+                    </div>
+                    <button id="search-btn" class="btn btn-primary">Найти</button>
+                </div>
+                <div id="search-results" class="search-results">
+                    <div class="empty-state">Результаты поиска появятся здесь</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Markdown & security libraries (CDN) -->
+    <script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.0/dist/purify.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/core.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/languages/python.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/languages/javascript.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/languages/bash.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/languages/json.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/languages/yaml.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/languages/sql.min.js"></script>
+
+    <script src="/static/js/api.js"></script>
+    <script src="/static/js/chat.js"></script>
+    <script src="/static/js/sidebar.js"></script>
+    <script src="/static/js/db_management.js"></script>
+</body>
+</html>
