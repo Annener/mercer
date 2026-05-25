@@ -1,0 +1,32 @@
+# pdf-sidecar dependencies
+# Устанавливать в venv: python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt
+
+# Web-сервер
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0
+python-multipart>=0.0.9
+
+# Основной парсер
+unstructured[pdf]>=0.14.0
+
+# Зависимости unstructured[pdf] (указаны явно для воспроизводимости):
+# - pdfminer.six         — fast-стратегия и извлечение текста
+# - pdf2image            — рендеринг страниц в изображения (OCR-путь)
+# - pillow               — обработка изображений
+# - pytesseract          — OCR обёртка над tesseract
+# - unstructured-inference — layout model (detectron2) для hi_res
+# - detectron2           — устанавливается отдельно (см. README)
+# - torch                — нужен для detectron2
+
+# Явные пины для стабильности
+pdfminer.six>=20221105
+pdf2image>=1.17.0
+pillow>=10.0.0
+pytesseract>=0.3.10
+
+# Для корректного парсинга HTML-таблиц из unstructured
+# (опционально, stdlib HTMLParser используется как fallback)
+lxml>=5.0.0
+
+# Утилиты
+pyyaml>=6.0
