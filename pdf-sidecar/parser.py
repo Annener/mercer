@@ -2,105 +2,131 @@
 PDF-парсер для pdf-sidecar.
 
 Использует unstructured partition_pdf с strategy='hi_res'.
-Весь файл парсится за один вызов — постраничное разбиение не применяется,
-чтобы не потерять контекст между страницами.
 
-GPU-поддержка (Apple Silicon):
-  - Table Transformer (PyTorch): monkey-patch load_agent → device='mps'.
-  - YOLO layout detection (ONNX Runtime): CoreMLExecutionProvider если доступен
-    (доступен при наличии onnxruntime>=1.17.0 на macOS arm64 с brew).
+## Параллельный батч-парсинг
 
-Прогресс:
-  - Хук на PageLayout.from_image — вызывается после каждой страницы.
-  - progress_callback(page_num, total_pages, n_elements, has_table) если передан.
-  - INFO-логи по каждой странице: [hi_res] Page N/M — X elements.
+Документ разрезается на батчи по N страниц и обрабатывается параллельно
+через ProcessPoolExecutor. Размер батча рассчитывается динамически:
 
-Прогрев (warmup_models):
-  - Вызывается при старте сервера.
-  - Скачивает и инициализирует spaCy, YOLO, Table Transformer.
-  - Первый запрос после прогрева не тратит время на инициализацию.
+    batch_size = ceil(total_pages / cpu_count)
+    но не менее MIN_BATCH_SIZE и не более MAX_BATCH_SIZE страниц
 
-Таблицы:
-  - infer_table_structure=True → table-transformer читает структуру.
-  - text_as_html → конвертируем в Markdown через stdlib HTMLParser.
+Каждый батч запускается в отдельном процессе (не потоке!) потому что:
+  - unstructured/ONNX Runtime держат GIL во время inference
+  - процессы дают настоящий параллелизм на M-серии
+  - CoreML и MPS инициализируются независимо в каждом процессе
+
+После завершения всех батчей элементы сортируются по page_number и
+склеиваются в единый результат. Контекст на границах батчей не теряется —
+embedded модель обрабатывает чанки с overlap, который перекрывает любой шов.
+
+## GPU-поддержка
+
+  - Table Transformer (PyTorch): monkey-patch load_agent → device='mps'
+  - YOLO layout detection: CoreMLExecutionProvider если доступен
+  - Модель: yolox_quantized (INT8, ~1.5–2× быстрее yolox при сопоставимом качестве)
+
+## DPI
+
+Рендеринг страниц: PDF_RENDER_DPI=200 (дефолт unstructured 350 — избыточно).
+YOLO сам ресайзит input до 640px, поэтому 200 DPI достаточно.
+Для Tesseract OCR качество не деградирует — он получает вырезанный регион.
+
+## Фильтрация
+
+Image и FigureCaption элементы отбрасываются — они не нужны для RAG.
+
+## Прогрев
+
+warmup_models() вызывается при старте сервера (lifespan hook в app.py).
+Инициализирует spaCy, YOLO, Table Transformer заранее.
 """
 from __future__ import annotations
 
 import logging
+import math
+import multiprocessing
+import os
 import re
+import tempfile
 import time
 from collections import defaultdict
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
-# Категории заголовков
-_HEADING_CATEGORIES = {"Title", "Header", "SectionHeader"}
+# ---------------------------------------------------------------------------
+# Константы
+# ---------------------------------------------------------------------------
 
-# Категории обычного текста
+# Категории которые включаем в результат
+_HEADING_CATEGORIES = {"Title", "Header", "SectionHeader"}
 _TEXT_CATEGORIES = {
-    "NarrativeText", "Text", "ListItem", "Table", "FigureCaption",
+    "NarrativeText", "Text", "ListItem", "Table",
     "Footer", "EmailAddress", "UncategorizedText", "Formula",
 }
+# Image и FigureCaption — намеренно НЕ включены
 
-# Глобальный флаг: были ли уже применены GPU-патчи
+# Параметры батчинга
+_MIN_BATCH_SIZE = 5     # минимум страниц в батче (меньше — overhead > выигрыш)
+_MAX_BATCH_SIZE = 20    # максимум (больше — теряем параллелизм)
+
+# DPI рендеринга — 200 достаточно для YOLO (640px) и Tesseract
+_RENDER_DPI = int(os.getenv("PDF_RENDER_DPI", "200"))
+
+# Модель YOLO — quantized быстрее при сопоставимом качестве
+_YOLO_MODEL = os.getenv("UNSTRUCTURED_HI_RES_MODEL_NAME", "yolox_quantized")
+
+# Глобальные флаги — применяются внутри каждого процесса
 _GPU_PATCHES_APPLIED = False
-
-# Глобальный флаг: был ли уже выполнен прогрев
 _WARMUP_DONE = False
+
+# ---------------------------------------------------------------------------
+# Тип callback прогресса
+# ---------------------------------------------------------------------------
+
+ProgressCallback = Callable[[int, int, int, bool], None]
 
 
 # ---------------------------------------------------------------------------
-# GPU Monkey-patches
+# GPU monkey-patches
 # ---------------------------------------------------------------------------
 
 def _apply_mps_patches() -> str:
-    """
-    Патчит unstructured_inference для использования Apple Silicon MPS/CoreML.
-    Применяется только один раз (идемпотентно).
-
-    Возвращает строку с описанием применённых патчей (для лога).
-    """
     global _GPU_PATCHES_APPLIED
     if _GPU_PATCHES_APPLIED:
         return "already applied"
 
     patches: list[str] = []
 
-    # --- 1. Table Transformer: передаём device='mps' ---
+    # Table Transformer → MPS
     try:
         import torch
         if torch.backends.mps.is_available():
             from unstructured_inference.models import tables as _tables_mod
-
-            original_load_agent = _tables_mod.load_agent
 
             def _patched_load_agent():
                 agent = _tables_mod.tables_agent
                 if getattr(agent, "model", None) is None:
                     with agent._lock:
                         if getattr(agent, "model", None) is None:
-                            logger.info(
-                                "Loading table structure model to mps (patched) ..."
-                            )
+                            logger.info("Loading table structure model to mps (patched) ...")
                             agent.initialize(_tables_mod.DEFAULT_MODEL, device="mps")
-                return
 
             _tables_mod.load_agent = _patched_load_agent
             patches.append("TableTransformer→mps")
         else:
-            patches.append("TableTransformer→cpu (MPS unavailable)")
+            patches.append("TableTransformer→cpu")
     except Exception as exc:
-        logger.warning("MPS patch for TableTransformer failed: %s", exc)
-        patches.append(f"TableTransformer patch FAILED: {exc}")
+        logger.warning("MPS patch failed: %s", exc)
+        patches.append(f"TableTransformer-FAILED:{exc}")
 
-    # --- 2. YOLO ONNX: добавляем CoreMLExecutionProvider ---
+    # YOLO → CoreML
     try:
         import onnxruntime
         from onnxruntime.capi import _pybind_state as _C
         from unstructured_inference.models.yolox import UnstructuredYoloXModel
-
-        original_yolo_init = UnstructuredYoloXModel.initialize
 
         def _patched_yolo_initialize(self, model_path: str, label_map: dict):
             self.model_path = model_path
@@ -112,14 +138,8 @@ def _apply_mps_patches() -> str:
                 "CPUExecutionProvider",
             ]
             providers = [p for p in ordered if p in available]
-            logger.info(
-                "YOLO ONNX providers selected: %s (available: %s)",
-                providers,
-                available,
-            )
-            self.model = onnxruntime.InferenceSession(
-                model_path, providers=providers
-            )
+            logger.info("YOLO ONNX providers: %s", providers)
+            self.model = onnxruntime.InferenceSession(model_path, providers=providers)
             self.layout_classes = label_map
 
         UnstructuredYoloXModel.initialize = _patched_yolo_initialize
@@ -128,11 +148,10 @@ def _apply_mps_patches() -> str:
         if "CoreMLExecutionProvider" in avail:
             patches.append("YOLO→CoreML+CPU")
         else:
-            patches.append("YOLO→CPU (CoreML unavailable)")
-
+            patches.append("YOLO→CPU")
     except Exception as exc:
-        logger.warning("CoreML patch for YOLO failed: %s", exc)
-        patches.append(f"YOLO patch FAILED: {exc}")
+        logger.warning("CoreML patch failed: %s", exc)
+        patches.append(f"YOLO-FAILED:{exc}")
 
     _GPU_PATCHES_APPLIED = True
     return ", ".join(patches)
@@ -143,53 +162,38 @@ def _apply_mps_patches() -> str:
 # ---------------------------------------------------------------------------
 
 def warmup_models() -> None:
-    """
-    Инициализирует все модели заранее чтобы первый запрос не тратил время на:
-      - скачивание/инициализацию spaCy (en_core_web_sm)
-      - скачивание/инициализацию YOLO ONNX модели
-      - загрузку Table Transformer на MPS
-
-    Вызывается один раз при старте через lifespan hook в app.py.
-    """
     global _WARMUP_DONE
     if _WARMUP_DONE:
-        logger.debug("warmup_models: already done, skipping")
         return
 
     t0 = time.monotonic()
     logger.info("[warmup] Starting model warmup...")
 
-    # Применяем GPU-патчи до загрузки моделей
     patch_report = _apply_mps_patches()
     logger.info("[warmup] GPU patches: [%s]", patch_report)
 
-    # 1. spaCy — скачивает en_core_web_sm если нет
     try:
         from unstructured.nlp.tokenize import get_tokenizer  # type: ignore[import]
         _ = get_tokenizer()
-        logger.info("[warmup] spaCy tokenizer: OK (%.1fs)", time.monotonic() - t0)
+        logger.info("[warmup] spaCy: OK (%.1fs)", time.monotonic() - t0)
     except Exception as exc:
-        logger.warning("[warmup] spaCy warmup failed: %s", exc)
+        logger.warning("[warmup] spaCy failed: %s", exc)
 
-    # 2. YOLO ONNX модель — скачивает yolox_l0.05.onnx если нет
     try:
-        from unstructured_inference.models.yolox import UnstructuredYoloXModel  # type: ignore[import]
         from unstructured_inference.models.base import get_model  # type: ignore[import]
-        model = get_model()  # загружает дефолтную модель (YOLO)
-        logger.info("[warmup] YOLO layout model: OK (%.1fs)", time.monotonic() - t0)
+        _ = get_model(_YOLO_MODEL)
+        logger.info("[warmup] YOLO (%s): OK (%.1fs)", _YOLO_MODEL, time.monotonic() - t0)
     except Exception as exc:
-        logger.warning("[warmup] YOLO warmup failed: %s", exc)
+        logger.warning("[warmup] YOLO failed: %s", exc)
 
-    # 3. Table Transformer — загружает модель на MPS/CPU
     try:
         from unstructured_inference.models import tables as _tables_mod  # type: ignore[import]
         _tables_mod.load_agent()
         logger.info("[warmup] Table Transformer: OK (%.1fs)", time.monotonic() - t0)
     except Exception as exc:
-        logger.warning("[warmup] Table Transformer warmup failed: %s", exc)
+        logger.warning("[warmup] Table Transformer failed: %s", exc)
 
-    elapsed = time.monotonic() - t0
-    logger.info("[warmup] All models ready in %.1fs", elapsed)
+    logger.info("[warmup] Done in %.1fs", time.monotonic() - t0)
     _WARMUP_DONE = True
 
 
@@ -197,70 +201,352 @@ def warmup_models() -> None:
 # Публичная точка входа
 # ---------------------------------------------------------------------------
 
-ProgressCallback = Callable[[int, int, int, bool], None]
-
-
 def parse_pdf_unstructured(
     path: str,
     source_name: str = "",
     progress_callback: Optional[ProgressCallback] = None,
 ) -> dict[str, Any]:
     """
-    Парсит PDF через unstructured hi_res.
-    Весь файл — одним вызовом partition_pdf (контекст между страницами не теряется).
+    Парсит PDF через unstructured hi_res с параллельным батч-парсингом.
 
     Args:
-        path: путь к PDF файлу
+        path: путь к PDF
         source_name: имя файла для логов/метаданных
-        progress_callback: функция (page_num, total_pages, n_elements, has_table)
-                           вызывается после каждой страницы (из потока парсинга)
+        progress_callback(page_num, total_pages, n_elements, has_table):
+            вызывается после завершения каждой страницы (из рабочих процессов)
     """
     source_name = source_name or path
     t_start = time.monotonic()
 
-    # GPU-патчи применяются идемпотентно — можно вызывать сколько угодно раз
     patch_report = _apply_mps_patches()
     if patch_report != "already applied":
-        logger.info("GPU patches applied: [%s]", patch_report)
+        logger.info("GPU patches: [%s]", patch_report)
 
-    result = _parse_hi_res(path, source_name, t_start, progress_callback)
-
-    elapsed = time.monotonic() - t_start
-    page_count = result.get("page_count", 0)
-    pages_per_sec = page_count / elapsed if elapsed > 0 else 0
+    # Считаем страницы
+    total_pages = _count_pdf_pages(path)
     logger.info(
-        "Parsing complete: %s → %d pages, %d headings in %.1fs (%.2f pages/s)",
-        source_name,
-        page_count,
-        len(result.get("headings", [])),
-        elapsed,
-        pages_per_sec,
+        "[hi_res] %s — %d pages, DPI=%d, model=%s",
+        source_name, total_pages, _RENDER_DPI, _YOLO_MODEL,
     )
+
+    if total_pages == 0:
+        logger.warning("Could not determine page count, falling back to single-pass parse")
+        return _parse_single(path, source_name, 1, total_pages, t_start, progress_callback)
+
+    # Определяем батчи
+    batches = _make_batches(total_pages)
+    n_workers = len(batches)
+
+    if n_workers == 1:
+        # Нет смысла в process overhead для маленьких документов
+        logger.info("[hi_res] Single batch (%d pages) — skipping parallelism", total_pages)
+        return _parse_single(path, source_name, 1, total_pages, t_start, progress_callback)
+
+    logger.info(
+        "[hi_res] Parallel parse: %d batches × ~%d pages, %d workers",
+        n_workers, batches[0][1] - batches[0][0] + 1, n_workers,
+    )
+
+    return _parse_parallel(path, source_name, total_pages, batches, t_start, progress_callback)
+
+
+# ---------------------------------------------------------------------------
+# Расчёт батчей
+# ---------------------------------------------------------------------------
+
+def _make_batches(total_pages: int) -> list[tuple[int, int]]:
+    """
+    Возвращает список (first_page, last_page) 1-based.
+
+    Размер батча: ceil(total_pages / cpu_count),
+    зажатый в [MIN_BATCH_SIZE, MAX_BATCH_SIZE].
+
+    Примеры для разных документов:
+      10 страниц, 10 CPU → batch=5 → 2 батча [1-5, 6-10]
+      98 страниц, 10 CPU → batch=10 → 10 батчей [1-10, 11-20, ..., 91-98]
+     200 страниц, 10 CPU → batch=20 → 10 батчей [1-20, 21-40, ..., 181-200]
+    """
+    cpu_count = os.cpu_count() or 4
+    raw_batch = math.ceil(total_pages / cpu_count)
+    batch_size = max(_MIN_BATCH_SIZE, min(_MAX_BATCH_SIZE, raw_batch))
+
+    batches: list[tuple[int, int]] = []
+    page = 1
+    while page <= total_pages:
+        last = min(page + batch_size - 1, total_pages)
+        batches.append((page, last))
+        page = last + 1
+
+    return batches
+
+
+# ---------------------------------------------------------------------------
+# Счётчик страниц
+# ---------------------------------------------------------------------------
+
+def _count_pdf_pages(path: str) -> int:
+    """Быстро считает количество страниц без полного парсинга."""
+    # pypdfium2 используется в unstructured-inference, точно есть в venv
+    try:
+        import pypdfium2 as pdfium  # type: ignore[import]
+        doc = pdfium.PdfDocument(path)
+        count = len(doc)
+        doc.close()
+        return count
+    except Exception:
+        pass
+
+    # Fallback: pdfminer
+    try:
+        from pdfminer.high_level import extract_pages  # type: ignore[import]
+        return sum(1 for _ in extract_pages(path))
+    except Exception:
+        pass
+
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Разрезание PDF на временный файл для батча
+# ---------------------------------------------------------------------------
+
+def _extract_pdf_pages(src_path: str, first_page: int, last_page: int) -> str:
+    """
+    Создаёт временный PDF с указанными страницами (1-based).
+    Возвращает путь к временному файлу (caller обязан удалить).
+    """
+    import pypdfium2 as pdfium  # type: ignore[import]
+
+    src = pdfium.PdfDocument(src_path)
+    dst = pdfium.PdfDocument.new()
+
+    # import_pages принимает 0-based индексы
+    pages_0based = list(range(first_page - 1, last_page))
+    dst.import_pages(src, pages=pages_0based)
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
+    tmp.close()
+    dst.save(tmp.name)
+
+    src.close()
+    dst.close()
+
+    return tmp.name
+
+
+# ---------------------------------------------------------------------------
+# Парсинг одного батча (запускается в дочернем процессе)
+# ---------------------------------------------------------------------------
+
+def _parse_batch_worker(
+    pdf_path: str,
+    first_page: int,
+    last_page: int,
+    source_name: str,
+    render_dpi: int,
+    yolo_model: str,
+) -> list[dict[str, Any]]:
+    """
+    Worker-функция для ProcessPoolExecutor.
+    Парсит страницы [first_page..last_page] и возвращает список сериализуемых элементов.
+
+    Запускается в отдельном процессе — GPU-патчи применяются независимо.
+    Использует starting_page_number чтобы сохранить правильные номера страниц.
+    """
+    # Настройка логирования в дочернем процессе
+    logging.basicConfig(
+        level=logging.INFO,
+        format=f"%(asctime)s [%(levelname)s] worker[{first_page}-{last_page}] %(name)s — %(message)s",
+    )
+    log = logging.getLogger(__name__)
+
+    # Устанавливаем DPI через env (unstructured читает из ENV)
+    os.environ["PDF_RENDER_DPI"] = str(render_dpi)
+    os.environ["UNSTRUCTURED_HI_RES_MODEL_NAME"] = yolo_model
+
+    # GPU патчи
+    _apply_mps_patches()
+
+    from unstructured.partition.pdf import partition_pdf  # type: ignore[import]
+
+    t0 = time.monotonic()
+    log.info("Batch [%d-%d] starting partition_pdf...", first_page, last_page)
+
+    try:
+        elements = partition_pdf(
+            filename=pdf_path,
+            strategy="hi_res",
+            languages=["rus", "eng"],
+            infer_table_structure=True,
+            extract_images_in_pdf=False,
+            hi_res_model_name=yolo_model,
+            starting_page_number=first_page,
+        )
+    except Exception as exc:
+        log.error("Batch [%d-%d] failed: %s", first_page, last_page, exc)
+        raise
+
+    elapsed = time.monotonic() - t0
+    log.info(
+        "Batch [%d-%d] done: %d elements in %.1fs",
+        first_page, last_page, len(elements), elapsed,
+    )
+
+    # Сериализуем элементы в dict (чтобы можно было передать через process boundary)
+    result = []
+    for el in elements:
+        meta = getattr(el, "metadata", None)
+        page_number = 1
+        if meta is not None:
+            page_number = getattr(meta, "page_number", None) or first_page
+
+        category = getattr(el, "category", "")
+        text = str(el).strip()
+
+        # Фильтрация: Image и FigureCaption не нужны
+        if category in ("Image", "FigureCaption"):
+            continue
+
+        text_as_html: Optional[str] = None
+        if category == "Table" and meta is not None:
+            text_as_html = getattr(meta, "text_as_html", None)
+
+        y0 = _extract_y0(el)
+
+        result.append({
+            "category": category,
+            "text": text,
+            "page_number": page_number,
+            "text_as_html": text_as_html,
+            "y0": y0,
+        })
+
     return result
 
 
 # ---------------------------------------------------------------------------
-# hi_res парсинг
+# Параллельный парсинг
 # ---------------------------------------------------------------------------
 
-def _parse_hi_res(
+def _parse_parallel(
     path: str,
     source_name: str,
+    total_pages: int,
+    batches: list[tuple[int, int]],
+    t_start: float,
+    progress_callback: Optional[ProgressCallback],
+) -> dict[str, Any]:
+    """
+    Запускает батчи параллельно через ProcessPoolExecutor.
+    Собирает результаты по мере завершения, сортирует по странице.
+    """
+    n_workers = len(batches)
+
+    # Создаём временные PDF-файлы для каждого батча
+    batch_files: list[tuple[int, int, str]] = []
+    try:
+        for first_page, last_page in batches:
+            tmp_path = _extract_pdf_pages(path, first_page, last_page)
+            batch_files.append((first_page, last_page, tmp_path))
+
+        logger.info("[hi_res] Created %d batch PDF files, starting parallel inference...", n_workers)
+
+        all_elements: list[dict[str, Any]] = []
+        completed = 0
+
+        with ProcessPoolExecutor(max_workers=n_workers) as executor:
+            futures = {
+                executor.submit(
+                    _parse_batch_worker,
+                    tmp_path,
+                    first_page,
+                    last_page,
+                    source_name,
+                    _RENDER_DPI,
+                    _YOLO_MODEL,
+                ): (first_page, last_page)
+                for first_page, last_page, tmp_path in batch_files
+            }
+
+            for future in as_completed(futures):
+                first_page, last_page = futures[future]
+                completed += 1
+                elapsed = time.monotonic() - t_start
+
+                try:
+                    batch_elements = future.result()
+                    all_elements.extend(batch_elements)
+
+                    pages_done = last_page  # приблизительно
+                    speed = pages_done / elapsed if elapsed > 0 else 0
+                    logger.info(
+                        "[hi_res] Batch [%d-%d] collected: %d elements "
+                        "(%d/%d batches done, %.1fs elapsed, %.2f p/s)",
+                        first_page, last_page, len(batch_elements),
+                        completed, n_workers, elapsed, speed,
+                    )
+
+                    # Прогресс callback — сообщаем о каждой завершённой странице батча
+                    if progress_callback is not None:
+                        for p in range(first_page, last_page + 1):
+                            n_el = sum(1 for e in batch_elements if e["page_number"] == p)
+                            has_tbl = any(
+                                e["category"] == "Table" and e["page_number"] == p
+                                for e in batch_elements
+                            )
+                            try:
+                                progress_callback(p, total_pages, n_el, has_tbl)
+                            except Exception:
+                                pass
+
+                except Exception as exc:
+                    logger.error(
+                        "[hi_res] Batch [%d-%d] error: %s", first_page, last_page, exc
+                    )
+                    raise
+
+    finally:
+        # Всегда удаляем временные файлы
+        for _, _, tmp_path in batch_files:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+    # Сортируем все элементы по номеру страницы для корректной склейки
+    all_elements.sort(key=lambda e: (e["page_number"], e.get("y0", 0.0)))
+
+    elapsed = time.monotonic() - t_start
+    logger.info(
+        "[hi_res] All batches complete: %d elements in %.1fs",
+        len(all_elements), elapsed,
+    )
+
+    return _serialized_elements_to_result(all_elements, source_name, t_start)
+
+
+# ---------------------------------------------------------------------------
+# Одиночный парсинг (маленькие документы / fallback)
+# ---------------------------------------------------------------------------
+
+def _parse_single(
+    path: str,
+    source_name: str,
+    first_page: int,
+    total_pages: int,
     t_start: float,
     progress_callback: Optional[ProgressCallback],
 ) -> dict[str, Any]:
     from unstructured.partition.pdf import partition_pdf  # type: ignore[import]
 
+    os.environ["PDF_RENDER_DPI"] = str(_RENDER_DPI)
+
     logger.info(
-        "[hi_res] Starting partition_pdf: %s (file size: %.1f MB)",
-        source_name,
-        _file_size_mb(path),
+        "[hi_res] Starting partition_pdf: %s (%.1f MB)",
+        source_name, _file_size_mb(path),
     )
 
-    # Устанавливаем прогресс-хук на PageLayout.from_image
-    # (вызывается ровно один раз per страница в DocumentLayout.from_file)
-    _install_page_progress_hook(source_name, t_start, progress_callback)
-
+    _install_page_progress_hook(source_name, t_start, total_pages, progress_callback)
     try:
         elements = partition_pdf(
             filename=path,
@@ -268,24 +554,114 @@ def _parse_hi_res(
             languages=["rus", "eng"],
             infer_table_structure=True,
             extract_images_in_pdf=False,
+            hi_res_model_name=_YOLO_MODEL,
         )
     finally:
         _remove_page_progress_hook()
 
     logger.info(
-        "[hi_res] partition_pdf done: %d elements total in %.1fs",
-        len(elements),
-        time.monotonic() - t_start,
+        "[hi_res] Done: %d elements in %.1fs",
+        len(elements), time.monotonic() - t_start,
     )
-    return _elements_to_result(elements, source_name, parser="unstructured-hi_res")
+
+    # Фильтруем Image/FigureCaption и сериализуем
+    serialized = []
+    for el in elements:
+        category = getattr(el, "category", "")
+        if category in ("Image", "FigureCaption"):
+            continue
+        meta = getattr(el, "metadata", None)
+        page_number = 1
+        if meta:
+            page_number = getattr(meta, "page_number", None) or 1
+        text_as_html = None
+        if category == "Table" and meta:
+            text_as_html = getattr(meta, "text_as_html", None)
+        serialized.append({
+            "category": category,
+            "text": str(el).strip(),
+            "page_number": page_number,
+            "text_as_html": text_as_html,
+            "y0": _extract_y0(el),
+        })
+
+    return _serialized_elements_to_result(serialized, source_name, t_start)
 
 
 # ---------------------------------------------------------------------------
-# Прогресс-хук: патчим PageLayout.from_image
+# Конвертация сериализованных элементов → unified result dict
 # ---------------------------------------------------------------------------
-# DocumentLayout.from_file итерирует страницы и для каждой вызывает
-# PageLayout.from_image(image, number=i+1, ...).
-# Это единственное надёжное место где можно перехватить завершение страницы.
+
+def _serialized_elements_to_result(
+    elements: list[dict[str, Any]],
+    source_name: str,
+    t_start: float,
+) -> dict[str, Any]:
+    pages_text: dict[int, list[str]] = defaultdict(list)
+    headings: list[dict[str, Any]] = []
+    tables_found = 0
+    categories_seen: dict[str, int] = defaultdict(int)
+
+    for el in elements:
+        category = el["category"]
+        text = el["text"]
+        page_number = el["page_number"]
+        categories_seen[category] += 1
+
+        if not text:
+            continue
+
+        if category in _HEADING_CATEGORIES:
+            normalized = re.sub(r"\s+", " ", text).strip()
+            if 0 < len(normalized) <= 300:
+                headings.append({
+                    "text": normalized,
+                    "page_number": page_number,
+                    "y0": el.get("y0", 0.0),
+                    "font_size": 0.0,
+                })
+            pages_text[page_number].append(f"## {normalized}")
+
+        elif category == "Table":
+            tables_found += 1
+            html = el.get("text_as_html")
+            table_md = _html_table_to_md(html) if html else text
+            pages_text[page_number].append(table_md)
+
+        else:
+            pages_text[page_number].append(text)
+
+    elapsed = time.monotonic() - t_start
+    logger.info(
+        "Element categories (filtered): %s",
+        ", ".join(f"{k}={v}" for k, v in sorted(categories_seen.items())),
+    )
+    if tables_found:
+        logger.info("Tables converted to Markdown: %d", tables_found)
+
+    pages: list[dict[str, Any]] = []
+    for page_number in sorted(pages_text.keys()):
+        page_text = "\n\n".join(pages_text[page_number])
+        if page_text.strip():
+            pages.append({"text": page_text, "page_number": page_number})
+
+    page_count = len(pages)
+    pages_per_sec = page_count / elapsed if elapsed > 0 else 0
+    logger.info(
+        "Parsing complete: %s → %d pages, %d headings in %.1fs (%.2f pages/s)",
+        source_name, page_count, len(headings), elapsed, pages_per_sec,
+    )
+
+    return {
+        "pages": pages,
+        "headings": headings,
+        "metadata": {"source": source_name, "parser": f"unstructured-hi_res/{_YOLO_MODEL}"},
+        "page_count": page_count,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Прогресс-хук на PageLayout.from_image (для single-pass режима)
 # ---------------------------------------------------------------------------
 
 _ORIGINAL_FROM_IMAGE = None
@@ -295,64 +671,46 @@ _HOOK_INSTALLED = False
 def _install_page_progress_hook(
     source_name: str,
     t_start: float,
+    total_pages: int,
     progress_callback: Optional[ProgressCallback],
 ) -> None:
     global _ORIGINAL_FROM_IMAGE, _HOOK_INSTALLED
     if _HOOK_INSTALLED:
         return
-
     try:
         from unstructured_inference.inference.layout import PageLayout  # type: ignore[import]
 
-        _ORIGINAL_FROM_IMAGE = PageLayout.from_image.__func__ if hasattr(
-            PageLayout.from_image, '__func__') else None
-
-        # Запоминаем оригинальный метод через __wrapped__ трюк
         _orig = PageLayout.from_image
-
-        # Счётчик страниц — замыкание, т.к. total неизвестен заранее
-        # (from_file сначала конвертирует все страницы в картинки, потом по одной)
-        _state: dict[str, Any] = {"count": 0, "last_log": 0.0}
+        _state: dict[str, Any] = {"count": 0}
 
         @classmethod  # type: ignore[misc]
-        def _hooked_from_image(cls, image, number=1, **kwargs):
+        def _hooked(cls, image, number=1, **kwargs):
             page = _orig.__func__(cls, image, number=number, **kwargs)
-
             _state["count"] += 1
-            n_done = _state["count"]
             elapsed = time.monotonic() - t_start
 
-            # Подсчёт элементов на странице
-            elements = getattr(page, "elements", None) or []
-            n_elements = len(list(elements))
-            has_table = any(
-                getattr(e, "category", "") == "Table"
-                for e in (elements or [])
-            )
+            elements = list(getattr(page, "elements", None) or [])
+            n_elements = len(elements)
+            has_table = any(getattr(e, "category", "") == "Table" for e in elements)
+            speed = _state["count"] / elapsed if elapsed > 0 else 0
 
-            speed = n_done / elapsed if elapsed > 0 else 0
+            total_str = f"/{total_pages}" if total_pages else ""
             logger.info(
-                "[hi_res] Page %d done — %d elements%s — elapsed %.1fs (%.2f p/s)",
-                number,
-                n_elements,
+                "[hi_res] Page %d%s — %d elements%s — %.1fs (%.2f p/s)",
+                number, total_str, n_elements,
                 " [TABLE]" if has_table else "",
-                elapsed,
-                speed,
+                elapsed, speed,
             )
 
             if progress_callback is not None:
                 try:
-                    # total_pages неизвестен здесь, передаём 0
-                    progress_callback(number, 0, n_elements, has_table)
-                except Exception as cb_exc:
-                    logger.debug("progress_callback error: %s", cb_exc)
-
+                    progress_callback(number, total_pages, n_elements, has_table)
+                except Exception:
+                    pass
             return page
 
-        PageLayout.from_image = _hooked_from_image
+        PageLayout.from_image = _hooked
         _HOOK_INSTALLED = True
-        logger.debug("Page progress hook installed on PageLayout.from_image")
-
     except Exception as exc:
         logger.debug("Could not install page progress hook: %s", exc)
 
@@ -370,70 +728,6 @@ def _remove_page_progress_hook() -> None:
     finally:
         _HOOK_INSTALLED = False
         _ORIGINAL_FROM_IMAGE = None
-
-
-# ---------------------------------------------------------------------------
-# Конвертация elements → unified dict
-# ---------------------------------------------------------------------------
-
-def _elements_to_result(elements: list[Any], source_name: str, parser: str) -> dict[str, Any]:
-    pages_text: dict[int, list[str]] = defaultdict(list)
-    headings: list[dict[str, Any]] = []
-
-    tables_found = 0
-    categories_seen: dict[str, int] = defaultdict(int)
-
-    for el in elements:
-        meta = getattr(el, "metadata", None)
-        page_number = 1
-        if meta is not None:
-            page_number = getattr(meta, "page_number", None) or 1
-
-        category = getattr(el, "category", "")
-        text = str(el).strip()
-        categories_seen[category] += 1
-
-        if not text:
-            continue
-
-        if category in _HEADING_CATEGORIES:
-            normalized = re.sub(r"\s+", " ", text).strip()
-            if 0 < len(normalized) <= 300:
-                headings.append({
-                    "text": normalized,
-                    "page_number": page_number,
-                    "y0": _extract_y0(el),
-                    "font_size": 0.0,
-                })
-            pages_text[page_number].append(f"## {normalized}")
-
-        elif category == "Table":
-            tables_found += 1
-            table_md = _table_to_markdown(el, tables_found)
-            pages_text[page_number].append(table_md)
-
-        else:
-            pages_text[page_number].append(text)
-
-    logger.info(
-        "Element categories: %s",
-        ", ".join(f"{k}={v}" for k, v in sorted(categories_seen.items())),
-    )
-    if tables_found > 0:
-        logger.info("Tables found and converted to Markdown: %d", tables_found)
-
-    pages: list[dict[str, Any]] = []
-    for page_number in sorted(pages_text.keys()):
-        page_text = "\n\n".join(pages_text[page_number])
-        if page_text.strip():
-            pages.append({"text": page_text, "page_number": page_number})
-
-    return {
-        "pages": pages,
-        "headings": headings,
-        "metadata": {"source": source_name, "parser": parser},
-        "page_count": len(pages),
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -456,81 +750,56 @@ def _extract_y0(element: Any) -> float:
     return 0.0
 
 
-def _table_to_markdown(element: Any, table_index: int = 0) -> str:
-    try:
-        meta = getattr(element, "metadata", None)
-        if meta is not None:
-            html = getattr(meta, "text_as_html", None)
-            if html:
-                md = _html_table_to_md(html)
-                logger.debug("Table #%d converted from HTML (%d chars)", table_index, len(md))
-                return md
-            else:
-                logger.debug("Table #%d: text_as_html is empty, using plain text", table_index)
-    except Exception as exc:
-        logger.debug("Table #%d HTML extraction error: %s", table_index, exc)
-    return str(element).strip()
-
-
 def _html_table_to_md(html: str) -> str:
     from html.parser import HTMLParser
 
-    class _TableParser(HTMLParser):
-        def __init__(self) -> None:
+    class _P(HTMLParser):
+        def __init__(self):
             super().__init__()
             self.rows: list[list[str]] = []
-            self._current_row: list[str] = []
-            self._current_cell: list[str] = []
-            self._in_cell = False
+            self._row: list[str] = []
+            self._cell: list[str] = []
+            self._in = False
 
-        def handle_starttag(self, tag: str, attrs: list) -> None:
+        def handle_starttag(self, tag, attrs):
             if tag == "tr":
-                self._current_row = []
+                self._row = []
             elif tag in ("td", "th"):
-                self._current_cell = []
-                self._in_cell = True
+                self._cell = []
+                self._in = True
 
-        def handle_endtag(self, tag: str) -> None:
+        def handle_endtag(self, tag):
             if tag in ("td", "th"):
-                self._current_row.append(" ".join(self._current_cell).strip())
-                self._in_cell = False
-            elif tag == "tr":
-                if self._current_row:
-                    self.rows.append(self._current_row)
+                self._row.append(" ".join(self._cell).strip())
+                self._in = False
+            elif tag == "tr" and self._row:
+                self.rows.append(self._row)
 
-        def handle_data(self, data: str) -> None:
-            if self._in_cell:
-                self._current_cell.append(data.strip())
+        def handle_data(self, data):
+            if self._in:
+                self._cell.append(data.strip())
 
     try:
-        parser = _TableParser()
-        parser.feed(html)
-
-        if not parser.rows:
+        p = _P()
+        p.feed(html)
+        if not p.rows:
             return re.sub(r"<[^>]+>", " ", html).strip()
-
-        header = parser.rows[0]
-        lines: list[str] = [
-            "| " + " | ".join(header) + " |",
-            "| " + " | ".join(["---"] * len(header)) + " |",
+        h = p.rows[0]
+        lines = [
+            "| " + " | ".join(h) + " |",
+            "| " + " | ".join(["---"] * len(h)) + " |",
         ]
-        for row in parser.rows[1:]:
-            while len(row) < len(header):
+        for row in p.rows[1:]:
+            while len(row) < len(h):
                 row.append("")
-            lines.append("| " + " | ".join(row[: len(header)]) + " |")
+            lines.append("| " + " | ".join(row[:len(h)]) + " |")
         return "\n".join(lines)
-
     except Exception:
         return re.sub(r"<[^>]+>", " ", html).strip()
 
 
-def _has_content(result: dict[str, Any]) -> bool:
-    return any(p.get("text", "").strip() for p in result.get("pages", []))
-
-
 def _file_size_mb(path: str) -> float:
     try:
-        from pathlib import Path
-        return Path(path).stat().st_size / (1024 * 1024)
+        return os.path.getsize(path) / (1024 * 1024)
     except Exception:
         return 0.0
