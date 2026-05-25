@@ -1,45 +1,55 @@
-// === DB Management UI (domain-based) ===
+// === DB Management UI v2 ===
+// - Domain tabs (вместо select-фильтра)
+// - Vault actions в меню ⋯ (три точки)
+// - Прогресс индексации: компактный блок без task ID
+// - Поиск: чанки свёрнуты, кнопка 🔍 для детального просмотра
+
 class DBManager {
     constructor() {
         this.modal = document.getElementById('db-mgmt-modal');
         this.openBtn = document.getElementById('db-mgmt-btn');
         this.closeBtn = document.getElementById('db-mgmt-close-btn');
-        
-        // Вкладки
+
+        // Tabs (manage / search)
         this.tabs = this.modal.querySelectorAll('.tab');
         this.tabContents = this.modal.querySelectorAll('.tab-content');
-        
-        // Вкладка "Управление"
-        this.mgmtDomainSelect = document.getElementById('mgmt-domain-select');
-        this.mgmtSearchInput = document.getElementById('mgmt-search-input');
+
+        // Manage tab
+        this.domainTabsContainer = document.getElementById('mgmt-domain-tabs');
         this.vaultsContainer = document.getElementById('mgmt-vaults-container');
-        
+
         // Прогресс
         this.progressBlock = document.getElementById('mgmt-progress-block');
-        this.taskIdSpan = document.getElementById('mgmt-task-id');
         this.taskStatusSpan = document.getElementById('mgmt-task-status');
         this.filesDoneSpan = document.getElementById('mgmt-files-done');
         this.filesTotalSpan = document.getElementById('mgmt-files-total');
         this.progressPctSpan = document.getElementById('mgmt-progress-pct');
         this.filesList = document.getElementById('mgmt-files-list');
         this.cancelBtn = document.getElementById('mgmt-cancel-btn');
-        this.overallBar = document.getElementById('mgmt-overall-bar');  // новый элемент в HTML
-        
-        // Вкладка "Поиск"
+        this.overallBar = document.getElementById('mgmt-overall-bar');
+
+        // Search tab
         this.searchDomainSelect = document.getElementById('search-domain-select');
         this.searchQueryInput = document.getElementById('search-query-input');
         this.searchLimitInput = document.getElementById('search-limit');
         this.searchBtn = document.getElementById('search-btn');
         this.searchResults = document.getElementById('search-results');
-        
+
+        // Chunk detail modal
+        this.chunkModal = document.getElementById('chunk-detail-modal');
+        this.chunkModalClose = document.getElementById('chunk-detail-close');
+        this.chunkModalContent = document.getElementById('chunk-detail-content');
+
         // Состояние
         this.domains = [];
+        this.allVaults = [];
+        this.activeDomainTab = null;
         this.currentTaskId = null;
         this.currentWs = null;
         this.currentFiles = {};
         this.expandedVaults = new Set();
-        this.vaultDocsCache = {};  // vaultId -> documents
-        
+        this.vaultDocsCache = {};
+
         this.initEventListeners();
     }
 
@@ -49,29 +59,32 @@ class DBManager {
         this.modal.addEventListener('click', (e) => {
             if (e.target === this.modal) this.close();
         });
-        
+
         this.tabs.forEach(tab => {
             tab.addEventListener('click', () => this.switchTab(tab.dataset.tab));
         });
-        
-        // Фильтры управления
-        this.mgmtDomainSelect.addEventListener('change', () => this.renderManageView());
-        this.mgmtSearchInput.addEventListener('input', this.debounce(() => this.renderManageView(), 250));
-        
-        // Поиск
+
+        // Search
         this.searchBtn.addEventListener('click', () => this.doSearch());
         this.searchQueryInput.addEventListener('keydown', (e) => {
             if (e.key === 'Enter') this.doSearch();
         });
-        
-        // Отмена индексации
+
+        // Cancel indexing
         this.cancelBtn.addEventListener('click', () => this.cancelCurrentTask());
+
+        // Chunk detail modal close
+        if (this.chunkModal) {
+            this.chunkModalClose.addEventListener('click', () => this.closeChunkModal());
+            this.chunkModal.addEventListener('click', (e) => {
+                if (e.target === this.chunkModal) this.closeChunkModal();
+            });
+        }
     }
 
     async open() {
         this.modal.style.display = 'flex';
         await this.loadDomains();
-        await this.renderManageView();
     }
 
     close() {
@@ -92,28 +105,11 @@ class DBManager {
             ]);
             this.domains = domainsResp.domains || [];
             this.allVaults = vaultsResp.vaults || [];
-            
-            // Заполнить селекторы доменов
-            this.populateDomainSelect(this.mgmtDomainSelect, true);
-            this.populateDomainSelect(this.searchDomainSelect, false);
+
+            this.renderDomainTabs();
+            this.populateSearchDomainSelect();
         } catch (error) {
             console.error('Failed to load domains:', error);
-        }
-    }
-
-    populateDomainSelect(select, includeAll) {
-        select.innerHTML = '';
-        if (includeAll) {
-            const opt = document.createElement('option');
-            opt.value = '';
-            opt.textContent = 'Все домены';
-            select.appendChild(opt);
-        }
-        for (const domain of this.domains) {
-            const opt = document.createElement('option');
-            opt.value = domain.domain_id;
-            opt.textContent = this.formatDomainName(domain.domain_id);
-            select.appendChild(opt);
         }
     }
 
@@ -122,163 +118,176 @@ class DBManager {
         return names[domainId] || domainId.toUpperCase();
     }
 
+    // --- Domain tabs (Управление) ---
+
+    renderDomainTabs() {
+        this.domainTabsContainer.innerHTML = '';
+
+        // Таб "Все"
+        const allTab = this._makeDomainTab('', 'Все', this.allVaults.length);
+        this.domainTabsContainer.appendChild(allTab);
+
+        for (const domain of this.domains) {
+            const count = this.allVaults.filter(v => v.domain_id === domain.domain_id).length;
+            const tab = this._makeDomainTab(domain.domain_id, this.formatDomainName(domain.domain_id), count);
+            this.domainTabsContainer.appendChild(tab);
+        }
+
+        // Активируем первый таб с вaultами или "Все"
+        const firstActive = this.domains.length > 0 ? this.domains[0].domain_id : '';
+        this.setActiveDomainTab(firstActive);
+    }
+
+    _makeDomainTab(domainId, label, count) {
+        const btn = document.createElement('button');
+        btn.className = 'domain-tab';
+        btn.dataset.domainId = domainId;
+        btn.innerHTML = `${this.escapeHtml(label)} <span class="domain-tab-count">${count}</span>`;
+        btn.addEventListener('click', () => this.setActiveDomainTab(domainId));
+        return btn;
+    }
+
+    setActiveDomainTab(domainId) {
+        this.activeDomainTab = domainId;
+        this.domainTabsContainer.querySelectorAll('.domain-tab').forEach(btn => {
+            btn.classList.toggle('active', btn.dataset.domainId === domainId);
+        });
+        this.renderManageView();
+    }
+
     async renderManageView() {
-        const domainFilter = this.mgmtDomainSelect.value;
-        const searchFilter = this.mgmtSearchInput.value.trim().toLowerCase();
-        
         this.vaultsContainer.innerHTML = '<div class="empty-state">Загрузка...</div>';
-        
         try {
-            const data = await chatAPI.getVaults(domainFilter || null, null);
-            let vaults = data.vaults || [];
-            
-            // Применяем поиск (по имени vault)
-            if (searchFilter) {
-                vaults = vaults.filter(v => v.vault_id.toLowerCase().includes(searchFilter));
-            }
-            
-            // Группировка по доменам
-            const byDomain = {};
-            for (const vault of vaults) {
-                if (!byDomain[vault.domain_id]) byDomain[vault.domain_id] = [];
-                byDomain[vault.domain_id].push(vault);
-            }
-            
+            const data = await chatAPI.getVaults(this.activeDomainTab || null, null);
+            const vaults = data.vaults || [];
+
             this.vaultsContainer.innerHTML = '';
-            const domainIds = Object.keys(byDomain).sort();
-            
-            if (domainIds.length === 0) {
-                this.vaultsContainer.innerHTML = '<div class="empty-state">Нет vault\'ов по заданным фильтрам</div>';
+            if (vaults.length === 0) {
+                this.vaultsContainer.innerHTML = '<div class="empty-state">Нет vault\'ов</div>';
                 return;
             }
-            
-            for (const domainId of domainIds) {
-                const section = document.createElement('div');
-                section.className = 'domain-section';
-                section.innerHTML = `
-                    <div class="domain-section-header">
-                        <h4>${this.escapeHtml(this.formatDomainName(domainId))}</h4>
-                        <span class="domain-section-count">${byDomain[domainId].length} vault(ов)</span>
-                    </div>
-                    <div class="domain-section-body"></div>
-                `;
-                const body = section.querySelector('.domain-section-body');
-                
-                for (const vault of byDomain[domainId]) {
-                    body.appendChild(this.createVaultCard(vault, searchFilter));
-                }
-                
-                this.vaultsContainer.appendChild(section);
+            for (const vault of vaults) {
+                this.vaultsContainer.appendChild(this.createVaultCard(vault));
             }
         } catch (error) {
-            console.error('Failed to render manage view:', error);
             this.vaultsContainer.innerHTML = `<div class="empty-state">Ошибка: ${this.escapeHtml(error.message)}</div>`;
         }
     }
 
-    createVaultCard(vault, fileSearchFilter) {
+    // --- Vault card с меню ⋯ ---
+
+    createVaultCard(vault) {
         const card = document.createElement('div');
-        card.className = 'vault-card';
+        card.className = 'vault-card2';
         card.dataset.vaultId = vault.vault_id;
-        
+
         const isExpanded = this.expandedVaults.has(vault.vault_id);
-        const statusClass = vault.enabled ? 'enabled' : 'disabled';
-        const statusText = vault.enabled ? 'активен' : 'отключён';
-        
+        const statusDot = vault.enabled
+            ? '<span class="vault-dot vault-dot-on" title="активен"></span>'
+            : '<span class="vault-dot vault-dot-off" title="отключён"></span>';
+
         card.innerHTML = `
-            <div class="vault-card-header">
-                <div class="vault-card-title">
-                    <button class="vault-toggle-btn" title="Развернуть/свернуть">
-                        <span class="vault-toggle-icon">${isExpanded ? '▼' : '▶'}</span>
-                    </button>
-                    <strong>${this.escapeHtml(vault.vault_id)}</strong>
-                    <span class="vault-status ${statusClass}">${statusText}</span>
-                </div>
-                <div class="vault-card-actions">
-                    <button class="btn btn-sm btn-primary" data-action="index">🔄 Индексация</button>
-                    <button class="btn btn-sm btn-secondary" data-action="reindex">⚡ Reindex</button>
-                    <button class="btn btn-sm btn-danger" data-action="detach">🗑️ Detach</button>
+            <div class="vault-card2-header">
+                <button class="vault-expand-btn" title="Развернуть/свернуть">
+                    <span class="vault-chevron">${isExpanded ? '▾' : '▸'}</span>
+                </button>
+                ${statusDot}
+                <span class="vault-card2-name">${this.escapeHtml(vault.vault_id)}</span>
+                <span class="vault-card2-meta">${this.escapeHtml(this.formatDomainName(vault.domain_id))}</span>
+                <div class="vault-menu-wrap">
+                    <button class="vault-menu-btn" title="Действия">⋯</button>
+                    <div class="vault-menu-dropdown" style="display:none">
+                        <button data-action="index">🔄 Индексировать</button>
+                        <button data-action="reindex">⚡ Переиндексировать</button>
+                        <button data-action="detach" class="menu-item-danger">🗑 Detach</button>
+                    </div>
                 </div>
             </div>
-            <div class="vault-card-body" style="display: ${isExpanded ? 'block' : 'none'}">
+            <div class="vault-card2-body" style="display:${isExpanded ? 'block' : 'none'}">
                 <div class="vault-docs-container">
-                    <div class="empty-state">Кликните для загрузки документов</div>
+                    <div class="empty-state">Кликните ▸ для загрузки документов</div>
                 </div>
             </div>
         `;
-        
-        // Toggle expand
-        const toggleBtn = card.querySelector('.vault-toggle-btn');
-        const body = card.querySelector('.vault-card-body');
-        toggleBtn.addEventListener('click', () => {
+
+        // Expand toggle
+        const expandBtn = card.querySelector('.vault-expand-btn');
+        const body = card.querySelector('.vault-card2-body');
+        const chevron = card.querySelector('.vault-chevron');
+        expandBtn.addEventListener('click', () => {
             const expanded = this.expandedVaults.has(vault.vault_id);
             if (expanded) {
                 this.expandedVaults.delete(vault.vault_id);
                 body.style.display = 'none';
-                toggleBtn.querySelector('.vault-toggle-icon').textContent = '▶';
+                chevron.textContent = '▸';
             } else {
                 this.expandedVaults.add(vault.vault_id);
                 body.style.display = 'block';
-                toggleBtn.querySelector('.vault-toggle-icon').textContent = '▼';
-                this.loadDocumentsForVault(vault.vault_id, card, fileSearchFilter);
+                chevron.textContent = '▾';
+                this.loadDocumentsForVault(vault.vault_id, card);
             }
         });
-        
-        // Если был развёрнут — загрузить документы
+
         if (isExpanded) {
-            this.loadDocumentsForVault(vault.vault_id, card, fileSearchFilter);
+            this.loadDocumentsForVault(vault.vault_id, card);
         }
-        
-        // Actions
-        card.querySelector('[data-action="index"]').addEventListener('click', () => this.startIndexing(vault.vault_id, false));
-        card.querySelector('[data-action="reindex"]').addEventListener('click', () => this.startIndexing(vault.vault_id, true));
-        card.querySelector('[data-action="detach"]').addEventListener('click', () => this.detachVault(vault.vault_id));
-        
+
+        // ⋯ menu
+        const menuBtn = card.querySelector('.vault-menu-btn');
+        const dropdown = card.querySelector('.vault-menu-dropdown');
+        menuBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const isOpen = dropdown.style.display !== 'none';
+            // Закрыть все другие меню
+            document.querySelectorAll('.vault-menu-dropdown').forEach(d => d.style.display = 'none');
+            dropdown.style.display = isOpen ? 'none' : 'block';
+        });
+        document.addEventListener('click', () => { dropdown.style.display = 'none'; }, { once: false });
+
+        card.querySelector('[data-action="index"]').addEventListener('click', () => {
+            dropdown.style.display = 'none';
+            this.startIndexing(vault.vault_id, false);
+        });
+        card.querySelector('[data-action="reindex"]').addEventListener('click', () => {
+            dropdown.style.display = 'none';
+            this.startIndexing(vault.vault_id, true);
+        });
+        card.querySelector('[data-action="detach"]').addEventListener('click', () => {
+            dropdown.style.display = 'none';
+            this.detachVault(vault.vault_id);
+        });
+
         return card;
     }
 
-    async loadDocumentsForVault(vaultId, card, fileSearchFilter) {
+    async loadDocumentsForVault(vaultId, card) {
         const container = card.querySelector('.vault-docs-container');
-        container.innerHTML = '<div class="empty-state">Загрузка документов...</div>';
-        
+        container.innerHTML = '<div class="empty-state">Загрузка...</div>';
         try {
             const data = await chatAPI.listDocuments(vaultId, 500, 0);
-            let docs = data.documents || [];
-            
-            // Фильтр по имени файла
-            if (fileSearchFilter) {
-                docs = docs.filter(d => d.source_path.toLowerCase().includes(fileSearchFilter));
-            }
-            
+            const docs = data.documents || [];
             this.vaultDocsCache[vaultId] = docs;
-            
+
             if (docs.length === 0) {
-                container.innerHTML = '<div class="empty-state">Документов нет. Запустите индексацию.</div>';
+                container.innerHTML = '<div class="empty-state">Нет документов. Запустите индексацию.</div>';
                 return;
             }
-            
+
             const table = document.createElement('table');
             table.className = 'data-table';
             table.innerHTML = `
-                <thead>
-                    <tr>
-                        <th>source_path</th>
-                        <th>chunks</th>
-                        <th>actions</th>
-                    </tr>
-                </thead>
+                <thead><tr>
+                    <th>Файл</th><th>Чанков</th><th></th>
+                </tr></thead>
                 <tbody></tbody>
             `;
             const tbody = table.querySelector('tbody');
-            
             for (const doc of docs) {
                 const tr = document.createElement('tr');
                 tr.innerHTML = `
                     <td class="path-cell" title="${this.escapeHtml(doc.source_path)}">${this.escapeHtml(doc.source_path)}</td>
-                    <td>${doc.chunk_count}</td>
-                    <td>
-                        <button class="btn btn-sm btn-danger" data-action="delete-doc">🗑️</button>
-                    </td>
+                    <td class="chunks-cell">${doc.chunk_count}</td>
+                    <td><button class="btn-icon" data-action="delete-doc" title="Удалить">🗑</button></td>
                 `;
                 tr.querySelector('[data-action="delete-doc"]').addEventListener('click', (e) => {
                     e.stopPropagation();
@@ -286,44 +295,39 @@ class DBManager {
                 });
                 tbody.appendChild(tr);
             }
-            
             container.innerHTML = '';
             container.appendChild(table);
         } catch (error) {
-            console.error('Failed to load documents:', error);
             container.innerHTML = `<div class="empty-state">Ошибка: ${this.escapeHtml(error.message)}</div>`;
         }
     }
 
     async deleteDocument(documentId, sourcePath, vaultId) {
         if (!confirm(`Удалить документ?\n\n${sourcePath}\n\nЭто удалит все чанки из векторной БД.`)) return;
-        
         try {
             await chatAPI.deleteDocument(documentId, vaultId);
-            // Перерисовать
             await this.renderManageView();
         } catch (error) {
-            console.error('Failed to delete document:', error);
             alert(`Ошибка удаления: ${error.message}`);
         }
     }
+
+    // --- Индексация и прогресс ---
 
     async startIndexing(vaultId, forceReindex) {
         try {
             const resp = await chatAPI.reindexVault(vaultId, forceReindex);
             this.currentTaskId = resp.task_id;
-            this.showProgressBlock(resp.task_id);
+            this.showProgressBlock();
             this.connectWebSocket(resp.task_id);
         } catch (error) {
-            console.error('Failed to start indexing:', error);
             alert(`Ошибка запуска: ${error.message}`);
         }
     }
 
-    showProgressBlock(taskId) {
+    showProgressBlock() {
         this.progressBlock.style.display = 'block';
-        this.taskIdSpan.textContent = taskId.slice(0, 12) + '…';
-        this.taskStatusSpan.textContent = 'running';
+        this.taskStatusSpan.textContent = 'запуск';
         this.taskStatusSpan.className = 'status-badge status-running';
         this.filesDoneSpan.textContent = '0';
         this.filesTotalSpan.textContent = '0';
@@ -339,14 +343,11 @@ class DBManager {
         try {
             this.currentWs = chatAPI.connectToTaskStream(taskId);
         } catch (error) {
-            console.error('Failed to create WebSocket:', error);
             alert('Не удалось подключиться к indexer.');
             return;
         }
         this.currentWs.onmessage = (event) => {
-            try {
-                this.handleWsMessage(JSON.parse(event.data));
-            } catch (e) { console.warn('Failed to parse WS:', e); }
+            try { this.handleWsMessage(JSON.parse(event.data)); } catch (e) {}
         };
         this.currentWs.onerror = (e) => console.error('WS error:', e);
         this.currentWs.onclose = () => { this.currentWs = null; };
@@ -364,25 +365,18 @@ class DBManager {
             const state = msg.state;
             this.filesTotalSpan.textContent = String(Object.keys(state.files || {}).length);
             for (const [path, fileState] of Object.entries(state.files || {})) {
-                this.updateFileRow(
-                    path,
-                    fileState.status,
-                    fileState.progress_pct,
-                    fileState.chunks_total || 0,
-                    fileState.chunks_processed || 0,
-                    fileState.error || null
-                );
+                this.updateFileRow(path, fileState.status, fileState.progress_pct,
+                    fileState.chunks_total || 0, fileState.chunks_processed || 0, fileState.error || null);
             }
             this.recalcProgress();
         } else if (msg.type === 'file_chunk_progress') {
             this.updateFileRow(msg.file_path, msg.stage, null, msg.chunks_total, msg.chunks_processed, msg.error);
             this.recalcProgress();
         } else if (msg.type === 'file_status') {
-            // back-compat: V2.1 deprecated event
             this.updateFileRow(msg.file_path, msg.status, msg.progress_pct, 0, 0, msg.error);
             this.recalcProgress();
         } else if (msg.type === 'task_complete') {
-            this.taskStatusSpan.textContent = 'done';
+            this.taskStatusSpan.textContent = 'готово';
             this.taskStatusSpan.className = 'status-badge status-done';
             this.filesDoneSpan.textContent = String(msg.files_indexed);
             this.filesTotalSpan.textContent = String(msg.files_total);
@@ -393,74 +387,60 @@ class DBManager {
             this.vaultDocsCache = {};
             this.renderManageView();
         } else if (msg.type === 'task_cancelled') {
-            this.taskStatusSpan.textContent = 'cancelled';
+            this.taskStatusSpan.textContent = 'отменено';
             this.taskStatusSpan.className = 'status-badge status-cancelled';
             this.cancelBtn.style.display = 'none';
         } else if (msg.error) {
-            this.taskStatusSpan.textContent = 'error';
+            this.taskStatusSpan.textContent = 'ошибка';
             this.taskStatusSpan.className = 'status-badge status-error';
         }
     }
 
     updateFileRow(path, stage, progressPct = null, chunksTotal = 0, chunksProcessed = 0, error = null) {
-        this.currentFiles[path] = {
-            stage,
-            chunks_total: chunksTotal,
-            chunks_processed: chunksProcessed,
-            progress_pct: progressPct,
-            error
+        this.currentFiles[path] = { stage, chunks_total: chunksTotal, chunks_processed: chunksProcessed, progress_pct: progressPct, error };
+
+        let pct = chunksTotal > 0 ? Math.round(chunksProcessed / chunksTotal * 100) : (progressPct || 0);
+
+        const stageColors = {
+            error: '#e74c3c', done: '#27ae60', indexed: '#27ae60', empty: '#27ae60',
+            parsing: '#f39c12', chunking: '#f39c12', indexing: '#3498db',
         };
+        const barColor = stageColors[stage] || '#95a5a6';
 
-        // Вычисляем процент прогресса для бара
-        let pct = 0;
-        if (chunksTotal > 0) {
-            pct = Math.round(chunksProcessed / chunksTotal * 100);
-        } else {
-            pct = progressPct || 0;
-        }
-
-        // Цвет бара
-        let barColor;
-        if (stage === 'error') {
-            barColor = '#e74c3c';
-        } else if (stage === 'done' || stage === 'indexed' || stage === 'empty') {
-            barColor = '#27ae60';
-        } else if (stage === 'parsing' || stage === 'chunking') {
-            barColor = '#f39c12';
-        } else if (stage === 'indexing') {
-            barColor = '#3498db';
-        } else {
-            barColor = '#95a5a6';
-        }
-
-        // Счётчик чанков
-        const chunksLabel = chunksTotal > 0
-            ? `${chunksProcessed} / ${chunksTotal} чанков`
-            : '—';
+        const stageLabels = {
+            parsing: 'парсинг', chunking: 'нарезка', indexing: 'индексация',
+            done: 'готово', error: 'ошибка', empty: 'пусто', pending: 'ожидание',
+        };
+        const stageLabel = stageLabels[stage] || (stage || '');
+        const chunksLabel = chunksTotal > 0 ? `${chunksProcessed} / ${chunksTotal}` : '';
 
         let row = this.filesList.querySelector(`[data-path="${CSS.escape(path)}"]`);
         if (!row) {
             row = document.createElement('div');
-            row.className = 'file-row';
+            row.className = 'file-row2';
             row.dataset.path = path;
             row.innerHTML = `
-                <span class="file-path"></span>
-                <span class="file-chunks"></span>
-                <span class="file-stage stage-badge"></span>
+                <div class="file-row2-top">
+                    <span class="file-row2-name"></span>
+                    <span class="file-row2-chunks"></span>
+                    <span class="file-row2-stage stage-badge"></span>
+                </div>
                 <div class="file-progress"><div class="file-progress-bar"></div></div>
             `;
             this.filesList.appendChild(row);
         }
 
-        const pathEl = row.querySelector('.file-path');
-        pathEl.textContent = path;
-        pathEl.title = error || path;
+        const nameEl = row.querySelector('.file-row2-name');
+        // Показываем только имя файла, полный путь в title
+        const shortName = path.split('/').pop();
+        nameEl.textContent = shortName;
+        nameEl.title = error || path;
 
-        row.querySelector('.file-chunks').textContent = chunksLabel;
+        row.querySelector('.file-row2-chunks').textContent = chunksLabel;
 
-        const stageEl = row.querySelector('.file-stage');
-        stageEl.textContent = stage || '';
-        stageEl.className = `file-stage stage-badge stage-${stage || 'pending'}`;
+        const stageEl = row.querySelector('.file-row2-stage');
+        stageEl.textContent = stageLabel;
+        stageEl.className = `file-row2-stage stage-badge stage-${stage || 'pending'}`;
 
         const bar = row.querySelector('.file-progress-bar');
         bar.style.width = `${pct}%`;
@@ -470,26 +450,16 @@ class DBManager {
     recalcProgress() {
         const files = Object.values(this.currentFiles);
         const total = files.length;
-
-        // Суммируем чанки
-        let sumTotal = 0;
-        let sumProcessed = 0;
+        let sumTotal = 0, sumProcessed = 0;
         for (const f of files) {
             sumTotal += f.chunks_total || 0;
             sumProcessed += f.chunks_processed || 0;
         }
-
-        // done-файлы: stage === 'done' || 'indexed' || 'empty'
         const doneStages = new Set(['done', 'indexed', 'empty']);
         const done = files.filter(f => doneStages.has(f.stage)).length;
-
-        let pct;
-        if (sumTotal > 0) {
-            pct = Math.round(sumProcessed / sumTotal * 100);
-        } else {
-            // fallback для back-compat (file_status без чанков)
-            pct = total > 0 ? Math.round((done / total) * 100) : 0;
-        }
+        const pct = sumTotal > 0
+            ? Math.round(sumProcessed / sumTotal * 100)
+            : (total > 0 ? Math.round(done / total * 100) : 0);
 
         this.filesDoneSpan.textContent = String(done);
         this.filesTotalSpan.textContent = String(total);
@@ -511,12 +481,23 @@ class DBManager {
         if (!confirm(`Detach vault "${vaultId}"?\n\nУдалит binding и все данные из векторной БД.`)) return;
         try {
             await chatAPI.detachVault(vaultId);
-            alert(`Vault "${vaultId}" отключён.`);
             this.expandedVaults.clear();
             this.vaultDocsCache = {};
-            await this.renderManageView();
+            await this.loadDomains();
         } catch (error) {
             alert(`Ошибка: ${error.message}`);
+        }
+    }
+
+    // --- Поиск ---
+
+    populateSearchDomainSelect() {
+        this.searchDomainSelect.innerHTML = '';
+        for (const domain of this.domains) {
+            const opt = document.createElement('option');
+            opt.value = domain.domain_id;
+            opt.textContent = this.formatDomainName(domain.domain_id);
+            this.searchDomainSelect.appendChild(opt);
         }
     }
 
@@ -524,24 +505,16 @@ class DBManager {
         const domainId = this.searchDomainSelect.value;
         const query = this.searchQueryInput.value.trim();
         const limit = parseInt(this.searchLimitInput.value, 10) || 20;
-        
-        if (!domainId) {
-            alert('Выберите домен');
-            return;
-        }
-        if (!query) {
-            alert('Введите текст для поиска');
-            return;
-        }
-        
+
+        if (!domainId) { alert('Выберите домен'); return; }
+        if (!query) { alert('Введите текст для поиска'); return; }
+
         this.searchBtn.disabled = true;
         this.searchResults.innerHTML = '<div class="empty-state">Поиск...</div>';
-        
         try {
             const data = await chatAPI.textSearchByDomain(domainId, query, limit);
             this.renderSearchResults(data.results || [], query);
         } catch (error) {
-            console.error('Search failed:', error);
             this.searchResults.innerHTML = `<div class="empty-state">Ошибка: ${this.escapeHtml(error.message)}</div>`;
         } finally {
             this.searchBtn.disabled = false;
@@ -553,28 +526,101 @@ class DBManager {
             this.searchResults.innerHTML = '<div class="empty-state">Ничего не найдено</div>';
             return;
         }
-        
         this.searchResults.innerHTML = '';
         for (const hit of results) {
             const div = document.createElement('div');
-            div.className = 'search-result';
+            div.className = 'search-hit';
+
+            // Превью: первые ~200 символов текста
+            const fullText = hit.text || '';
+            const previewText = fullText.length > 220
+                ? fullText.slice(0, 220).trimEnd() + '…'
+                : fullText;
+            const isLong = fullText.length > 220;
+
+            const source = hit.metadata?.source_path || hit.document_id || '?';
+            const score = typeof hit.score === 'number' ? hit.score.toFixed(3) : '?';
+            const page = hit.metadata?.page_number != null ? `стр. ${hit.metadata.page_number}` : '';
+            const section = hit.metadata?.headers?.section ? `§ ${hit.metadata.headers.section}` : '';
+
             div.innerHTML = `
-                <div class="search-result-header">
-                    <span>vault: ${this.escapeHtml(hit.metadata?.vault_id || '?')} | chunk: ${this.escapeHtml(hit.chunk_id)}</span>
-                    <span>score: ${hit.score.toFixed(3)}</span>
+                <div class="search-hit-header">
+                    <span class="search-hit-source" title="${this.escapeHtml(source)}">${this.escapeHtml(source.split('/').pop())}</span>
+                    <span class="search-hit-meta">${this.escapeHtml([page, section].filter(Boolean).join(' · '))}</span>
+                    <span class="search-hit-score">score ${score}</span>
+                    <button class="search-hit-detail-btn" title="Все свойства чанка">🔍</button>
                 </div>
-                <div class="search-result-text">${this.highlightText(hit.text, query)}</div>
+                <div class="search-hit-body">
+                    <div class="search-hit-preview">${this.highlightText(this.escapeHtml(previewText), query)}</div>
+                    ${isLong ? `
+                        <div class="search-hit-full" style="display:none">${this.highlightText(this.escapeHtml(fullText), query)}</div>
+                        <button class="search-hit-expand-btn">показать полностью ▾</button>
+                    ` : ''}
+                </div>
             `;
+
+            if (isLong) {
+                const expandBtn = div.querySelector('.search-hit-expand-btn');
+                const fullDiv = div.querySelector('.search-hit-full');
+                const previewDiv = div.querySelector('.search-hit-preview');
+                expandBtn.addEventListener('click', () => {
+                    const isVisible = fullDiv.style.display !== 'none';
+                    fullDiv.style.display = isVisible ? 'none' : 'block';
+                    previewDiv.style.display = isVisible ? 'block' : 'none';
+                    expandBtn.textContent = isVisible ? 'показать полностью ▾' : 'свернуть ▴';
+                });
+            }
+
+            div.querySelector('.search-hit-detail-btn').addEventListener('click', () => {
+                this.openChunkModal(hit);
+            });
+
             this.searchResults.appendChild(div);
         }
     }
 
-    highlightText(text, query) {
-        const escaped = this.escapeHtml(text);
-        const escapedQuery = this.escapeHtml(query);
-        if (!escapedQuery) return escaped;
-        const regex = new RegExp(`(${escapedQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
-        return escaped.replace(regex, '<mark>$1</mark>');
+    openChunkModal(hit) {
+        if (!this.chunkModal) return;
+        const meta = hit.metadata || {};
+        const rows = [
+            ['chunk_id', hit.chunk_id],
+            ['document_id', hit.document_id],
+            ['vault_id', meta.vault_id || hit.vault_id],
+            ['source_path', meta.source_path],
+            ['page_number', meta.page_number],
+            ['section', meta.headers?.section],
+            ['content_type', meta.content_type],
+            ['score', typeof hit.score === 'number' ? hit.score.toFixed(5) : hit.score],
+            ['checksum', meta.checksum],
+            ['extension', meta.extension],
+            ['domain_id', meta.domain_id],
+            ['source_hint', meta.source_hint],
+            ['tags', Array.isArray(meta.tags) ? meta.tags.join(', ') : meta.tags],
+        ].filter(([, v]) => v != null && v !== '' && v !== undefined);
+
+        const tableRows = rows.map(([k, v]) =>
+            `<tr><td class="chunk-prop-key">${this.escapeHtml(k)}</td><td class="chunk-prop-val">${this.escapeHtml(String(v))}</td></tr>`
+        ).join('');
+
+        this.chunkModalContent.innerHTML = `
+            <h4 class="chunk-modal-title">Свойства чанка</h4>
+            <table class="chunk-props-table">${tableRows}</table>
+            <div class="chunk-modal-section-label">Текст</div>
+            <pre class="chunk-modal-text">${this.escapeHtml(hit.text || '')}</pre>
+        `;
+        this.chunkModal.style.display = 'flex';
+    }
+
+    closeChunkModal() {
+        if (this.chunkModal) this.chunkModal.style.display = 'none';
+    }
+
+    highlightText(escapedHtml, query) {
+        if (!query) return escapedHtml;
+        const escapedQuery = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        // query уже escapeHtml не нужен здесь — ищем в уже-escaped HTML
+        const regex = new RegExp(`(${escapedQuery})`, 'gi');
+        return escapedHtml.replace(regex, '<mark>$1</mark>');
     }
 
     escapeHtml(text) {
@@ -586,10 +632,7 @@ class DBManager {
 
     debounce(fn, ms) {
         let t;
-        return (...args) => {
-            clearTimeout(t);
-            t = setTimeout(() => fn.apply(this, args), ms);
-        };
+        return (...args) => { clearTimeout(t); t = setTimeout(() => fn.apply(this, args), ms); };
     }
 }
 
