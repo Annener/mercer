@@ -25,6 +25,7 @@ from parser.preprocessing.pdf_page_merger import (
     merge_pdf_pages,
     page_number_for_offset,
     resolve_headers_at_offset,
+    strip_page_markers,
 )
 from parser.preprocessing.preprocessor import preprocess
 from parser.scanning.vault_scanner import scan_vault
@@ -300,6 +301,9 @@ async def _process_file(
     # Препроцессинг ПОСЛЕ чанкинга — на каждом чанке отдельно (V3.0)
     for idx, chunk in enumerate(chunks):
         source_hint = f"{relative_path}:chunk_{idx}"
+        # Удаляем <!--PAGE:N--> из текста чанка — они нужны только для
+        # восстановления page_number, в чанках LLM они мешают пониманию текста.
+        chunk.text = strip_page_markers(chunk.text)
         cleaned = await asyncio.to_thread(preprocess, chunk.text, source_hint)
         chunk.text = cleaned
         chunk.metadata["source_hint"] = source_hint
