@@ -133,11 +133,21 @@ def _detect_headers_footers(pages: list[dict[str, Any]]) -> set[str]:
 
 def _looks_like_real_header(line: str) -> bool:
     """
-    Эвристика: если строка содержит слова "глава/chapter/..." — скорее всего
-    это настоящий заголовок, а не колонтитул. Не удаляем.
+    Эвристика: если строка содержит слова "глава/chapter/..." — возможно,
+    это настоящий заголовок. Но если строка выглядит как колонтитул вида
+    "ГЛАВА 2 | Название" (содержит разделитель | или —) — это колонтитул,
+    и её нужно удалять.
     """
     lower = line.lower()
-    return any(kw in lower for kw in _REAL_HEADER_KEYWORDS)
+    has_header_keyword = any(kw in lower for kw in _REAL_HEADER_KEYWORDS)
+    if not has_header_keyword:
+        return False
+    # Колонтитул-признак: содержит '|', '—', '/', '\\' — типичный разделитель
+    # в строках вида "ГЛАВА 2 | Сигил, ГОРОД ДВЕРЕЙ» или «Часть 1 / Введение"
+    _HEADER_FOOTER_SEPARATORS = ('|', ' — ', ' / ', ' \\ ')
+    if any(sep in line for sep in _HEADER_FOOTER_SEPARATORS):
+        return False  # это колонтитул, не настоящий заголовок
+    return True
 
 
 def _strip_headers_footers(text: str, headers_footers: set[str]) -> str:
