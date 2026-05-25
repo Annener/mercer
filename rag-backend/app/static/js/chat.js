@@ -54,6 +54,46 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
+/**
+ * Рендерит блок источников под ответом ассистента.
+ * sources: [{path, page, vault_id}]
+ */
+function renderSourcesBlock(sources) {
+    if (!sources || sources.length === 0) return '';
+
+    // Группируем по файлу (path), собираем страницы
+    const fileMap = new Map();
+    for (const s of sources) {
+        const key = s.path;
+        if (!fileMap.has(key)) {
+            fileMap.set(key, { path: s.path, vault_id: s.vault_id, pages: [] });
+        }
+        if (s.page != null) {
+            fileMap.get(key).pages.push(s.page);
+        }
+    }
+
+    const items = Array.from(fileMap.values());
+    const rows = items.map((item, i) => {
+        const fileName = item.path.split('/').pop();
+        const pagesLabel = item.pages.length > 0
+            ? `стр. ${item.pages.sort((a, b) => a - b).join(', ')}`
+            : '';
+        const numBadge = `<span class="src-num">${i + 1}</span>`;
+        const pageSpan = pagesLabel
+            ? `<span class="src-page">${escapeHtml(pagesLabel)}</span>`
+            : '';
+        return `
+            <div class="src-item" title="${escapeHtml(item.path)}">
+                ${numBadge}
+                <span class="src-name">${escapeHtml(fileName)}</span>
+                ${pageSpan}
+            </div>`;
+    }).join('');
+
+    return `<div class="sources-block"><div class="sources-label">Источники</div><div class="sources-list">${rows}</div></div>`;
+}
+
 // === Chat Manager ===
 class ChatManager {
     constructor() {
@@ -145,6 +185,7 @@ class ChatManager {
         let assistantMessage = null;
         let fullContent = '';
         let pendingContent = '';  // буфер для debounced рендера
+        let pendingSources = null; // источники из SSE
 
         try {
             while (true) {
@@ -168,6 +209,8 @@ class ChatManager {
                             fullContent += parsed.token;
                             pendingContent = fullContent;
                             this.scheduleMarkdownRender(assistantMessage, () => pendingContent);
+                        } else if (parsed.sources) {
+                            pendingSources = parsed.sources;
                         }
                     } catch (e) {
                         // игнорируем
@@ -185,6 +228,15 @@ class ChatManager {
         if (assistantMessage && fullContent) {
             assistantMessage.innerHTML = renderMarkdown(fullContent);
         }
+
+        // Блок источников — добавляем к тому же DOM-элементу сообщения
+        if (assistantMessage && pendingSources && pendingSources.length > 0) {
+            const sourcesHtml = renderSourcesBlock(pendingSources);
+            if (sourcesHtml) {
+                assistantMessage.insertAdjacentHTML('beforeend', sourcesHtml);
+            }
+        }
+
         this.scrollToBottom();
 
         if (window.sidebarManager) {
