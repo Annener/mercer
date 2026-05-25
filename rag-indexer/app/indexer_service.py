@@ -41,7 +41,13 @@ class IndexerService:
             task = self._tasks.get(task_id)
             if task is None or task.done():
                 return False
+            # Ставим флаг — run_indexing проверяет его между файлами и в heartbeat-цикле.
             self._cancel_flags[task_id] = True
+            # Также отменяем asyncio.Task напрямую — это прервёт любой await
+            # (в том числе asyncio.sleep, broadcast, save_cache).
+            # asyncio.to_thread и ProcessPoolExecutor всё равно дождутся завершения
+            # текущей операции в потоке/процессе, но не запустят следующее.
+            task.cancel()
             return True
 
     def is_cancelled(self, task_id: str) -> bool:
