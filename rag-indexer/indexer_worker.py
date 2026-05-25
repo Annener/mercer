@@ -497,15 +497,17 @@ async def _embed_chunks(
     cached_count = len(chunks) - len(missing_texts)
 
     if missing_texts:
-        embedded = await provider.embed(missing_texts)
-        for offset, vector in enumerate(embedded):
-            if not vector:
+        # Embed по одному чанку — чтобы прогресс транслировался после каждого,
+        # а не после окончания всего батча (fix: 8.5-минутная тишина).
+        for offset, embedding_text in enumerate(missing_texts):
+            result = await provider.embed([embedding_text])
+            if not result or not result[0]:
                 raise ValueError(f"Embedding failed for chunk index {missing_indices[offset]}")
+            vector = result[0]
+
             chunk_index = missing_indices[offset]
             vectors[chunk_index] = vector
-            embedding_text = chunks[chunk_index].metadata.get(
-                "embedding_text", chunks[chunk_index].text
-            )
+
             await asyncio.to_thread(
                 save_cache,
                 embedding_text,
