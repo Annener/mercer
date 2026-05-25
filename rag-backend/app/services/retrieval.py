@@ -56,25 +56,33 @@ async def retrieve_multi_vault(
 
 def format_context(hits: list[SearchHit]) -> str:
     """
-    Формирует стандартный структурированный блок контекста для LLM.
-    Использует Markdown + XML-теги для чёткого разделения источников и чанков.
+    Формирует блок контекста для LLM.
+    Намеренно нейтральный формат — без Markdown-заголовков и XML-тегов,
+    чтобы LLM не копировал служебные метки в ответ.
+    Нумерация совпадает с индексами источников, которые фронтенд показывает пользователю.
     """
     if not hits:
-        return "<retrieved_context>\nКонтекст не найден в базе знаний. Опирайся на общие правила, но явно укажи отсутствие локальных данных.\n</retrieved_context>"
-    
-    parts = ["<retrieved_context>"]
-    for index, hit in enumerate(hits, start=1):
-        source = hit.metadata.get("source_path") or hit.document_id or "unknown"
-        score = hit.score
-        tags = ", ".join(hit.metadata.get("tags", [])) or "none"
-        content_type = hit.metadata.get("content_type", "general")
+        return "Контекст не найден в базе знаний. Отвечай на основе общих знаний, но явно укажи что локальные данные не найдены."
+
+    # Дедуплицируем по (path, page) — те же ключи что в _hits_to_sources
+    seen: set[tuple[str, int | None]] = set()
+    numbered: list[tuple[int, SearchHit]] = []
+    src_index = 1
+    for hit in hits:
+        path = hit.metadata.get("source_path") or hit.document_id or "unknown"
+        page = hit.metadata.get("page_number")
+        key = (path, page)
+        if key not in seen:
+            seen.add(key)
+            src_index += 1
+        numbered.append((src_index - 1, hit))
+
+    parts = []
+    for idx, hit in numbered:
         text = hit.text.strip()
-        
-        parts.append(f"### Источник {index} | Файл: `{source}` | Тип: `{content_type}` | Теги: `{tags}` | Score: {score:.3f}")
-        parts.append(f"<chunk>{text}</chunk>")
-    
-    parts.append("</retrieved_context>")
-    return "\n\n".join(parts)
+        parts.append(f"[{idx}]\n{text}")
+
+    return "\n\n---\n\n".join(parts)
 
 def _select_embedding_model(config: AppConfig) -> EmbeddingModelConfig:
     for embedding_model in config.embedding_models.values():
