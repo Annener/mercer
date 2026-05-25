@@ -60,6 +60,24 @@ class ValidationRuleRange(BaseModel):
     max: float
 
 
+class PdfSidecarConfig(BaseModel):
+    """Configuration for the PDF sidecar service running on the macOS host.
+
+    The sidecar uses unstructured hi_res (detectron2 + tesseract OCR) to parse
+    scanned PDFs with high quality.  rag-indexer calls it via HTTP multipart and
+    receives pre-cleaned plain text back, so the rest of the pipeline is unaware
+    of the sidecar's existence.
+    """
+
+    # Base URL of the sidecar service.  When rag-indexer runs inside Docker the
+    # host machine is reachable via the special DNS name host.docker.internal.
+    url: str = ""
+    # Per-file HTTP timeout in seconds.  hi_res parsing with OCR can be slow.
+    timeout_seconds: float = 180.0
+    # If True, fall back to pdfminer (fast, text-only) when sidecar is down.
+    fallback_to_pdfminer: bool = True
+
+
 class AppConfig(BaseModel):
     vaults: dict[str, VaultConfig]
     embedding_models: dict[str, EmbeddingModelConfig]
@@ -68,4 +86,5 @@ class AppConfig(BaseModel):
     chat: ChatConfig = Field(default_factory=ChatConfig)
     retrieval: RetrievalConfig = Field(default_factory=RetrievalConfig)
     chunking: ChunkingConfig = Field(default_factory=ChunkingConfig)
+    pdf_sidecar: PdfSidecarConfig = Field(default_factory=PdfSidecarConfig)
     validation_rules: dict[str, ValidationRuleRange] = Field(default_factory=dict)
