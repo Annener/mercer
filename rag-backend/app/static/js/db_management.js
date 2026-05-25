@@ -23,6 +23,7 @@ class DBManager {
         this.progressPctSpan = document.getElementById('mgmt-progress-pct');
         this.filesList = document.getElementById('mgmt-files-list');
         this.cancelBtn = document.getElementById('mgmt-cancel-btn');
+        this.overallBar = document.getElementById('mgmt-overall-bar');  // новый элемент в HTML
         
         // Вкладка "Поиск"
         this.searchDomainSelect = document.getElementById('search-domain-select');
@@ -330,6 +331,7 @@ class DBManager {
         this.filesList.innerHTML = '';
         this.currentFiles = {};
         this.cancelBtn.style.display = '';
+        if (this.overallBar) this.overallBar.style.width = '0%';
     }
 
     connectWebSocket(taskId) {
@@ -362,11 +364,22 @@ class DBManager {
             const state = msg.state;
             this.filesTotalSpan.textContent = String(Object.keys(state.files || {}).length);
             for (const [path, fileState] of Object.entries(state.files || {})) {
-                this.updateFileRow(path, fileState.status, fileState.progress_pct);
+                this.updateFileRow(
+                    path,
+                    fileState.status,
+                    fileState.progress_pct,
+                    fileState.chunks_total || 0,
+                    fileState.chunks_processed || 0,
+                    fileState.error || null
+                );
             }
             this.recalcProgress();
+        } else if (msg.type === 'file_chunk_progress') {
+            this.updateFileRow(msg.file_path, msg.stage, null, msg.chunks_total, msg.chunks_processed, msg.error);
+            this.recalcProgress();
         } else if (msg.type === 'file_status') {
-            this.updateFileRow(msg.file_path, msg.status, msg.progress_pct, msg.error);
+            // back-compat: V2.1 deprecated event
+            this.updateFileRow(msg.file_path, msg.status, msg.progress_pct, 0, 0, msg.error);
             this.recalcProgress();
         } else if (msg.type === 'task_complete') {
             this.taskStatusSpan.textContent = 'done';
@@ -374,6 +387,7 @@ class DBManager {
             this.filesDoneSpan.textContent = String(msg.files_indexed);
             this.filesTotalSpan.textContent = String(msg.files_total);
             this.progressPctSpan.textContent = '100';
+            if (this.overallBar) this.overallBar.style.width = '100%';
             this.cancelBtn.style.display = 'none';
             this.expandedVaults.clear();
             this.vaultDocsCache = {};
@@ -388,9 +402,42 @@ class DBManager {
         }
     }
 
-    updateFileRow(path, status, progressPct, error = null) {
-        this.currentFiles[path] = { status, progress_pct: progressPct, error };
-        
+    updateFileRow(path, stage, progressPct = null, chunksTotal = 0, chunksProcessed = 0, error = null) {
+        this.currentFiles[path] = {
+            stage,
+            chunks_total: chunksTotal,
+            chunks_processed: chunksProcessed,
+            progress_pct: progressPct,
+            error
+        };
+
+        // Вычисляем процент прогресса для бара
+        let pct = 0;
+        if (chunksTotal > 0) {
+            pct = Math.round(chunksProcessed / chunksTotal * 100);
+        } else {
+            pct = progressPct || 0;
+        }
+
+        // Цвет бара
+        let barColor;
+        if (stage === 'error') {
+            barColor = '#e74c3c';
+        } else if (stage === 'done' || stage === 'indexed' || stage === 'empty') {
+            barColor = '#27ae60';
+        } else if (stage === 'parsing' || stage === 'chunking') {
+            barColor = '#f39c12';
+        } else if (stage === 'indexing') {
+            barColor = '#3498db';
+        } else {
+            barColor = '#95a5a6';
+        }
+
+        // Счётчик чанков
+        const chunksLabel = chunksTotal > 0
+            ? `${chunksProcessed} / ${chunksTotal} чанков`
+            : '—';
+
         let row = this.filesList.querySelector(`[data-path="${CSS.escape(path)}"]`);
         if (!row) {
             row = document.createElement('div');
@@ -398,32 +445,56 @@ class DBManager {
             row.dataset.path = path;
             row.innerHTML = `
                 <span class="file-path"></span>
-                <span class="file-status status-badge"></span>
+                <span class="file-chunks"></span>
+                <span class="file-stage stage-badge"></span>
                 <div class="file-progress"><div class="file-progress-bar"></div></div>
             `;
             this.filesList.appendChild(row);
         }
-        
-        row.querySelector('.file-path').textContent = path;
-        row.querySelector('.file-path').title = error || path;
-        
-        const statusEl = row.querySelector('.file-status');
-        statusEl.textContent = status;
-        statusEl.className = `file-status status-badge status-${status === 'indexed' ? 'done' : status === 'error' ? 'error' : 'running'}`;
-        
+
+        const pathEl = row.querySelector('.file-path');
+        pathEl.textContent = path;
+        pathEl.title = error || path;
+
+        row.querySelector('.file-chunks').textContent = chunksLabel;
+
+        const stageEl = row.querySelector('.file-stage');
+        stageEl.textContent = stage || '';
+        stageEl.className = `file-stage stage-badge stage-${stage || 'pending'}`;
+
         const bar = row.querySelector('.file-progress-bar');
-        bar.style.width = `${progressPct || 0}%`;
-        bar.style.backgroundColor = status === 'error' ? '#e74c3c' : status === 'indexed' ? '#27ae60' : '#3498db';
+        bar.style.width = `${pct}%`;
+        bar.style.backgroundColor = barColor;
     }
 
     recalcProgress() {
         const files = Object.values(this.currentFiles);
         const total = files.length;
-        const done = files.filter(f => f.status === 'indexed').length;
-        const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+
+        // Суммируем чанки
+        let sumTotal = 0;
+        let sumProcessed = 0;
+        for (const f of files) {
+            sumTotal += f.chunks_total || 0;
+            sumProcessed += f.chunks_processed || 0;
+        }
+
+        // done-файлы: stage === 'done' || 'indexed' || 'empty'
+        const doneStages = new Set(['done', 'indexed', 'empty']);
+        const done = files.filter(f => doneStages.has(f.stage)).length;
+
+        let pct;
+        if (sumTotal > 0) {
+            pct = Math.round(sumProcessed / sumTotal * 100);
+        } else {
+            // fallback для back-compat (file_status без чанков)
+            pct = total > 0 ? Math.round((done / total) * 100) : 0;
+        }
+
         this.filesDoneSpan.textContent = String(done);
         this.filesTotalSpan.textContent = String(total);
         this.progressPctSpan.textContent = String(pct);
+        if (this.overallBar) this.overallBar.style.width = pct + '%';
     }
 
     async cancelCurrentTask() {
