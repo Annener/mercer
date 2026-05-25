@@ -629,9 +629,10 @@ body {
 
 .modal-content-lg {
     min-width: 800px;
-    max-width: 1000px;
-    width: 90%;
-    max-height: 85vh;
+    max-width: 1100px;
+    width: 92%;
+    height: 90vh;
+    max-height: 90vh;
     display: flex;
     flex-direction: column;
 }
@@ -683,10 +684,12 @@ body {
     display: none;
     flex: 1;
     overflow-y: auto;
+    min-height: 0;
 }
 
 .tab-content.active {
-    display: block;
+    display: flex;
+    flex-direction: column;
 }
 
 /* === Management toolbar === */
@@ -1178,39 +1181,46 @@ body {
    ============================================================ */
 
 /* Domain tabs */
+/* Domain tabs — стиль как у основных табов Manage/Search */
 .domain-tabs {
     display: flex;
-    gap: 4px;
-    padding: 10px 0 6px;
-    flex-wrap: wrap;
+    gap: 0;
+    border-bottom: 2px solid #e1e4e8;
+    margin-bottom: 14px;
+    flex-shrink: 0;
 }
 
 .domain-tab {
-    padding: 5px 14px;
-    border-radius: 20px;
-    border: 1px solid #d0d7de;
-    background: #f6f8fa;
-    color: #444;
+    padding: 8px 18px;
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -2px;
+    color: #6a737d;
     font-size: 13px;
+    font-weight: 500;
     cursor: pointer;
     transition: all .15s;
     white-space: nowrap;
 }
-.domain-tab:hover { background: #e1e8f0; }
+.domain-tab:hover { color: #24292e; }
 .domain-tab.active {
-    background: #0969da;
-    color: #fff;
-    border-color: #0969da;
+    color: #0969da;
+    border-bottom-color: #0969da;
 }
 .domain-tab-count {
     display: inline-block;
-    background: rgba(0,0,0,.12);
+    background: #e1e4e8;
     border-radius: 10px;
     padding: 0 6px;
     font-size: 11px;
-    margin-left: 4px;
+    margin-left: 5px;
+    color: #57606a;
 }
-.domain-tab.active .domain-tab-count { background: rgba(255,255,255,.25); }
+.domain-tab.active .domain-tab-count {
+    background: #ddf4ff;
+    color: #0969da;
+}
 
 /* Vault card v2 */
 .vault-card2 {
@@ -1535,4 +1545,72 @@ body {
     font-size: 12px;
     white-space: nowrap;
     padding-right: 8px;
+}
+
+/* === Sources block (под ответом ассистента) === */
+.sources-block {
+    margin-top: 14px;
+    padding-top: 10px;
+    border-top: 1px solid #e1e4e8;
+}
+
+.sources-label {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: #8b949e;
+    margin-bottom: 6px;
+}
+
+.sources-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.src-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: #57606a;
+    line-height: 1.4;
+}
+
+.src-num {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 18px;
+    height: 18px;
+    background: #e1e4e8;
+    color: #24292e;
+    border-radius: 50%;
+    font-size: 10px;
+    font-weight: 600;
+    flex-shrink: 0;
+}
+
+.src-name {
+    font-family: 'SF Mono', 'Consolas', monospace;
+    color: #0969da;
+    font-size: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 340px;
+}
+
+.src-page {
+    color: #8b949e;
+    font-size: 11px;
+    white-space: nowrap;
+}
+
+/* vaults-container должен скроллиться внутри tab-content */
+#mgmt-vaults-container {
+    flex: 1;
+    overflow-y: auto;
+    min-height: 0;
 }
