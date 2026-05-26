@@ -191,7 +191,10 @@ async def run_indexing(
         await mark_task_done(task_id)
         final_state = await load_state(task_id)
         if final_state is not None:
-            await save_last_successful_state(final_state)
+            # Сохраняем последний успешный state — только файлы со статусом done/indexed/empty.
+            # Файлы с error/cancelled/pending не включаем: при следующем запуске они
+            # не найдутся в last_state и будут переиндексированы.
+            await save_last_successful_state(_filter_successful_state(final_state))
         await _broadcast_task_complete(
             task_id, files_total=len(files_info), files_indexed=indexed_count, broadcast=broadcast
         )
@@ -203,6 +206,12 @@ async def run_indexing(
             if await load_state(task_id) is None:
                 await create_state(task_id, vault_id, [])
             await mark_task_done(task_id, error=str(exc))
+            # Даже при ошибке — сохраняем частичный успешный state.
+            # Файлы которые успели завершиться (done/indexed/empty) не будут
+            # переиндексированы при следующем запуске.
+            partial_state = await load_state(task_id)
+            if partial_state is not None:
+                await save_last_successful_state(_filter_successful_state(partial_state))
         except Exception:
             logger.warning("Failed to mark task as error: %s", task_id, exc_info=True)
 
@@ -681,3 +690,27 @@ async def _broadcast_task_complete(
 
 async def _noop_broadcast(_task_id: str, _message: dict[str, Any]) -> None:
     return None
+
+
+def _filter_successful_state(state: IndexState) -> IndexState:
+    """
+    Возвращает копию IndexState содержащую только успешно завершённые файлы.
+    Файлы со статусами error/cancelled/pending/parsing/chunking/indexing
+    исключаются, чтобы при следующем запуске они
+    были переиндексированы.
+    """
+    _SUCCESSFUL_STATUSES = {"done", "indexed", "empty"}
+    filtered_files = {
+        path: file_state
+        for path, file_state in state.files.items()
+        if file_state.status in _SUCCESSFUL_STATUSES
+    }
+    return IndexState(
+        version=state.version,
+        task_id=state.task_id,
+        vault_id=state.vault_id,
+        status=state.status,
+        last_updated=state.last_updated,
+        files=filtered_files,
+        error=state.error,
+    )

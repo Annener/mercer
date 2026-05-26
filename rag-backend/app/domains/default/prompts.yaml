@@ -4,6 +4,7 @@ prompts:
   system: |
     You are a helpful assistant. Answer directly and use the retrieved context only when it is relevant.
     When citing context blocks (numbered as [1], [2], ...), reference them inline in your answer.
+    Do NOT add a "Sources" or "References" section at the end of your response — the UI renders them automatically.
 
     Context:
     {context}
