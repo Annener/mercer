@@ -14,6 +14,13 @@ logger = logging.getLogger(__name__)
 MAX_RETRIES = 3
 
 
+# Таймаут для upsert — увеличен, т.к. большой PDF (1000+ чанков с Qwen3-4B embedding)
+# может занимать 30-40 минут embedding + запись в LanceDB.
+# Используем httpx.Timeout с раздельными настройками: connect и read отдельно.
+_UPSERT_TIMEOUT = httpx.Timeout(connect=10.0, read=3600.0, write=300.0, pool=10.0)
+_SEARCH_TIMEOUT = httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0)
+
+
 class StorageClient:
     def __init__(self, base_url: str, timeout: int = 30) -> None:
         self.base_url = base_url.rstrip("/")
@@ -59,7 +66,8 @@ class StorageClient:
         return final_response
 
     async def _upsert(self, req: UpsertRequest) -> UpsertResponse:
-        async with httpx.AsyncClient(base_url=self.base_url, timeout=self.timeout) as client:
+        # Используем раздельный timeout: connect короткий, read длинный (embedding тяжёлые)
+        async with httpx.AsyncClient(base_url=self.base_url, timeout=_UPSERT_TIMEOUT) as client:
             response = await client.post("/index/upsert", json=req.model_dump())
         try:
             response.raise_for_status()
@@ -69,7 +77,7 @@ class StorageClient:
         return UpsertResponse.model_validate(response.json())
 
     async def search(self, req: SearchRequest) -> SearchResponse:
-        async with httpx.AsyncClient(base_url=self.base_url, timeout=self.timeout) as client:
+        async with httpx.AsyncClient(base_url=self.base_url, timeout=_SEARCH_TIMEOUT) as client:
             response = await client.post("/index/search", json=req.model_dump())
         try:
             response.raise_for_status()

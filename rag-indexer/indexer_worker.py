@@ -516,6 +516,12 @@ async def _embed_chunks(
     cached_count = len(chunks) - len(missing_texts)
 
     if missing_texts:
+        logger.info(
+            "Embedding start: file=%s total_chunks=%d cached=%d to_embed=%d model=%s",
+            file_path or "?", len(chunks), cached_count, len(missing_texts), embedding_model.model_id,
+        )
+        embed_start_time = asyncio.get_event_loop().time()
+
         # Embed по одному чанку — чтобы прогресс транслировался после каждого,
         # а не после окончания всего батча (fix: 8.5-минутная тишина).
         for offset, embedding_text in enumerate(missing_texts):
@@ -541,6 +547,16 @@ async def _embed_chunks(
             # processed_count = уже закэшированные + только что обработанные
             processed_count = cached_count + offset + 1
 
+            # Лог прогресса embedding есть здесь: каждые N чанков или последний
+            if processed_count % CHUNK_PROGRESS_REPORT_INTERVAL == 0 or processed_count == len(chunks):
+                elapsed = asyncio.get_event_loop().time() - embed_start_time
+                rate = (offset + 1) / elapsed if elapsed > 0 else 0
+                eta = (len(missing_texts) - offset - 1) / rate if rate > 0 else 0
+                logger.info(
+                    "Embedding progress: file=%s %d/%d chunks (%.1f c/s, ETA ~%.0fs)",
+                    file_path or "?", processed_count, len(chunks), rate, eta,
+                )
+
             # Прогресс по чанкам каждые N или на последнем
             if (
                 broadcast is not None
@@ -559,6 +575,12 @@ async def _embed_chunks(
                     chunks_processed=processed_count,
                     broadcast=broadcast,
                 )
+
+        logger.info(
+            "Embedding complete: file=%s %d chunks embedded in %.1fs",
+            file_path or "?", len(missing_texts),
+            asyncio.get_event_loop().time() - embed_start_time,
+        )
 
     return [vector for vector in vectors if vector is not None]
 
