@@ -14,9 +14,11 @@ class OpenAICompatibleProvider(GenerationProvider):
         self.config = config
         self.api_key = api_key
         self.max_retries = max_retries
+        # Используем полный timeout из конфига для read, короткий для connect.
+        # Раньше min(..., 10.0) резал реальный timeout_seconds=60 из конфига.
         self.timeout = httpx.Timeout(
-            min(float(config.timeout_seconds), 10.0),
-            connect=min(float(config.timeout_seconds), 3.0),
+            float(config.timeout_seconds),
+            connect=min(float(config.timeout_seconds), 10.0),
         )
 
     async def generate_stream(self, messages: list[dict[str, str]]) -> AsyncIterator[str]:

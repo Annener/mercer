@@ -1614,3 +1614,26 @@ body {
     overflow-y: auto;
     min-height: 0;
 }
+
+/* Кнопка повтора запроса при LLM unavailable */
+.retry-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 10px;
+    padding: 6px 14px;
+    background: #e8f0fe;
+    border: 1px solid #4285f4;
+    border-radius: 6px;
+    color: #1a73e8;
+    font-size: 13px;
+    cursor: pointer;
+    transition: background 0.15s;
+}
+.retry-btn:hover {
+    background: #d2e3fc;
+}
+.retry-btn::before {
+    content: '↩';
+    font-size: 14px;
+}

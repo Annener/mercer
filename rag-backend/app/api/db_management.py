@@ -153,10 +153,34 @@ async def delete_document(
     return payload
 
 
+class ReindexRequest(BaseModel):
+    force_reindex: bool = False
+
+
 @router.post("/vaults/{vault_id}/reindex")
-async def reindex_vault(vault_id: str) -> dict[str, Any]:
+async def reindex_vault(vault_id: str, req: ReindexRequest | None = None) -> dict[str, Any]:
+    force = req.force_reindex if req is not None else True
     async with httpx.AsyncClient(base_url=INDEXER_API_URL, timeout=20) as client:
-        response = await client.post("/api/v1/tasks", json={"vault_id": vault_id, "force_reindex": True})
+        response = await client.post("/api/v1/tasks", json={"vault_id": vault_id, "force_reindex": force})
+    _raise_upstream(response)
+    return response.json()
+
+
+@router.post("/indexer/tasks/{task_id}/cancel")
+async def cancel_indexer_task(task_id: str) -> dict[str, Any]:
+    """Проксирует запрос отмены задачи к rag-indexer.
+    Фронтенд обращается сюда вместо прямых запросов на localhost:9000 (избегаем CORS-ошибку)."""
+    async with httpx.AsyncClient(base_url=INDEXER_API_URL, timeout=10) as client:
+        response = await client.post(f"/api/v1/tasks/{task_id}/cancel")
+    _raise_upstream(response)
+    return response.json()
+
+
+@router.get("/indexer/tasks/{task_id}/state")
+async def get_indexer_task_state(task_id: str) -> dict[str, Any]:
+    """Проксирует запрос состояния задачи к rag-indexer."""
+    async with httpx.AsyncClient(base_url=INDEXER_API_URL, timeout=10) as client:
+        response = await client.get(f"/api/v1/tasks/{task_id}/state")
     _raise_upstream(response)
     return response.json()
 

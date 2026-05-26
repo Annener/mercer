@@ -201,8 +201,13 @@ class LanceDBStore:
         return self._db().create_table(_table_name(vault_id), data=rows)
 
     def _replace_rows(self, table: Any, rows: list[dict[str, Any]]) -> None:
-        for row in rows:
-            table.delete(f"chunk_id = '{_escape_sql_literal(str(row['chunk_id']))}'")
+        # Батчевый upsert: удаляем все chunk_id за одну операцию, затем вставляем все сразу.
+        # Раньше делалось N отдельных DELETE по одному чанку — для 1345 чанков это 1345 транзакций LanceDB.
+        if not rows:
+            return
+        chunk_ids = [_escape_sql_literal(str(row["chunk_id"])) for row in rows]
+        ids_list = ", ".join(f"'{cid}'" for cid in chunk_ids)
+        table.delete(f"chunk_id IN ({ids_list})")
         table.add(rows)
 
     def _get_expected_dimensions(self, vault_id: str) -> int | None:

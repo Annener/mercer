@@ -120,14 +120,14 @@ class LLMRAGPlanner:
     LLM-driven декомпозитор запросов. Разбивает сложный промпт на список оптимизированных подзапросов
     для параллельного retrieval. Возвращает fallback на исходный запрос при ошибке LLM.
     """
-    PROMPT_TEMPLATE = """Ты агент-координатор поиска в RAG-системе для D&D.
+    PROMPT_TEMPLATE = """Ты агент-координатор поиска в RAG-системе для домена "{domain_id}".
 Твоя задача: проанализировать запрос пользователя и разбить его на 1-3 конкретных подзапроса для семантического поиска по базе знаний.
-Возвращай ТОЛЬКО валидный JSON в формате: {"queries": ["запрос1", "запрос2"]}
+Возвращай ТОЛЬКО валидный JSON в формате: {{"queries": ["запрос1", "запрос2"]}}
 Правила:
-1. Если запрос требует сюжета/боя/лора, выдели отдельные аспекты (локация, монстры, правила, предыстория).
+1. Разбивай сложный запрос на независимые смысловые аспекты, которые можно искать отдельно.
 2. Не меняй смысл запроса, только оптимизируй для векторного поиска.
-3. Если запрос уже конкретен, верни его один раз.
-Пример: {"queries": ["Лес ветров описание локации Альварон", "Монстры D&D 5e для леса", "Расчет сложности encounter уровень 5"]}"""
+3. Если запрос уже конкретен и самодостаточен, верни его один раз без изменений.
+Пример: {{"queries": ["<ключевые термины из запроса 1>", "<ключевые термины из запроса 2>"]}}"""
 
     def __init__(self, config: AppConfig):
         self.config = config
@@ -135,11 +135,12 @@ class LLMRAGPlanner:
     async def decompose(self, query: str, domain_id: str, history: list[str] | None = None) -> list[str]:
         try:
             provider = get_generation_provider(self.config)
+            system_prompt = self.PROMPT_TEMPLATE.format(domain_id=domain_id or "general")
             context_hint = f"Последние сообщения чата: {history[-2:]}" if history else ""
-            full_prompt = f"{self.PROMPT_TEMPLATE}\n\nКонтекст чата:\n{context_hint}\n\nЗапрос пользователя:\n{query}"
+            full_prompt = f"{system_prompt}\n\nКонтекст чата:\n{context_hint}\n\nЗапрос пользователя:\n{query}"
             
             result = await provider.generate_json(
-                messages=[{"role": "system", "content": self.PROMPT_TEMPLATE}, {"role": "user", "content": full_prompt}],
+                messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": full_prompt}],
                 fallback={"queries": [query]}
             )
             queries = result.get("queries", [])

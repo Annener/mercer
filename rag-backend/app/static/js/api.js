@@ -158,9 +158,18 @@ class ChatAPI {
         return response.json();
     }
 
-    async cancelIndexTask(taskId) {
+    async getIndexerTaskState(taskId) {
         const response = await fetch(
-            `${this.indexerUrl}/api/v1/tasks/${encodeURIComponent(taskId)}/cancel`,
+            `${this.baseUrl}/indexer/tasks/${encodeURIComponent(taskId)}/state`,
+        );
+        if (!response.ok) throw new Error(`Failed to get task state: ${response.statusText}`);
+        return response.json();
+    }
+
+    async cancelIndexTask(taskId) {
+        // Используем backend-прокси вместо прямого запроса на localhost:9000 (избегаем CORS)
+        const response = await fetch(
+            `${this.baseUrl}/indexer/tasks/${encodeURIComponent(taskId)}/cancel`,
             { method: 'POST' },
         );
         if (!response.ok) throw new Error(`Failed to cancel task: ${response.statusText}`);
@@ -168,6 +177,7 @@ class ChatAPI {
     }
 
     connectToTaskStream(taskId) {
+        // WebSocket на indexer через текущий хост (поддерживает прохождение через nginx если есть)
         const url = `${this.indexerWsUrl}/api/v1/tasks/${encodeURIComponent(taskId)}/stream`;
         return new WebSocket(url);
     }

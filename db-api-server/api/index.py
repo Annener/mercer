@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
@@ -30,8 +32,11 @@ class ChunksResponse(BaseModel):
 
 @router.post("/upsert", response_model=UpsertResponse)
 async def upsert_index(req: UpsertRequest, request: Request) -> UpsertResponse:
+    # Выносим синхронный LanceDB upsert в поток, чтобы не блокировать event loop.
+    # Для большого PDF (1000+ чанков) вставка в LanceDB может занимать несколько минут.
+    store = _store(request)
     try:
-        return _store(request).upsert(req)
+        return await asyncio.to_thread(store.upsert, req)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 

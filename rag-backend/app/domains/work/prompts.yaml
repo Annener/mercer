@@ -2,9 +2,9 @@ domain_id: work
 description: "Work knowledge base"
 prompts:
   system: |
-    You are a concise work knowledge-base assistant. Prioritize actionable answers and cite retrieved context when available.
+    You are a concise work knowledge-base assistant. Prioritize actionable answers and cite retrieved context blocks inline using [1], [2], ... notation when referencing them.
 
-    Retrieved context:
+    Context:
     {context}
 
     Collected clarification fields:

@@ -57,30 +57,31 @@ async def retrieve_multi_vault(
 def format_context(hits: list[SearchHit]) -> str:
     """
     Формирует блок контекста для LLM.
-    Намеренно нейтральный формат — без Markdown-заголовков и XML-тегов,
-    чтобы LLM не копировал служебные метки в ответ.
-    Нумерация совпадает с индексами источников, которые фронтенд показывает пользователю.
+    Нумерация блоков [1], [2], ... строго соответствует нумерации карточек источников
+    на фронтенде (файл 1, файл 2, ...) — группировка по уникальным (path, page) в том же порядке.
+    Не используем XML/HTML-теги (типа <retrieved_context>), чтобы LLM не протаскивал их в ответ.
     """
     if not hits:
         return "Контекст не найден в базе знаний. Отвечай на основе общих знаний, но явно укажи что локальные данные не найдены."
 
-    # Дедуплицируем по (path, page) — те же ключи что в _hits_to_sources
-    seen: set[tuple[str, int | None]] = set()
+    # Назначаем номер каждому уникальному источнику (path, page).
+    # Фронтенд нумерует точно так же — по порядку появления уникального (path).
+    source_index: dict[str, int] = {}  # path -> номер источника
     numbered: list[tuple[int, SearchHit]] = []
-    src_index = 1
+
     for hit in hits:
         path = hit.metadata.get("source_path") or hit.document_id or "unknown"
-        page = hit.metadata.get("page_number")
-        key = (path, page)
-        if key not in seen:
-            seen.add(key)
-            src_index += 1
-        numbered.append((src_index - 1, hit))
+        if path not in source_index:
+            source_index[path] = len(source_index) + 1
+        idx = source_index[path]
+        numbered.append((idx, hit))
 
     parts = []
     for idx, hit in numbered:
         text = hit.text.strip()
-        parts.append(f"[{idx}]\n{text}")
+        page = hit.metadata.get("page_number")
+        page_hint = f" (стр. {page})" if page is not None else ""
+        parts.append(f"[{idx}]{page_hint}\n{text}")
 
     return "\n\n---\n\n".join(parts)
 

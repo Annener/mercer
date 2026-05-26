@@ -166,15 +166,19 @@ class ChatManager {
         }
     }
 
-    async sendMessage() {
-        const content = this.messageInput.value.trim();
+    async sendMessage(overrideContent = null) {
+        const content = overrideContent || this.messageInput.value.trim();
         if (!content || !this.currentChatId || this.isStreaming) {
             return;
         }
 
+        // Очищаем инпут только если не повторная отправка
+        if (!overrideContent) {
+            this.messageInput.value = '';
+            this.messageInput.style.height = 'auto';
+        }
         this.addMessage('user', content);
-        this.messageInput.value = '';
-        this.messageInput.style.height = 'auto';
+        this._lastUserMessage = content;
         
         this.sendBtn.disabled = true;
         this.isStreaming = true;
@@ -250,6 +254,10 @@ class ChatManager {
         // Финальный рендер после завершения стрима
         if (assistantMessage && fullContent) {
             assistantMessage.innerHTML = renderMarkdown(fullContent);
+            // Если LLM недоступен, добавляем кнопку повтора
+            if (this._isLlmUnavailable(fullContent)) {
+                this._appendRetryButton(assistantMessage);
+            }
         }
 
         // Блок источников — добавляем к тому же DOM-элементу сообщения
@@ -293,8 +301,29 @@ class ChatManager {
             // Clarification response
             this.addMessage('clarification', response.content);
         } else if (response.content) {
-            this.addMessage('assistant', response.content);
+            const msgEl = this.addMessage('assistant', response.content);
+            if (this._isLlmUnavailable(response.content)) {
+                this._appendRetryButton(msgEl);
+            }
         }
+    }
+
+    _isLlmUnavailable(text) {
+        return text && text.includes('LLM service unavailable');
+    }
+
+    _appendRetryButton(messageEl) {
+        const btn = document.createElement('button');
+        btn.className = 'retry-btn';
+        btn.textContent = 'Повторить запрос';
+        btn.title = 'Повторить последнее сообщение';
+        btn.addEventListener('click', () => {
+            if (this._lastUserMessage) {
+                btn.remove();
+                this.sendMessage(this._lastUserMessage);
+            }
+        });
+        messageEl.appendChild(btn);
     }
 
     /**

@@ -356,6 +356,32 @@ class DBManager {
         };
         this.currentWs.onerror = (e) => console.error('WS error:', e);
         this.currentWs.onclose = () => { this.currentWs = null; };
+
+        // Race-condition fix: create_state может ещё не завершиться к моменту первого snapshot.
+        // Через 1с запрашиваем полный state через HTTP и добавляем пропущенные файлы.
+        setTimeout(() => this._syncStateFromHttp(taskId), 1200);
+    }
+
+    async _syncStateFromHttp(taskId) {
+        try {
+            const state = await chatAPI.getIndexerTaskState(taskId);
+            if (!state || !state.state) return;
+            const files = state.state.files || {};
+            let added = 0;
+            for (const [path, fileState] of Object.entries(files)) {
+                if (!this.currentFiles[path]) {
+                    this.updateFileRow(path, fileState.status, fileState.progress_pct,
+                        fileState.chunks_total || 0, fileState.chunks_processed || 0, fileState.error || null);
+                    added++;
+                }
+            }
+            if (added > 0) {
+                this.filesTotalSpan.textContent = String(Object.keys(this.currentFiles).length);
+                this.recalcProgress();
+            }
+        } catch (e) {
+            // Не критично — state появится через WS-события
+        }
     }
 
     disconnectWs() {
@@ -368,8 +394,10 @@ class DBManager {
     handleWsMessage(msg) {
         if (msg.type === 'snapshot' && msg.state) {
             const state = msg.state;
-            this.filesTotalSpan.textContent = String(Object.keys(state.files || {}).length);
-            for (const [path, fileState] of Object.entries(state.files || {})) {
+            // Отображаем ВСЕ файлы из state, независимо от статуса (в т.ч. pending)
+            const files = state.files || {};
+            this.filesTotalSpan.textContent = String(Object.keys(files).length);
+            for (const [path, fileState] of Object.entries(files)) {
                 this.updateFileRow(path, fileState.status, fileState.progress_pct,
                     fileState.chunks_total || 0, fileState.chunks_processed || 0, fileState.error || null);
             }
