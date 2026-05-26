@@ -126,18 +126,17 @@ async def run_indexing(
                 continue
 
             previous_file_state = _previous_file_state(last_state, relative_path)
-            if (
-                previous_file_state is not None
-                and previous_file_state.checksum_md5 == file_info["checksum"]
-            ):
+            skip_reason = _should_skip(previous_file_state, file_info["checksum"])
+            if skip_reason is not None:
+                logger.debug("Skipping file %s: %s", relative_path, skip_reason)
                 await update_file_status(
                     task_id,
                     relative_path,
                     status="done",
                     progress_pct=100,
-                    chunk_ids=previous_file_state.chunk_ids,
-                    chunks_total=len(previous_file_state.chunk_ids),
-                    chunks_processed=len(previous_file_state.chunk_ids),
+                    chunk_ids=previous_file_state.chunk_ids,  # type: ignore[union-attr]
+                    chunks_total=len(previous_file_state.chunk_ids),  # type: ignore[union-attr]
+                    chunks_processed=len(previous_file_state.chunk_ids),  # type: ignore[union-attr]
                     error=None,
                 )
                 indexed_count += 1
@@ -145,11 +144,19 @@ async def run_indexing(
                     task_id,
                     relative_path,
                     "done",
-                    chunks_total=len(previous_file_state.chunk_ids),
-                    chunks_processed=len(previous_file_state.chunk_ids),
+                    chunks_total=len(previous_file_state.chunk_ids),  # type: ignore[union-attr]
+                    chunks_processed=len(previous_file_state.chunk_ids),  # type: ignore[union-attr]
                     broadcast=broadcast,
                 )
                 continue
+
+            if previous_file_state is not None:
+                logger.info(
+                    "Re-indexing file %s (prev_status=%s checksum_match=%s)",
+                    relative_path,
+                    previous_file_state.status,
+                    previous_file_state.checksum_md5 == file_info["checksum"],
+                )
 
             try:
                 chunk_ids = await _process_file(
@@ -191,10 +198,10 @@ async def run_indexing(
         await mark_task_done(task_id)
         final_state = await load_state(task_id)
         if final_state is not None:
-            # Сохраняем последний успешный state — только файлы со статусом done/indexed/empty.
-            # Файлы с error/cancelled/pending не включаем: при следующем запуске они
-            # не найдутся в last_state и будут переиндексированы.
-            await save_last_successful_state(_filter_successful_state(final_state))
+            # Сохраняем полный state как есть — включая файлы с error.
+            # При следующем запуске error-файлы будут переиндексированы,
+            # done/indexed — пропущены (если checksum совпадает).
+            await save_last_successful_state(final_state)
         await _broadcast_task_complete(
             task_id, files_total=len(files_info), files_indexed=indexed_count, broadcast=broadcast
         )
@@ -206,12 +213,12 @@ async def run_indexing(
             if await load_state(task_id) is None:
                 await create_state(task_id, vault_id, [])
             await mark_task_done(task_id, error=str(exc))
-            # Даже при ошибке — сохраняем частичный успешный state.
+            # Сохраняем частичный state даже при падении задачи.
             # Файлы которые успели завершиться (done/indexed/empty) не будут
-            # переиндексированы при следующем запуске.
+            # переиндексированы при следующем запуске; error-файлы — будут.
             partial_state = await load_state(task_id)
             if partial_state is not None:
-                await save_last_successful_state(_filter_successful_state(partial_state))
+                await save_last_successful_state(partial_state)
         except Exception:
             logger.warning("Failed to mark task as error: %s", task_id, exc_info=True)
 
@@ -626,12 +633,48 @@ def _build_provider(embedding_model: EmbeddingModelConfig) -> EmbeddingProvider:
 def _previous_file_state(
     last_state: IndexState | None, relative_path: str
 ) -> FileIndexState | None:
+    """Возвращает FileIndexState из last_state если файл там есть.
+
+    Возвращает состояние для любого статуса (done, indexed, empty, error).
+    Вызывающий код сам решает что делать:
+    - done/indexed + checksum совпадает → пропустить
+    - error → переиндексировать (даже если checksum тот же)
+    - empty → пропустить (файл уже пытались — он пустой)
+    - None (файла нет в стейте) → новый файл, индексировать
+    """
     if last_state is None:
         return None
-    previous = last_state.files.get(relative_path)
-    if previous is None or previous.status not in ("done", "indexed"):
-        return None
-    return previous
+    return last_state.files.get(relative_path)
+
+
+def _should_skip(previous: FileIndexState | None, current_checksum: str) -> str | None:
+    """Определяет нужно ли пропустить файл.
+
+    Возвращает строку-причину если нужно пропустить, None — если нужно индексировать.
+
+    Правила:
+    - Файла нет в стейте (previous=None) → новый, индексировать
+    - done/indexed + checksum совпадает → пропустить
+    - done/indexed + checksum изменился → файл изменён, индексировать
+    - empty + checksum совпадает → пропустить (файл уже пытались, он пустой)
+    - error → переиндексировать (даже если checksum тот же)
+    - cancelled/pending/parsing/chunking/indexing → индексировать (задача была прервана)
+    """
+    if previous is None:
+        return None  # новый файл
+
+    if previous.status in ("done", "indexed"):
+        if previous.checksum_md5 == current_checksum:
+            return f"already indexed (status={previous.status})"
+        return None  # файл изменён — переиндексировать
+
+    if previous.status == "empty":
+        if previous.checksum_md5 == current_checksum:
+            return "previously empty, checksum unchanged"
+        return None  # файл изменился — попытаться ещё раз
+
+    # error / cancelled / pending / parsing / chunking / indexing — переиндексировать
+    return None
 
 
 def _document_id(vault_id: str, relative_path: str) -> str:
@@ -692,25 +735,3 @@ async def _noop_broadcast(_task_id: str, _message: dict[str, Any]) -> None:
     return None
 
 
-def _filter_successful_state(state: IndexState) -> IndexState:
-    """
-    Возвращает копию IndexState содержащую только успешно завершённые файлы.
-    Файлы со статусами error/cancelled/pending/parsing/chunking/indexing
-    исключаются, чтобы при следующем запуске они
-    были переиндексированы.
-    """
-    _SUCCESSFUL_STATUSES = {"done", "indexed", "empty"}
-    filtered_files = {
-        path: file_state
-        for path, file_state in state.files.items()
-        if file_state.status in _SUCCESSFUL_STATUSES
-    }
-    return IndexState(
-        version=state.version,
-        task_id=state.task_id,
-        vault_id=state.vault_id,
-        status=state.status,
-        last_updated=state.last_updated,
-        files=filtered_files,
-        error=state.error,
-    )
