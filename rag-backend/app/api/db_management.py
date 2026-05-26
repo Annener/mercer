@@ -159,7 +159,9 @@ class ReindexRequest(BaseModel):
 
 @router.post("/vaults/{vault_id}/reindex")
 async def reindex_vault(vault_id: str, req: ReindexRequest | None = None) -> dict[str, Any]:
-    force = req.force_reindex if req is not None else True
+    # req=None не должно приводить к force=True: если тело не пришло,
+    # всё равно используем инкрементальный режим (force_reindex=False).
+    force = req.force_reindex if req is not None else False
     async with httpx.AsyncClient(base_url=INDEXER_API_URL, timeout=20) as client:
         response = await client.post("/api/v1/tasks", json={"vault_id": vault_id, "force_reindex": force})
     _raise_upstream(response)

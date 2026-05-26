@@ -72,13 +72,33 @@ function escapeHtml(text) {
 }
 
 /**
- * Рендерит блок источников под ответом ассистента.
- * sources: [{path, page, vault_id}]
+ * Извлекает номера цитат [N] использованных в тексте ответа LLM.
+ * Возвращает Set<number> с 1-based индексами.
  */
-function renderSourcesBlock(sources) {
+function extractCitedIndices(text) {
+    if (!text) return new Set();
+    const cited = new Set();
+    // Ищем все [N] и [N, M, ...] в тексте
+    const re = /\[(\d+)\]/g;
+    let m;
+    while ((m = re.exec(text)) !== null) {
+        cited.add(parseInt(m[1], 10));
+    }
+    return cited;
+}
+
+/**
+ * Рендерит блок источников под ответом ассистента.
+ * sources: [{path, page, vault_id}] — полный список retrieved.
+ * answerText: финальный текст ответа LLM (для фильтрации по цитатам).
+ *
+ * Показывает только источники реально процитированные в ответе ([1], [2], ...).
+ * Нумерация в блоке совпадает с нумерацией в тексте.
+ */
+function renderSourcesBlock(sources, answerText) {
     if (!sources || sources.length === 0) return '';
 
-    // Группируем по файлу (path), собираем страницы
+    // Группируем по файлу (path), собираем страницы — итоговый список 1-based
     const fileMap = new Map();
     for (const s of sources) {
         const key = s.path;
@@ -90,7 +110,16 @@ function renderSourcesBlock(sources) {
         }
     }
 
-    const items = Array.from(fileMap.values());
+    const allItems = Array.from(fileMap.values());
+
+    // Фильтруем: показываем только те источники, на которые LLM сослался
+    const cited = extractCitedIndices(answerText);
+    const items = cited.size > 0
+        ? allItems.filter((_, i) => cited.has(i + 1))
+        : allItems; // если LLM не вставил ни одной цитаты — показываем все
+
+    if (items.length === 0) return '';
+
     const rows = items.map((item, i) => {
         const fileName = item.path.split('/').pop();
         const pagesLabel = item.pages.length > 0
@@ -260,9 +289,9 @@ class ChatManager {
             }
         }
 
-        // Блок источников — добавляем к тому же DOM-элементу сообщения
+        // Блок источников — только те источники, на которые LLM реально сослался ([1], [2]...)
         if (assistantMessage && pendingSources && pendingSources.length > 0) {
-            const sourcesHtml = renderSourcesBlock(pendingSources);
+            const sourcesHtml = renderSourcesBlock(pendingSources, fullContent);
             if (sourcesHtml) {
                 assistantMessage.insertAdjacentHTML('beforeend', sourcesHtml);
             }
