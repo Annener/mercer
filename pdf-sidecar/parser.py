@@ -413,11 +413,21 @@ def _parse_batch_worker(
             page_number = getattr(meta, "page_number", None) or first_page
 
         category = getattr(el, "category", "")
-        text = str(el).strip()
 
         # Фильтрация: Image и FigureCaption не нужны
         if category in ("Image", "FigureCaption"):
             continue
+
+        # str(el) может упасть с "__str__ returned non-string (type NoneType)"
+        # если unstructured вернул элемент с None внутри.
+        # Используем getattr(el, 'text', None) как основной путь, str(el) как fallback.
+        raw_text = getattr(el, "text", None)
+        if raw_text is None:
+            try:
+                raw_text = str(el)
+            except TypeError:
+                raw_text = ""
+        text = (raw_text or "").strip()
 
         text_as_html: Optional[str] = None
         if category == "Table" and meta is not None:
@@ -517,10 +527,15 @@ def _parse_parallel(
                                 pass
 
                 except Exception as exc:
+                    # Ошибка одного батча не должна убивать весь парсинг.
+                    # Остальные батчи могут быть уже в all_elements.
+                    # Логируем страницы которые потеряны, продолжаем.
+                    lost_pages = last_page - first_page + 1
                     logger.error(
-                        "[hi_res] Batch [%d-%d] error: %s", first_page, last_page, exc
+                        "[hi_res] Batch [%d-%d] error (skipping %d pages): %s",
+                        first_page, last_page, lost_pages,
+                        exc, exc_info=True,
                     )
-                    raise
 
     finally:
         # Всегда удаляем временные файлы
@@ -594,9 +609,15 @@ def _parse_single(
         text_as_html = None
         if category == "Table" and meta:
             text_as_html = getattr(meta, "text_as_html", None)
+        raw_text = getattr(el, "text", None)
+        if raw_text is None:
+            try:
+                raw_text = str(el)
+            except TypeError:
+                raw_text = ""
         serialized.append({
             "category": category,
-            "text": str(el).strip(),
+            "text": (raw_text or "").strip(),
             "page_number": page_number,
             "text_as_html": text_as_html,
             "y0": _extract_y0(el),
