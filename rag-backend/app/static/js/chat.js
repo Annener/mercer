@@ -153,6 +153,11 @@ class ChatManager {
         this.sendBtn = document.getElementById('send-btn');
         this.chatTitle = document.getElementById('chat-title');
         this.welcomeMessage = document.getElementById('welcome-message');
+        this.contextBar = document.getElementById('chat-context-bar');
+        this.worldName = document.getElementById('world-name');
+        this.pipelineSelect = document.getElementById('pipeline-select');
+        this.lockPipelineBtn = document.getElementById('lock-pipeline-btn');
+        this.currentChat = null;
         
         this.initEventListeners();
     }
@@ -171,12 +176,15 @@ class ChatManager {
             this.messageInput.style.height = 'auto';
             this.messageInput.style.height = Math.min(this.messageInput.scrollHeight, 150) + 'px';
         });
+
+        this.lockPipelineBtn?.addEventListener('click', () => this.togglePipelineLock());
     }
 
     async loadChat(chatId) {
         try {
             this.currentChatId = chatId;
             const data = await chatAPI.getChat(chatId);
+            this.currentChat = data.chat;
             
             this.chatTitle.textContent = data.chat.title;
             this.inputArea.style.display = 'flex';
@@ -187,6 +195,7 @@ class ChatManager {
             for (const message of data.messages) {
                 this.addMessage(message.role, message.content);
             }
+            await this.setupContextBar(data.chat);
             
             this.scrollToBottom();
         } catch (error) {
@@ -236,6 +245,7 @@ class ChatManager {
         let fullContent = '';
         let pendingContent = '';  // буфер для debounced рендера
         let pendingSources = null; // источники из SSE
+        let pendingGroupedSources = null;
         let streamDone = false;
 
         try {
@@ -258,7 +268,19 @@ class ChatManager {
 
                     try {
                         const parsed = JSON.parse(data);
-                        if (parsed.token) {
+                        if (parsed.type) {
+                            if (!assistantMessage) assistantMessage = this.addMessage('assistant', '');
+                            if (parsed.type === 'pipeline_selected') this.showPipelineBadge(assistantMessage, parsed);
+                            if (parsed.type === 'progress') this.updateProgressBar(assistantMessage, parsed.step, parsed.total, parsed.step_name);
+                            if (parsed.type === 'step_done') this.markStepDone(assistantMessage, parsed.step);
+                            if (parsed.type === 'token') {
+                                fullContent += parsed.content || '';
+                                pendingContent = fullContent;
+                                this.scheduleMarkdownRender(assistantMessage, () => pendingContent);
+                            }
+                            if (parsed.type === 'sources' && parsed.grouped_by_step) pendingGroupedSources = parsed.step_groups;
+                            if (parsed.type === 'error') this.addMessage('system', parsed.message || 'Pipeline error');
+                        } else if (parsed.token) {
                             if (!assistantMessage) {
                                 assistantMessage = this.addMessage('assistant', '');
                             }
@@ -282,7 +304,7 @@ class ChatManager {
 
         // Финальный рендер после завершения стрима
         if (assistantMessage && fullContent) {
-            assistantMessage.innerHTML = renderMarkdown(fullContent);
+            this.renderAssistantMarkdown(assistantMessage, fullContent);
             // Если LLM недоступен, добавляем кнопку повтора
             if (this._isLlmUnavailable(fullContent)) {
                 this._appendRetryButton(assistantMessage);
@@ -296,6 +318,9 @@ class ChatManager {
                 assistantMessage.insertAdjacentHTML('beforeend', sourcesHtml);
             }
         }
+        if (assistantMessage && pendingGroupedSources) {
+            assistantMessage.insertAdjacentHTML('beforeend', this.renderGroupedSources(pendingGroupedSources));
+        }
 
         this.scrollToBottom();
 
@@ -306,6 +331,80 @@ class ChatManager {
                 this.chatTitle.textContent = chatData.chat.title;
             } catch (e) { /* ignore */ }
         }
+    }
+
+    async setupContextBar(chat) {
+        if (!this.contextBar) return;
+        const hasContext = Boolean(chat.world_id || chat.domain_id);
+        this.contextBar.classList.toggle('hidden', !hasContext);
+        if (this.worldName) {
+            this.worldName.textContent = chat.world_id ? `Мир: ${chat.world_id}` : '';
+        }
+        if (!this.pipelineSelect) return;
+        const pipelines = await chatAPI.getPipelines(chat.domain_id);
+        this.pipelineSelect.innerHTML = '<option value="">Авто</option>';
+        for (const pipeline of pipelines.filter(p => p.is_active)) {
+            const option = document.createElement('option');
+            option.value = pipeline.pipeline_id;
+            option.textContent = pipeline.name;
+            this.pipelineSelect.appendChild(option);
+        }
+        this.pipelineSelect.value = chat.locked_pipeline_id || '';
+        this.pipelineSelect.disabled = Boolean(chat.locked_pipeline_id);
+        if (this.lockPipelineBtn) this.lockPipelineBtn.textContent = chat.locked_pipeline_id ? '🔒' : '🔓';
+    }
+
+    async togglePipelineLock() {
+        if (!this.currentChatId || !this.pipelineSelect) return;
+        const locked = Boolean(this.currentChat?.locked_pipeline_id);
+        const pipelineId = locked ? null : (this.pipelineSelect.value || null);
+        await chatAPI.lockPipeline(this.currentChatId, pipelineId);
+        const data = await chatAPI.getChat(this.currentChatId);
+        this.currentChat = data.chat;
+        await this.setupContextBar(data.chat);
+    }
+
+    showPipelineBadge(messageEl, data) {
+        messageEl.insertAdjacentHTML('beforeend', `
+            <div class="pipeline-badge">${escapeHtml(data.pipeline_name || data.pipeline_id)} · ${escapeHtml(data.mode || 'auto')}</div>
+        `);
+    }
+
+    updateProgressBar(messageEl, step, total, stepName) {
+        let bar = messageEl.querySelector('.pipeline-progress');
+        if (!bar) {
+            bar = document.createElement('div');
+            bar.className = 'pipeline-progress';
+            messageEl.appendChild(bar);
+        }
+        bar.innerHTML = Array.from({ length: total }, (_, i) => `
+            <span class="pipeline-step ${i + 1 < step ? 'done' : i + 1 === step ? 'active' : ''}" data-step="${i + 1}">${i + 1}</span>
+        `).join('') + `<em>${escapeHtml(stepName || '')}</em>`;
+    }
+
+    markStepDone(messageEl, step) {
+        messageEl.querySelector(`.pipeline-step[data-step="${step}"]`)?.classList.add('done');
+    }
+
+    renderGroupedSources(stepGroups) {
+        return `
+            <div class="sources-grouped">
+                <div class="sources-label">Источники по шагам</div>
+                ${stepGroups.map(group => `
+                    <details class="sources-group" ${group.step === 1 ? 'open' : ''}>
+                        <summary>Шаг ${group.step}: ${escapeHtml(group.step_name)} (${group.sources.length})</summary>
+                        <div class="sources-list">
+                            ${group.sources.map(src => `
+                                <div class="src-item">
+                                    <span class="src-name">${escapeHtml(src.path || '')}</span>
+                                    ${src.page ? `<span class="src-page">стр. ${src.page}</span>` : ''}
+                                    <span class="src-vault">${escapeHtml(src.vault_id || '')}</span>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </details>
+                `).join('')}
+            </div>`;
     }
 
     /**
@@ -319,10 +418,17 @@ class ChatManager {
             this._renderScheduled = false;
             const text = contentGetter();
             if (text) {
-                element.innerHTML = renderMarkdown(text);
+                this.renderAssistantMarkdown(element, text);
                 this.scrollToBottom();
             }
         });
+    }
+
+    renderAssistantMarkdown(element, text) {
+        const prefix = Array.from(element.querySelectorAll('.pipeline-badge, .pipeline-progress'))
+            .map((node) => node.outerHTML)
+            .join('');
+        element.innerHTML = prefix + renderMarkdown(text);
     }
 
     handleJSONResponse(response) {

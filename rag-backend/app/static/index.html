@@ -19,6 +19,13 @@
                     <label for="domain-select">Домен:</label>
                     <select id="domain-select" class="domain-select"></select>
                 </div>
+                <div class="world-selector" id="world-selector" style="display: none;">
+                    <label for="world-select">Мир:</label>
+                    <select id="world-select" class="domain-select">
+                        <option value="">Без мира</option>
+                    </select>
+                    <div class="campaigns-list" id="campaigns-list"></div>
+                </div>
                 <button id="new-chat-btn" class="btn btn-primary btn-full">+ Новая беседа</button>
             </div>
             <div class="chat-list" id="chat-list"></div>
@@ -28,6 +35,14 @@
         <main class="chat-main">
             <div class="chat-header" id="chat-header">
                 <h3 id="chat-title">Выберите чат или создайте новый</h3>
+            </div>
+            <div class="chat-context-bar hidden" id="chat-context-bar">
+                <span class="context-world" id="context-world"><span id="world-name"></span></span>
+                <span class="context-pipeline">
+                    Pipeline:
+                    <select id="pipeline-select"><option value="">Авто</option></select>
+                    <button id="lock-pipeline-btn" class="btn btn-secondary btn-sm" title="Зафиксировать pipeline">🔓</button>
+                </span>
             </div>
             <div class="messages-container" id="messages-container">
                 <div class="welcome-message" id="welcome-message">

@@ -169,6 +169,30 @@ body {
     color: #2c3e50;
 }
 
+.chat-context-bar {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 9px 30px;
+    border-bottom: 1px solid #dde4ec;
+    background: #fbfcfd;
+    color: #526579;
+    font-size: 13px;
+}
+
+.context-pipeline {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.context-pipeline select,
+.world-selector select {
+    border: 1px solid #60758b;
+    border-radius: 5px;
+    padding: 5px 7px;
+}
+
 .messages-container {
     flex: 1;
     overflow-y: auto;
@@ -222,6 +246,86 @@ body {
     background-color: #e8f4f8;
     border-left: 4px solid #3498db;
     color: #2c3e50;
+}
+
+.pipeline-badge {
+    display: inline-block;
+    margin-bottom: 8px;
+    padding: 4px 8px;
+    border-radius: 999px;
+    background: #dcefff;
+    color: #1f5f8f;
+    font-size: 12px;
+}
+
+.pipeline-progress {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    margin-bottom: 10px;
+}
+
+.pipeline-step {
+    width: 22px;
+    height: 22px;
+    border-radius: 999px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: #d9e1ea;
+    color: #526579;
+    font-size: 12px;
+}
+
+.pipeline-step.active {
+    background: #3498db;
+    color: #fff;
+}
+
+.pipeline-step.done {
+    background: #2ecc71;
+    color: #fff;
+}
+
+.pipeline-progress em {
+    color: #657789;
+    font-size: 12px;
+    font-style: normal;
+}
+
+.sources-grouped {
+    margin-top: 12px;
+}
+
+.sources-group {
+    margin-top: 6px;
+}
+
+.sources-group summary {
+    cursor: pointer;
+    color: #2c3e50;
+    font-size: 13px;
+}
+
+.campaigns-list {
+    display: grid;
+    gap: 5px;
+    margin-top: 8px;
+}
+
+.campaign-item {
+    border: 1px solid #60758b;
+    background: #34495e;
+    color: #fff;
+    border-radius: 5px;
+    padding: 5px 7px;
+    cursor: pointer;
+    text-align: left;
+    font-size: 12px;
+}
+
+.campaign-item.active {
+    border-color: #2ecc71;
 }
 
 .typing-indicator {

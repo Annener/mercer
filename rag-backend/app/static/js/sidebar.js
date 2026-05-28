@@ -10,11 +10,15 @@ class SidebarManager {
         this.renameCancelBtn = document.getElementById('rename-cancel-btn');
         
         this.domainSelector = document.getElementById('domain-select');
+        this.worldSelectorBlock = document.getElementById('world-selector');
+        this.worldSelect = document.getElementById('world-select');
+        this.campaignsList = document.getElementById('campaigns-list');
         
         this.currentRenameChatId = null;
         this.domains = [];
         this.domainCache = {};
         this.currentDomain = localStorage.getItem('currentDomain') || null;
+        this.currentWorldId = localStorage.getItem('currentWorldId') || '';
         
         this.initEventListeners();
         this.loadDomains();
@@ -28,6 +32,11 @@ class SidebarManager {
         
         this.domainSelector.addEventListener('change', (e) => {
             this.switchDomain(e.target.value);
+        });
+        this.worldSelect?.addEventListener('change', async (e) => {
+            this.currentWorldId = e.target.value;
+            localStorage.setItem('currentWorldId', this.currentWorldId);
+            await this.loadCampaigns();
         });
         
         this.renameModal.addEventListener('click', (e) => {
@@ -71,6 +80,7 @@ class SidebarManager {
             }
             
             await this.loadChats();
+            await this.loadWorlds();
         } catch (error) {
             console.error('Failed to load domains:', error);
             this.chatList.innerHTML = '<div class="empty-state">Не удалось загрузить домены</div>';
@@ -120,6 +130,7 @@ class SidebarManager {
         
         this.closeAllDropdowns();
         await this.loadChats();
+        await this.loadWorlds();
     }
 
     getCurrentDomainInfo() {
@@ -226,12 +237,61 @@ class SidebarManager {
         }
         
         try {
-            const response = await chatAPI.createChat(null, this.currentDomain);
+            const response = await chatAPI.createChat(null, this.currentDomain, this.currentWorldId || null);
             await this.loadChats();
             await this.selectChat(response.chat_id);
         } catch (error) {
             console.error('Failed to create chat:', error);
             alert('Не удалось создать беседу');
+        }
+    }
+
+    async loadWorlds() {
+        if (!this.worldSelectorBlock || !this.worldSelect) return;
+        try {
+            const vaults = await chatAPI.getSettingsVaults();
+            const vault = vaults.find(v => v.domain_id === this.currentDomain && v.enabled) || vaults.find(v => v.enabled);
+            if (!vault) {
+                this.worldSelectorBlock.style.display = 'none';
+                return;
+            }
+            const worlds = await chatAPI.getWorlds(vault.vault_id);
+            this.worldSelect.innerHTML = '<option value="">Без мира</option>';
+            for (const world of worlds) {
+                const option = document.createElement('option');
+                option.value = world.world_id;
+                option.textContent = world.name;
+                this.worldSelect.appendChild(option);
+            }
+            this.worldSelect.value = worlds.some(w => w.world_id === this.currentWorldId) ? this.currentWorldId : '';
+            this.currentWorldId = this.worldSelect.value;
+            this.worldSelectorBlock.style.display = worlds.length ? 'block' : 'none';
+            await this.loadCampaigns();
+        } catch (error) {
+            console.error('Failed to load worlds:', error);
+            this.worldSelectorBlock.style.display = 'none';
+        }
+    }
+
+    async loadCampaigns() {
+        if (!this.campaignsList) return;
+        this.campaignsList.innerHTML = '';
+        if (!this.currentWorldId) return;
+        try {
+            const campaigns = await chatAPI.getWorldCampaigns(this.currentWorldId);
+            this.campaignsList.innerHTML = campaigns.map(campaign => `
+                <button class="campaign-item ${campaign.is_active ? 'active' : ''}" data-id="${this.escapeHtml(campaign.campaign_id)}">
+                    ${this.escapeHtml(campaign.name)}
+                </button>
+            `).join('');
+            this.campaignsList.querySelectorAll('.campaign-item').forEach(button => {
+                button.addEventListener('click', async () => {
+                    await chatAPI.toggleCampaign(this.currentWorldId, button.dataset.id);
+                    await this.loadCampaigns();
+                });
+            });
+        } catch (error) {
+            console.error('Failed to load campaigns:', error);
         }
     }
 
