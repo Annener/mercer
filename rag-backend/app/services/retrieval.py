@@ -2,8 +2,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from typing import Any
 import httpx
 from app.config import AppConfig, EmbeddingModelConfig
+from app.services.settings_service import settings_service
 from shared_contracts.models import SearchHit, SearchRequest, SearchResponse
 
 logger = logging.getLogger(__name__)
@@ -12,27 +14,46 @@ STORAGE_API_URL = os.getenv("STORAGE_API_URL", "http://db-api-server:8080")
 async def retrieve(
     query: str,
     vault_id: str | None,
-    top_k: int,
-    strategy: str,
-    config: AppConfig,
+    *,
+    document_ids: list[str] | None = None,
+    world_id: str | None = None,
+    categories: list[str] | None = None,
+    campaign_id: str | None = None,
+    exclude_campaigns: list[str] | None = None,
+    top_k: int | None = None,
+    strategy: str = "semantic",
+    config: AppConfig | None = None,
 ) -> list[SearchHit]:
-    if not config.retrieval.enabled or not vault_id or strategy == "none":
+    if not vault_id or strategy == "none":
         return []
+    effective_top_k = top_k or await _default_top_k()
     if strategy != "semantic":
         logger.info("Retrieval strategy is not implemented yet: %s", strategy)
         return []
     try:
+        if config is None:
+            raise ValueError("Embedding configuration is not available.")
         embedding_model = _select_embedding_model(config)
         vector = await _embed_query(query, embedding_model)
+        request_filter = _exact_filter(world_id=world_id, campaign_id=campaign_id)
+        search_top_k = effective_top_k * 10 if _has_filters(document_ids, world_id, categories, campaign_id, exclude_campaigns) else effective_top_k
         async with httpx.AsyncClient(base_url=STORAGE_API_URL, timeout=15) as client:
             response = await client.post(
                 "/index/search",
-                json=SearchRequest(vault_id=vault_id, vector=vector, top_k=top_k).model_dump(),
+                json=SearchRequest(vault_id=vault_id, vector=vector, top_k=search_top_k, filter=request_filter).model_dump(),
             )
             response.raise_for_status()
         search_response = SearchResponse.model_validate(response.json())
-        logger.info("Retrieval completed: vault_id=%s hits=%s", vault_id, len(search_response.results))
-        return search_response.results
+        results = _filter_hits(
+            search_response.results,
+            document_ids=document_ids,
+            world_id=world_id,
+            categories=categories,
+            campaign_id=campaign_id,
+            exclude_campaigns=exclude_campaigns,
+        )[:effective_top_k]
+        logger.info("Retrieval completed: vault_id=%s hits=%s", vault_id, len(results))
+        return results
     except Exception:
         logger.warning("Retrieval failed; continuing without context: vault_id=%s", vault_id, exc_info=True)
         return []
@@ -40,19 +61,37 @@ async def retrieve(
 async def retrieve_multi_vault(
     query: str,
     vault_ids: list[str],
-    top_k: int,
-    strategy: str,
-    config: AppConfig,
+    *,
+    document_ids: list[str] | None = None,
+    world_id: str | None = None,
+    categories: list[str] | None = None,
+    campaign_id: str | None = None,
+    exclude_campaigns: list[str] | None = None,
+    top_k: int | None = None,
+    strategy: str = "semantic",
+    config: AppConfig | None = None,
 ) -> list[SearchHit]:
     """Ищет во всех указанных vault'ах, объединяет результаты, сортирует по score, возвращает top_k."""
     if not vault_ids:
         return []
+    effective_top_k = top_k or await _default_top_k()
     all_hits: list[SearchHit] = []
     for vault_id in vault_ids:
-        hits = await retrieve(query, vault_id, top_k, strategy, config)
+        hits = await retrieve(
+            query,
+            vault_id,
+            document_ids=document_ids,
+            world_id=world_id,
+            categories=categories,
+            campaign_id=campaign_id,
+            exclude_campaigns=exclude_campaigns,
+            top_k=effective_top_k,
+            strategy=strategy,
+            config=config,
+        )
         all_hits.extend(hits)
     all_hits.sort(key=lambda h: h.score, reverse=True)
-    return all_hits[:top_k]
+    return all_hits[:effective_top_k]
 
 def format_context(hits: list[SearchHit]) -> str:
     """
@@ -84,6 +123,75 @@ def format_context(hits: list[SearchHit]) -> str:
         parts.append(f"[{idx}]{page_hint}\n{text}")
 
     return "\n\n---\n\n".join(parts)
+
+
+ROLE_HEADERS = {
+    "methodology": "=== МЕТОДОЛОГИЯ ===",
+    "lore": "=== ЗНАНИЯ О МИРЕ ===",
+    "campaign_context": "=== КОНТЕКСТ КАМПАНИИ ===",
+    "character_sheet": "=== ЛИСТ ПЕРСОНАЖА ===",
+    "session_log": "=== ЖУРНАЛ СЕССИИ ===",
+    "rules": "=== ПРАВИЛА ===",
+}
+
+
+def format_context_with_role(hits: list[SearchHit], role: str) -> str:
+    if not hits:
+        return ""
+    header = ROLE_HEADERS.get(role, f"=== {role.upper()} ===")
+    parts = [header]
+    for index, hit in enumerate(hits, start=1):
+        parts.append(f"[{index}]\n{hit.text.strip()}\n---")
+    return "\n\n".join(parts)
+
+
+async def _default_top_k() -> int:
+    try:
+        return int(await settings_service.get("retrieval.top_k"))
+    except KeyError:
+        return 10
+
+
+def _exact_filter(*, world_id: str | None, campaign_id: str | None) -> dict[str, Any] | None:
+    filter_values: dict[str, Any] = {}
+    if world_id:
+        filter_values["world_id"] = world_id
+    if campaign_id:
+        filter_values["campaign_id"] = campaign_id
+    return filter_values or None
+
+
+def _has_filters(*values: Any) -> bool:
+    return any(bool(value) for value in values)
+
+
+def _filter_hits(
+    hits: list[SearchHit],
+    *,
+    document_ids: list[str] | None,
+    world_id: str | None,
+    categories: list[str] | None,
+    campaign_id: str | None,
+    exclude_campaigns: list[str] | None,
+) -> list[SearchHit]:
+    document_set = set(document_ids or [])
+    category_set = set(categories or [])
+    exclude_set = set(exclude_campaigns or [])
+    filtered: list[SearchHit] = []
+    for hit in hits:
+        metadata = hit.metadata or {}
+        if document_set and hit.document_id not in document_set and metadata.get("document_id") not in document_set:
+            continue
+        if world_id and metadata.get("world_id") != world_id:
+            continue
+        if category_set and metadata.get("category") not in category_set:
+            continue
+        if campaign_id and metadata.get("campaign_id") != campaign_id:
+            continue
+        if exclude_set and metadata.get("campaign_id") in exclude_set:
+            continue
+        filtered.append(hit)
+    return filtered
 
 def _select_embedding_model(config: AppConfig) -> EmbeddingModelConfig:
     for embedding_model in config.embedding_models.values():
