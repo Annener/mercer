@@ -6,7 +6,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from config import AppConfig
+from app.db_client import IndexerDBClient
 
 
 logger = logging.getLogger(__name__)
@@ -15,17 +15,18 @@ BroadcastCallable = Callable[[str, dict[str, Any]], Awaitable[None]]
 
 
 class IndexerService:
-    def __init__(self, config: AppConfig, broadcaster: BroadcastCallable) -> None:
-        self.config = config
+    def __init__(self, db_client: IndexerDBClient, broadcaster: BroadcastCallable) -> None:
+        self.db_client = db_client
         self.broadcaster = broadcaster
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._cancel_flags: dict[str, bool] = {}
         self._lock = asyncio.Lock()
 
     async def start_task(self, vault_id: str, force_reindex: bool) -> str:
-        if vault_id not in self.config.vaults:
+        vault = await self.db_client.get_vault(vault_id)
+        if vault is None:
             raise KeyError(f"Unknown vault_id={vault_id!r}")
-        if not self.config.vaults[vault_id].enabled:
+        if not vault["enabled"]:
             raise ValueError(f"Vault is disabled: {vault_id}")
 
         task_id = uuid.uuid4().hex
@@ -85,7 +86,7 @@ class IndexerService:
             task_id=task_id,
             vault_id=vault_id,
             force_reindex=force_reindex,
-            config=self.config,
+            db_client=self.db_client,
             is_cancelled=self.is_cancelled,
             broadcast=self.broadcaster,
         )

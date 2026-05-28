@@ -6,7 +6,6 @@ import logging
 import httpx
 
 from shared_contracts.models import SearchRequest, SearchResponse, UpsertRequest, UpsertResponse
-from storage.binding_manager import get_binding, lock_binding
 
 
 logger = logging.getLogger(__name__)
@@ -60,9 +59,6 @@ class StorageClient:
             error_details=error_details if pending_indices else [],
         )
 
-        if final_response.upserted_count > 0:
-            await self._lock_binding_after_upsert(req.vault_id)
-
         return final_response
 
     async def _upsert(self, req: UpsertRequest) -> UpsertResponse:
@@ -86,9 +82,12 @@ class StorageClient:
             raise
         return SearchResponse.model_validate(response.json())
 
-    async def _lock_binding_after_upsert(self, vault_id: str) -> None:
-        binding = await get_binding(vault_id)
-        if binding is None:
-            logger.warning("Storage upsert succeeded, but no vault binding exists for vault_id=%s.", vault_id)
-            return
-        await lock_binding(vault_id)
+    async def delete_document(self, document_id: str, vault_id: str) -> dict:
+        async with httpx.AsyncClient(base_url=self.base_url, timeout=_SEARCH_TIMEOUT) as client:
+            response = await client.delete(f"/index/document/{document_id}", params={"vault_id": vault_id})
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError:
+            logger.exception("Storage document delete failed: status=%s body=%s", response.status_code, response.text)
+            raise
+        return response.json()

@@ -7,8 +7,8 @@ import os
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from config import AppConfig, EmbeddingModelConfig
-from config_loader import get_config
+from app.db_client import IndexerDBClient
+from config import EmbeddingModelConfig
 from embedding.base_provider import EmbeddingProvider
 from embedding.cache import get_cached, save_cache
 from embedding.ollama_provider import OllamaEmbeddingProvider
@@ -48,7 +48,6 @@ from shared_contracts.models import (
     WSTaskCancelledMessage,
     WSTaskCompleteMessage,
 )
-from storage.binding_manager import create_or_get_binding, increment_chunk_count
 from storage.storage_client import StorageClient
 
 logger = logging.getLogger(__name__)
@@ -77,23 +76,49 @@ async def run_indexing(
     task_id: str,
     vault_id: str,
     force_reindex: bool,
-    config: AppConfig | None = None,
+    db_client: IndexerDBClient,
     is_cancelled: CancelCallable | None = None,
     broadcast: BroadcastCallable | None = None,
 ) -> None:
-    config = config or get_config()
     is_cancelled = is_cancelled or (lambda _: False)
     broadcast = broadcast or _noop_broadcast
 
     try:
-        vault = config.vaults[vault_id]
-        embedding_model = _select_embedding_model(config)
-        provider = _build_provider(embedding_model)
+        settings = await db_client.get_platform_settings()
+        vault = await db_client.get_vault(vault_id)
+        if vault is None or not vault["enabled"]:
+            logger.error("Indexing task aborted: vault missing or disabled: vault_id=%s", vault_id)
+            return
+        if not vault.get("embedding_model_id"):
+            await db_client.update_vault_binding_status(vault_id, "error")
+            logger.error("Indexing task aborted: no embedding model bound: vault_id=%s", vault_id)
+            return
+        embedding_model_data = await db_client.get_embedding_model(vault["embedding_model_id"])
+        if embedding_model_data is None:
+            await db_client.update_vault_binding_status(vault_id, "error")
+            logger.error("Indexing task aborted: embedding model missing: vault_id=%s", vault_id)
+            return
+        try:
+            api_key = db_client.decrypt_api_key(embedding_model_data.get("encrypted_api_key"))
+        except Exception:
+            await db_client.update_vault_binding_status(vault_id, "error")
+            logger.error("Indexing task aborted: failed to decrypt embedding key: vault_id=%s", vault_id, exc_info=True)
+            return
+
+        embedding_model = _embedding_model_config(embedding_model_data)
+        provider = _build_provider(embedding_model, api_key)
         storage_client = StorageClient(STORAGE_API_URL)
+        await db_client.update_vault_binding_status(vault_id, "indexing")
 
-        await create_or_get_binding(vault_id, embedding_model.model_id, provider.dimensions)
+        vault_path = f"/data/vaults/{vault_id}"
+        chunk_size = vault.get("chunk_size") or settings["chunking.chunk_size"]
+        overlap = vault.get("overlap") or settings["chunking.overlap"]
+        entity_aware = vault.get("entity_aware_mode")
+        if entity_aware is None:
+            entity_aware = settings["chunking.entity_aware_mode"]
+        worlds = await db_client.get_worlds_for_vault(vault_id)
 
-        files = await asyncio.to_thread(scan_vault, vault.path)
+        files = await asyncio.to_thread(scan_vault, vault_path)
 
         files_info: list[dict[str, Any]] = []
         for f in files:
@@ -114,6 +139,7 @@ async def run_indexing(
 
         last_state = None if force_reindex else await load_last_successful_state(vault_id)
         indexed_count = 0
+        uploaded_document_ids: list[str] = []
 
         for file_info in files_info:
             if is_cancelled(task_id):
@@ -159,19 +185,24 @@ async def run_indexing(
                 )
 
             try:
-                chunk_ids = await _process_file(
+                chunk_ids, _document_id_uploaded = await _process_file(
                     task_id=task_id,
                     vault_id=vault_id,
                     file_info=file_info,
                     embedding_model=embedding_model,
                     provider=provider,
                     storage_client=storage_client,
-                    config=config,
+                    vault=vault,
+                    chunk_size=int(chunk_size),
+                    overlap=int(overlap),
+                    entity_aware=bool(entity_aware),
+                    worlds=worlds,
+                    uploaded_document_ids=uploaded_document_ids,
                     is_cancelled=is_cancelled,
                     broadcast=broadcast,
                 )
                 indexed_count += 1
-                await increment_chunk_count(vault_id, len(chunk_ids))
+                await db_client.update_vault_chunk_count(vault_id, len(chunk_ids))
             except asyncio.CancelledError:
                 await _cancel_task(task_id, broadcast)
                 return
@@ -190,12 +221,22 @@ async def run_indexing(
                 await _broadcast_chunk_progress(
                     task_id, relative_path, "error", broadcast=broadcast, error=str(exc)
                 )
+                if uploaded_document_ids:
+                    logger.warning("Partial indexing detected. Rolling back documents: %s", uploaded_document_ids)
+                    for document_id in uploaded_document_ids:
+                        try:
+                            await storage_client.delete_document(document_id, vault_id)
+                        except Exception:
+                            logger.critical("Failed to rollback document %s", document_id, exc_info=True)
+                    await db_client.update_vault_binding_status(vault_id, "error")
+                raise
 
         if is_cancelled(task_id):
             await _cancel_task(task_id, broadcast)
             return
 
         await mark_task_done(task_id)
+        await db_client.update_vault_binding_status(vault_id, "bound")
         final_state = await load_state(task_id)
         if final_state is not None:
             # Сохраняем полный state как есть — включая файлы с error.
@@ -208,6 +249,10 @@ async def run_indexing(
         logger.info("Indexing task completed: task_id=%s vault_id=%s", task_id, vault_id)
 
     except Exception as exc:
+        try:
+            await db_client.update_vault_binding_status(vault_id, "error")
+        except Exception:
+            logger.warning("Failed to update vault status after indexing error: vault_id=%s", vault_id, exc_info=True)
         logger.error("Indexing task failed: task_id=%s vault_id=%s", task_id, vault_id, exc_info=True)
         try:
             if await load_state(task_id) is None:
@@ -230,10 +275,15 @@ async def _process_file(
     embedding_model: EmbeddingModelConfig,
     provider: EmbeddingProvider,
     storage_client: StorageClient,
-    config: AppConfig,
+    vault: dict[str, Any],
+    chunk_size: int,
+    overlap: int,
+    entity_aware: bool,
+    worlds: list[dict[str, Any]],
+    uploaded_document_ids: list[str],
     is_cancelled: CancelCallable,
     broadcast: BroadcastCallable,
-) -> list[str]:
+) -> tuple[list[str], str]:
     absolute_path = str(file_info["path"])
     relative_path = str(file_info.get("relative_path", ""))
 
@@ -259,12 +309,10 @@ async def _process_file(
         "source_path": relative_path,
         "checksum": file_info["checksum"],
         "extension": file_info.get("extension", ""),
-        "domain_id": config.vaults[vault_id].domain_id if vault_id in config.vaults else None,
+        "domain_id": vault.get("domain_id"),
     })
+    base_metadata.update(_extract_world_metadata(relative_path, worlds))
     document_id = _document_id(vault_id, relative_path)
-
-    chunk_size = config.chunking.chunk_size
-    overlap = config.chunking.overlap
 
     is_pdf = "pages" in parsed
 
@@ -286,9 +334,9 @@ async def _process_file(
         logger.warning("No text extracted from file: %s", relative_path)
         await update_file_status(task_id, relative_path, "empty", 100, chunk_ids=[])
         await _broadcast_chunk_progress(task_id, relative_path, "empty", broadcast=broadcast)
-        return []
+        return [], document_id
 
-    if config.chunking.entity_aware_mode:
+    if entity_aware:
         chunks, _entities = await asyncio.to_thread(
             chunk_with_entities,
             text_for_chunking,
@@ -313,7 +361,7 @@ async def _process_file(
         logger.warning("No valid chunks generated for file: %s", relative_path)
         await update_file_status(task_id, relative_path, "empty", 100, chunk_ids=[])
         await _broadcast_chunk_progress(task_id, relative_path, "empty", broadcast=broadcast)
-        return []
+        return [], document_id
 
     # Препроцессинг ПОСЛЕ чанкинга — на каждом чанке отдельно (V3.0)
     for idx, chunk in enumerate(chunks):
@@ -330,7 +378,7 @@ async def _process_file(
         logger.warning("All chunks empty after preprocessing: %s", relative_path)
         await update_file_status(task_id, relative_path, "empty", 100, chunk_ids=[])
         await _broadcast_chunk_progress(task_id, relative_path, "empty", broadcast=broadcast)
-        return []
+        return [], document_id
 
     # Для PDF: восстановление page_number и активного заголовка
     if is_pdf:
@@ -401,6 +449,7 @@ async def _process_file(
     )
     if response.status == "partial":
         raise ValueError(f"Failed to upsert chunk indices: {response.failed_indices}")
+    uploaded_document_ids.append(document_id)
 
     chunk_ids = [f"{document_id}_{index}" for index in range(len(upsert_chunks))]
     await update_file_status(
@@ -420,7 +469,7 @@ async def _process_file(
         chunks_processed=len(chunks),
         broadcast=broadcast,
     )
-    return chunk_ids
+    return chunk_ids, document_id
 
 
 def _assign_page_numbers_and_headers(
@@ -601,14 +650,20 @@ async def _embed_chunks(
     return [vector for vector in vectors if vector is not None]
 
 
-def _select_embedding_model(config: AppConfig) -> EmbeddingModelConfig:
-    for embedding_model in config.embedding_models.values():
-        if embedding_model.enabled:
-            return embedding_model
-    raise ValueError("No enabled embedding model configured.")
+def _embedding_model_config(model: dict[str, Any]) -> EmbeddingModelConfig:
+    return EmbeddingModelConfig(
+        model_id=model["model_id"],
+        provider=model["provider"],
+        model_name=model["model_name"],
+        base_url=model["base_url"],
+        dimensions=int(model["dimensions"]),
+        enabled=bool(model.get("enabled", True)),
+        timeout_seconds=int(model.get("timeout_seconds", 30)),
+        max_retries=int(model.get("max_retries", 3)),
+    )
 
 
-def _build_provider(embedding_model: EmbeddingModelConfig) -> EmbeddingProvider:
+def _build_provider(embedding_model: EmbeddingModelConfig, api_key: str = "") -> EmbeddingProvider:
     if embedding_model.provider == "ollama":
         return OllamaEmbeddingProvider(
             base_url=embedding_model.base_url,
@@ -618,12 +673,11 @@ def _build_provider(embedding_model: EmbeddingModelConfig) -> EmbeddingProvider:
             max_retries=embedding_model.max_retries,
         )
     if embedding_model.provider == "openai_compatible":
-        api_key_env = getattr(embedding_model, "api_key_env", "OPENAI_API_KEY")
         return OpenAICompatibleProvider(
             base_url=embedding_model.base_url,
             model_name=embedding_model.model_name,
             dimensions=embedding_model.dimensions,
-            api_key=os.getenv(api_key_env, ""),
+            api_key=api_key,
             timeout=embedding_model.timeout_seconds,
             max_retries=embedding_model.max_retries,
         )
@@ -685,6 +739,29 @@ def _document_id(vault_id: str, relative_path: str) -> str:
 document_id = _document_id
 
 
+def _extract_world_metadata(relative_path: str, worlds: list[dict[str, Any]]) -> dict[str, Any]:
+    normalized_path = relative_path.lstrip("/")
+    for world in worlds:
+        prefix = str(world.get("path_prefix", "")).strip("/")
+        if not prefix:
+            continue
+        prefix_with_sep = f"{prefix}/"
+        if normalized_path != prefix and not normalized_path.startswith(prefix_with_sep):
+            continue
+        remainder = normalized_path.removeprefix(prefix_with_sep)
+        parts = [part for part in remainder.split("/") if part]
+        category = parts[0] if parts else None
+        campaign_id = None
+        if category == "campaigns" and len(parts) > 1:
+            campaign_id = parts[1]
+        return {
+            "world_id": world.get("world_id"),
+            "category": category,
+            "campaign_id": campaign_id,
+        }
+    return {}
+
+
 async def _ensure_not_cancelled(task_id: str, is_cancelled: CancelCallable) -> None:
     if is_cancelled(task_id):
         raise asyncio.CancelledError
@@ -733,5 +810,3 @@ async def _broadcast_task_complete(
 
 async def _noop_broadcast(_task_id: str, _message: dict[str, Any]) -> None:
     return None
-
-

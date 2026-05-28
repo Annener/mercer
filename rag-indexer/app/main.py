@@ -1,16 +1,16 @@
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 import uvicorn
-from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 
+from app.db_client import IndexerDBClient
 from app.indexer_service import IndexerService
 from app.websocket_manager import ConnectionManager
-from config import AppConfig
-from config_loader import get_config
 from logging_config import setup_logging
 from parser.state.state_manager import load_state
 from shared_contracts.models import StartIndexTaskRequest, StartIndexTaskResponse, TaskStateResponse
@@ -22,18 +22,21 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     setup_logging("indexer")
-    app.state.config = get_config()
+    db_client = IndexerDBClient()
+    await db_client.connect(os.getenv("DATABASE_URL", ""), os.getenv("ENCRYPTION_KEY", ""))
+    app.state.db_client = db_client
     app.state.ws_manager = ConnectionManager()
     app.state.indexer_service = IndexerService(
-        config=app.state.config,
+        db_client=db_client,
         broadcaster=app.state.ws_manager.broadcast,
     )
-    logger.info("Service started. Config loaded.")
+    logger.info("Service started. DB client connected.")
     try:
         yield
     finally:
         logger.info("Service shutdown requested. Cancelling active indexer tasks.")
         await app.state.indexer_service.shutdown(timeout_seconds=30)
+        await db_client.close()
         logger.info("Service stopped.")
 
 
@@ -41,8 +44,7 @@ app = FastAPI(title="RAG Indexer", lifespan=lifespan)
 
 
 @app.get("/health")
-async def health(config: AppConfig = Depends(get_config)) -> dict[str, str]:
-    _ = config
+async def health() -> dict[str, str]:
     return {"status": "ok", "service": "rag-indexer"}
 
 
