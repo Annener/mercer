@@ -1,1 +1,1 @@
-PROJECT_CONTEXT.md
+Nothing should be ignored in this case. The only file change is the addition of a markdown file (AI_DIAGNOSTIC_CONTEXT.md), which is a source/config file and should not be added to .gitignore.
