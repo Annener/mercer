@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from app.api.chat import router as chat_router
 from app.api.config_api import router as config_router
 from app.api.db_management import router as db_management_router
+from app.api.settings import router as settings_router
 from app.config import AppConfig
 from app.config_loader import get_config
 from app.db.migrations import run_migrations
@@ -67,6 +68,7 @@ app = FastAPI(title="RAG Backend", lifespan=lifespan)
 app.include_router(chat_router)
 app.include_router(config_router)
 app.include_router(db_management_router)
+app.include_router(settings_router, prefix="/settings", tags=["settings"])
 
 STATIC_DIR = Path(__file__).parent / "static"
 if STATIC_DIR.exists():
