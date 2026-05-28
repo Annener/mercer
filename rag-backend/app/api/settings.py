@@ -78,9 +78,9 @@ class EmbeddingModelCreateRequest(BaseModel):
     model_id: str = Field(min_length=1, max_length=128)
     provider: str
     display_name: str | None = None
-    model_name: str
-    base_url: str
-    api_key: str | None = None
+    model_name: str | None = None  # Optional for providers that use model_id
+    base_url: str | None = None  # Optional for providers that don't require it
+    api_key: str | None = None  # Optional for local providers like Ollama
     dimensions: int = Field(gt=0)
     timeout_seconds: int = 30
     max_retries: int = 3
@@ -247,6 +247,20 @@ async def delete_domain(domain_id: str, db: AsyncSession = Depends(get_db)) -> R
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get("/domains/{domain_id}")
+async def get_domain(domain_id: str, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+    domain = await db.get(Domain, domain_id)
+    if domain is None:
+        raise HTTPException(status_code=404, detail="Domain not found")
+    return {
+        "domain_id": domain.domain_id,
+        "display_name": domain.display_name,
+        "description": domain.description,
+        "enabled": domain.enabled,
+        "is_system": domain.is_system,
+    }
 
 
 @router.get("/domains/{domain_id}/prompts")
