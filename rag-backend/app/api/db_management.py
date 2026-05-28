@@ -8,13 +8,11 @@ from typing import Any
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import delete
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import HTMLResponse
 
-from app.config import AppConfig
-from app.config_loader import get_config
-from app.db.models import AuditLog, VaultBinding
+from app.db.models import AuditLog, Vault
 from app.db.session import get_db
 from shared_contracts.models import ChunkRecord, DocumentRecord, SearchHit
 
@@ -23,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["db-management"])
 
-DB_API_URL = os.getenv("DB_API_URL", "http://db-api-server:8080")
+STORAGE_API_URL = os.getenv("STORAGE_API_URL", "http://db-api-server:8080")
 INDEXER_API_URL = os.getenv("INDEXER_API_URL", "http://rag-indexer:9000")
 
 
@@ -58,7 +56,7 @@ async def list_documents(
     offset: int = Query(default=0, ge=0),
     order_by: str = Query(default="document_id"),
 ) -> DocumentsResponse:
-    async with httpx.AsyncClient(base_url=DB_API_URL, timeout=20) as client:
+    async with httpx.AsyncClient(base_url=STORAGE_API_URL, timeout=20) as client:
         response = await client.get(
             "/index/documents",
             params={"vault_id": vault_id, "limit": limit, "offset": offset, "order_by": order_by},
@@ -72,7 +70,7 @@ async def get_document_chunks(
     document_id: str,
     vault_id: str = Query(..., min_length=1),
 ) -> ChunksResponse:
-    async with httpx.AsyncClient(base_url=DB_API_URL, timeout=20) as client:
+    async with httpx.AsyncClient(base_url=STORAGE_API_URL, timeout=20) as client:
         response = await client.get(
             f"/index/document/{document_id}/chunks",
             params={"vault_id": vault_id},
@@ -83,7 +81,7 @@ async def get_document_chunks(
 
 @router.post("/db/search/text", response_model=TextSearchResponse)
 async def text_search(req: TextSearchRequest) -> TextSearchResponse:
-    async with httpx.AsyncClient(base_url=DB_API_URL, timeout=30) as client:
+    async with httpx.AsyncClient(base_url=STORAGE_API_URL, timeout=30) as client:
         response = await client.post("/index/search/text", json=req.model_dump())
     _raise_upstream(response)
     return TextSearchResponse.model_validate(response.json())
@@ -92,22 +90,19 @@ async def text_search(req: TextSearchRequest) -> TextSearchResponse:
 @router.post("/db/search/text/by-domain", response_model=TextSearchResponse)
 async def text_search_by_domain(
     req: TextSearchByDomainRequest,
-    config: AppConfig = Depends(get_config),
+    db: AsyncSession = Depends(get_db),
 ) -> TextSearchResponse:
     """
     Текстовый поиск во всех enabled vault'ах домена.
     Запросы выполняются параллельно, результаты объединяются и обрезаются до limit.
     """
-    vault_ids = [
-        v.vault_id
-        for v in config.vaults.values()
-        if v.domain_id == req.domain_id and v.enabled
-    ]
+    result = await db.execute(select(Vault.vault_id).where(Vault.domain_id == req.domain_id, Vault.enabled == True))
+    vault_ids = list(result.scalars().all())
     
     if not vault_ids:
         return TextSearchResponse(results=[])
     
-    async with httpx.AsyncClient(base_url=DB_API_URL, timeout=30) as client:
+    async with httpx.AsyncClient(base_url=STORAGE_API_URL, timeout=30) as client:
         async def _search(vault_id: str) -> list[SearchHit]:
             try:
                 resp = await client.post(
@@ -140,13 +135,21 @@ async def delete_document(
     vault_id: str = Query(..., min_length=1),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
-    async with httpx.AsyncClient(base_url=DB_API_URL, timeout=20) as client:
+    async with httpx.AsyncClient(base_url=STORAGE_API_URL, timeout=20) as client:
         response = await client.delete(
             f"/index/document/{document_id}",
             params={"vault_id": vault_id},
         )
     _raise_upstream(response)
     payload = response.json()
+    try:
+        docs_response = await _fetch_documents_for_vault(vault_id)
+        new_total = sum(int(doc.get("chunk_count", 0)) for doc in docs_response)
+        vault = await db.get(Vault, vault_id)
+        if vault is not None:
+            vault.chunk_count = new_total
+    except Exception:
+        logger.warning("Failed to recalculate vault chunk_count after document delete: vault_id=%s", vault_id, exc_info=True)
     await _audit(db, "db.document.delete", "document", document_id, {"vault_id": vault_id, **payload})
     await db.commit()
     logger.info("Deleted document via DB management: vault_id=%s document_id=%s", vault_id, document_id)
@@ -189,11 +192,14 @@ async def get_indexer_task_state(task_id: str) -> dict[str, Any]:
 
 @router.post("/vaults/{vault_id}/detach")
 async def detach_vault(vault_id: str, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
-    await db.execute(delete(VaultBinding).where(VaultBinding.vault_id == vault_id))
-    async with httpx.AsyncClient(base_url=DB_API_URL, timeout=30) as client:
+    async with httpx.AsyncClient(base_url=STORAGE_API_URL, timeout=30) as client:
         response = await client.delete(f"/index/vault/{vault_id}")
     _raise_upstream(response)
     payload = response.json()
+    vault = await db.get(Vault, vault_id)
+    if vault is not None:
+        vault.binding_status = "unbound"
+        vault.chunk_count = 0
     await _audit(db, "vault.detach", "vault", vault_id, payload)
     await db.commit()
     logger.info("Detached vault: vault_id=%s deleted_count=%s", vault_id, payload.get("deleted_count"))
@@ -201,9 +207,7 @@ async def detach_vault(vault_id: str, db: AsyncSession = Depends(get_db)) -> dic
 
 
 @router.get("/db/ui", response_class=HTMLResponse)
-async def db_management_ui(config: AppConfig = Depends(get_config)) -> HTMLResponse:
-    if not config.ui.db_management_enabled:
-        raise HTTPException(status_code=404, detail="DB management UI is disabled")
+async def db_management_ui() -> HTMLResponse:
     return HTMLResponse(DB_MANAGEMENT_HTML)
 
 
@@ -221,6 +225,15 @@ def _raise_upstream(response: httpx.Response) -> None:
     if response.is_success:
         return
     raise HTTPException(status_code=response.status_code, detail=response.text)
+
+
+async def _fetch_documents_for_vault(vault_id: str) -> list[dict[str, Any]]:
+    async with httpx.AsyncClient(base_url=STORAGE_API_URL, timeout=20) as client:
+        response = await client.get("/index/documents", params={"vault_id": vault_id})
+    _raise_upstream(response)
+    payload = response.json()
+    documents = payload.get("documents", payload)
+    return documents if isinstance(documents, list) else []
 
 
 DB_MANAGEMENT_HTML = """<html><body><h1>DB Management (legacy)</h1></body></html>"""

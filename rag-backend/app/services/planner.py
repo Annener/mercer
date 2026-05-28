@@ -1,12 +1,14 @@
 from __future__ import annotations
 import json
 import logging
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import AppConfig
-from app.db.models import VaultBinding
+from app.db.models import Vault
 from app.pipelines.registry import PipelineRegistry
 from app.providers.generation import get_generation_provider, GenerationProviderUnavailableError
+from app.services.domain_service import domain_service
+from app.services.settings_service import settings_service
 from shared_contracts.models import PipelineInvocation, PlannerDecision
 
 logger = logging.getLogger(__name__)
@@ -21,7 +23,7 @@ AMBIGUOUS_SUBJECTS = {
 }
 
 class Planner:
-    def __init__(self, config: AppConfig, pipeline_registry: PipelineRegistry | None = None) -> None:
+    def __init__(self, config: AppConfig | None = None, pipeline_registry: PipelineRegistry | None = None) -> None:
         self.config = config
         self.pipeline_registry = pipeline_registry
 
@@ -35,19 +37,19 @@ class Planner:
     ) -> tuple[PlannerDecision, list[str]]:
         _ = history
         retrieval_strategy = "none"
-        if self.config.retrieval.enabled:
+        retrieval_enabled = bool(await settings_service.get("retrieval.enabled", db))
+        if retrieval_enabled:
             if vault_id:
                 retrieval_strategy = await self._strategy_for_vault(db, vault_id)
             elif domain_id:
-                # Чат привязан к домену (без конкретного vault) — используем semantic retrieval
-                # если в домене есть хотя бы один vault с проиндексированными чанками
                 retrieval_strategy = await self._strategy_for_domain(db, domain_id)
 
-        missing_fields = self._missing_fields(query)
+        missing_fields = await self._missing_fields_for_domain(query, domain_id or "default", db)
         pipeline_invocations = await self._pipeline_invocations(domain_id)
+        max_clarification_turns = int(await settings_service.get("chat.max_clarification_turns", db))
         decision = PlannerDecision(
             retrieval_strategy=retrieval_strategy,
-            clarification_needed=bool(missing_fields) and self.config.chat.max_clarification_turns > 0,
+            clarification_needed=bool(missing_fields) and max_clarification_turns > 0,
             pipeline_invocations=pipeline_invocations,
             reasoning=(
                 f"strategy={retrieval_strategy}; "
@@ -65,37 +67,27 @@ class Planner:
         return decision, missing_fields
 
     async def _strategy_for_vault(self, db: AsyncSession, vault_id: str) -> str:
-        result = await db.execute(select(VaultBinding).where(VaultBinding.vault_id == vault_id))
-        binding = result.scalar_one_or_none()
-        if binding is not None and binding.chunk_count <= 0:
+        result = await db.execute(
+            select(Vault).where(Vault.vault_id == vault_id, Vault.enabled == True)
+        )
+        vault = result.scalar_one_or_none()
+        if not vault or vault.chunk_count <= 0:
             return "none"
         return "semantic"
 
     async def _strategy_for_domain(self, db: AsyncSession, domain_id: str) -> str:
-        """Возвращает 'semantic' если в домене есть хотя бы один vault с данными."""
-        domain_vault_ids = [
-            v.vault_id
-            for v in self.config.vaults.values()
-            if v.domain_id == domain_id and v.enabled
-        ]
-        if not domain_vault_ids:
-            return "none"
         result = await db.execute(
-            select(VaultBinding).where(VaultBinding.vault_id.in_(domain_vault_ids))
+            select(func.count()).select_from(Vault).where(
+                Vault.domain_id == domain_id,
+                Vault.enabled == True,
+                Vault.chunk_count > 0,
+            )
         )
-        bindings = result.scalars().all()
-        # Хотя бы один vault проиндексирован (chunk_count > 0)
-        for binding in bindings:
-            if binding.chunk_count > 0:
-                return "semantic"
-        # Нет ни одного binding или все пустые — всё равно пробуем semantic,
-        # т.к. binding может быть не создан, но данные могут быть в LanceDB
-        if not bindings:
-            return "semantic"
-        return "none"
+        count = result.scalar()
+        return "semantic" if count and count > 0 else "none"
 
     async def _pipeline_invocations(self, domain_id: str | None) -> list[PipelineInvocation]:
-        if self.pipeline_registry is None or not self.config.pipelines.enabled:
+        if self.pipeline_registry is None or self.config is None or not self.config.pipelines.enabled:
             return []
         runners = await self.pipeline_registry.list_by_domain(domain_id)
         return [
@@ -113,6 +105,13 @@ class Planner:
             if trigger in query.lower() and field not in missing:
                 missing.append(field)
         return missing
+
+    async def _missing_fields_for_domain(self, query: str, domain_id: str, db: AsyncSession) -> list[str]:
+        fields = await domain_service.get_clarification_fields(domain_id, db)
+        allowed = {field["field_name"] for field in fields}
+        if not allowed:
+            return []
+        return [field for field in self._missing_fields(query) if field in allowed]
 
 
 class LLMRAGPlanner:

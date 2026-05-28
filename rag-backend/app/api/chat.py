@@ -14,7 +14,7 @@ from sqlalchemy.orm import selectinload
 from starlette.responses import StreamingResponse
 from app.config import AppConfig
 from app.config_loader import get_config
-from app.db.models import AuditLog, Chat, ClarificationState as ClarificationStateRow, Message
+from app.db.models import AuditLog, Chat, ClarificationState as ClarificationStateRow, Message, Vault
 from app.db.session import SessionLocal, get_db
 from app.domains.registry import DomainRegistry
 from app.pipelines.registry import PipelineRegistry
@@ -23,6 +23,7 @@ from app.services import clarification_fsm
 from app.services.planner import LLMRAGPlanner, Planner
 from app.services.prompt_pack import PromptPack, format_prompt
 from app.services.retrieval import format_context, retrieve, retrieve_multi_vault
+from app.services.settings_service import settings_service
 from shared_contracts.models import (
     ChatMessage,
     ChatRecord,
@@ -46,6 +47,7 @@ class RenameChatRequest(BaseModel):
 class ChatHistoryResponse(BaseModel):
     chat: ChatRecord
     messages: list[ChatMessage]
+    vault_enabled: bool = False
 
 class ChatListItem(BaseModel):
     chat_id: str
@@ -62,6 +64,9 @@ class MessageResponse(BaseModel):
     content: str
     message_id: str
 
+class PipelineLockRequest(BaseModel):
+    pipeline_id: str | None = None
+
 @router.post("/create", response_model=CreateChatResponse)
 async def create_chat(
     req: CreateChatRequest,
@@ -69,8 +74,10 @@ async def create_chat(
     db: AsyncSession = Depends(get_db),
 ) -> CreateChatResponse:
     chat = Chat(
+        title="New Chat",
         vault_id=req.vault_id,
         domain_id=req.domain_id,
+        world_id=req.world_id,
         pipeline_versions=await _pipeline_versions(request),
     )
     db.add(chat)
@@ -95,7 +102,11 @@ async def list_chats(
 @router.get("/{chat_id}", response_model=ChatHistoryResponse)
 async def get_chat(chat_id: str, db: AsyncSession = Depends(get_db)) -> ChatHistoryResponse:
     chat = await _get_chat_with_messages(db, chat_id)
-    return ChatHistoryResponse(chat=_chat_record(chat), messages=[_chat_message(message) for message in chat.messages])
+    return ChatHistoryResponse(
+        chat=_chat_record(chat),
+        messages=[_chat_message(message) for message in chat.messages],
+        vault_enabled=await _vault_enabled(db, chat.vault_id),
+    )
 
 @router.delete("/{chat_id}")
 async def delete_chat(chat_id: str, db: AsyncSession = Depends(get_db)) -> dict[str, str]:
@@ -122,6 +133,18 @@ async def rename_chat(
     logger.info("Renamed chat: chat_id=%s", chat_id)
     return CreateChatResponse(chat_id=str(chat.id), title=chat.title)
 
+@router.put("/{chat_id}/pipeline")
+async def lock_pipeline(
+    chat_id: str,
+    req: PipelineLockRequest,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, str | None]:
+    chat = await _get_chat(db, chat_id)
+    chat.locked_pipeline_id = req.pipeline_id
+    await _audit(db, "chat.pipeline.lock", "chat", chat_id, {"pipeline_id": req.pipeline_id})
+    await db.commit()
+    return {"chat_id": chat_id, "locked_pipeline_id": chat.locked_pipeline_id}
+
 @router.post("/{chat_id}/message", response_model=None)
 async def send_message(
     chat_id: str,
@@ -140,7 +163,7 @@ async def send_message(
     await db.commit()
     await db.refresh(user_message)
 
-    if is_first_user_message and config.chat.auto_title:
+    if is_first_user_message and await settings_service.get("chat.auto_title", db):
         asyncio.create_task(_generate_title(chat_id, req.content, config))
 
     prompt_pack = _prompt_pack_for_chat(request, chat, config)
@@ -173,7 +196,7 @@ async def send_message(
         next_state = clarification_fsm.process_clarification_answer(
             state=state,
             user_message=req.content,
-            max_turns=config.chat.max_clarification_turns,
+            max_turns=int(await settings_service.get("chat.max_clarification_turns", db)),
             prompt_pack=prompt_pack,
         )
         await clarification_fsm.save_state(db, chat.id, next_state)
@@ -192,14 +215,14 @@ async def send_message(
             )
         await db.commit()
         decision = PlannerDecision(
-            retrieval_strategy="semantic" if chat.vault_id and config.retrieval.enabled else "none",
+            retrieval_strategy="semantic" if chat.vault_id and await settings_service.get("retrieval.enabled", db) else "none",
             clarification_needed=False,
             reasoning=f"clarification_state={next_state.stage}",
         )
         state = next_state
     else:
         decision = PlannerDecision(
-            retrieval_strategy="semantic" if chat.vault_id and config.retrieval.enabled else "none",
+            retrieval_strategy="semantic" if chat.vault_id and await settings_service.get("retrieval.enabled", db) else "none",
             clarification_needed=False,
             reasoning=f"clarification_state={state.stage}",
         )
@@ -447,9 +470,11 @@ async def _audit(
 def _chat_record(chat: Chat) -> ChatRecord:
     return ChatRecord(
         chat_id=str(chat.id),
-        title=chat.title,
+        title=chat.title or "New Chat",
         vault_id=chat.vault_id,
         domain_id=chat.domain_id,
+        world_id=chat.world_id,
+        locked_pipeline_id=chat.locked_pipeline_id,
         created_at=chat.created_at,
         updated_at=chat.updated_at,
         pipeline_versions=chat.pipeline_versions or {},
@@ -468,12 +493,18 @@ def _chat_message(message: Message) -> ChatMessage:
 def _chat_list_item(chat: Chat) -> ChatListItem:
     return ChatListItem(
         chat_id=str(chat.id),
-        title=chat.title,
+        title=chat.title or "New Chat",
         vault_id=chat.vault_id,
         domain_id=chat.domain_id,
         created_at=chat.created_at,
         updated_at=chat.updated_at,
     )
+
+async def _vault_enabled(db: AsyncSession, vault_id: str | None) -> bool:
+    if not vault_id:
+        return False
+    vault = await db.get(Vault, vault_id)
+    return bool(vault and vault.enabled)
 
 def _llm_message(message: Message) -> dict[str, str]:
     return {"role": message.role, "content": message.content}
