@@ -13,6 +13,7 @@ class SidebarManager {
         
         this.currentRenameChatId = null;
         this.domains = [];
+        this.domainCache = {};
         this.currentDomain = localStorage.getItem('currentDomain') || null;
         
         this.initEventListeners();
@@ -52,6 +53,10 @@ class SidebarManager {
         try {
             const data = await chatAPI.getDomains();
             this.domains = data.domains || [];
+            this.domainCache = {};
+            for (const domain of this.domains) {
+                this.domainCache[domain.domain_id] = domain.display_name || domain.domain_id;
+            }
             this.renderDomainOptions();
             
             // Все домены активны (даже без vault — они работают в режиме LLM-only)
@@ -99,10 +104,8 @@ class SidebarManager {
     }
 
     formatDomainName(domainId) {
-        // Красивые имена для известных доменов; новые домены из конфига отображаются как есть
-        const names = { 'dnd': 'D&D', 'work': 'Работа' };
-        if (names[domainId]) return names[domainId];
-        return domainId.charAt(0).toUpperCase() + domainId.slice(1);
+        if (domainId === 'default') return null;
+        return this.domainCache[domainId] || domainId.toUpperCase();
     }
 
     async switchDomain(domainId) {

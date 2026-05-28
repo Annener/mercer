@@ -13,6 +13,7 @@
         <aside class="sidebar">
             <div class="sidebar-header">
                 <h2>MattMercer</h2>
+                <button id="settings-btn" class="btn btn-secondary btn-full btn-sidebar-secondary">Настройки платформы</button>
                 <button id="db-mgmt-btn" class="btn btn-secondary btn-full btn-sidebar-secondary">⚙️ Управление хранилищем</button>
                 <div class="domain-selector">
                     <label for="domain-select">Домен:</label>
@@ -34,12 +35,30 @@
                     <p>Создайте новый чат или выберите существующий из списка слева</p>
                 </div>
             </div>
+            <div id="status-banner" class="status-banner hidden"></div>
             <div class="input-area" id="input-area" style="display: none;">
                 <textarea id="message-input" placeholder="Введите сообщение..." rows="1"></textarea>
                 <button id="send-btn" class="btn btn-send">Отправить</button>
             </div>
         </main>
     </div>
+
+    <main id="settings-page" class="settings-page hidden">
+        <div class="settings-header">
+            <h2>Настройки платформы</h2>
+            <button id="back-to-chat-btn" class="btn btn-secondary">Назад к чатам</button>
+        </div>
+        <div class="settings-tabs">
+            <button data-tab="domains" class="active">Домены</button>
+            <button data-tab="vaults">Vault'ы</button>
+            <button data-tab="gen-models">Генеративные модели</button>
+            <button data-tab="emb-models">Embedding-модели</button>
+            <button data-tab="params">Параметры</button>
+            <button data-tab="pipelines">Pipelines</button>
+            <button data-tab="worlds">Миры</button>
+        </div>
+        <div id="settings-content" class="settings-content"></div>
+    </main>
 
     <!-- Модальное окно переименования -->
     <div class="modal" id="rename-modal" style="display: none;">
@@ -133,6 +152,7 @@
     <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/languages/sql.min.js"></script>
 
     <script src="/static/js/api.js"></script>
+    <script src="/static/js/settings.js"></script>
     <script src="/static/js/chat.js"></script>
     <script src="/static/js/sidebar.js"></script>
     <script src="/static/js/db_management.js"></script>

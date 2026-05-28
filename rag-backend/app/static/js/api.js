@@ -8,13 +8,14 @@ class ChatAPI {
 
     // === Chat API ===
 
-    async createChat(vaultId = null, domainId = null) {
+    async createChat(vaultId = null, domainId = null, worldId = null) {
         const response = await fetch(`${this.baseUrl}/chat/create`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 vault_id: vaultId,
                 domain_id: domainId,
+                world_id: worldId,
             }),
         });
         if (!response.ok) {
@@ -68,6 +69,13 @@ class ChatAPI {
             return response.body;
         }
         return response.json();
+    }
+
+    async lockPipeline(chatId, pipelineId) {
+        return this._request(`/chat/${encodeURIComponent(chatId)}/pipeline`, {
+            method: 'PUT',
+            body: JSON.stringify({ pipeline_id: pipelineId }),
+        });
     }
 
     // === Config API ===
@@ -180,6 +188,93 @@ class ChatAPI {
         // WebSocket на indexer через текущий хост (поддерживает прохождение через nginx если есть)
         const url = `${this.indexerWsUrl}/api/v1/tasks/${encodeURIComponent(taskId)}/stream`;
         return new WebSocket(url);
+    }
+
+    // === Settings API ===
+    async getSettingsStatus() { return this._request('/settings/status'); }
+    async getSettingsParams() { return this._request('/settings/params'); }
+    async updateSettingsParam(key, value) {
+        return this._request(`/settings/params/${encodeURIComponent(key)}`, {
+            method: 'PUT',
+            body: JSON.stringify({ value }),
+        });
+    }
+    async resetSettingsParams() { return this._request('/settings/params/reset', { method: 'POST' }); }
+
+    async createDomain(data) { return this._request('/settings/domains', { method: 'POST', body: JSON.stringify(data) }); }
+    async updateDomain(id, data) { return this._request(`/settings/domains/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(data) }); }
+    async deleteDomain(id) { return this._request(`/settings/domains/${encodeURIComponent(id)}`, { method: 'DELETE' }); }
+    async getDomainPrompts(id) { return this._request(`/settings/domains/${encodeURIComponent(id)}/prompts`); }
+    async updateDomainPrompt(id, type, content) {
+        return this._request(`/settings/domains/${encodeURIComponent(id)}/prompts/${encodeURIComponent(type)}`, {
+            method: 'PUT',
+            body: JSON.stringify({ content }),
+        });
+    }
+    async getDomainFields(id) { return this._request(`/settings/domains/${encodeURIComponent(id)}/fields`); }
+    async updateDomainFields(id, fields) {
+        return this._request(`/settings/domains/${encodeURIComponent(id)}/fields`, { method: 'PUT', body: JSON.stringify(fields) });
+    }
+
+    async getGenerationModels() { return this._request('/settings/generation-models'); }
+    async createGenerationModel(data) { return this._request('/settings/generation-models', { method: 'POST', body: JSON.stringify(data) }); }
+    async updateGenerationModel(id, data) { return this._request(`/settings/generation-models/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(data) }); }
+    async deleteGenerationModel(id) { return this._request(`/settings/generation-models/${encodeURIComponent(id)}`, { method: 'DELETE' }); }
+    async activateGenerationModel(id) { return this._request(`/settings/generation-models/${encodeURIComponent(id)}/activate`, { method: 'POST' }); }
+    async checkGenerationModel(id) { return this._request(`/settings/generation-models/${encodeURIComponent(id)}/check`, { method: 'POST' }); }
+
+    async getEmbeddingModels() { return this._request('/settings/embedding-models'); }
+    async createEmbeddingModel(data) { return this._request('/settings/embedding-models', { method: 'POST', body: JSON.stringify(data) }); }
+    async updateEmbeddingModel(id, data) { return this._request(`/settings/embedding-models/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(data) }); }
+    async deleteEmbeddingModel(id) { return this._request(`/settings/embedding-models/${encodeURIComponent(id)}`, { method: 'DELETE' }); }
+    async checkEmbeddingModel(id) { return this._request(`/settings/embedding-models/${encodeURIComponent(id)}/check`, { method: 'POST' }); }
+
+    async getSettingsVaults() { return this._request('/settings/vaults'); }
+    async createVault(data) { return this._request('/settings/vaults', { method: 'POST', body: JSON.stringify(data) }); }
+    async updateVault(id, data) { return this._request(`/settings/vaults/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(data) }); }
+    async deleteVault(id) { return this._request(`/settings/vaults/${encodeURIComponent(id)}`, { method: 'DELETE' }); }
+    async toggleVault(id) { return this._request(`/settings/vaults/${encodeURIComponent(id)}/toggle`, { method: 'POST' }); }
+
+    async getWorlds(vaultId = null) {
+        const url = new URL(`${this.baseUrl}/settings/worlds`, window.location.origin);
+        if (vaultId) url.searchParams.set('vault_id', vaultId);
+        return this._request(url.pathname + url.search);
+    }
+    async createWorld(data) { return this._request('/settings/worlds', { method: 'POST', body: JSON.stringify(data) }); }
+    async updateWorld(worldId, data) { return this._request(`/settings/worlds/${encodeURIComponent(worldId)}`, { method: 'PUT', body: JSON.stringify(data) }); }
+    async getWorldCampaigns(worldId) { return this._request(`/settings/worlds/${encodeURIComponent(worldId)}/campaigns`); }
+    async createCampaign(worldId, data) { return this._request(`/settings/worlds/${encodeURIComponent(worldId)}/campaigns`, { method: 'POST', body: JSON.stringify(data) }); }
+    async updateCampaign(worldId, campaignId, data) {
+        return this._request(`/settings/worlds/${encodeURIComponent(worldId)}/campaigns/${encodeURIComponent(campaignId)}`, {
+            method: 'PUT',
+            body: JSON.stringify(data),
+        });
+    }
+    async toggleCampaign(worldId, campaignId) {
+        return this._request(`/settings/worlds/${encodeURIComponent(worldId)}/campaigns/${encodeURIComponent(campaignId)}/toggle`, { method: 'POST' });
+    }
+
+    async getPipelines(domainId = null) {
+        const url = new URL(`${this.baseUrl}/settings/pipelines`, window.location.origin);
+        if (domainId) url.searchParams.set('domain_id', domainId);
+        return this._request(url.pathname + url.search);
+    }
+    async createPipeline(data) { return this._request('/settings/pipelines', { method: 'POST', body: JSON.stringify(data) }); }
+    async updatePipeline(id, data) { return this._request(`/settings/pipelines/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(data) }); }
+    async deletePipeline(id) { return this._request(`/settings/pipelines/${encodeURIComponent(id)}`, { method: 'DELETE' }); }
+    async activatePipeline(id) { return this._request(`/settings/pipelines/${encodeURIComponent(id)}/activate`, { method: 'POST' }); }
+
+    async _request(path, options = {}) {
+        const response = await fetch(`${this.baseUrl}${path}`, {
+            headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+            ...options,
+        });
+        if (!response.ok) {
+            const data = await response.json().catch(() => ({}));
+            throw new Error(data.detail || response.statusText);
+        }
+        if (response.status === 204) return null;
+        return response.json();
     }
 }
 
