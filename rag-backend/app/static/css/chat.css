@@ -340,6 +340,53 @@ body {
     font-size: 13px;
 }
 
+.settings-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 10px;
+}
+
+.btn-sm {
+    padding: 5px 8px;
+    font-size: 12px;
+}
+
+.settings-param-list {
+    display: grid;
+    gap: 8px;
+    max-width: 760px;
+}
+
+.settings-param-row {
+    display: grid;
+    grid-template-columns: minmax(220px, 1fr) minmax(180px, 260px);
+    align-items: center;
+    gap: 12px;
+    background: #fff;
+    border: 1px solid #dfe6ee;
+    border-radius: 6px;
+    padding: 10px 12px;
+    font-size: 13px;
+}
+
+.settings-param-row input {
+    border: 1px solid #d4dde7;
+    border-radius: 5px;
+    padding: 7px 9px;
+    font: inherit;
+}
+
+.settings-note {
+    color: #657789;
+    margin-bottom: 14px;
+    font-size: 13px;
+}
+
+.world-card {
+    min-height: 116px;
+}
+
 .badge {
     align-self: flex-start;
     border-radius: 999px;
