@@ -292,20 +292,22 @@ class SettingsManager {
         const domain = domainId ? await this.api._request(`/settings/domains/${encodeURIComponent(domainId)}`) : null;
         const modal = document.createElement('div');
         modal.className = 'modal';
-        modal.style.display = 'block';
         modal.innerHTML = `
             <div class="modal-content">
                 <h3>${domain ? 'Редактировать домен' : 'Новый домен'}</h3>
                 <div class="form-group">
-                    <label>ID домена:</label>
-                    <input type="text" id="domain-id-input" value="${this.escapeHtml(domain?.domain_id || '')}" ${domain ? 'disabled' : ''}>
+                    <label for="domain-id-desc">ID домена:</label>
+                    <span class="field-desc" id="domain-id-desc">Уникальный идентификатор домена (3-32 символа, только a-z, 0-9 и _). При редактировании изменение невозможно.</span>
+                    <input type="text" id="domain-id-input" value="${this.escapeHtml(domain?.domain_id || '')}" ${domain ? 'disabled' : ''} pattern="[a-z0-9_]{3,32}" title="3-32 символа, только a-z, 0-9, _">
                 </div>
                 <div class="form-group">
-                    <label>Отображаемое имя:</label>
+                    <label for="domain-name-desc">Отображаемое имя:</label>
+                    <span class="field-desc" id="domain-name-desc">Человекочитаемое название домена для отображения в интерфейсе.</span>
                     <input type="text" id="domain-name-input" value="${this.escapeHtml(domain?.display_name || '')}">
                 </div>
                 <div class="form-group">
-                    <label>Описание:</label>
+                    <label for="domain-desc-desc">Описание:</label>
+                    <span class="field-desc" id="domain-desc-desc">Краткое описание назначения домена (опционально).</span>
                     <textarea id="domain-desc-input">${this.escapeHtml(domain?.description || '')}</textarea>
                 </div>
                 <div class="modal-actions">
@@ -317,6 +319,12 @@ class SettingsManager {
         document.body.appendChild(modal);
         modal.querySelector('#domain-cancel-btn')?.addEventListener('click', () => modal.remove());
         modal.querySelector('#domain-save-btn')?.addEventListener('click', async () => {
+            const domainIdInput = modal.querySelector('#domain-id-input');
+            const domainIdValue = domainIdInput.value.trim();
+            if (!domainId && !/^[a-z0-9_]{3,32}$/.test(domainIdValue)) {
+                alert('ID домена должен содержать от 3 до 32 символов, только a-z, 0-9 и _');
+                return;
+            }
             const data = {
                 display_name: modal.querySelector('#domain-name-input').value,
                 description: modal.querySelector('#domain-desc-input').value,
@@ -324,7 +332,7 @@ class SettingsManager {
             if (domainId) {
                 await this.api.updateDomain(domainId, data);
             } else {
-                data.domain_id = modal.querySelector('#domain-id-input').value;
+                data.domain_id = domainIdValue;
                 await this.api.createDomain(data);
             }
             modal.remove();
@@ -337,26 +345,29 @@ class SettingsManager {
         const domains = await this.api.getDomains();
         const modal = document.createElement('div');
         modal.className = 'modal';
-        modal.style.display = 'block';
         modal.innerHTML = `
             <div class="modal-content">
                 <h3>${vault ? 'Редактировать vault' : 'Новый vault'}</h3>
                 <div class="form-group">
-                    <label>ID vault:</label>
+                    <label for="vault-id-desc">ID vault:</label>
+                    <span class="field-desc" id="vault-id-desc">Уникальный идентификатор хранилища документов. При редактировании изменение невозможно.</span>
                     <input type="text" id="vault-id-input" value="${this.escapeHtml(vault?.vault_id || '')}" ${vault ? 'disabled' : ''}>
                 </div>
                 <div class="form-group">
-                    <label>Отображаемое имя:</label>
+                    <label for="vault-name-desc">Отображаемое имя:</label>
+                    <span class="field-desc" id="vault-name-desc">Человекочитаемое название vault для отображения в интерфейсе (опционально).</span>
                     <input type="text" id="vault-name-input" value="${this.escapeHtml(vault?.display_name || '')}">
                 </div>
                 <div class="form-group">
-                    <label>Домен:</label>
+                    <label for="vault-domain-desc">Домен:</label>
+                    <span class="field-desc" id="vault-domain-desc">Домен, к которому привязывается данный vault.</span>
                     <select id="vault-domain-select">
                         ${domains.map((d) => `<option value="${this.escapeHtml(d.domain_id)}" ${vault?.domain_id === d.domain_id ? 'selected' : ''}>${this.escapeHtml(d.display_name)}</option>`).join('')}
                     </select>
                 </div>
                 <div class="form-group">
-                    <label>Путь к данным:</label>
+                    <label for="vault-path-desc">Путь к данным:</label>
+                    <span class="field-desc" id="vault-path-desc">Путь к папке с документами в файловой системе (например, /data/vaults/my_vault).</span>
                     <input type="text" id="vault-path-input" value="${this.escapeHtml(vault?.data_path || '')}">
                 </div>
                 <div class="modal-actions">
@@ -387,20 +398,22 @@ class SettingsManager {
     async showGenerationModelModal() {
         const modal = document.createElement('div');
         modal.className = 'modal';
-        modal.style.display = 'block';
         modal.innerHTML = `
             <div class="modal-content">
                 <h3>Новая генеративная модель</h3>
                 <div class="form-group">
-                    <label>ID модели:</label>
+                    <label for="gen-model-id-desc">ID модели:</label>
+                    <span class="field-desc" id="gen-model-id-desc">Уникальный идентификатор модели (например, gpt-4, llama3).</span>
                     <input type="text" id="gen-model-id-input">
                 </div>
                 <div class="form-group">
-                    <label>Отображаемое имя:</label>
+                    <label for="gen-model-name-desc">Отображаемое имя:</label>
+                    <span class="field-desc" id="gen-model-name-desc">Человекочитаемое название модели для отображения в интерфейсе.</span>
                     <input type="text" id="gen-model-name-input">
                 </div>
                 <div class="form-group">
-                    <label>Провайдер:</label>
+                    <label for="gen-model-provider-desc">Провайдер:</label>
+                    <span class="field-desc" id="gen-model-provider-desc">Поставщик модели: OpenAI, Ollama (локально), Anthropic.</span>
                     <select id="gen-model-provider">
                         <option value="openai">OpenAI</option>
                         <option value="ollama">Ollama</option>
@@ -408,11 +421,13 @@ class SettingsManager {
                     </select>
                 </div>
                 <div class="form-group">
-                    <label>API Key:</label>
+                    <label for="gen-model-api-key-desc">API Key:</label>
+                    <span class="field-desc" id="gen-model-api-key-desc">Ключ доступа к API провайдера. Для Ollama можно оставить пустым.</span>
                     <input type="password" id="gen-model-api-key-input">
                 </div>
                 <div class="form-group">
-                    <label>Base URL (опционально):</label>
+                    <label for="gen-model-base-url-desc">Base URL (опционально):</label>
+                    <span class="field-desc" id="gen-model-base-url-desc">Адрес сервера API. Оставьте пустым для использования адреса по умолчанию.</span>
                     <input type="text" id="gen-model-base-url-input">
                 </div>
                 <div class="modal-actions">
@@ -441,35 +456,40 @@ class SettingsManager {
     async showEmbeddingModelModal() {
         const modal = document.createElement('div');
         modal.className = 'modal';
-        modal.style.display = 'block';
         modal.innerHTML = `
             <div class="modal-content">
                 <h3>Новая embedding-модель</h3>
                 <div class="form-group">
-                    <label>ID модели:</label>
+                    <label for="emb-model-id-desc">ID модели:</label>
+                    <span class="field-desc" id="emb-model-id-desc">Уникальный идентификатор embedding-модели (например, text-embedding-3-small).</span>
                     <input type="text" id="emb-model-id-input">
                 </div>
                 <div class="form-group">
-                    <label>Отображаемое имя:</label>
+                    <label for="emb-model-name-desc">Отображаемое имя:</label>
+                    <span class="field-desc" id="emb-model-name-desc">Человекочитаемое название модели для отображения в интерфейсе.</span>
                     <input type="text" id="emb-model-name-input">
                 </div>
                 <div class="form-group">
-                    <label>Провайдер:</label>
+                    <label for="emb-model-provider-desc">Провайдер:</label>
+                    <span class="field-desc" id="emb-model-provider-desc">Поставщик модели: OpenAI или Ollama (локально).</span>
                     <select id="emb-model-provider">
                         <option value="openai">OpenAI</option>
                         <option value="ollama">Ollama</option>
                     </select>
                 </div>
                 <div class="form-group">
-                    <label>API Key:</label>
+                    <label for="emb-model-api-key-desc">API Key (опционально):</label>
+                    <span class="field-desc" id="emb-model-api-key-desc">Ключ доступа к API провайдера. Для Ollama можно оставить пустым.</span>
                     <input type="password" id="emb-model-api-key-input">
                 </div>
                 <div class="form-group">
-                    <label>Размерность:</label>
+                    <label for="emb-model-dimensions-desc">Размерность:</label>
+                    <span class="field-desc" id="emb-model-dimensions-desc">Количество измерений вектора (например, 768, 1536). Уточните в документации модели.</span>
                     <input type="number" id="emb-model-dimensions-input" value="768">
                 </div>
                 <div class="form-group">
-                    <label>Base URL (опционально):</label>
+                    <label for="emb-model-base-url-desc">Base URL (опционально):</label>
+                    <span class="field-desc" id="emb-model-base-url-desc">Адрес сервера API. Оставьте пустым для использования адреса по умолчанию.</span>
                     <input type="text" id="emb-model-base-url-input">
                 </div>
                 <div class="modal-actions">
@@ -485,7 +505,7 @@ class SettingsManager {
                 model_id: modal.querySelector('#emb-model-id-input').value,
                 display_name: modal.querySelector('#emb-model-name-input').value,
                 provider: modal.querySelector('#emb-model-provider').value,
-                api_key: modal.querySelector('#emb-model-api-key-input').value,
+                api_key: modal.querySelector('#emb-model-api-key-input').value || null,
                 dimensions: parseInt(modal.querySelector('#emb-model-dimensions-input').value, 10),
             };
             const baseUrl = modal.querySelector('#emb-model-base-url-input').value;
@@ -500,27 +520,30 @@ class SettingsManager {
         const domains = await this.api.getDomains();
         const modal = document.createElement('div');
         modal.className = 'modal';
-        modal.style.display = 'block';
         modal.innerHTML = `
             <div class="modal-content">
                 <h3>Новый pipeline</h3>
                 <div class="form-group">
-                    <label>Название:</label>
+                    <label for="pipeline-name-desc">Название:</label>
+                    <span class="field-desc" id="pipeline-name-desc">Человекочитаемое название pipeline для отображения в интерфейсе.</span>
                     <input type="text" id="pipeline-name-input">
                 </div>
                 <div class="form-group">
-                    <label>Домен:</label>
+                    <label for="pipeline-domain-desc">Домен:</label>
+                    <span class="field-desc" id="pipeline-domain-desc">Домен, к которому будет привязан данный pipeline.</span>
                     <select id="pipeline-domain-select">
                         ${domains.map((d) => `<option value="${this.escapeHtml(d.domain_id)}">${this.escapeHtml(d.display_name)}</option>`).join('')}
                     </select>
                 </div>
                 <div class="form-group">
-                    <label>Версия:</label>
+                    <label for="pipeline-version-desc">Версия:</label>
+                    <span class="field-desc" id="pipeline-version-desc">Версия pipeline в формате semver (например, 1.0, 2.1.0).</span>
                     <input type="text" id="pipeline-version-input" value="1.0">
                 </div>
                 <div class="form-group">
-                    <label>Шаги (JSON):</label>
-                    <textarea id="pipeline-steps-input">[]</textarea>
+                    <label for="pipeline-steps-desc">Шаги (JSON):</label>
+                    <span class="field-desc" id="pipeline-steps-desc">Массив шагов обработки запроса в формате JSON. Каждый шаг должен содержать type и параметры.</span>
+                    <textarea id="pipeline-steps-input" class="json-editor">[]</textarea>
                 </div>
                 <div class="modal-actions">
                     <button id="pipeline-save-btn" class="btn btn-primary">Сохранить</button>
@@ -552,27 +575,30 @@ class SettingsManager {
         const vaults = await this.api.getSettingsVaults();
         const modal = document.createElement('div');
         modal.className = 'modal';
-        modal.style.display = 'block';
         modal.innerHTML = `
             <div class="modal-content">
                 <h3>Новый мир</h3>
                 <div class="form-group">
-                    <label>ID мира:</label>
+                    <label for="world-id-desc">ID мира:</label>
+                    <span class="field-desc" id="world-id-desc">Уникальный идентификатор мира (например, dragonlance, forgotten_realms).</span>
                     <input type="text" id="world-id-input">
                 </div>
                 <div class="form-group">
-                    <label>Название:</label>
+                    <label for="world-name-desc">Название:</label>
+                    <span class="field-desc" id="world-name-desc">Человекочитаемое название мира для отображения в интерфейсе.</span>
                     <input type="text" id="world-name-input">
                 </div>
                 <div class="form-group">
-                    <label>Vault:</label>
+                    <label for="world-vault-desc">Vault:</label>
+                    <span class="field-desc" id="world-vault-desc">Хранилище документов (vault), к которому привязывается данный мир.</span>
                     <select id="world-vault-select">
                         ${vaults.map((v) => `<option value="${this.escapeHtml(v.vault_id)}">${this.escapeHtml(v.display_name || v.vault_id)}</option>`).join('')}
                     </select>
                 </div>
                 <div class="form-group">
-                    <label>Path prefix:</label>
-                    <input type="text" id="world-path-input">
+                    <label for="world-path-desc">Path prefix:</label>
+                    <span class="field-desc" id="world-path-desc">Префикс пути к папке с документами мира. Должен заканчиваться на '/' (например, worlds/dragonlance/).</span>
+                    <input type="text" id="world-path-input" placeholder="worlds/my_world/">
                 </div>
                 <div class="modal-actions">
                     <button id="world-save-btn" class="btn btn-primary">Сохранить</button>
@@ -583,11 +609,16 @@ class SettingsManager {
         document.body.appendChild(modal);
         modal.querySelector('#world-cancel-btn')?.addEventListener('click', () => modal.remove());
         modal.querySelector('#world-save-btn')?.addEventListener('click', async () => {
+            let pathPrefix = modal.querySelector('#world-path-input').value;
+            // Автоматически добавляем завершающий слэш если его нет
+            if (pathPrefix && !pathPrefix.endsWith('/')) {
+                pathPrefix += '/';
+            }
             const data = {
                 world_id: modal.querySelector('#world-id-input').value,
                 name: modal.querySelector('#world-name-input').value,
                 vault_id: modal.querySelector('#world-vault-select').value,
-                path_prefix: modal.querySelector('#world-path-input').value,
+                path_prefix: pathPrefix,
             };
             await this.api.createWorld(data);
             modal.remove();
