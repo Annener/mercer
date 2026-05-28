@@ -1,65 +1,44 @@
 ```
-# Dependencies
-__pycache__/
+# Compiled and build artifacts
 *.pyc
-*.pyo
-*.pyd
-*.py.class
-*.py.o
-*.py.obj
-
-# Build and distribution artifacts
+__pycache__/
+*.o
+*.obj
 dist/
 build/
-*.egg-info/
+target/
 
-# Virtual environments
-venv/
+# Dependencies
 .venv/
-env/
-.ENV/
+venv/
+node_modules/
+.mypy_cache/
+.pytest_cache/
+.gradle/
 
-# Logs
+# Logs and temp files
 *.log
-
-# Environment variables
-.env
-.env.local
-*.env.*
-
-# IDE and editor files
-.vscode/
-.idea/
+*.tmp
 *.swp
 *.swo
-*.tmp
 
-# OS generated files
+# Environment
+.env
+.env.local
+.env.*
+
+# Editors
+.vscode/
+.idea/
+
+# System files
 .DS_Store
 Thumbs.db
 
-# Testing
-.coverage
+# Coverage
 coverage/
 htmlcov/
-.pytest_cache/
-.mypy_cache/
-
-# Node.js (if present)
-node_modules/
-
-# Java/Maven (if present)
-target/
-.gradle/
-*.class
-
-# Other common build artifacts
-*.so
-*.dll
-*.a
-*.lib
-*.exe
-*.out
+.coverage
 
 # Compressed files
 *.zip
@@ -70,10 +49,18 @@ target/
 *.xz
 *.7z
 *.rar
+*.zst
+*.lz4
+*.lzh
+*.cab
+*.arj
+*.rpm
+*.deb
 *.Z
 *.lz
 *.lzo
 *.tar.gz
 *.tar.bz2
 *.tar.xz
+*.tar.zst
 ```
