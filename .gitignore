@@ -10,3 +10,5 @@ __pycache__/
 /state/
 /cache/
 /vaults/
+.DS_Store
+
