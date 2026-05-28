@@ -3,7 +3,11 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class ORMModel(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
 
 
 class FileIndexState(BaseModel):
@@ -73,6 +77,287 @@ class VaultBinding(BaseModel):
     chunk_count: int = 0
 
 
+class DomainRead(ORMModel):
+    domain_id: str
+    display_name: str
+    description: str | None = None
+    is_system: bool = False
+    enabled: bool = True
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class DomainCreate(BaseModel):
+    domain_id: str
+    display_name: str
+    description: str | None = None
+    enabled: bool = True
+
+
+class DomainUpdate(BaseModel):
+    display_name: str | None = None
+    description: str | None = None
+    enabled: bool | None = None
+
+
+class DomainPromptRead(ORMModel):
+    id: str | None = None
+    domain_id: str
+    prompt_type: Literal["system", "clarification", "planner", "pipeline_router"]
+    content: str
+    updated_at: datetime | None = None
+
+
+class DomainPromptUpdate(BaseModel):
+    content: str
+
+
+class DomainClarificationFieldRead(ORMModel):
+    id: str | None = None
+    domain_id: str
+    field_name: str
+    label: str
+    hint: str | None = None
+    required: bool = True
+    display_order: int = 0
+
+
+class DomainClarificationFieldCreate(BaseModel):
+    field_name: str
+    label: str
+    hint: str | None = None
+    required: bool = True
+    display_order: int = 0
+
+
+class PlatformSettingRead(ORMModel):
+    key: str
+    value: Any
+    value_type: Literal["int", "float", "bool", "str"]
+    group_name: str
+    label: str
+    hint: str
+    updated_at: datetime | None = None
+
+
+class PlatformSettingUpdate(BaseModel):
+    value: Any
+
+
+class GenerationModelRead(ORMModel):
+    model_id: str
+    provider: str = "openai_compatible"
+    display_name: str | None = None
+    base_url: str
+    timeout_seconds: int = 60
+    is_active: bool = False
+    enabled: bool = True
+    has_api_key: bool = False
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class GenerationModelCreate(BaseModel):
+    model_id: str
+    provider: str = "openai_compatible"
+    display_name: str | None = None
+    base_url: str
+    api_key: str | None = None
+    timeout_seconds: int = 60
+    enabled: bool = True
+
+
+class GenerationModelUpdate(BaseModel):
+    provider: str | None = None
+    display_name: str | None = None
+    base_url: str | None = None
+    api_key: str | None = None
+    timeout_seconds: int | None = None
+    enabled: bool | None = None
+
+
+class EmbeddingModelRead(ORMModel):
+    model_id: str
+    provider: Literal["ollama", "openai_compatible"]
+    display_name: str | None = None
+    model_name: str
+    base_url: str
+    dimensions: int
+    timeout_seconds: int = 30
+    max_retries: int = 3
+    enabled: bool = True
+    has_api_key: bool = False
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class EmbeddingModelCreate(BaseModel):
+    model_id: str
+    provider: Literal["ollama", "openai_compatible"]
+    display_name: str | None = None
+    model_name: str
+    base_url: str
+    api_key: str | None = None
+    dimensions: int = Field(gt=0)
+    timeout_seconds: int = 30
+    max_retries: int = 3
+    enabled: bool = True
+
+
+class EmbeddingModelUpdate(BaseModel):
+    provider: Literal["ollama", "openai_compatible"] | None = None
+    display_name: str | None = None
+    model_name: str | None = None
+    base_url: str | None = None
+    api_key: str | None = None
+    dimensions: int | None = Field(default=None, gt=0)
+    timeout_seconds: int | None = None
+    max_retries: int | None = None
+    enabled: bool | None = None
+
+
+class VaultRead(ORMModel):
+    vault_id: str
+    domain_id: str
+    display_name: str | None = None
+    enabled: bool = True
+    embedding_model_id: str | None = None
+    expected_dimensions: int | None = None
+    chunk_size: int | None = None
+    overlap: int | None = None
+    entity_aware_mode: bool | None = None
+    binding_status: Literal["unbound", "indexing", "bound", "error"] = "unbound"
+    chunk_count: int = 0
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class VaultCreate(BaseModel):
+    vault_id: str
+    domain_id: str
+    display_name: str | None = None
+    embedding_model_id: str | None = None
+    expected_dimensions: int | None = None
+    chunk_size: int | None = None
+    overlap: int | None = None
+    entity_aware_mode: bool | None = None
+
+
+class VaultUpdate(BaseModel):
+    domain_id: str | None = None
+    display_name: str | None = None
+    enabled: bool | None = None
+    embedding_model_id: str | None = None
+    expected_dimensions: int | None = None
+    chunk_size: int | None = None
+    overlap: int | None = None
+    entity_aware_mode: bool | None = None
+    binding_status: Literal["unbound", "indexing", "bound", "error"] | None = None
+    chunk_count: int | None = None
+
+
+class WorldRead(ORMModel):
+    id: str
+    world_id: str
+    vault_id: str
+    name: str
+    description: str | None = None
+    path_prefix: str
+    is_active: bool = True
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class WorldCreate(BaseModel):
+    world_id: str
+    vault_id: str
+    name: str
+    description: str | None = None
+    path_prefix: str
+    is_active: bool = True
+
+
+class WorldUpdate(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    path_prefix: str | None = None
+    is_active: bool | None = None
+
+
+class CampaignRead(ORMModel):
+    id: str
+    campaign_id: str
+    world_id: str
+    vault_id: str
+    name: str
+    description: str | None = None
+    path_prefix: str
+    is_active: bool = True
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class CampaignCreate(BaseModel):
+    campaign_id: str
+    world_id: str | None = None
+    vault_id: str | None = None
+    name: str
+    description: str | None = None
+    path_prefix: str
+    is_active: bool = True
+
+
+class CampaignUpdate(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    path_prefix: str | None = None
+    is_active: bool | None = None
+
+
+class PipelineStep(BaseModel):
+    order: int
+    type: Literal["book", "world", "campaign"]
+    name: str
+    role: Literal["methodology", "lore", "campaign_context", "character_sheet", "session_log", "rules"]
+    system_prompt: str
+    top_k: int | None = None
+    document_ids: list[str] | None = None
+    world_id: str | None = None
+    categories: list[str] | None = None
+    campaign_id: str | None = None
+
+
+class FinalComposition(BaseModel):
+    system_prompt: str
+
+
+class PipelineRead(ORMModel):
+    id: str
+    pipeline_id: str
+    domain_id: str
+    version: str
+    name: str
+    description: str | None = None
+    steps: list[PipelineStep]
+    final_composition: FinalComposition
+    is_active: bool = True
+    created_at: datetime | None = None
+
+
+class PipelineCreate(BaseModel):
+    pipeline_id: str
+    domain_id: str
+    name: str
+    description: str | None = None
+    steps: list[PipelineStep]
+    final_composition: FinalComposition
+    is_active: bool = True
+
+
+class PipelineUpdate(PipelineCreate):
+    pass
+
+
 class ClarificationState(BaseModel):
     stage: Literal["idle", "collecting", "complete", "fallback"] = "idle"
     missing_fields: list[str] = Field(default_factory=list)
@@ -95,6 +380,8 @@ class ChatRecord(BaseModel):
     title: str = "New Chat"
     vault_id: str | None = None
     domain_id: str | None = None
+    world_id: str | None = None
+    locked_pipeline_id: str | None = None
     created_at: datetime
     updated_at: datetime
     pipeline_versions: dict[str, str] = Field(default_factory=dict)
@@ -151,6 +438,7 @@ class TaskStateResponse(BaseModel):
 class CreateChatRequest(BaseModel):
     vault_id: str | None = None
     domain_id: str | None = None
+    world_id: str | None = None
 
 
 class CreateChatResponse(BaseModel):
@@ -268,6 +556,9 @@ type TaskStreamEvent = (
 
 
 __all__ = [
+    "CampaignCreate",
+    "CampaignRead",
+    "CampaignUpdate",
     "ChatMessage",
     "ChatRecord",
     "ChunkRecord",
@@ -276,13 +567,33 @@ __all__ = [
     "CreateChatRequest",
     "CreateChatResponse",
     "DocumentRecord",
+    "DomainClarificationFieldCreate",
+    "DomainClarificationFieldRead",
+    "DomainCreate",
+    "DomainPromptRead",
+    "DomainPromptUpdate",
+    "DomainRead",
+    "DomainUpdate",
+    "EmbeddingModelCreate",
+    "EmbeddingModelRead",
+    "EmbeddingModelUpdate",
     "EntityRecord",
     "ErrorResponse",
     "FileIndexState",
+    "FinalComposition",
+    "GenerationModelCreate",
+    "GenerationModelRead",
+    "GenerationModelUpdate",
     "IndexState",
+    "PipelineCreate",
     "PipelineContext",
     "PipelineInvocation",
+    "PipelineRead",
     "PipelineResult",
+    "PipelineStep",
+    "PipelineUpdate",
+    "PlatformSettingRead",
+    "PlatformSettingUpdate",
     "PlannerDecision",
     "SearchHit",
     "SearchRequest",
@@ -296,6 +607,12 @@ __all__ = [
     "UpsertRequest",
     "UpsertResponse",
     "VaultBinding",
+    "VaultCreate",
+    "VaultRead",
+    "VaultUpdate",
+    "WorldCreate",
+    "WorldRead",
+    "WorldUpdate",
     "WSFileStatusMessage",
     "WSFileChunkProgressMessage",
     "WSTaskCancelledMessage",

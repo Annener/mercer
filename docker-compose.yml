@@ -54,11 +54,13 @@ services:
       - .env 
     environment:
       SERVICE_PORT: "9000"
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://raguser:changeme@rag-db:5432/ragplatform}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      STORAGE_API_URL: ${STORAGE_API_URL:-http://db-api-server:8080}
     # ports не пробрасываем наружу — rag-indexer внутренний сервис,
     # доступен только через rag-backend (proxy) внутри rag-net
     volumes:
-      - ./config:/app/config:ro
-      - ./vaults:/data/vaults:ro
+      - ./vaults:/data/vaults:rw
       - ./state:/app/state
       - ./cache/embeddings:/app/cache/embeddings
       - ./logs:/app/logs
@@ -83,12 +85,13 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://raguser:changeme@rag-db:5432/ragplatform}
       DB_API_URL: ${DB_API_URL:-http://db-api-server:8080}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      STORAGE_API_URL: ${STORAGE_API_URL:-http://db-api-server:8080}
       INDEXER_API_URL: ${INDEXER_API_URL:-http://rag-indexer:9000}
       SERVICE_PORT: "8000"
     ports:
       - "8000:8000"
     volumes:
-      - ./config:/app/config:ro
       - ./logs:/app/logs
       - ./rag-backend/app/static:/app/app/static:ro
     depends_on:

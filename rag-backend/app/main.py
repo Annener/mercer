@@ -15,7 +15,7 @@ from app.api.config_api import router as config_router
 from app.api.db_management import router as db_management_router
 from app.config import AppConfig
 from app.config_loader import get_config
-from app.db.migrations import migrate_vault_bindings_from_json, run_migrations
+from app.db.migrations import run_migrations
 from app.db.session import dispose_engine
 from app.domains.registry import DomainRegistry
 from app.logging_config import setup_logging
@@ -30,7 +30,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.config = get_config()
     await run_migrations()
     setup_logging("backend")
-    await migrate_vault_bindings_from_json()
     app.state.domain_registry = DomainRegistry()
     app.state.domain_registry.load()
     app.state.pipeline_registry = PipelineRegistry(app.state.config.pipelines.path)
