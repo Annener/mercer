@@ -473,7 +473,7 @@ class SettingsManager {
                     <label for="emb-model-provider-desc">Провайдер:</label>
                     <span class="field-desc" id="emb-model-provider-desc">Поставщик модели: OpenAI или Ollama (локально).</span>
                     <select id="emb-model-provider">
-                        <option value="openai">OpenAI</option>
+                        <option value="openai_compatible">OpenAI</option>
                         <option value="ollama">Ollama</option>
                     </select>
                 </div>
@@ -505,11 +505,11 @@ class SettingsManager {
                 model_id: modal.querySelector('#emb-model-id-input').value,
                 display_name: modal.querySelector('#emb-model-name-input').value,
                 provider: modal.querySelector('#emb-model-provider').value,
+                model_name: modal.querySelector('#emb-model-id-input').value,
                 api_key: modal.querySelector('#emb-model-api-key-input').value || null,
                 dimensions: parseInt(modal.querySelector('#emb-model-dimensions-input').value, 10),
+                base_url: modal.querySelector('#emb-model-base-url-input').value || '',
             };
-            const baseUrl = modal.querySelector('#emb-model-base-url-input').value;
-            if (baseUrl) data.base_url = baseUrl;
             await this.api.createEmbeddingModel(data);
             modal.remove();
             await this.loadTab(this.currentTab);
