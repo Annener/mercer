@@ -12,17 +12,15 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from starlette.responses import StreamingResponse
-from app.config import AppConfig
-from app.config_loader import get_config
-from app.db.models import AuditLog, Chat, ClarificationState as ClarificationStateRow, Message, Vault
+from app.config import AppConfig, EmbeddingModelConfig, VaultConfig
+from app.db.models import AuditLog, Chat, ClarificationState as ClarificationStateRow, EmbeddingModel, Message, Vault
 from app.db.session import SessionLocal, get_db
-from app.domains.registry import DomainRegistry
-from app.pipelines.registry import PipelineRegistry
 from app.providers.generation import GenerationProviderUnavailableError, get_generation_provider
 from app.services import clarification_fsm
 from app.services.planner import LLMRAGPlanner, Planner
 from app.services.prompt_pack import PromptPack, format_prompt
 from app.services.retrieval import format_context, retrieve, retrieve_multi_vault
+from app.services.domain_service import domain_service
 from app.services.settings_service import settings_service
 from shared_contracts.models import (
     ChatMessage,
@@ -151,7 +149,6 @@ async def send_message(
     req: SendMessageRequest,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    config: AppConfig = Depends(get_config),
 ) -> StreamingResponse | MessageResponse | ClarificationResponse:
     chat = await _get_chat(db, chat_id)
     existing_messages = await _get_messages(db, chat.id)
@@ -164,14 +161,15 @@ async def send_message(
     await db.refresh(user_message)
 
     if is_first_user_message and await settings_service.get("chat.auto_title", db):
-        asyncio.create_task(_generate_title(chat_id, req.content, config))
+        asyncio.create_task(_generate_title(chat_id, req.content))
 
-    prompt_pack = _prompt_pack_for_chat(request, chat, config)
+    prompt_pack = await _prompt_pack_for_chat(chat, db)
     state = await clarification_fsm.get_state(db, chat.id)
 
     if state.stage == "idle":
-        domain_id = _domain_id_for_chat(chat, config)
-        decision, missing_fields = await Planner(config, _pipeline_registry(request)).decide(
+        domain_id = await _domain_id_for_chat(chat, db)
+        runtime_config = await _runtime_config_from_db(db)
+        decision, missing_fields = await Planner(runtime_config, None).decide(
             db=db,
             query=req.content,
             vault_id=chat.vault_id,
@@ -234,7 +232,7 @@ async def send_message(
         request=request,
         existing_messages=existing_messages,
         user_message=user_message,
-        config=config,
+        db=db,
         prompt_pack=prompt_pack,
         decision=decision,
         collected=collected,
@@ -246,26 +244,27 @@ async def _generate_answer(
     request: Request,
     existing_messages: list[Message],
     user_message: Message,
-    config: AppConfig,
+    db: AsyncSession,
     prompt_pack: PromptPack,
     decision: PlannerDecision,
     collected: dict[str, Any],
 ) -> StreamingResponse | MessageResponse:
+    config = await _runtime_config_from_db(db)
     
     # --- LLM-driven Query Decomposition (Agent Step) ---
     queries = [req.content]
-    if decision.retrieval_strategy == "semantic" and config.retrieval.enabled:
+    if decision.retrieval_strategy == "semantic" and await settings_service.get("retrieval.enabled", db):
         try:
             planner = LLMRAGPlanner(config)
             history_texts = [m.content for m in existing_messages[-4:]]
-            queries = await planner.decompose(req.content, _domain_id_for_chat(chat, config), history_texts)
+            queries = await planner.decompose(req.content, await _domain_id_for_chat(chat, db) or "default", history_texts)
         except Exception as e:
             logger.warning("LLM decomposition failed, using raw query: %s", e)
             queries = [req.content]
 
     # --- Parallel Retrieval across queries & vaults ---
     all_hits: list[SearchHit] = []
-    top_k = config.retrieval.top_k
+    top_k = int(await settings_service.get("retrieval.top_k", db))
     
     if chat.vault_id:
         for q in queries:
@@ -305,7 +304,7 @@ async def _generate_answer(
     messages_for_llm.append({"role": "user", "content": req.content})
     
     try:
-        provider = get_generation_provider(config)
+        provider = get_generation_provider()
     except Exception:
         logger.warning("Generation provider configuration failed.", exc_info=True)
         provider = None
@@ -403,9 +402,9 @@ async def _add_assistant_message(db: AsyncSession, chat_uuid: uuid.UUID, content
     )
     return assistant_message
 
-async def _generate_title(chat_id: str, first_message: str, config: AppConfig) -> None:
+async def _generate_title(chat_id: str, first_message: str) -> None:
     try:
-        provider = get_generation_provider(config)
+        provider = get_generation_provider()
     except Exception:
         logger.warning("Auto-title generation provider is not configured: chat_id=%s", chat_id, exc_info=True)
         return
@@ -506,33 +505,57 @@ async def _vault_enabled(db: AsyncSession, vault_id: str | None) -> bool:
     vault = await db.get(Vault, vault_id)
     return bool(vault and vault.enabled)
 
+async def _runtime_config_from_db(db: AsyncSession) -> AppConfig:
+    vaults_result = await db.execute(select(Vault))
+    vaults = {
+        vault.vault_id: VaultConfig(
+            vault_id=vault.vault_id,
+            domain_id=vault.domain_id,
+            path=f"/data/vaults/{vault.vault_id}",
+            enabled=vault.enabled,
+        )
+        for vault in vaults_result.scalars().all()
+    }
+    models_result = await db.execute(select(EmbeddingModel).where(EmbeddingModel.enabled == True))
+    embedding_models = {
+        model.model_id: EmbeddingModelConfig(
+            model_id=model.model_id,
+            provider=model.provider,
+            model_name=model.model_name,
+            base_url=model.base_url,
+            dimensions=model.dimensions,
+            enabled=model.enabled,
+            timeout_seconds=model.timeout_seconds,
+            max_retries=model.max_retries,
+        )
+        for model in models_result.scalars().all()
+    }
+    return AppConfig(vaults=vaults, embedding_models=embedding_models, generation_models={})
+
 def _llm_message(message: Message) -> dict[str, str]:
     return {"role": message.role, "content": message.content}
 
-def _prompt_pack_for_chat(request: Request, chat: Chat, config: AppConfig) -> PromptPack:
-    domain_id = _domain_id_for_chat(chat, config)
-    registry = getattr(request.app.state, "domain_registry", None)
-    if not isinstance(registry, DomainRegistry):
-        registry = DomainRegistry()
-        registry.load()
-    return registry.get(domain_id)
+async def _prompt_pack_for_chat(chat: Chat, db: AsyncSession) -> PromptPack:
+    domain_id = await _domain_id_for_chat(chat, db) or "default"
+    domain = await domain_service.get_domain(domain_id, db)
+    return PromptPack(
+        domain_id=domain.domain_id,
+        description="",
+        prompts=domain.prompts,
+    )
 
-def _domain_id_for_chat(chat: Chat, config: AppConfig) -> str | None:
+async def _domain_id_for_chat(chat: Chat, db: AsyncSession) -> str | None:
     if chat.domain_id is not None:
         return chat.domain_id
-    if chat.vault_id and chat.vault_id in config.vaults:
-        return config.vaults[chat.vault_id].domain_id
+    if chat.vault_id:
+        vault = await db.get(Vault, chat.vault_id)
+        if vault is not None:
+            return vault.domain_id
     return None
 
-def _pipeline_registry(request: Request) -> PipelineRegistry | None:
-    registry = getattr(request.app.state, "pipeline_registry", None)
-    return registry if isinstance(registry, PipelineRegistry) else None
-
 async def _pipeline_versions(request: Request) -> dict[str, str]:
-    registry = _pipeline_registry(request)
-    if registry is None:
-        return {}
-    return await registry.snapshot_versions()
+    _ = request
+    return {}
 
 async def _run_pipelines(
     request: Request,
@@ -543,33 +566,8 @@ async def _run_pipelines(
     collected: dict[str, Any],
     decision: PlannerDecision,
 ) -> list[PipelineResult]:
-    registry = _pipeline_registry(request)
-    if registry is None or not decision.pipeline_invocations:
-        return []
-    context = PipelineContext(
-        query=query,
-        vault_id=chat.vault_id or "",
-        domain_id=_domain_id_for_chat(chat, get_config()),
-        context_chunks=[_hit_to_chunk(hit, chat.vault_id or "") for hit in hits],
-        clarification_collected=collected,
-        chat_history=[_chat_message(message) for message in existing_messages[-8:]],
-        metadata={},
-    )
-
-    results: list[PipelineResult] = []
-    for invocation in sorted(decision.pipeline_invocations, key=lambda item: item.priority):
-        version = (chat.pipeline_versions or {}).get(invocation.pipeline_id)
-        try:
-            results.append(await registry.run(invocation.pipeline_id, context, version=version))
-        except Exception:
-            logger.warning(
-                "Pipeline invocation failed: chat_id=%s pipeline_id=%s version=%s",
-                chat.id,
-                invocation.pipeline_id,
-                version,
-                exc_info=True,
-            )
-    return results
+    _ = request, chat, query, hits, existing_messages, collected, decision
+    return []
 
 def _hit_to_chunk(hit: SearchHit, vault_id: str) -> ChunkRecord:
     return ChunkRecord(

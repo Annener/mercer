@@ -117,6 +117,11 @@ async def run_indexing(
         if entity_aware is None:
             entity_aware = settings["chunking.entity_aware_mode"]
         worlds = await db_client.get_worlds_for_vault(vault_id)
+        parser_settings = {
+            "sidecar_url": settings["pdf_sidecar.url"],
+            "timeout_seconds": float(settings["pdf_sidecar.timeout_seconds"]),
+            "fallback_to_pdfminer": bool(settings["pdf_sidecar.fallback_to_pdfminer"]),
+        }
 
         files = await asyncio.to_thread(scan_vault, vault_path)
 
@@ -197,6 +202,7 @@ async def run_indexing(
                     overlap=int(overlap),
                     entity_aware=bool(entity_aware),
                     worlds=worlds,
+                    parser_settings=parser_settings,
                     uploaded_document_ids=uploaded_document_ids,
                     is_cancelled=is_cancelled,
                     broadcast=broadcast,
@@ -280,6 +286,7 @@ async def _process_file(
     overlap: int,
     entity_aware: bool,
     worlds: list[dict[str, Any]],
+    parser_settings: dict[str, Any],
     uploaded_document_ids: list[str],
     is_cancelled: CancelCallable,
     broadcast: BroadcastCallable,
@@ -298,6 +305,7 @@ async def _process_file(
         relative_path=relative_path,
         broadcast=broadcast,
         is_cancelled=is_cancelled,
+        parser_settings=parser_settings,
     )
 
     await _ensure_not_cancelled(task_id, is_cancelled)
@@ -495,11 +503,16 @@ def _assign_page_numbers_and_headers(
             chunk.metadata["headers"] = headers
 
 
-def _parse_file(path: str, extension: str) -> dict[str, Any]:
+def _parse_file(path: str, extension: str, parser_settings: dict[str, Any]) -> dict[str, Any]:
     if extension == ".md":
         return parse_markdown(path)
     if extension == ".pdf":
-        return parse_pdf(path)
+        return parse_pdf(
+            path,
+            sidecar_url=str(parser_settings["sidecar_url"]),
+            timeout_seconds=float(parser_settings.get("timeout_seconds", 180.0)),
+            fallback_to_pdfminer=bool(parser_settings.get("fallback_to_pdfminer", True)),
+        )
     raise ValueError(f"Unsupported file extension: {extension}")
 
 
@@ -510,6 +523,7 @@ async def _parse_file_with_progress(
     relative_path: str,
     broadcast: BroadcastCallable,
     is_cancelled: CancelCallable | None = None,
+    parser_settings: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Запускает _parse_file в потоке и параллельно каждые _PARSING_HEARTBEAT_INTERVAL
@@ -519,7 +533,7 @@ async def _parse_file_with_progress(
     но следующую страницу/батч уже не запустит.
     """
     parse_task = asyncio.ensure_future(
-        asyncio.to_thread(_parse_file, absolute_path, extension)
+        asyncio.to_thread(_parse_file, absolute_path, extension, parser_settings or {})
     )
 
     # Для не-PDF heartbeat не нужен — парсинг быстрый
