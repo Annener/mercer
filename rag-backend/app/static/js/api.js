@@ -279,3 +279,6 @@ class ChatAPI {
 }
 
 const chatAPI = new ChatAPI();
+
+// Экспортируем в глобальную область видимости для использования в других модулях
+window.chatAPI = chatAPI;
