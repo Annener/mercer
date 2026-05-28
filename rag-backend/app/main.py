@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -16,10 +17,12 @@ from app.api.db_management import router as db_management_router
 from app.config import AppConfig
 from app.config_loader import get_config
 from app.db.migrations import run_migrations
-from app.db.session import dispose_engine
+from app.db.session import SessionLocal, dispose_engine
 from app.domains.registry import DomainRegistry
 from app.logging_config import setup_logging
 from app.pipelines.registry import PipelineHotReloader, PipelineRegistry
+from app.services.domain_service import domain_service
+from app.services.settings_service import settings_service
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +33,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.config = get_config()
     await run_migrations()
     setup_logging("backend")
+    app.state.settings_service = settings_service
+    app.state.domain_service = domain_service
+    try:
+        async with SessionLocal() as db:
+            await settings_service.load_settings(db)
+            await settings_service.load_active_provider(db)
+    except Exception:
+        logger.critical("Failed to initialize runtime settings or active generation model.", exc_info=True)
+        sys.exit(1)
     app.state.domain_registry = DomainRegistry()
     app.state.domain_registry.load()
     app.state.pipeline_registry = PipelineRegistry(app.state.config.pipelines.path)

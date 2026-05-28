@@ -1,5 +1,6 @@
 alembic
 asyncpg
+cryptography>=41.0.0
 fastapi
 httpx
 pydantic-settings
