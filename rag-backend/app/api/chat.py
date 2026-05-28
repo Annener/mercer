@@ -18,6 +18,8 @@ from app.db.session import SessionLocal, get_db
 from app.providers.generation import GenerationProviderUnavailableError, get_generation_provider
 from app.services import clarification_fsm
 from app.services.planner import LLMRAGPlanner, Planner
+from app.services.pipeline_executor import pipeline_executor
+from app.services.pipeline_router import pipeline_router
 from app.services.prompt_pack import PromptPack, format_prompt
 from app.services.retrieval import format_context, retrieve, retrieve_multi_vault
 from app.services.domain_service import domain_service
@@ -226,6 +228,30 @@ async def send_message(
         )
 
     collected = state.collected if state.stage in {"complete", "fallback"} else {}
+    selected_pipeline, mode, confidence, reasoning = await pipeline_router.decide(req.content, chat, db)
+    if selected_pipeline is not None:
+        chat_context = {
+            "chat_id": chat.id,
+            "vault_id": chat.vault_id,
+            "collected_fields": collected,
+            "history": [_llm_message(message) for message in existing_messages[-8:]],
+            "mode": mode,
+            "confidence": confidence,
+            "reasoning": reasoning,
+            "config": await _runtime_config_from_db(db),
+        }
+        return StreamingResponse(
+            _pipeline_sse_response(
+                chat_id=str(chat.id),
+                user_message_id=str(user_message.id),
+                pipeline=selected_pipeline,
+                query=req.content,
+                chat_context=chat_context,
+                db=db,
+                request=request,
+            ),
+            media_type="text/event-stream",
+        )
     return await _generate_answer(
         chat=chat,
         req=req,
@@ -378,6 +404,31 @@ async def _sse_response(
         yield _sse_data({"token": fallback, "warning": str(exc)})
         await _save_assistant_message(chat_id, fallback, reset_clarification=True)
         yield "data: [DONE]\n\n"
+
+
+async def _pipeline_sse_response(
+    chat_id: str,
+    user_message_id: str,
+    pipeline: Any,
+    query: str,
+    chat_context: dict[str, Any],
+    db: AsyncSession,
+    request: Request,
+) -> AsyncIterator[str]:
+    tokens: list[str] = []
+    async for event in pipeline_executor.run(pipeline, query, chat_context, db, request=request):
+        if event.get("type") == "token":
+            tokens.append(str(event.get("content", "")))
+        yield _sse_data(event)
+    if tokens:
+        assistant_message = await _save_assistant_message(chat_id, "".join(tokens), reset_clarification=True)
+        logger.info(
+            "Completed pipeline chat response: chat_id=%s user_message_id=%s assistant_message_id=%s",
+            chat_id,
+            user_message_id,
+            assistant_message.id,
+        )
+    yield "data: [DONE]\n\n"
 
 async def _save_assistant_message(chat_id: str, content: str, reset_clarification: bool = False) -> Message:
     async with SessionLocal() as db:
