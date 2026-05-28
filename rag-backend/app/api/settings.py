@@ -168,11 +168,7 @@ class PipelineUpdateRequest(BaseModel):
 
 @router.get("/status")
 async def get_status(db: AsyncSession = Depends(get_db)) -> dict[str, bool]:
-    try:
-        settings_service.get_active_provider()
-        has_active_generation_model = True
-    except RuntimeError:
-        has_active_generation_model = False
+    has_active_generation_model = settings_service.get_active_provider() is not None
 
     embedding_count = await db.execute(
         select(func.count())

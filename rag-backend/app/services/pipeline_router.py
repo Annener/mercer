@@ -71,6 +71,9 @@ class PipelineRouter:
             chat_history=history,
         )
         provider = llm_provider or settings_service.get_active_provider()
+        if provider is None:
+            logger.warning("No active generation model configured; pipeline router cannot function.")
+            return None, None, None, None
         raw_output = await provider.generate([{"role": "system", "content": full_prompt}, {"role": "user", "content": query}])
         available = {pipeline.pipeline_id: pipeline for pipeline in pipelines}
         try:

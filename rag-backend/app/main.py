@@ -38,6 +38,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     except Exception:
         logger.critical("Failed to initialize runtime settings or active generation model.", exc_info=True)
         sys.exit(1)
+    if settings_service.get_active_provider() is None:
+        logger.warning("No active generation model configured. Application will start but LLM features will be unavailable.")
     logger.info("Service started. Database migrations applied.")
     try:
         yield

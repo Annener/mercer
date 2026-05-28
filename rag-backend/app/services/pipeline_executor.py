@@ -40,6 +40,8 @@ class PipelineExecutor:
             partial_results: list[str] = []
             step_hits: list[list[SearchHit]] = []
             provider = settings_service.get_active_provider()
+            if provider is None:
+                raise RuntimeError("No active generation model configured")
             total = len(steps)
 
             for index, step in enumerate(steps, start=1):
