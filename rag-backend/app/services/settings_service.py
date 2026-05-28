@@ -91,16 +91,15 @@ class SettingsService:
         self._settings_cache.pop(key, None)
         self._setting_types.pop(key, None)
 
-    def get_active_provider(self) -> GenerationProvider:
-        if self._active_provider is None:
-            raise RuntimeError("No active generation model configured")
+    def get_active_provider(self) -> GenerationProvider | None:
         return self._active_provider
 
     async def load_active_provider(self, db: AsyncSession) -> None:
         result = await db.execute(select(GenerationModel).where(GenerationModel.is_active == True, GenerationModel.enabled == True))
         model = result.scalar_one_or_none()
         if model is None:
-            raise RuntimeError("No active generation model configured")
+            self._active_provider = None
+            return
         provider = self._build_generation_provider(model)
         async with self._provider_lock:
             self._active_provider = provider
