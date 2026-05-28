@@ -360,13 +360,20 @@ body {
 
 .settings-param-row {
     display: grid;
-    grid-template-columns: minmax(220px, 1fr) minmax(180px, 260px);
+    grid-template-columns: minmax(220px, 1fr) minmax(180px, 260px) auto;
     align-items: center;
     gap: 12px;
     background: #fff;
     border: 1px solid #dfe6ee;
     border-radius: 6px;
     padding: 10px 12px;
+    font-size: 13px;
+}
+
+.json-editor {
+    width: 100%;
+    min-height: 220px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     font-size: 13px;
 }
 

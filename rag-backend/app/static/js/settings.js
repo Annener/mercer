@@ -170,6 +170,7 @@ class SettingsManager {
                     <label class="settings-param-row">
                         <span>${this.escapeHtml(key)}</span>
                         <input data-param="${this.escapeHtml(key)}" value="${this.escapeHtml(value ?? '')}">
+                        <button class="btn btn-sm btn-secondary" data-action="default-param" data-id="${this.escapeHtml(key)}">Дефолт</button>
                     </label>
                 `).join('')}
             </div>`;
@@ -242,6 +243,7 @@ class SettingsManager {
             if (action === 'check-emb') alert(JSON.stringify(await this.api.checkEmbeddingModel(id), null, 2));
             if (action === 'delete-emb' && confirm('Удалить embedding-модель?')) await this.api.deleteEmbeddingModel(id);
             if (action === 'reset-params' && confirm('Сбросить все параметры?')) await this.api.resetSettingsParams();
+            if (action === 'default-param') await this.api.updateSettingsParam(id, SETTINGS_DEFAULTS[id] ?? '');
             if (action === 'activate-pipeline') await this.api.activatePipeline(id);
             if (action === 'delete-pipeline') await this.api.deletePipeline(id);
             if (action === 'toggle-world') await this.api.updateWorld(id, { is_active: button.dataset.active !== '1' });
@@ -258,6 +260,25 @@ class SettingsManager {
         return div.innerHTML;
     }
 }
+
+const SETTINGS_DEFAULTS = {
+    'retrieval.enabled': true,
+    'retrieval.top_k': 10,
+    'retrieval.reranker_enabled': false,
+    'chunking.chunk_size': 2000,
+    'chunking.overlap': 64,
+    'chunking.entity_aware_mode': true,
+    'chat.max_clarification_turns': 3,
+    'chat.stream_answers': true,
+    'chat.auto_title': true,
+    'reranker.enabled': false,
+    'reranker.provider': null,
+    'reranker.base_url': null,
+    'reranker.model_name': null,
+    'pdf_sidecar.url': 'http://host.docker.internal:8765',
+    'pdf_sidecar.timeout_seconds': 180,
+    'pdf_sidecar.fallback_to_pdfminer': true,
+};
 
 document.addEventListener('DOMContentLoaded', () => {
     window.settingsManager = new SettingsManager(window.chatAPI);
