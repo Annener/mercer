@@ -6,7 +6,7 @@ import os
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,6 +16,15 @@ from app.db.models import AuditLog, Vault
 from app.db.session import get_db
 from shared_contracts.models import ChunkRecord, DocumentRecord, SearchHit
 
+# Попытка импорта websockets для прокси
+try:
+    from websockets import connect
+    from websockets.exceptions import ConnectionClosed
+    WEBSOCKETS_AVAILABLE = True
+except ImportError:
+    WEBSOCKETS_AVAILABLE = False
+    import warnings
+    warnings.warn("websockets library not installed. WebSocket proxy will not work. Run: pip install websockets")
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +58,10 @@ class TextSearchResponse(BaseModel):
     results: list[SearchHit]
 
 
-@router.get("/db/documents", response_model=DocumentsResponse)
+# === DB Management API ===
+# Согласно спецификации V3.0: /api/db/*
+
+@router.get("/api/db/documents", response_model=DocumentsResponse)
 async def list_documents(
     vault_id: str = Query(..., min_length=1),
     limit: int = Query(default=100, ge=1, le=500),
@@ -61,13 +73,13 @@ async def list_documents(
             "/index/documents",
             params={"vault_id": vault_id, "limit": limit, "offset": offset, "order_by": order_by},
         )
-    _raise_upstream(response)
-    return DocumentsResponse.model_validate(response.json())
+        _raise_upstream(response)
+        return DocumentsResponse.model_validate(response.json())
 
 
-@router.get("/db/docs/{document_id}/chunks", response_model=ChunksResponse)
+@router.get("/api/db/chunks", response_model=ChunksResponse)
 async def get_document_chunks(
-    document_id: str,
+    document_id: str = Query(..., min_length=1),
     vault_id: str = Query(..., min_length=1),
 ) -> ChunksResponse:
     async with httpx.AsyncClient(base_url=STORAGE_API_URL, timeout=20) as client:
@@ -75,19 +87,19 @@ async def get_document_chunks(
             f"/index/document/{document_id}/chunks",
             params={"vault_id": vault_id},
         )
-    _raise_upstream(response)
-    return ChunksResponse.model_validate(response.json())
+        _raise_upstream(response)
+        return ChunksResponse.model_validate(response.json())
 
 
-@router.post("/db/search/text", response_model=TextSearchResponse)
+@router.post("/api/db/search/text", response_model=TextSearchResponse)
 async def text_search(req: TextSearchRequest) -> TextSearchResponse:
     async with httpx.AsyncClient(base_url=STORAGE_API_URL, timeout=30) as client:
         response = await client.post("/index/search/text", json=req.model_dump())
-    _raise_upstream(response)
-    return TextSearchResponse.model_validate(response.json())
+        _raise_upstream(response)
+        return TextSearchResponse.model_validate(response.json())
 
 
-@router.post("/db/search/text/by-domain", response_model=TextSearchResponse)
+@router.post("/api/db/search/domain", response_model=TextSearchResponse)
 async def text_search_by_domain(
     req: TextSearchByDomainRequest,
     db: AsyncSession = Depends(get_db),
@@ -98,10 +110,9 @@ async def text_search_by_domain(
     """
     result = await db.execute(select(Vault.vault_id).where(Vault.domain_id == req.domain_id, Vault.enabled == True))
     vault_ids = list(result.scalars().all())
-    
     if not vault_ids:
         return TextSearchResponse(results=[])
-    
+
     async with httpx.AsyncClient(base_url=STORAGE_API_URL, timeout=30) as client:
         async def _search(vault_id: str) -> list[SearchHit]:
             try:
@@ -119,17 +130,17 @@ async def text_search_by_domain(
                 return []
         
         results_per_vault = await asyncio.gather(*[_search(vid) for vid in vault_ids])
-    
+
     all_results: list[SearchHit] = []
     for hits in results_per_vault:
         all_results.extend(hits)
-    
+
     # Сортируем по score (score здесь = 1.0 для точного совпадения, так что сохраняем порядок)
-    all_results = all_results[: req.limit]
+    all_results = all_results[:req.limit]
     return TextSearchResponse(results=all_results)
 
 
-@router.delete("/db/docs/{document_id}")
+@router.delete("/api/db/documents/{document_id}")
 async def delete_document(
     document_id: str,
     vault_id: str = Query(..., min_length=1),
@@ -140,8 +151,9 @@ async def delete_document(
             f"/index/document/{document_id}",
             params={"vault_id": vault_id},
         )
-    _raise_upstream(response)
-    payload = response.json()
+        _raise_upstream(response)
+        payload = response.json()
+
     try:
         docs_response = await _fetch_documents_for_vault(vault_id)
         new_total = sum(int(doc.get("chunk_count", 0)) for doc in docs_response)
@@ -150,11 +162,14 @@ async def delete_document(
             vault.chunk_count = new_total
     except Exception:
         logger.warning("Failed to recalculate vault chunk_count after document delete: vault_id=%s", vault_id, exc_info=True)
+
     await _audit(db, "db.document.delete", "document", document_id, {"vault_id": vault_id, **payload})
     await db.commit()
     logger.info("Deleted document via DB management: vault_id=%s document_id=%s", vault_id, document_id)
     return payload
 
+
+# === Vault Reindex ===
 
 class ReindexRequest(BaseModel):
     force_reindex: bool = False
@@ -162,54 +177,93 @@ class ReindexRequest(BaseModel):
 
 @router.post("/vaults/{vault_id}/reindex")
 async def reindex_vault(vault_id: str, req: ReindexRequest | None = None) -> dict[str, Any]:
-    # req=None не должно приводить к force=True: если тело не пришло,
-    # всё равно используем инкрементальный режим (force_reindex=False).
     force = req.force_reindex if req is not None else False
     async with httpx.AsyncClient(base_url=INDEXER_API_URL, timeout=20) as client:
         response = await client.post("/api/v1/tasks", json={"vault_id": vault_id, "force_reindex": force})
-    _raise_upstream(response)
-    return response.json()
+        _raise_upstream(response)
+        return response.json()
 
 
-@router.post("/indexer/tasks/{task_id}/cancel")
-async def cancel_indexer_task(task_id: str) -> dict[str, Any]:
-    """Проксирует запрос отмены задачи к rag-indexer.
-    Фронтенд обращается сюда вместо прямых запросов на localhost:9000 (избегаем CORS-ошибку)."""
+# === Index Tasks API ===
+# Согласно спецификации V3.0: /index-tasks/* (не /indexer/tasks/*)
+
+@router.delete("/index-tasks/{task_id}")
+async def cancel_index_task(task_id: str) -> dict[str, Any]:
+    """Отмена задачи индексации. Проксирует запрос к rag-indexer."""
     async with httpx.AsyncClient(base_url=INDEXER_API_URL, timeout=10) as client:
         response = await client.post(f"/api/v1/tasks/{task_id}/cancel")
-    _raise_upstream(response)
-    return response.json()
+        _raise_upstream(response)
+        return response.json()
 
 
-@router.get("/indexer/tasks/{task_id}/state")
-async def get_indexer_task_state(task_id: str) -> dict[str, Any]:
-    """Проксирует запрос состояния задачи к rag-indexer."""
+@router.get("/index-tasks/{task_id}/state")
+async def get_index_task_state(task_id: str) -> dict[str, Any]:
+    """Получить состояние задачи индексации. Проксирует запрос к rag-indexer."""
     async with httpx.AsyncClient(base_url=INDEXER_API_URL, timeout=10) as client:
         response = await client.get(f"/api/v1/tasks/{task_id}/state")
-    _raise_upstream(response)
-    return response.json()
+        _raise_upstream(response)
+        return response.json()
 
+
+# === Vault Detach ===
 
 @router.post("/vaults/{vault_id}/detach")
 async def detach_vault(vault_id: str, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
     async with httpx.AsyncClient(base_url=STORAGE_API_URL, timeout=30) as client:
         response = await client.delete(f"/index/vault/{vault_id}")
-    _raise_upstream(response)
-    payload = response.json()
+        _raise_upstream(response)
+        payload = response.json()
+
     vault = await db.get(Vault, vault_id)
     if vault is not None:
         vault.binding_status = "unbound"
         vault.chunk_count = 0
+
     await _audit(db, "vault.detach", "vault", vault_id, payload)
     await db.commit()
     logger.info("Detached vault: vault_id=%s deleted_count=%s", vault_id, payload.get("deleted_count"))
     return {"status": "ok", "vault_id": vault_id, "storage": payload}
 
 
-@router.get("/db/ui", response_class=HTMLResponse)
-async def db_management_ui() -> HTMLResponse:
-    return HTMLResponse(DB_MANAGEMENT_HTML)
+# === WebSocket Proxy для прогресса индексации ===
+# Согласно спецификации V3.0: /ws/index-tasks/{task_id} (не /ws/indexer/tasks/.../stream)
 
+@router.websocket("/ws/index-tasks/{task_id}")
+async def websocket_index_task_proxy(websocket: WebSocket, task_id: str):
+    """
+    Проксирует WebSocket поток от rag-indexer к клиенту.
+    Клиент подключается к этому эндпоинту вместо прямого соединения с indexer.
+    """
+    await websocket.accept()
+    
+    if not WEBSOCKETS_AVAILABLE:
+        await websocket.send_text('{"error": "WebSocket proxy not available (websockets library missing)"}')
+        await websocket.close()
+        return
+
+    indexer_ws_url = f"ws://rag-indexer:9000/api/v1/tasks/{task_id}/stream"
+    
+    try:
+        async with connect(indexer_ws_url) as indexer_ws:
+            while True:
+                message = await indexer_ws.recv()
+                await websocket.send_text(message)
+    except ConnectionClosed:
+        logger.info("WebSocket connection closed for task %s", task_id)
+    except Exception as e:
+        logger.error("WebSocket proxy error for task %s: %s", task_id, e, exc_info=True)
+        try:
+            await websocket.send_text(f'{{"error": "{str(e)}"}}')
+        except:
+            pass
+    finally:
+        try:
+            await websocket.close()
+        except:
+            pass
+
+
+# === Вспомогательные функции ===
 
 async def _audit(
     db: AsyncSession,
@@ -230,10 +284,23 @@ def _raise_upstream(response: httpx.Response) -> None:
 async def _fetch_documents_for_vault(vault_id: str) -> list[dict[str, Any]]:
     async with httpx.AsyncClient(base_url=STORAGE_API_URL, timeout=20) as client:
         response = await client.get("/index/documents", params={"vault_id": vault_id})
-    _raise_upstream(response)
-    payload = response.json()
-    documents = payload.get("documents", payload)
-    return documents if isinstance(documents, list) else []
+        _raise_upstream(response)
+        payload = response.json()
+        documents = payload.get("documents", payload)
+        return documents if isinstance(documents, list) else []
 
 
-DB_MANAGEMENT_HTML = """<html><body><h1>DB Management (legacy)</h1></body></html>"""
+# === Legacy UI (для обратной совместимости) ===
+
+@router.get("/db/ui", response_class=HTMLResponse)
+async def db_management_ui() -> HTMLResponse:
+    return HTMLResponse(DB_MANAGEMENT_HTML)
+
+
+DB_MANAGEMENT_HTML = """
+<html>
+<body>
+<h1>DB Management (legacy)</h1>
+</body>
+</html>
+"""

@@ -7,7 +7,6 @@ if (window.marked) {
         headerIds: false,      // не генерировать id у заголовков
         mangle: false,         // не обфусцировать email
     });
-
     // Используем highlight.js для блоков кода
     const renderer = new marked.Renderer();
     renderer.code = function (code, language) {
@@ -35,7 +34,6 @@ if (window.marked) {
  * marked не понимает GH-callout-синтаксис и рендерит `[!NOTE]` как простой текст.
  */
 const CALLOUT_LABELS = { NOTE: 'Заметка', TIP: 'Совет', IMPORTANT: 'Важно', WARNING: 'Предупреждение', CAUTION: 'Осторожно' };
-
 function preprocessMarkdown(text) {
     if (!text) return text;
     // Стрипаем [!TYPE] в начале блокцитата и заменяем на хуманный заголовок
@@ -60,7 +58,7 @@ function renderMarkdown(text) {
     return DOMPurify.sanitize(rawHtml, {
         ADD_ATTR: ['target'],
         FORBID_TAGS: ['script', 'style', 'iframe'],
-        ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto|ftp):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i,
+        ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto|ftp):|[^a-z]|[a-z+.-]+(?:[^a-z+.-:]|$))/i,
         FORCE_BODY: false,
     });
 }
@@ -79,6 +77,7 @@ function extractCitedIndices(text) {
     if (!text) return new Set();
     const cited = new Set();
     // Ищем все [N] и [N, M, ...] в тексте
+    // ВАЖНО: экранируем квадратные скобки в regex!
     const re = /\[(\d+)\]/g;
     let m;
     while ((m = re.exec(text)) !== null) {
@@ -91,13 +90,11 @@ function extractCitedIndices(text) {
  * Рендерит блок источников под ответом ассистента.
  * sources: [{path, page, vault_id}] — полный список retrieved.
  * answerText: финальный текст ответа LLM (для фильтрации по цитатам).
- *
  * Показывает только источники реально процитированные в ответе ([1], [2], ...).
  * Нумерация в блоке совпадает с нумерацией в тексте.
  */
 function renderSourcesBlock(sources, answerText) {
     if (!sources || sources.length === 0) return '';
-
     // Группируем по файлу (path), собираем страницы — итоговый список 1-based
     const fileMap = new Map();
     for (const s of sources) {
@@ -109,17 +106,13 @@ function renderSourcesBlock(sources, answerText) {
             fileMap.get(key).pages.push(s.page);
         }
     }
-
     const allItems = Array.from(fileMap.values());
-
     // Фильтруем: показываем только те источники, на которые LLM сослался
     const cited = extractCitedIndices(answerText);
     const items = cited.size > 0
         ? allItems.filter((_, i) => cited.has(i + 1))
         : allItems; // если LLM не вставил ни одной цитаты — показываем все
-
     if (items.length === 0) return '';
-
     const rows = items.map((item, i) => {
         const fileName = item.path.split('/').pop();
         const pagesLabel = item.pages.length > 0
@@ -129,14 +122,8 @@ function renderSourcesBlock(sources, answerText) {
         const pageSpan = pagesLabel
             ? `<span class="src-page">${escapeHtml(pagesLabel)}</span>`
             : '';
-        return `
-            <div class="src-item" title="${escapeHtml(item.path)}">
-                ${numBadge}
-                <span class="src-name">${escapeHtml(fileName)}</span>
-                ${pageSpan}
-            </div>`;
+        return `<div class="src-item" title="${escapeHtml(item.path)}">${numBadge}<span class="src-name">${escapeHtml(fileName)}</span>${pageSpan}</div>`;
     }).join('');
-
     return `<div class="sources-block"><div class="sources-label">Источники</div><div class="sources-list">${rows}</div></div>`;
 }
 
@@ -146,7 +133,6 @@ class ChatManager {
         this.currentChatId = null;
         this.isStreaming = false;
         this._renderScheduled = false;
-        
         this.messagesContainer = document.getElementById('messages-container');
         this.inputArea = document.getElementById('input-area');
         this.messageInput = document.getElementById('message-input');
@@ -158,21 +144,22 @@ class ChatManager {
         this.pipelineSelect = document.getElementById('pipeline-select');
         this.lockPipelineBtn = document.getElementById('lock-pipeline-btn');
         this.currentChat = null;
+        this._lastUserMessage = null;
         
         this.initEventListeners();
     }
 
     initEventListeners() {
-        this.sendBtn.addEventListener('click', () => this.sendMessage());
+        this.sendBtn?.addEventListener('click', () => this.sendMessage());
         
-        this.messageInput.addEventListener('keydown', (e) => {
+        this.messageInput?.addEventListener('keydown', (e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
                 this.sendMessage();
             }
         });
 
-        this.messageInput.addEventListener('input', () => {
+        this.messageInput?.addEventListener('input', () => {
             this.messageInput.style.height = 'auto';
             this.messageInput.style.height = Math.min(this.messageInput.scrollHeight, 150) + 'px';
         });
@@ -189,7 +176,7 @@ class ChatManager {
             this.chatTitle.textContent = data.chat.title;
             this.inputArea.style.display = 'flex';
             this.welcomeMessage.style.display = 'none';
-            
+             
             this.clearMessages();
             
             for (const message of data.messages) {
@@ -210,7 +197,6 @@ class ChatManager {
             return;
         }
 
-        // Очищаем инпут только если не повторная отправка
         if (!overrideContent) {
             this.messageInput.value = '';
             this.messageInput.style.height = 'auto';
@@ -231,7 +217,12 @@ class ChatManager {
             }
         } catch (error) {
             console.error('Failed to send message:', error);
-            this.addMessage('system', `Ошибка: ${error.message}`);
+            // Обработка ошибки LLM
+            if (error.message.includes('LLM service unavailable') || error.status === 503 || error.message.includes('generation model')) {
+                this.addMessage('system', 'Генеративная модель не настроена или недоступна. Перейдите в Настройки → Генеративные модели.');
+            } else {
+                this.addMessage('system', `Ошибка: ${error.message}`);
+            }
         } finally {
             this.sendBtn.disabled = false;
             this.isStreaming = false;
@@ -244,7 +235,7 @@ class ChatManager {
         let assistantMessage = null;
         let fullContent = '';
         let pendingContent = '';  // буфер для debounced рендера
-        let pendingSources = null; // источники из SSE
+        let pendingSources = null; // источник из SSE
         let pendingGroupedSources = null;
         let streamDone = false;
 
@@ -279,6 +270,12 @@ class ChatManager {
                                 this.scheduleMarkdownRender(assistantMessage, () => pendingContent);
                             }
                             if (parsed.type === 'sources' && parsed.grouped_by_step) pendingGroupedSources = parsed.step_groups;
+                            if (parsed.type === 'sources' && !parsed.grouped_by_step) pendingSources = parsed.sources;
+                            if (parsed.type === 'clarification') {
+                                fullContent += `\n❓ ${parsed.question || parsed.content || ''}`;
+                                pendingContent = fullContent;
+                                this.scheduleMarkdownRender(assistantMessage, () => pendingContent);
+                            }
                             if (parsed.type === 'error') this.addMessage('system', parsed.message || 'Pipeline error');
                         } else if (parsed.token) {
                             if (!assistantMessage) {
@@ -343,7 +340,7 @@ class ChatManager {
         if (!this.pipelineSelect) return;
         const pipelines = await chatAPI.getPipelines(chat.domain_id);
         this.pipelineSelect.innerHTML = '<option value="">Авто</option>';
-        for (const pipeline of pipelines.filter(p => p.is_active)) {
+        for (const pipeline of (pipelines || []).filter(p => p.is_active)) {
             const option = document.createElement('option');
             option.value = pipeline.pipeline_id;
             option.textContent = pipeline.name;
@@ -390,7 +387,7 @@ class ChatManager {
         return `
             <div class="sources-grouped">
                 <div class="sources-label">Источники по шагам</div>
-                ${stepGroups.map(group => `
+                ${(stepGroups || []).map(group => `
                     <details class="sources-group" ${group.step === 1 ? 'open' : ''}>
                         <summary>Шаг ${group.step}: ${escapeHtml(group.step_name)} (${group.sources.length})</summary>
                         <div class="sources-list">
@@ -444,7 +441,11 @@ class ChatManager {
     }
 
     _isLlmUnavailable(text) {
-        return text && text.includes('LLM service unavailable');
+        if (!text) return false;
+        return text.includes('LLM service unavailable') 
+            || /llm.*(unavailable|error|timeout|refused)/i.test(text) 
+            || /model.*not.*found/i.test(text)
+            || /generation model.*not configured/i.test(text);
     }
 
     _appendRetryButton(messageEl) {
@@ -501,5 +502,9 @@ class ChatManager {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+    if (!window.chatAPI) {
+        console.error('chatAPI not available — ChatManager will not initialize');
+        return;
+    }
     window.chatManager = new ChatManager();
 });

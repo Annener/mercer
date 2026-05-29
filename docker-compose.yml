@@ -94,6 +94,7 @@ services:
     volumes:
       - ./logs:/app/logs
       - ./rag-backend/app/static:/app/app/static:ro
+      - ./vaults:/data/vaults:rw
     depends_on:
       rag-db:
         condition: service_healthy

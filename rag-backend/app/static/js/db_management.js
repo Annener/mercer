@@ -3,22 +3,17 @@
 // - Vault actions в меню ⋯ (три точки)
 // - Прогресс индексации: компактный блок без task ID
 // - Поиск: чанки свёрнуты, кнопка 🔍 для детального просмотра
-
 class DBManager {
     constructor() {
         this.modal = document.getElementById('db-mgmt-modal');
         this.openBtn = document.getElementById('db-mgmt-btn');
         this.closeBtn = document.getElementById('db-mgmt-close-btn');
-
-        // Tabs (manage / search)
         this.tabs = this.modal.querySelectorAll('.tab');
         this.tabContents = this.modal.querySelectorAll('.tab-content');
 
-        // Manage tab
         this.domainTabsContainer = document.getElementById('mgmt-domain-tabs');
         this.vaultsContainer = document.getElementById('mgmt-vaults-container');
 
-        // Прогресс
         this.progressBlock = document.getElementById('mgmt-progress-block');
         this.taskStatusSpan = document.getElementById('mgmt-task-status');
         this.filesDoneSpan = document.getElementById('mgmt-files-done');
@@ -28,19 +23,16 @@ class DBManager {
         this.cancelBtn = document.getElementById('mgmt-cancel-btn');
         this.overallBar = document.getElementById('mgmt-overall-bar');
 
-        // Search tab
         this.searchDomainSelect = document.getElementById('search-domain-select');
         this.searchQueryInput = document.getElementById('search-query-input');
         this.searchLimitInput = document.getElementById('search-limit');
         this.searchBtn = document.getElementById('search-btn');
         this.searchResults = document.getElementById('search-results');
 
-        // Chunk detail modal
         this.chunkModal = document.getElementById('chunk-detail-modal');
         this.chunkModalClose = document.getElementById('chunk-detail-close');
         this.chunkModalContent = document.getElementById('chunk-detail-content');
 
-        // Состояние
         this.domains = [];
         this.allVaults = [];
         this.activeDomainTab = null;
@@ -54,9 +46,9 @@ class DBManager {
     }
 
     initEventListeners() {
-        this.openBtn.addEventListener('click', () => this.open());
-        this.closeBtn.addEventListener('click', () => this.close());
-        this.modal.addEventListener('click', (e) => {
+        this.openBtn?.addEventListener('click', () => this.open());
+        this.closeBtn?.addEventListener('click', () => this.close());
+        this.modal?.addEventListener('click', (e) => {
             if (e.target === this.modal) this.close();
         });
 
@@ -64,22 +56,24 @@ class DBManager {
             tab.addEventListener('click', () => this.switchTab(tab.dataset.tab));
         });
 
-        // Search
-        this.searchBtn.addEventListener('click', () => this.doSearch());
-        this.searchQueryInput.addEventListener('keydown', (e) => {
+        this.searchBtn?.addEventListener('click', () => this.doSearch());
+        this.searchQueryInput?.addEventListener('keydown', (e) => {
             if (e.key === 'Enter') this.doSearch();
         });
 
-        // Cancel indexing
-        this.cancelBtn.addEventListener('click', () => this.cancelCurrentTask());
+        this.cancelBtn?.addEventListener('click', () => this.cancelCurrentTask());
 
-        // Chunk detail modal close
         if (this.chunkModal) {
-            this.chunkModalClose.addEventListener('click', () => this.closeChunkModal());
+            this.chunkModalClose?.addEventListener('click', () => this.closeChunkModal());
             this.chunkModal.addEventListener('click', (e) => {
                 if (e.target === this.chunkModal) this.closeChunkModal();
             });
         }
+
+        // Глобальный обработчик для закрытия dropdown меню (навешивается ОДИН раз)
+        document.addEventListener('click', () => {
+            document.querySelectorAll('.vault-menu-dropdown').forEach(d => d.style.display = 'none');
+        });
     }
 
     async open() {
@@ -101,11 +95,10 @@ class DBManager {
         try {
             const [domainsResp, vaultsResp] = await Promise.all([
                 chatAPI.getDomains(),
-                chatAPI.getVaults(),
+                chatAPI.getSettingsVaults(),
             ]);
             this.domains = domainsResp.domains || [];
-            this.allVaults = vaultsResp.vaults || [];
-
+            this.allVaults = Array.isArray(vaultsResp) ? vaultsResp : [];
             this.renderDomainTabs();
             this.populateSearchDomainSelect();
         } catch (error) {
@@ -114,31 +107,24 @@ class DBManager {
     }
 
     formatDomainName(domainId) {
-        // Красивые имена для известных доменов; неизвестные отображаются как есть (id из конфига)
         const names = { 'dnd': 'D&D', 'work': 'Работа' };
         if (names[domainId]) return names[domainId];
-        // Капитализация первой буквы идентификатора
         return domainId.charAt(0).toUpperCase() + domainId.slice(1);
     }
-
-    // --- Domain tabs (Управление) ---
 
     renderDomainTabs() {
         this.domainTabsContainer.innerHTML = '';
 
-        // Таб "Все"
         const allTab = this._makeDomainTab('', 'Все', this.allVaults.length);
         this.domainTabsContainer.appendChild(allTab);
 
         for (const domain of this.domains) {
-            // Домен "default" — служебный фолбэк для промптов, не показываем в UI
             if (domain.domain_id === 'default') continue;
             const count = this.allVaults.filter(v => v.domain_id === domain.domain_id).length;
             const tab = this._makeDomainTab(domain.domain_id, this.formatDomainName(domain.domain_id), count);
             this.domainTabsContainer.appendChild(tab);
         }
 
-        // Активируем первый таб с вaultами или "Все"
         const firstActive = this.domains.length > 0 ? this.domains[0].domain_id : '';
         this.setActiveDomainTab(firstActive);
     }
@@ -147,7 +133,7 @@ class DBManager {
         const btn = document.createElement('button');
         btn.className = 'domain-tab';
         btn.dataset.domainId = domainId;
-        btn.innerHTML = `${this.escapeHtml(label)} <span class="domain-tab-count">${count}</span>`;
+        btn.innerHTML = `${this.escapeHtml(label)}<span class="domain-tab-count">${count}</span>`;
         btn.addEventListener('click', () => this.setActiveDomainTab(domainId));
         return btn;
     }
@@ -163,9 +149,10 @@ class DBManager {
     async renderManageView() {
         this.vaultsContainer.innerHTML = '<div class="empty-state">Загрузка...</div>';
         try {
-            const data = await chatAPI.getVaults(this.activeDomainTab || null, null);
-            const vaults = data.vaults || [];
-
+            let vaults = this.allVaults;
+            if (this.activeDomainTab) {
+                vaults = vaults.filter(v => v.domain_id === this.activeDomainTab);
+            }
             this.vaultsContainer.innerHTML = '';
             if (vaults.length === 0) {
                 this.vaultsContainer.innerHTML = '<div class="empty-state">Нет vault\'ов</div>';
@@ -178,8 +165,6 @@ class DBManager {
             this.vaultsContainer.innerHTML = `<div class="empty-state">Ошибка: ${this.escapeHtml(error.message)}</div>`;
         }
     }
-
-    // --- Vault card с меню ⋯ ---
 
     createVaultCard(vault) {
         const card = document.createElement('div');
@@ -215,7 +200,6 @@ class DBManager {
             </div>
         `;
 
-        // Expand toggle
         const expandBtn = card.querySelector('.vault-expand-btn');
         const body = card.querySelector('.vault-card2-body');
         const chevron = card.querySelector('.vault-chevron');
@@ -237,17 +221,14 @@ class DBManager {
             this.loadDocumentsForVault(vault.vault_id, card);
         }
 
-        // ⋯ menu
         const menuBtn = card.querySelector('.vault-menu-btn');
         const dropdown = card.querySelector('.vault-menu-dropdown');
         menuBtn.addEventListener('click', (e) => {
             e.stopPropagation();
             const isOpen = dropdown.style.display !== 'none';
-            // Закрыть все другие меню
             document.querySelectorAll('.vault-menu-dropdown').forEach(d => d.style.display = 'none');
             dropdown.style.display = isOpen ? 'none' : 'block';
         });
-        document.addEventListener('click', () => { dropdown.style.display = 'none'; }, { once: false });
 
         card.querySelector('[data-action="index"]').addEventListener('click', () => {
             dropdown.style.display = 'none';
@@ -281,16 +262,17 @@ class DBManager {
             const table = document.createElement('table');
             table.className = 'data-table';
             table.innerHTML = `
-                <thead><tr>
-                    <th>Файл</th><th>Чанков</th><th></th>
-                </tr></thead>
+                <thead>
+                    <tr>
+                        <th>Файл</th><th>Чанков</th><th></th>
+                    </tr>
+                </thead>
                 <tbody></tbody>
             `;
             const tbody = table.querySelector('tbody');
             for (const doc of docs) {
                 const tr = document.createElement('tr');
-                tr.innerHTML = `
-                    <td class="path-cell" title="${this.escapeHtml(doc.source_path)}">${this.escapeHtml(doc.source_path)}</td>
+                tr.innerHTML = `<td class="path-cell" title="${this.escapeHtml(doc.source_path)}">${this.escapeHtml(doc.source_path)}</td>
                     <td class="chunks-cell">${doc.chunk_count}</td>
                     <td><button class="btn-icon" data-action="delete-doc" title="Удалить">🗑</button></td>
                 `;
@@ -316,8 +298,6 @@ class DBManager {
             alert(`Ошибка удаления: ${error.message}`);
         }
     }
-
-    // --- Индексация и прогресс ---
 
     async startIndexing(vaultId, forceReindex) {
         try {
@@ -356,17 +336,15 @@ class DBManager {
         };
         this.currentWs.onerror = (e) => console.error('WS error:', e);
         this.currentWs.onclose = () => { this.currentWs = null; };
-
-        // Race-condition fix: create_state может ещё не завершиться к моменту первого snapshot.
-        // Через 1с запрашиваем полный state через HTTP и добавляем пропущенные файлы.
         setTimeout(() => this._syncStateFromHttp(taskId), 1200);
     }
 
     async _syncStateFromHttp(taskId) {
         try {
-            const state = await chatAPI.getIndexerTaskState(taskId);
-            if (!state || !state.state) return;
-            const files = state.state.files || {};
+            const state = await chatAPI.getIndexTaskState(taskId);
+            if (!state) return;
+            // Поддерживаем оба формата: state.files и state.state.files
+            const files = state.files || state.state?.files || {};
             let added = 0;
             for (const [path, fileState] of Object.entries(files)) {
                 if (!this.currentFiles[path]) {
@@ -380,7 +358,7 @@ class DBManager {
                 this.recalcProgress();
             }
         } catch (e) {
-            // Не критично — state появится через WS-события
+            // не критично
         }
     }
 
@@ -392,21 +370,8 @@ class DBManager {
     }
 
     handleWsMessage(msg) {
-        if (msg.type === 'snapshot' && msg.state) {
-            const state = msg.state;
-            // Отображаем ВСЕ файлы из state, независимо от статуса (в т.ч. pending)
-            const files = state.files || {};
-            this.filesTotalSpan.textContent = String(Object.keys(files).length);
-            for (const [path, fileState] of Object.entries(files)) {
-                this.updateFileRow(path, fileState.status, fileState.progress_pct,
-                    fileState.chunks_total || 0, fileState.chunks_processed || 0, fileState.error || null);
-            }
-            this.recalcProgress();
-        } else if (msg.type === 'file_chunk_progress') {
+        if (msg.type === 'file_chunk_progress') {
             this.updateFileRow(msg.file_path, msg.stage, null, msg.chunks_total, msg.chunks_processed, msg.error);
-            this.recalcProgress();
-        } else if (msg.type === 'file_status') {
-            this.updateFileRow(msg.file_path, msg.status, msg.progress_pct, 0, 0, msg.error);
             this.recalcProgress();
         } else if (msg.type === 'task_complete') {
             this.taskStatusSpan.textContent = 'готово';
@@ -464,7 +429,6 @@ class DBManager {
         }
 
         const nameEl = row.querySelector('.file-row2-name');
-        // Показываем только имя файла, полный путь в title
         const shortName = path.split('/').pop();
         nameEl.textContent = shortName;
         nameEl.title = error || path;
@@ -522,9 +486,8 @@ class DBManager {
         }
     }
 
-    // --- Поиск ---
-
-    populateSearchDomainSelect() {
+    async populateSearchDomainSelect() {
+        if (!this.domains.length) await this.loadDomains();
         this.searchDomainSelect.innerHTML = '';
         for (const domain of this.domains) {
             const opt = document.createElement('option');
@@ -564,7 +527,6 @@ class DBManager {
             const div = document.createElement('div');
             div.className = 'search-hit';
 
-            // Превью: первые ~200 символов текста
             const fullText = hit.text || '';
             const previewText = fullText.length > 220
                 ? fullText.slice(0, 220).trimEnd() + '…'
@@ -651,7 +613,6 @@ class DBManager {
     highlightText(escapedHtml, query) {
         if (!query) return escapedHtml;
         const escapedQuery = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        // query уже escapeHtml не нужен здесь — ищем в уже-escaped HTML
         const regex = new RegExp(`(${escapedQuery})`, 'gi');
         return escapedHtml.replace(regex, '<mark>$1</mark>');
     }
@@ -662,13 +623,12 @@ class DBManager {
         div.textContent = String(text);
         return div.innerHTML;
     }
-
-    debounce(fn, ms) {
-        let t;
-        return (...args) => { clearTimeout(t); t = setTimeout(() => fn.apply(this, args), ms); };
-    }
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+    if (!window.chatAPI) {
+        console.error('chatAPI not available — DBManager will not initialize');
+        return;
+    }
     window.dbManager = new DBManager();
 });

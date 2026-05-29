@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import asyncio
 import json
 import logging
@@ -6,14 +7,23 @@ import uuid
 from collections.abc import AsyncIterator
 from datetime import datetime
 from typing import Any
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from starlette.responses import StreamingResponse
+
 from app.config import AppConfig, EmbeddingModelConfig, VaultConfig
-from app.db.models import AuditLog, Chat, ClarificationState as ClarificationStateRow, EmbeddingModel, Message, Vault
+from app.db.models import (
+    AuditLog,
+    Chat,
+    ClarificationState as ClarificationStateRow,
+    EmbeddingModel,
+    Message,
+    Vault,
+)
 from app.db.session import SessionLocal, get_db
 from app.providers.generation import GenerationProviderUnavailableError, get_generation_provider
 from app.services import clarification_fsm
@@ -39,15 +49,19 @@ from shared_contracts.models import (
 )
 
 logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/chat", tags=["chat"])
+
 
 class RenameChatRequest(BaseModel):
     title: str = Field(min_length=1, max_length=255)
+
 
 class ChatHistoryResponse(BaseModel):
     chat: ChatRecord
     messages: list[ChatMessage]
     vault_enabled: bool = False
+
 
 class ChatListItem(BaseModel):
     chat_id: str
@@ -57,15 +71,19 @@ class ChatListItem(BaseModel):
     created_at: datetime
     updated_at: datetime
 
+
 class ChatListResponse(BaseModel):
     chats: list[ChatListItem]
+
 
 class MessageResponse(BaseModel):
     content: str
     message_id: str
 
+
 class PipelineLockRequest(BaseModel):
     pipeline_id: str | None = None
+
 
 @router.post("/create", response_model=CreateChatResponse)
 async def create_chat(
@@ -82,11 +100,18 @@ async def create_chat(
     )
     db.add(chat)
     await db.flush()
-    db.add(ClarificationStateRow(chat_id=chat.id))
-    await _audit(db, "chat.create", "chat", str(chat.id), {"vault_id": req.vault_id, "domain_id": req.domain_id})
+    db.add(ClarificationStateRow(chat_id=chat.id, stage="idle"))
+    await _audit(
+        db,
+        "chat.create",
+        "chat",
+        str(chat.id),
+        {"vault_id": req.vault_id, "domain_id": req.domain_id},
+    )
     await db.commit()
     logger.info("Created chat: chat_id=%s", chat.id)
     return CreateChatResponse(chat_id=str(chat.id), title=chat.title)
+
 
 @router.get("/list", response_model=ChatListResponse)
 async def list_chats(
@@ -99,6 +124,7 @@ async def list_chats(
     result = await db.execute(stmt)
     return ChatListResponse(chats=[_chat_list_item(chat) for chat in result.scalars().all()])
 
+
 @router.get("/{chat_id}", response_model=ChatHistoryResponse)
 async def get_chat(chat_id: str, db: AsyncSession = Depends(get_db)) -> ChatHistoryResponse:
     chat = await _get_chat_with_messages(db, chat_id)
@@ -107,6 +133,7 @@ async def get_chat(chat_id: str, db: AsyncSession = Depends(get_db)) -> ChatHist
         messages=[_chat_message(message) for message in chat.messages],
         vault_enabled=await _vault_enabled(db, chat.vault_id),
     )
+
 
 @router.delete("/{chat_id}")
 async def delete_chat(chat_id: str, db: AsyncSession = Depends(get_db)) -> dict[str, str]:
@@ -118,6 +145,7 @@ async def delete_chat(chat_id: str, db: AsyncSession = Depends(get_db)) -> dict[
     await db.commit()
     logger.info("Deleted chat: chat_id=%s", chat_id)
     return {"status": "ok"}
+
 
 @router.post("/{chat_id}/rename", response_model=CreateChatResponse)
 async def rename_chat(
@@ -133,6 +161,7 @@ async def rename_chat(
     logger.info("Renamed chat: chat_id=%s", chat_id)
     return CreateChatResponse(chat_id=str(chat.id), title=chat.title)
 
+
 @router.put("/{chat_id}/pipeline")
 async def lock_pipeline(
     chat_id: str,
@@ -144,6 +173,7 @@ async def lock_pipeline(
     await _audit(db, "chat.pipeline.lock", "chat", chat_id, {"pipeline_id": req.pipeline_id})
     await db.commit()
     return {"chat_id": chat_id, "locked_pipeline_id": chat.locked_pipeline_id}
+
 
 @router.post("/{chat_id}/message", response_model=None)
 async def send_message(
@@ -158,7 +188,13 @@ async def send_message(
     user_message = Message(chat_id=chat.id, role="user", content=req.content)
     db.add(user_message)
     await db.flush()
-    await _audit(db, "message.create", "message", str(user_message.id), {"chat_id": chat_id, "role": "user"})
+    await _audit(
+        db,
+        "message.create",
+        "message",
+        str(user_message.id),
+        {"chat_id": chat_id, "role": "user"},
+    )
     await db.commit()
     await db.refresh(user_message)
 
@@ -264,6 +300,7 @@ async def send_message(
         collected=collected,
     )
 
+
 async def _generate_answer(
     chat: Chat,
     req: SendMessageRequest,
@@ -276,8 +313,6 @@ async def _generate_answer(
     collected: dict[str, Any],
 ) -> StreamingResponse | MessageResponse:
     config = await _runtime_config_from_db(db)
-    
-    # --- LLM-driven Query Decomposition (Agent Step) ---
     queries = [req.content]
     if decision.retrieval_strategy == "semantic" and await settings_service.get("retrieval.enabled", db):
         try:
@@ -288,10 +323,9 @@ async def _generate_answer(
             logger.warning("LLM decomposition failed, using raw query: %s", e)
             queries = [req.content]
 
-    # --- Parallel Retrieval across queries & vaults ---
     all_hits: list[SearchHit] = []
     top_k = int(await settings_service.get("retrieval.top_k", db))
-    
+
     if chat.vault_id:
         for q in queries:
             hits = await retrieve(query=q, vault_id=chat.vault_id, top_k=top_k, strategy=decision.retrieval_strategy, config=config)
@@ -304,7 +338,6 @@ async def _generate_answer(
     else:
         all_hits = []
 
-    # Deduplicate & Sort by score
     seen = set()
     unique_hits: list[SearchHit] = []
     for h in all_hits:
@@ -328,7 +361,7 @@ async def _generate_answer(
     messages_for_llm = [{"role": "system", "content": system_prompt}]
     messages_for_llm.extend(_llm_message(message) for message in existing_messages[-16:])
     messages_for_llm.append({"role": "user", "content": req.content})
-    
+
     try:
         provider = get_generation_provider()
     except Exception:
@@ -352,8 +385,8 @@ async def _generate_answer(
     logger.info("Completed non-stream chat response: chat_id=%s message_id=%s", chat.id, assistant_message.id)
     return MessageResponse(content=content, message_id=str(assistant_message.id))
 
+
 def _hits_to_sources(hits: list[SearchHit]) -> list[dict]:
-    """Преобразует список SearchHit в компактный список источников для фронтенда."""
     seen: set[tuple[str, int | None]] = set()
     sources = []
     for hit in hits:
@@ -385,6 +418,10 @@ async def _sse_response(
                 return
             tokens.append(token)
             yield _sse_data({"token": token})
+        # ИСПРАВЛЕНО: склеиваем токены БЕЗ разделителя — провайдеры
+        # (OpenAI/Ollama) возвращают токены уже с пробелами в нужных местах.
+        # Было: " ".join(tokens) → давало "П р о в е р к а"
+        # Стало: "".join(tokens)  → даёт "Проверка"
         assistant_message = await _save_assistant_message(chat_id, "".join(tokens), reset_clarification=True)
         logger.info(
             "Completed streaming chat response: chat_id=%s user_message_id=%s assistant_message_id=%s",
@@ -392,7 +429,6 @@ async def _sse_response(
             user_message_id,
             assistant_message.id,
         )
-        # Отправляем источники до [DONE] чтобы фронтенд успел их обработать
         if hits:
             sources = _hits_to_sources(hits)
             yield _sse_data({"sources": sources})
@@ -421,6 +457,7 @@ async def _pipeline_sse_response(
             tokens.append(str(event.get("content", "")))
         yield _sse_data(event)
     if tokens:
+        # ИСПРАВЛЕНО: склеиваем токены БЕЗ разделителя
         assistant_message = await _save_assistant_message(chat_id, "".join(tokens), reset_clarification=True)
         logger.info(
             "Completed pipeline chat response: chat_id=%s user_message_id=%s assistant_message_id=%s",
@@ -429,6 +466,7 @@ async def _pipeline_sse_response(
             assistant_message.id,
         )
     yield "data: [DONE]\n\n"
+
 
 async def _save_assistant_message(chat_id: str, content: str, reset_clarification: bool = False) -> Message:
     async with SessionLocal() as db:
@@ -439,6 +477,7 @@ async def _save_assistant_message(chat_id: str, content: str, reset_clarificatio
         await db.commit()
         await db.refresh(assistant_message)
         return assistant_message
+
 
 async def _add_assistant_message(db: AsyncSession, chat_uuid: uuid.UUID, content: str, chat_id: str) -> Message:
     assistant_message = Message(chat_id=chat_uuid, role="assistant", content=content)
@@ -452,6 +491,7 @@ async def _add_assistant_message(db: AsyncSession, chat_uuid: uuid.UUID, content
         {"chat_id": chat_id, "role": "assistant"},
     )
     return assistant_message
+
 
 async def _generate_title(chat_id: str, first_message: str) -> None:
     try:
@@ -477,7 +517,6 @@ async def _generate_title(chat_id: str, first_message: str) -> None:
     normalized_title = _normalize_title(title)
     if not normalized_title:
         return
-
     async with SessionLocal() as db:
         chat = await _get_chat(db, chat_id)
         if chat.title != "New Chat":
@@ -487,12 +526,14 @@ async def _generate_title(chat_id: str, first_message: str) -> None:
         await db.commit()
         logger.info("Generated chat title: chat_id=%s title=%s", chat_id, normalized_title)
 
+
 async def _get_chat(db: AsyncSession, chat_id: str) -> Chat:
     chat_uuid = _parse_uuid(chat_id)
     chat = await db.get(Chat, chat_uuid)
     if chat is None:
         raise HTTPException(status_code=404, detail="Chat not found")
     return chat
+
 
 async def _get_chat_with_messages(db: AsyncSession, chat_id: str) -> Chat:
     chat_uuid = _parse_uuid(chat_id)
@@ -504,9 +545,11 @@ async def _get_chat_with_messages(db: AsyncSession, chat_id: str) -> Chat:
         raise HTTPException(status_code=404, detail="Chat not found")
     return chat
 
+
 async def _get_messages(db: AsyncSession, chat_id: uuid.UUID) -> list[Message]:
     result = await db.execute(select(Message).where(Message.chat_id == chat_id).order_by(Message.created_at, Message.id))
     return list(result.scalars().all())
+
 
 async def _audit(
     db: AsyncSession,
@@ -516,6 +559,7 @@ async def _audit(
     details: dict[str, Any] | None = None,
 ) -> None:
     db.add(AuditLog(action=action, entity_type=entity_type, entity_id=entity_id, details=details or {}))
+
 
 def _chat_record(chat: Chat) -> ChatRecord:
     return ChatRecord(
@@ -530,6 +574,7 @@ def _chat_record(chat: Chat) -> ChatRecord:
         pipeline_versions=chat.pipeline_versions or {},
     )
 
+
 def _chat_message(message: Message) -> ChatMessage:
     return ChatMessage(
         message_id=str(message.id),
@@ -539,6 +584,7 @@ def _chat_message(message: Message) -> ChatMessage:
         created_at=message.created_at,
         metadata={},
     )
+
 
 def _chat_list_item(chat: Chat) -> ChatListItem:
     return ChatListItem(
@@ -550,11 +596,13 @@ def _chat_list_item(chat: Chat) -> ChatListItem:
         updated_at=chat.updated_at,
     )
 
+
 async def _vault_enabled(db: AsyncSession, vault_id: str | None) -> bool:
     if not vault_id:
         return False
     vault = await db.get(Vault, vault_id)
     return bool(vault and vault.enabled)
+
 
 async def _runtime_config_from_db(db: AsyncSession) -> AppConfig:
     vaults_result = await db.execute(select(Vault))
@@ -583,8 +631,10 @@ async def _runtime_config_from_db(db: AsyncSession) -> AppConfig:
     }
     return AppConfig(vaults=vaults, embedding_models=embedding_models, generation_models={})
 
+
 def _llm_message(message: Message) -> dict[str, str]:
     return {"role": message.role, "content": message.content}
+
 
 async def _prompt_pack_for_chat(chat: Chat, db: AsyncSession) -> PromptPack:
     domain_id = await _domain_id_for_chat(chat, db) or "default"
@@ -595,6 +645,7 @@ async def _prompt_pack_for_chat(chat: Chat, db: AsyncSession) -> PromptPack:
         prompts=domain.prompts,
     )
 
+
 async def _domain_id_for_chat(chat: Chat, db: AsyncSession) -> str | None:
     if chat.domain_id is not None:
         return chat.domain_id
@@ -604,9 +655,11 @@ async def _domain_id_for_chat(chat: Chat, db: AsyncSession) -> str | None:
             return vault.domain_id
     return None
 
+
 async def _pipeline_versions(request: Request) -> dict[str, str]:
     _ = request
     return {}
+
 
 async def _run_pipelines(
     request: Request,
@@ -620,6 +673,7 @@ async def _run_pipelines(
     _ = request, chat, query, hits, existing_messages, collected, decision
     return []
 
+
 def _hit_to_chunk(hit: SearchHit, vault_id: str) -> ChunkRecord:
     return ChunkRecord(
         chunk_id=hit.chunk_id,
@@ -631,6 +685,7 @@ def _hit_to_chunk(hit: SearchHit, vault_id: str) -> ChunkRecord:
         summary=None,
     )
 
+
 def _combined_context(hits: list[SearchHit], pipeline_results: list[PipelineResult]) -> str:
     parts = []
     search_context = format_context(hits)
@@ -639,6 +694,7 @@ def _combined_context(hits: list[SearchHit], pipeline_results: list[PipelineResu
     for result in pipeline_results:
         parts.append(f"Pipeline result confidence={result.confidence}: {result.content}\nmetadata={result.metadata}")
     return "\n\n".join(parts)
+
 
 def _system_prompt(prompt_pack: PromptPack, query: str, hits_context: str, collected: dict[str, Any]) -> str:
     template = prompt_pack.get(
@@ -654,11 +710,14 @@ def _system_prompt(prompt_pack: PromptPack, query: str, hits_context: str, colle
         },
     )
 
+
 async def _fallback_stream() -> AsyncIterator[str]:
     yield _fallback_answer()
 
+
 def _fallback_answer() -> str:
     return "LLM service unavailable. Попробуйте повторить запрос позже."
+
 
 def _parse_uuid(value: str) -> uuid.UUID:
     try:
@@ -666,8 +725,10 @@ def _parse_uuid(value: str) -> uuid.UUID:
     except ValueError as exc:
         raise HTTPException(status_code=422, detail="Invalid UUID") from exc
 
+
 def _sse_data(payload: dict[str, Any]) -> str:
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
 
 def _normalize_title(title: str) -> str:
     cleaned = title.strip().strip('"').strip("'")

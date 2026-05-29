@@ -4,56 +4,57 @@ class SidebarManager {
         this.chatList = document.getElementById('chat-list');
         this.newChatBtn = document.getElementById('new-chat-btn');
         this.renameModal = document.getElementById('rename-modal');
-        
         this.renameInput = document.getElementById('rename-input');
         this.renameConfirmBtn = document.getElementById('rename-confirm-btn');
         this.renameCancelBtn = document.getElementById('rename-cancel-btn');
-        
+
         this.domainSelector = document.getElementById('domain-select');
         this.worldSelectorBlock = document.getElementById('world-selector');
         this.worldSelect = document.getElementById('world-select');
         this.campaignsList = document.getElementById('campaigns-list');
-        
+
         this.currentRenameChatId = null;
         this.domains = [];
         this.domainCache = {};
         this.currentDomain = localStorage.getItem('currentDomain') || null;
         this.currentWorldId = localStorage.getItem('currentWorldId') || '';
-        
+
         this.initEventListeners();
         this.loadDomains();
     }
 
     initEventListeners() {
-        this.newChatBtn.addEventListener('click', () => this.createChatForCurrentDomain());
-        
-        this.renameConfirmBtn.addEventListener('click', () => this.confirmRename());
-        this.renameCancelBtn.addEventListener('click', () => this.hideRenameModal());
-        
-        this.domainSelector.addEventListener('change', (e) => {
+        this.newChatBtn?.addEventListener('click', () => this.createChatForCurrentDomain());
+
+        this.renameConfirmBtn?.addEventListener('click', () => this.confirmRename());
+        this.renameCancelBtn?.addEventListener('click', () => this.hideRenameModal());
+
+        this.domainSelector?.addEventListener('change', (e) => {
             this.switchDomain(e.target.value);
         });
+
         this.worldSelect?.addEventListener('change', async (e) => {
             this.currentWorldId = e.target.value;
             localStorage.setItem('currentWorldId', this.currentWorldId);
             await this.loadCampaigns();
         });
-        
-        this.renameModal.addEventListener('click', (e) => {
+
+        this.renameModal?.addEventListener('click', (e) => {
             if (e.target === this.renameModal) {
                 this.hideRenameModal();
             }
         });
-        
+
         document.addEventListener('click', (e) => {
             if (!e.target.closest('.chat-dropdown') && !e.target.closest('.chat-item-menu-toggle')) {
                 this.closeAllDropdowns();
             }
         });
-        
+
         document.addEventListener('keydown', (e) => {
             if (e.key === 'Escape') {
                 this.closeAllDropdowns();
+                this.hideRenameModal();
             }
         });
     }
@@ -64,11 +65,11 @@ class SidebarManager {
             this.domains = data.domains || [];
             this.domainCache = {};
             for (const domain of this.domains) {
+                // config_api возвращает DomainInfo без display_name — используем domain_id
                 this.domainCache[domain.domain_id] = domain.display_name || domain.domain_id;
             }
             this.renderDomainOptions();
-            
-            // Все домены активны (даже без vault — они работают в режиме LLM-only)
+
             if (this.currentDomain && this.domains.some(d => d.domain_id === this.currentDomain)) {
                 this.domainSelector.value = this.currentDomain;
             } else if (this.domains.length > 0) {
@@ -78,18 +79,21 @@ class SidebarManager {
             } else {
                 this.currentDomain = null;
             }
-            
+
             await this.loadChats();
             await this.loadWorlds();
         } catch (error) {
             console.error('Failed to load domains:', error);
-            this.chatList.innerHTML = '<div class="empty-state">Не удалось загрузить домены</div>';
+            if (this.chatList) {
+                this.chatList.innerHTML = '<div class="empty-state">Не удалось загрузить домены</div>';
+            }
         }
     }
 
     renderDomainOptions() {
+        if (!this.domainSelector) return;
         this.domainSelector.innerHTML = '';
-        
+
         if (this.domains.length === 0) {
             const opt = document.createElement('option');
             opt.textContent = 'Нет доменов';
@@ -97,16 +101,14 @@ class SidebarManager {
             this.domainSelector.appendChild(opt);
             return;
         }
-        
+
         for (const domain of this.domains) {
-            // Домен "default" — служебный фолбэк, в селекторе не показываем
             if (domain.domain_id === 'default') continue;
             const opt = document.createElement('option');
             opt.value = domain.domain_id;
             let label = this.formatDomainName(domain.domain_id);
-            if (!domain.vault_enabled) {
-                // Пометка — но домен остаётся активным (LLM-only режим)
-                label += ' (без хранилища)';
+            if (domain.has_vault === false || domain.vault_enabled === false) {
+                label += domain.has_vault === false ? ' (без хранилища)' : ' (хранилище отключено)';
             }
             opt.textContent = label;
             this.domainSelector.appendChild(opt);
@@ -115,19 +117,22 @@ class SidebarManager {
 
     formatDomainName(domainId) {
         if (domainId === 'default') return null;
+        // Пытаемся взять кэшированное имя; fallback на верхний регистр
+        const specialNames = { 'dnd': 'D&D', 'work': 'Работа' };
+        if (specialNames[domainId]) return specialNames[domainId];
         return this.domainCache[domainId] || domainId.toUpperCase();
     }
 
     async switchDomain(domainId) {
         if (domainId === this.currentDomain) return;
-        
+
         this.currentDomain = domainId;
         localStorage.setItem('currentDomain', domainId);
-        
+
         if (window.chatManager) {
             window.chatManager.reset();
         }
-        
+
         this.closeAllDropdowns();
         await this.loadChats();
         await this.loadWorlds();
@@ -138,18 +143,21 @@ class SidebarManager {
     }
 
     async loadChats() {
+        if (!this.chatList) return;
         try {
             const data = await chatAPI.listChats(this.currentDomain);
-            this.renderChatList(data.chats);
+            this.renderChatList(data.chats || []);
         } catch (error) {
             console.error('Failed to load chats:', error);
+            this.chatList.innerHTML = '<div class="empty-state">Не удалось загрузить беседы</div>';
         }
     }
 
     renderChatList(chats) {
+        if (!this.chatList) return;
         this.chatList.innerHTML = '';
-        
-        if (chats.length === 0) {
+
+        if (!chats || chats.length === 0) {
             const empty = document.createElement('div');
             empty.className = 'empty-state';
             empty.style.color = '#95a5a6';
@@ -160,16 +168,16 @@ class SidebarManager {
             this.chatList.appendChild(empty);
             return;
         }
-        
+
         for (const chat of chats) {
             const chatItem = document.createElement('div');
             chatItem.className = 'chat-item';
             chatItem.dataset.chatId = chat.chat_id;
-            
+
             if (window.chatManager && window.chatManager.currentChatId === chat.chat_id) {
                 chatItem.classList.add('active');
             }
-            
+
             chatItem.innerHTML = `
                 <div class="chat-item-title" title="${this.escapeHtml(chat.title)}">${this.escapeHtml(chat.title)}</div>
                 <button class="chat-item-menu-toggle" title="Меню">⋮</button>
@@ -178,17 +186,17 @@ class SidebarManager {
                     <button class="chat-dropdown-item danger delete-btn">Удалить</button>
                 </div>
             `;
-            
+
             chatItem.addEventListener('click', (e) => {
                 if (!e.target.closest('.chat-item-menu-toggle') && !e.target.closest('.chat-dropdown')) {
                     this.closeAllDropdowns();
                     this.selectChat(chat.chat_id);
                 }
             });
-            
+
             const toggleBtn = chatItem.querySelector('.chat-item-menu-toggle');
             const dropdown = chatItem.querySelector('.chat-dropdown');
-            
+
             toggleBtn.addEventListener('click', (e) => {
                 e.stopPropagation();
                 const isOpen = dropdown.classList.contains('open');
@@ -198,33 +206,34 @@ class SidebarManager {
                     toggleBtn.classList.add('open');
                 }
             });
-            
+
             chatItem.querySelector('.rename-btn').addEventListener('click', (e) => {
                 e.stopPropagation();
                 this.closeAllDropdowns();
                 this.showRenameModal(chat.chat_id, chat.title);
             });
-            
+
             chatItem.querySelector('.delete-btn').addEventListener('click', (e) => {
                 e.stopPropagation();
                 this.closeAllDropdowns();
                 this.deleteChat(chat.chat_id);
             });
-            
+
             this.chatList.appendChild(chatItem);
         }
     }
 
     async selectChat(chatId) {
+        if (!this.chatList) return;
         this.chatList.querySelectorAll('.chat-item').forEach(item => {
             item.classList.remove('active');
         });
-        
+
         const chatItem = this.chatList.querySelector(`[data-chat-id="${chatId}"]`);
         if (chatItem) {
             chatItem.classList.add('active');
         }
-        
+
         if (window.chatManager) {
             await window.chatManager.loadChat(chatId);
         }
@@ -235,7 +244,7 @@ class SidebarManager {
             alert('Выберите домен');
             return;
         }
-        
+
         try {
             const response = await chatAPI.createChat(null, this.currentDomain, this.currentWorldId || null);
             await this.loadChats();
@@ -250,14 +259,29 @@ class SidebarManager {
         if (!this.worldSelectorBlock || !this.worldSelect) return;
         try {
             const vaults = await chatAPI.getSettingsVaults();
-            const vault = vaults.find(v => v.domain_id === this.currentDomain && v.enabled) || vaults.find(v => v.enabled);
+            // Ищем vault ТОЛЬКО для текущего домена, без fallback на любой enabled
+            const vault = Array.isArray(vaults)
+                ? vaults.find(v => v.domain_id === this.currentDomain && v.enabled)
+                : null;
+
             if (!vault) {
                 this.worldSelectorBlock.style.display = 'none';
                 return;
             }
-            const worlds = await chatAPI.getWorlds(vault.vault_id);
+
+            let worlds = [];
+            try {
+                worlds = await chatAPI.getWorlds(vault.vault_id);
+            } catch (worldsError) {
+                // Эндпоинт /api/settings/worlds может быть недоступен или вернуть пустой результат
+                // Это не критично — просто скрываем world selector
+                console.warn('Worlds API unavailable:', worldsError.message);
+                this.worldSelectorBlock.style.display = 'none';
+                return;
+            }
+
             this.worldSelect.innerHTML = '<option value="">Без мира</option>';
-            for (const world of worlds) {
+            for (const world of (worlds || [])) {
                 const option = document.createElement('option');
                 option.value = world.world_id;
                 option.textContent = world.name;
@@ -268,7 +292,7 @@ class SidebarManager {
             this.worldSelectorBlock.style.display = worlds.length ? 'block' : 'none';
             await this.loadCampaigns();
         } catch (error) {
-            console.error('Failed to load worlds:', error);
+            console.warn('Failed to load worlds:', error.message);
             this.worldSelectorBlock.style.display = 'none';
         }
     }
@@ -279,6 +303,8 @@ class SidebarManager {
         if (!this.currentWorldId) return;
         try {
             const campaigns = await chatAPI.getWorldCampaigns(this.currentWorldId);
+            if (!campaigns || campaigns.length === 0) return;
+
             this.campaignsList.innerHTML = campaigns.map(campaign => `
                 <button class="campaign-item ${campaign.is_active ? 'active' : ''}" data-id="${this.escapeHtml(campaign.campaign_id)}">
                     ${this.escapeHtml(campaign.name)}
@@ -286,16 +312,23 @@ class SidebarManager {
             `).join('');
             this.campaignsList.querySelectorAll('.campaign-item').forEach(button => {
                 button.addEventListener('click', async () => {
-                    await chatAPI.toggleCampaign(this.currentWorldId, button.dataset.id);
-                    await this.loadCampaigns();
+                    try {
+                        await chatAPI.toggleCampaign(this.currentWorldId, button.dataset.id);
+                        await this.loadCampaigns();
+                    } catch (err) {
+                        console.warn('Failed to toggle campaign:', err.message);
+                        alert(`Ошибка: ${err.message}`);
+                    }
                 });
             });
         } catch (error) {
-            console.error('Failed to load campaigns:', error);
+            // Эндпоинт кампаний может быть недоступен — это не критично для сайдбара
+            console.warn('Failed to load campaigns:', error.message);
         }
     }
 
     showRenameModal(chatId, currentTitle) {
+        if (!this.renameModal || !this.renameInput) return;
         this.currentRenameChatId = chatId;
         this.renameInput.value = currentTitle;
         this.renameModal.style.display = 'flex';
@@ -304,6 +337,7 @@ class SidebarManager {
     }
 
     hideRenameModal() {
+        if (!this.renameModal) return;
         this.renameModal.style.display = 'none';
         this.currentRenameChatId = null;
     }
@@ -311,12 +345,12 @@ class SidebarManager {
     async confirmRename() {
         const newTitle = this.renameInput.value.trim();
         if (!newTitle || !this.currentRenameChatId) return;
-        
+
         try {
             await chatAPI.renameChat(this.currentRenameChatId, newTitle);
             this.hideRenameModal();
             await this.loadChats();
-            
+
             if (window.chatManager && window.chatManager.currentChatId === this.currentRenameChatId) {
                 window.chatManager.chatTitle.textContent = newTitle;
             }
@@ -328,11 +362,11 @@ class SidebarManager {
 
     async deleteChat(chatId) {
         if (!confirm('Вы уверены, что хотите удалить эту беседу?')) return;
-        
+
         try {
             await chatAPI.deleteChat(chatId);
             await this.loadChats();
-            
+
             if (window.chatManager && window.chatManager.currentChatId === chatId) {
                 window.chatManager.reset();
             }
@@ -349,12 +383,15 @@ class SidebarManager {
 
     escapeHtml(text) {
         const div = document.createElement('div');
-        div.textContent = text;
+        div.textContent = text == null ? '' : String(text);
         return div.innerHTML;
     }
 }
 
-// Единственная точка инициализации
 document.addEventListener('DOMContentLoaded', () => {
+    if (!window.chatAPI) {
+        console.error('chatAPI not available — SidebarManager will not initialize');
+        return;
+    }
     window.sidebarManager = new SidebarManager();
 });

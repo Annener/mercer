@@ -2,8 +2,6 @@
 class ChatAPI {
     constructor() {
         this.baseUrl = '';
-        this.indexerUrl = 'http://localhost:9000';
-        this.indexerWsUrl = `ws://${window.location.hostname}:9000`;
     }
 
     // === Chat API ===
@@ -86,16 +84,8 @@ class ChatAPI {
         return response.json();
     }
 
-    async getVaults(domainId = null, search = null) {
-        const url = new URL(`${this.baseUrl}/config/vaults`, window.location.origin);
-        if (domainId) url.searchParams.set('domain_id', domainId);
-        if (search) url.searchParams.set('search', search);
-        const response = await fetch(url.toString());
-        if (!response.ok) throw new Error(`Failed to load vaults: ${response.statusText}`);
-        return response.json();
-    }
-
     // === DB Management API ===
+    // Согласно спецификации V3.0: /api/db/*
 
     async listDocuments(vaultId, limit = 100, offset = 0) {
         const params = new URLSearchParams({
@@ -103,14 +93,17 @@ class ChatAPI {
             limit: String(limit),
             offset: String(offset),
         });
-        const response = await fetch(`${this.baseUrl}/db/documents?${params}`);
+        const response = await fetch(`${this.baseUrl}/api/db/documents?${params}`);
         if (!response.ok) throw new Error(`Failed to list documents: ${response.statusText}`);
         return response.json();
     }
 
     async listDocumentChunks(documentId, vaultId) {
-        const params = new URLSearchParams({ vault_id: vaultId });
-        const response = await fetch(`${this.baseUrl}/db/docs/${encodeURIComponent(documentId)}/chunks?${params}`);
+        const params = new URLSearchParams({
+            document_id: documentId,
+            vault_id: vaultId,
+        });
+        const response = await fetch(`${this.baseUrl}/api/db/chunks?${params}`);
         if (!response.ok) throw new Error(`Failed to list chunks: ${response.statusText}`);
         return response.json();
     }
@@ -118,7 +111,7 @@ class ChatAPI {
     async deleteDocument(documentId, vaultId) {
         const params = new URLSearchParams({ vault_id: vaultId });
         const response = await fetch(
-            `${this.baseUrl}/db/docs/${encodeURIComponent(documentId)}?${params}`,
+            `${this.baseUrl}/api/db/documents/${encodeURIComponent(documentId)}?${params}`,
             { method: 'DELETE' },
         );
         if (!response.ok) throw new Error(`Failed to delete document: ${response.statusText}`);
@@ -126,7 +119,7 @@ class ChatAPI {
     }
 
     async textSearch(vaultId, queryText, limit = 20) {
-        const response = await fetch(`${this.baseUrl}/db/search/text`, {
+        const response = await fetch(`${this.baseUrl}/api/db/search/text`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ vault_id: vaultId, query_text: queryText, limit }),
@@ -136,7 +129,7 @@ class ChatAPI {
     }
 
     async textSearchByDomain(domainId, queryText, limit = 20) {
-        const response = await fetch(`${this.baseUrl}/db/search/text/by-domain`, {
+        const response = await fetch(`${this.baseUrl}/api/db/search/domain`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ domain_id: domainId, query_text: queryText, limit }),
@@ -166,103 +159,110 @@ class ChatAPI {
         return response.json();
     }
 
-    async getIndexerTaskState(taskId) {
+    // === Index Tasks API ===
+    // Согласно спецификации V3.0: /index-tasks/* (не /indexer/tasks/*)
+
+    async getIndexTaskState(taskId) {
         const response = await fetch(
-            `${this.baseUrl}/indexer/tasks/${encodeURIComponent(taskId)}/state`,
+            `${this.baseUrl}/index-tasks/${encodeURIComponent(taskId)}/state`,
         );
         if (!response.ok) throw new Error(`Failed to get task state: ${response.statusText}`);
         return response.json();
     }
 
     async cancelIndexTask(taskId) {
-        // Используем backend-прокси вместо прямого запроса на localhost:9000 (избегаем CORS)
         const response = await fetch(
-            `${this.baseUrl}/indexer/tasks/${encodeURIComponent(taskId)}/cancel`,
-            { method: 'POST' },
+            `${this.baseUrl}/index-tasks/${encodeURIComponent(taskId)}`,
+            { method: 'DELETE' },
         );
         if (!response.ok) throw new Error(`Failed to cancel task: ${response.statusText}`);
         return response.json();
     }
 
+    // WebSocket согласно спецификации V3.0: /ws/index-tasks/{task_id}
     connectToTaskStream(taskId) {
-        // WebSocket на indexer через текущий хост (поддерживает прохождение через nginx если есть)
-        const url = `${this.indexerWsUrl}/api/v1/tasks/${encodeURIComponent(taskId)}/stream`;
-        return new WebSocket(url);
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsUrl = `${protocol}//${window.location.host}/ws/index-tasks/${encodeURIComponent(taskId)}`;
+        return new WebSocket(wsUrl);
     }
 
     // === Settings API ===
-    async getSettingsStatus() { return this._request('/settings/status'); }
-    async getSettingsParams() { return this._request('/settings/params'); }
+    // Согласно спецификации V3.0: /api/settings/*
+
+    async getSettingsStatus() { return this._request('/api/settings/status'); }
+    async getSettingsParams() { return this._request('/api/settings/params'); }
     async updateSettingsParam(key, value) {
-        return this._request(`/settings/params/${encodeURIComponent(key)}`, {
+        return this._request(`/api/settings/param/${encodeURIComponent(key)}`, {
             method: 'PUT',
             body: JSON.stringify({ value }),
         });
     }
-    async resetSettingsParams() { return this._request('/settings/params/reset', { method: 'POST' }); }
+    async resetSettingsParams() { return this._request('/api/settings/reset', { method: 'POST' }); }
 
-    async createDomain(data) { return this._request('/settings/domains', { method: 'POST', body: JSON.stringify(data) }); }
-    async updateDomain(id, data) { return this._request(`/settings/domains/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(data) }); }
-    async deleteDomain(id) { return this._request(`/settings/domains/${encodeURIComponent(id)}`, { method: 'DELETE' }); }
-    async getDomainPrompts(id) { return this._request(`/settings/domains/${encodeURIComponent(id)}/prompts`); }
+    async createDomain(data) { return this._request('/api/settings/domains', { method: 'POST', body: JSON.stringify(data) }); }
+    async updateDomain(id, data) { return this._request(`/api/settings/domains/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(data) }); }
+    async deleteDomain(id) { return this._request(`/api/settings/domains/${encodeURIComponent(id)}`, { method: 'DELETE' }); }
+    async getDomainPrompts(id) { return this._request(`/api/settings/domains/${encodeURIComponent(id)}/prompts`); }
     async updateDomainPrompt(id, type, content) {
-        return this._request(`/settings/domains/${encodeURIComponent(id)}/prompts/${encodeURIComponent(type)}`, {
+        return this._request(`/api/settings/domains/${encodeURIComponent(id)}/prompts/${encodeURIComponent(type)}`, {
             method: 'PUT',
             body: JSON.stringify({ content }),
         });
     }
-    async getDomainFields(id) { return this._request(`/settings/domains/${encodeURIComponent(id)}/fields`); }
+    async getDomainFields(id) { return this._request(`/api/settings/domains/${encodeURIComponent(id)}/fields`); }
     async updateDomainFields(id, fields) {
-        return this._request(`/settings/domains/${encodeURIComponent(id)}/fields`, { method: 'PUT', body: JSON.stringify(fields) });
+        return this._request(`/api/settings/domains/${encodeURIComponent(id)}/fields`, { method: 'PUT', body: JSON.stringify(fields) });
     }
 
-    async getGenerationModels() { return this._request('/settings/generation-models'); }
-    async createGenerationModel(data) { return this._request('/settings/generation-models', { method: 'POST', body: JSON.stringify(data) }); }
-    async updateGenerationModel(id, data) { return this._request(`/settings/generation-models/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(data) }); }
-    async deleteGenerationModel(id) { return this._request(`/settings/generation-models/${encodeURIComponent(id)}`, { method: 'DELETE' }); }
-    async activateGenerationModel(id) { return this._request(`/settings/generation-models/${encodeURIComponent(id)}/activate`, { method: 'POST' }); }
-    async checkGenerationModel(id) { return this._request(`/settings/generation-models/${encodeURIComponent(id)}/check`, { method: 'POST' }); }
+    // Модели согласно спецификации V3.0: /models/generation, /models/embedding
+    async getGenerationModels() { return this._request('/api/settings/models/generation'); }
+    async createGenerationModel(data) { return this._request('/api/settings/models/generation', { method: 'POST', body: JSON.stringify(data) }); }
+    async updateGenerationModel(id, data) { return this._request(`/api/settings/models/generation/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(data) }); }
+    async deleteGenerationModel(id) { return this._request(`/api/settings/models/generation/${encodeURIComponent(id)}`, { method: 'DELETE' }); }
+    async activateGenerationModel(id) { return this._request(`/api/settings/models/generation/${encodeURIComponent(id)}/activate`, { method: 'POST' }); }
+    async checkGenerationModel(id) { return this._request(`/api/settings/models/generation/${encodeURIComponent(id)}/check`, { method: 'POST' }); }
 
-    async getEmbeddingModels() { return this._request('/settings/embedding-models'); }
-    async createEmbeddingModel(data) { return this._request('/settings/embedding-models', { method: 'POST', body: JSON.stringify(data) }); }
-    async updateEmbeddingModel(id, data) { return this._request(`/settings/embedding-models/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(data) }); }
-    async deleteEmbeddingModel(id) { return this._request(`/settings/embedding-models/${encodeURIComponent(id)}`, { method: 'DELETE' }); }
-    async checkEmbeddingModel(id) { return this._request(`/settings/embedding-models/${encodeURIComponent(id)}/check`, { method: 'POST' }); }
+    async getEmbeddingModels() { return this._request('/api/settings/models/embedding'); }
+    async createEmbeddingModel(data) { return this._request('/api/settings/models/embedding', { method: 'POST', body: JSON.stringify(data) }); }
+    async updateEmbeddingModel(id, data) { return this._request(`/api/settings/models/embedding/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(data) }); }
+    async deleteEmbeddingModel(id) { return this._request(`/api/settings/models/embedding/${encodeURIComponent(id)}`, { method: 'DELETE' }); }
+    async checkEmbeddingModel(id) { return this._request(`/api/settings/models/embedding/${encodeURIComponent(id)}/check`, { method: 'POST' }); }
 
-    async getSettingsVaults() { return this._request('/settings/vaults'); }
-    async createVault(data) { return this._request('/settings/vaults', { method: 'POST', body: JSON.stringify(data) }); }
-    async updateVault(id, data) { return this._request(`/settings/vaults/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(data) }); }
-    async deleteVault(id) { return this._request(`/settings/vaults/${encodeURIComponent(id)}`, { method: 'DELETE' }); }
-    async toggleVault(id) { return this._request(`/settings/vaults/${encodeURIComponent(id)}/toggle`, { method: 'POST' }); }
+    async getSettingsVaults() { return this._request('/api/settings/vaults'); }
+    async createVault(data) { return this._request('/api/settings/vaults', { method: 'POST', body: JSON.stringify(data) }); }
+    async updateVault(id, data) { return this._request(`/api/settings/vaults/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(data) }); }
+    async deleteVault(id) { return this._request(`/api/settings/vaults/${encodeURIComponent(id)}`, { method: 'DELETE' }); }
+    async toggleVault(id) { return this._request(`/api/settings/vaults/${encodeURIComponent(id)}/toggle`, { method: 'POST' }); }
 
     async getWorlds(vaultId = null) {
-        const url = new URL(`${this.baseUrl}/settings/worlds`, window.location.origin);
+        const url = new URL(`${this.baseUrl}/api/settings/worlds`, window.location.origin);
         if (vaultId) url.searchParams.set('vault_id', vaultId);
         return this._request(url.pathname + url.search);
     }
-    async createWorld(data) { return this._request('/settings/worlds', { method: 'POST', body: JSON.stringify(data) }); }
-    async updateWorld(worldId, data) { return this._request(`/settings/worlds/${encodeURIComponent(worldId)}`, { method: 'PUT', body: JSON.stringify(data) }); }
-    async getWorldCampaigns(worldId) { return this._request(`/settings/worlds/${encodeURIComponent(worldId)}/campaigns`); }
-    async createCampaign(worldId, data) { return this._request(`/settings/worlds/${encodeURIComponent(worldId)}/campaigns`, { method: 'POST', body: JSON.stringify(data) }); }
+    async createWorld(data) { return this._request('/api/settings/worlds', { method: 'POST', body: JSON.stringify(data) }); }
+    async updateWorld(worldId, data) { return this._request(`/api/settings/worlds/${encodeURIComponent(worldId)}`, { method: 'PUT', body: JSON.stringify(data) }); }
+    async getWorldCampaigns(worldId) { return this._request(`/api/settings/worlds/${encodeURIComponent(worldId)}/campaigns`); }
+    async createCampaign(worldId, data) { return this._request(`/api/settings/worlds/${encodeURIComponent(worldId)}/campaigns`, { method: 'POST', body: JSON.stringify(data) }); }
     async updateCampaign(worldId, campaignId, data) {
-        return this._request(`/settings/worlds/${encodeURIComponent(worldId)}/campaigns/${encodeURIComponent(campaignId)}`, {
+        return this._request(`/api/settings/worlds/${encodeURIComponent(worldId)}/campaigns/${encodeURIComponent(campaignId)}`, {
             method: 'PUT',
             body: JSON.stringify(data),
         });
     }
     async toggleCampaign(worldId, campaignId) {
-        return this._request(`/settings/worlds/${encodeURIComponent(worldId)}/campaigns/${encodeURIComponent(campaignId)}/toggle`, { method: 'POST' });
+        return this._request(`/api/settings/worlds/${encodeURIComponent(worldId)}/campaigns/${encodeURIComponent(campaignId)}/toggle`, { method: 'POST' });
     }
 
     async getPipelines(domainId = null) {
-        const url = new URL(`${this.baseUrl}/settings/pipelines`, window.location.origin);
+        const url = new URL(`${this.baseUrl}/api/settings/pipelines`, window.location.origin);
         if (domainId) url.searchParams.set('domain_id', domainId);
         return this._request(url.pathname + url.search);
     }
-    async createPipeline(data) { return this._request('/settings/pipelines', { method: 'POST', body: JSON.stringify(data) }); }
-    async updatePipeline(id, data) { return this._request(`/settings/pipelines/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(data) }); }
-    async deletePipeline(id) { return this._request(`/settings/pipelines/${encodeURIComponent(id)}`, { method: 'DELETE' }); }
-    async activatePipeline(id) { return this._request(`/settings/pipelines/${encodeURIComponent(id)}/activate`, { method: 'POST' }); }
+    async createPipeline(data) { return this._request('/api/settings/pipelines', { method: 'POST', body: JSON.stringify(data) }); }
+    async updatePipeline(id, data) { return this._request(`/api/settings/pipelines/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(data) }); }
+    async deletePipeline(id) { return this._request(`/api/settings/pipelines/${encodeURIComponent(id)}`, { method: 'DELETE' }); }
+    async activatePipeline(id) { return this._request(`/api/settings/pipelines/${encodeURIComponent(id)}/activate`, { method: 'POST' }); }
+    async deactivatePipeline(id) { return this.deletePipeline(id); }
 
     async _request(path, options = {}) {
         const response = await fetch(`${this.baseUrl}${path}`, {
@@ -279,6 +279,4 @@ class ChatAPI {
 }
 
 const chatAPI = new ChatAPI();
-
-// Экспортируем в глобальную область видимости для использования в других модулях
 window.chatAPI = chatAPI;

@@ -10,7 +10,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import Domain, Vault
 from app.db.session import get_db
 
-
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/config", tags=["config"])
@@ -18,6 +17,8 @@ router = APIRouter(prefix="/config", tags=["config"])
 
 class DomainInfo(BaseModel):
     domain_id: str
+    display_name: str = ""          # ← ДОБАВЛЕНО
+    description: str | None = None  # ← ДОБАВЛЕНО
     has_vault: bool = False
     vault_enabled: bool = False
 
@@ -42,20 +43,29 @@ async def list_domains(
 ) -> DomainsResponse:
     domain_map: dict[str, DomainInfo] = {}
 
-    domains_result = await db.execute(select(Domain).where(Domain.enabled == True).order_by(Domain.domain_id))
+    # Сначала загружаем все enabled домены с display_name
+    domains_result = await db.execute(
+        select(Domain).where(Domain.enabled == True).order_by(Domain.domain_id)
+    )
     for domain in domains_result.scalars().all():
         domain_map[domain.domain_id] = DomainInfo(
             domain_id=domain.domain_id,
+            display_name=domain.display_name,
+            description=domain.description,
             has_vault=False,
             vault_enabled=False,
         )
 
+    # Подтягиваем информацию о vault'ах
     vaults_result = await db.execute(select(Vault))
     for vault in vaults_result.scalars().all():
         existing = domain_map.get(vault.domain_id)
         if existing is None:
+            # Домен отключён или отсутствует — создаём запись с display_name = domain_id
             domain_map[vault.domain_id] = DomainInfo(
                 domain_id=vault.domain_id,
+                display_name=vault.domain_id,
+                description=None,
                 has_vault=True,
                 vault_enabled=vault.enabled,
             )
@@ -65,7 +75,10 @@ async def list_domains(
             existing.vault_enabled = True
 
     priority = {"dnd": 0, "work": 1, "default": 99}
-    domains = sorted(domain_map.values(), key=lambda d: (priority.get(d.domain_id, 50), d.domain_id))
+    domains = sorted(
+        domain_map.values(),
+        key=lambda d: (priority.get(d.domain_id, 50), d.domain_id),
+    )
     return DomainsResponse(domains=domains)
 
 

@@ -1,1 +1,10 @@
-Nothing needs to be added to .gitignore since the changes only include markdown documentation files (.md) which are source/config files.
+.DS_Store
+.env
+cache/
+data/
+logs/
+pdf-sidecar/__pycache__/
+pdf-sidecar/logs/
+state/
+vaults/
+pdf-sidecar/sidecar.pid

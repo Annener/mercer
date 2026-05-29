@@ -29,17 +29,27 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     setup_logging("backend")
     await run_migrations()
     setup_logging("backend")
+
     app.state.settings_service = settings_service
     app.state.domain_service = domain_service
+
     try:
         async with SessionLocal() as db:
             await settings_service.load_settings(db)
             await settings_service.load_active_provider(db)
     except Exception:
-        logger.critical("Failed to initialize runtime settings or active generation model.", exc_info=True)
+        logger.critical(
+            "Failed to initialize runtime settings or active generation model.",
+            exc_info=True,
+        )
         sys.exit(1)
+
     if settings_service.get_active_provider() is None:
-        logger.warning("No active generation model configured. Application will start but LLM features will be unavailable.")
+        logger.warning(
+            "No active generation model configured. "
+            "Application will start but LLM features will be unavailable."
+        )
+
     logger.info("Service started. Database migrations applied.")
     try:
         yield
@@ -50,11 +60,23 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title="RAG Backend", lifespan=lifespan)
 
+# === Роутеры ===
 app.include_router(chat_router)
 app.include_router(config_router)
-app.include_router(db_management_router)
-app.include_router(settings_router, prefix="/settings", tags=["settings"])
 
+# Settings API — согласно спецификации V3.0: /api/settings/*
+app.include_router(
+    settings_router,
+    prefix="/api/settings",
+    tags=["settings"],
+)
+
+# DB Management API — роутер без префикса.
+# Пути внутри роутера: /api/db/*, /index-tasks/*, /vaults/*, /ws/*
+# (разные префиксы нельзя задать одним include_router)
+app.include_router(db_management_router)
+
+# === Статика ===
 STATIC_DIR = Path(__file__).parent / "static"
 if STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

@@ -7,7 +7,7 @@ import uuid
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,12 +19,19 @@ from app.providers.generation.openai_compatible import OpenAICompatibleProvider
 from app.services.domain_service import domain_service
 from app.services.settings_service import settings_service
 
+logger = logging.getLogger(__name__) if "logging" in globals() else None
+
+import logging
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
 DOMAIN_ID_RE = re.compile(r"^[a-z0-9_]{3,32}$")
-SLUG_RE = re.compile(r"^[a-z0-9_\\-]{3,64}$")
+SLUG_RE = re.compile(r"^[a-z0-9_\-]{3,64}$")
 STORAGE_API_URL = os.getenv("STORAGE_API_URL", "http://db-api-server:8080")
 
+
+# === Request/Response schemas ===
 
 class ParamUpdateRequest(BaseModel):
     value: Any = None
@@ -78,9 +85,9 @@ class EmbeddingModelCreateRequest(BaseModel):
     model_id: str = Field(min_length=1, max_length=128)
     provider: str
     display_name: str | None = None
-    model_name: str | None = None  # Optional for providers that use model_id
-    base_url: str | None = None  # Optional for providers that don't require it
-    api_key: str | None = None  # Optional for local providers like Ollama
+    model_name: str | None = None
+    base_url: str | None = None
+    api_key: str | None = None
     dimensions: int = Field(gt=0)
     timeout_seconds: int = 30
     max_retries: int = 3
@@ -166,17 +173,20 @@ class PipelineUpdateRequest(BaseModel):
     is_active: bool | None = None
 
 
+# === Status endpoint ===
+
 @router.get("/status")
 async def get_status(db: AsyncSession = Depends(get_db)) -> dict[str, bool]:
     has_active_generation_model = settings_service.get_active_provider() is not None
-
     embedding_count = await db.execute(
         select(func.count())
         .select_from(Vault)
         .join(EmbeddingModel, Vault.embedding_model_id == EmbeddingModel.model_id)
         .where(Vault.embedding_model_id.is_not(None), EmbeddingModel.enabled == True)
     )
-    vault_count = await db.execute(select(func.count()).select_from(Vault).where(Vault.enabled == True))
+    vault_count = await db.execute(
+        select(func.count()).select_from(Vault).where(Vault.enabled == True)
+    )
 
     try:
         sidecar_url = await settings_service.get("pdf_sidecar.url", db)
@@ -191,12 +201,18 @@ async def get_status(db: AsyncSession = Depends(get_db)) -> dict[str, bool]:
     }
 
 
+# === Platform parameters ===
+# Согласно спецификации V3.0:
+#   GET  /api/settings/params
+#   PUT  /api/settings/param/{key}      (ед. число!)
+#   POST /api/settings/reset            (без /params)
+
 @router.get("/params")
 async def get_params(db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
     return await settings_service.get_all(db)
 
 
-@router.put("/params/{key:path}")
+@router.put("/param/{key:path}")
 async def update_param(key: str, req: ParamUpdateRequest, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
     try:
         await settings_service.set(key, req.value, db)
@@ -209,11 +225,13 @@ async def update_param(key: str, req: ParamUpdateRequest, db: AsyncSession = Dep
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
-@router.post("/params/reset")
+@router.post("/reset")
 async def reset_params(db: AsyncSession = Depends(get_db)) -> dict[str, str]:
     await settings_service.reset_all(db)
     return {"status": "ok"}
 
+
+# === Domains ===
 
 @router.get("/domains")
 async def list_domains(db: AsyncSession = Depends(get_db)) -> list[dict[str, Any]]:
@@ -230,26 +248,7 @@ async def create_domain(req: DomainCreateRequest, db: AsyncSession = Depends(get
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
-@router.put("/domains/{domain_id}")
-async def update_domain(domain_id: str, req: DomainUpdateRequest, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
-    try:
-        return await domain_service.update_domain(domain_id, req.model_dump(exclude_unset=True), db)
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail="Domain not found") from exc
-
-
-@router.delete("/domains/{domain_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_domain(domain_id: str, db: AsyncSession = Depends(get_db)) -> Response:
-    try:
-        await domain_service.delete_domain(domain_id, db)
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail="Domain not found") from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
-
-
-@router.get("/domains/{domain_id}")
+@router.get("/domains/{domain_id:path}")
 async def get_domain(domain_id: str, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
     domain = await db.get(Domain, domain_id)
     if domain is None:
@@ -263,7 +262,26 @@ async def get_domain(domain_id: str, db: AsyncSession = Depends(get_db)) -> dict
     }
 
 
-@router.get("/domains/{domain_id}/prompts")
+@router.put("/domains/{domain_id:path}")
+async def update_domain(domain_id: str, req: DomainUpdateRequest, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+    try:
+        return await domain_service.update_domain(domain_id, req.model_dump(exclude_unset=True), db)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Domain not found") from exc
+
+
+@router.delete("/domains/{domain_id:path}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_domain(domain_id: str, db: AsyncSession = Depends(get_db)) -> Response:
+    try:
+        await domain_service.delete_domain(domain_id, db)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Domain not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get("/domains/{domain_id:path}/prompts")
 async def get_domain_prompts(domain_id: str, db: AsyncSession = Depends(get_db)) -> dict[str, str]:
     if await db.get(Domain, domain_id) is None:
         raise HTTPException(status_code=404, detail="Domain not found")
@@ -273,7 +291,7 @@ async def get_domain_prompts(domain_id: str, db: AsyncSession = Depends(get_db))
     }
 
 
-@router.put("/domains/{domain_id}/prompts/{prompt_type}")
+@router.put("/domains/{domain_id:path}/prompts/{prompt_type}")
 async def update_domain_prompt(
     domain_id: str,
     prompt_type: str,
@@ -289,14 +307,14 @@ async def update_domain_prompt(
     return {"status": "ok"}
 
 
-@router.get("/domains/{domain_id}/fields")
+@router.get("/domains/{domain_id:path}/fields")
 async def get_domain_fields(domain_id: str, db: AsyncSession = Depends(get_db)) -> list[dict[str, Any]]:
     if await db.get(Domain, domain_id) is None:
         raise HTTPException(status_code=404, detail="Domain not found")
     return await domain_service.get_clarification_fields(domain_id, db)
 
 
-@router.put("/domains/{domain_id}/fields")
+@router.put("/domains/{domain_id:path}/fields")
 async def update_domain_fields(
     domain_id: str,
     fields: list[ClarificationFieldRequest],
@@ -311,12 +329,15 @@ async def update_domain_fields(
     return {"status": "ok"}
 
 
-@router.get("/generation-models")
+# === Generation Models ===
+# Согласно спецификации V3.0: /models/generation (не /generation-models)
+
+@router.get("/models/generation")
 async def list_generation_models(db: AsyncSession = Depends(get_db)) -> list[dict[str, Any]]:
     return await settings_service.list_generation_models(db)
 
 
-@router.post("/generation-models", status_code=status.HTTP_201_CREATED)
+@router.post("/models/generation", status_code=status.HTTP_201_CREATED)
 async def create_generation_model(req: GenerationModelCreateRequest, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
     if await db.get(GenerationModel, req.model_id) is not None:
         raise HTTPException(status_code=409, detail="Generation model already exists")
@@ -326,7 +347,7 @@ async def create_generation_model(req: GenerationModelCreateRequest, db: AsyncSe
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
-@router.put("/generation-models/{model_id}")
+@router.put("/models/generation/{model_id:path}")
 async def update_generation_model(
     model_id: str,
     req: GenerationModelUpdateRequest,
@@ -340,7 +361,7 @@ async def update_generation_model(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
-@router.delete("/generation-models/{model_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/models/generation/{model_id:path}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_generation_model(model_id: str, db: AsyncSession = Depends(get_db)) -> Response:
     try:
         await settings_service.delete_generation_model(model_id, db)
@@ -351,7 +372,7 @@ async def delete_generation_model(model_id: str, db: AsyncSession = Depends(get_
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@router.post("/generation-models/{model_id}/activate")
+@router.post("/models/generation/{model_id:path}/activate")
 async def activate_generation_model(model_id: str, db: AsyncSession = Depends(get_db)) -> dict[str, str]:
     try:
         await settings_service.activate_generation_model(model_id, db)
@@ -360,7 +381,7 @@ async def activate_generation_model(model_id: str, db: AsyncSession = Depends(ge
     return {"status": "ok"}
 
 
-@router.post("/generation-models/{model_id}/check")
+@router.post("/models/generation/{model_id:path}/check")
 async def check_generation_model(model_id: str, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
     model = await db.get(GenerationModel, model_id)
     if model is None:
@@ -388,12 +409,15 @@ async def check_generation_model(model_id: str, db: AsyncSession = Depends(get_d
         return {"ok": False, "latency_ms": int((time.perf_counter() - started) * 1000), "error": str(exc)}
 
 
-@router.get("/embedding-models")
+# === Embedding Models ===
+# Согласно спецификации V3.0: /models/embedding (не /embedding-models)
+
+@router.get("/models/embedding")
 async def list_embedding_models(db: AsyncSession = Depends(get_db)) -> list[dict[str, Any]]:
     return await settings_service.list_embedding_models(db)
 
 
-@router.post("/embedding-models", status_code=status.HTTP_201_CREATED)
+@router.post("/models/embedding", status_code=status.HTTP_201_CREATED)
 async def create_embedding_model(req: EmbeddingModelCreateRequest, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
     if req.provider not in {"ollama", "openai_compatible"}:
         raise HTTPException(status_code=422, detail="Unsupported embedding provider")
@@ -402,7 +426,7 @@ async def create_embedding_model(req: EmbeddingModelCreateRequest, db: AsyncSess
     return await settings_service.create_embedding_model(req.model_dump(exclude_none=True), db)
 
 
-@router.put("/embedding-models/{model_id}")
+@router.put("/models/embedding/{model_id:path}")
 async def update_embedding_model(
     model_id: str,
     req: EmbeddingModelUpdateRequest,
@@ -417,7 +441,7 @@ async def update_embedding_model(
         raise HTTPException(status_code=404, detail="Embedding model not found") from exc
 
 
-@router.delete("/embedding-models/{model_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/models/embedding/{model_id:path}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_embedding_model(model_id: str, db: AsyncSession = Depends(get_db)) -> Response:
     result = await db.execute(select(func.count()).select_from(Vault).where(Vault.embedding_model_id == model_id))
     if result.scalar_one() > 0:
@@ -429,7 +453,7 @@ async def delete_embedding_model(model_id: str, db: AsyncSession = Depends(get_d
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@router.post("/embedding-models/{model_id}/check")
+@router.post("/models/embedding/{model_id:path}/check")
 async def check_embedding_model(model_id: str, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
     model = await db.get(EmbeddingModel, model_id)
     if model is None:
@@ -452,9 +476,17 @@ async def check_embedding_model(model_id: str, db: AsyncSession = Depends(get_db
         }
 
 
+# === Vaults ===
+
 @router.get("/vaults")
-async def list_vaults(db: AsyncSession = Depends(get_db)) -> list[dict[str, Any]]:
-    result = await db.execute(select(Vault).order_by(Vault.vault_id))
+async def list_vaults(
+    domain_id: str | None = Query(default=None, description="Фильтр по домену"),
+    db: AsyncSession = Depends(get_db),
+) -> list[dict[str, Any]]:
+    stmt = select(Vault).order_by(Vault.vault_id)
+    if domain_id:
+        stmt = stmt.where(Vault.domain_id == domain_id)
+    result = await db.execute(stmt)
     return [_vault_dict(vault) for vault in result.scalars().all()]
 
 
@@ -468,8 +500,18 @@ async def create_vault(req: VaultCreateRequest, db: AsyncSession = Depends(get_d
         raise HTTPException(status_code=404, detail="Embedding model not found")
     if await db.get(Vault, req.vault_id) is not None:
         raise HTTPException(status_code=409, detail="Vault already exists")
-    if req.create_folder:
-        os.makedirs(f"/data/vaults/{req.vault_id}", exist_ok=True)
+
+    vault_path = f"/data/vaults/{req.vault_id}"
+    try:
+        os.makedirs(vault_path, exist_ok=True)
+        logger.info("Created vault directory: %s", vault_path)
+    except OSError as exc:
+        logger.error("Failed to create vault directory %s: %s", vault_path, exc)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to create vault directory: {exc}",
+        ) from exc
+    
     vault = Vault(
         vault_id=req.vault_id,
         domain_id=req.domain_id,
@@ -484,7 +526,7 @@ async def create_vault(req: VaultCreateRequest, db: AsyncSession = Depends(get_d
     return _vault_dict(vault)
 
 
-@router.put("/vaults/{vault_id}")
+@router.put("/vaults/{vault_id:path}")
 async def update_vault(vault_id: str, req: VaultUpdateRequest, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
     vault = await db.get(Vault, vault_id)
     if vault is None:
@@ -508,7 +550,7 @@ async def update_vault(vault_id: str, req: VaultUpdateRequest, db: AsyncSession 
                 vault.binding_status = "unbound"
             for key, value in payload.items():
                 setattr(vault, key, value)
-        await db.commit()
+            await db.commit()
     except httpx.HTTPError as exc:
         await db.rollback()
         raise HTTPException(status_code=502, detail=f"Failed to clear vault vectors: {exc}") from exc
@@ -516,7 +558,7 @@ async def update_vault(vault_id: str, req: VaultUpdateRequest, db: AsyncSession 
     return _vault_dict(vault)
 
 
-@router.delete("/vaults/{vault_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/vaults/{vault_id:path}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_vault(vault_id: str, db: AsyncSession = Depends(get_db)) -> Response:
     vault = await db.get(Vault, vault_id)
     if vault is None:
@@ -531,7 +573,7 @@ async def delete_vault(vault_id: str, db: AsyncSession = Depends(get_db)) -> Res
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@router.post("/vaults/{vault_id}/toggle")
+@router.post("/vaults/{vault_id:path}/toggle")
 async def toggle_vault(vault_id: str, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
     vault = await db.get(Vault, vault_id)
     if vault is None:
@@ -541,6 +583,8 @@ async def toggle_vault(vault_id: str, db: AsyncSession = Depends(get_db)) -> dic
     await db.refresh(vault)
     return _vault_dict(vault)
 
+
+# === Worlds & Campaigns ===
 
 @router.get("/worlds")
 async def list_worlds(vault_id: str | None = None, db: AsyncSession = Depends(get_db)) -> list[dict[str, Any]]:
@@ -569,7 +613,7 @@ async def create_world(req: WorldCreateRequest, db: AsyncSession = Depends(get_d
     return _world_dict(world)
 
 
-@router.put("/worlds/{world_id}")
+@router.put("/worlds/{world_id:path}")
 async def update_world(world_id: str, req: WorldUpdateRequest, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
     world = await _get_world_by_slug(world_id, db)
     payload = req.model_dump(exclude_unset=True)
@@ -582,13 +626,13 @@ async def update_world(world_id: str, req: WorldUpdateRequest, db: AsyncSession 
     return _world_dict(world)
 
 
-@router.get("/worlds/{world_id}/campaigns")
+@router.get("/worlds/{world_id:path}/campaigns")
 async def list_campaigns(world_id: str, db: AsyncSession = Depends(get_db)) -> list[dict[str, Any]]:
     result = await db.execute(select(Campaign).where(Campaign.world_id == world_id).order_by(Campaign.name))
     return [_campaign_dict(campaign) for campaign in result.scalars().all()]
 
 
-@router.post("/worlds/{world_id}/campaigns", status_code=status.HTTP_201_CREATED)
+@router.post("/worlds/{world_id:path}/campaigns", status_code=status.HTTP_201_CREATED)
 async def create_campaign(world_id: str, req: CampaignCreateRequest, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
     world = await _get_world_by_slug(world_id, db)
     if SLUG_RE.fullmatch(req.campaign_id) is None:
@@ -605,7 +649,7 @@ async def create_campaign(world_id: str, req: CampaignCreateRequest, db: AsyncSe
     return _campaign_dict(campaign)
 
 
-@router.put("/worlds/{world_id}/campaigns/{campaign_id}")
+@router.put("/worlds/{world_id:path}/campaigns/{campaign_id:path}")
 async def update_campaign(
     world_id: str,
     campaign_id: str,
@@ -624,7 +668,7 @@ async def update_campaign(
     return _campaign_dict(campaign)
 
 
-@router.post("/worlds/{world_id}/campaigns/{campaign_id}/toggle")
+@router.post("/worlds/{world_id:path}/campaigns/{campaign_id:path}/toggle")
 async def toggle_campaign(world_id: str, campaign_id: str, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
     campaign = await _get_campaign(world_id, campaign_id, db)
     campaign.is_active = not campaign.is_active
@@ -632,6 +676,8 @@ async def toggle_campaign(world_id: str, campaign_id: str, db: AsyncSession = De
     await db.refresh(campaign)
     return _campaign_dict(campaign)
 
+
+# === Pipelines ===
 
 @router.get("/pipelines")
 async def list_pipelines(domain_id: str | None = None, db: AsyncSession = Depends(get_db)) -> list[dict[str, Any]]:
@@ -659,7 +705,7 @@ async def create_pipeline(req: PipelineCreateRequest, db: AsyncSession = Depends
     return _pipeline_dict(pipeline)
 
 
-@router.put("/pipelines/{pipeline_uuid}")
+@router.put("/pipelines/{pipeline_uuid:path}")
 async def update_pipeline(
     pipeline_uuid: str,
     req: PipelineUpdateRequest,
@@ -688,7 +734,7 @@ async def update_pipeline(
     return _pipeline_dict(new_pipeline)
 
 
-@router.delete("/pipelines/{pipeline_uuid}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/pipelines/{pipeline_uuid:path}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_pipeline(pipeline_uuid: str, db: AsyncSession = Depends(get_db)) -> Response:
     pipeline = await _get_pipeline_by_uuid(pipeline_uuid, db)
     pipeline.is_active = False
@@ -696,7 +742,7 @@ async def delete_pipeline(pipeline_uuid: str, db: AsyncSession = Depends(get_db)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@router.post("/pipelines/{pipeline_uuid}/activate")
+@router.post("/pipelines/{pipeline_uuid:path}/activate")
 async def activate_pipeline(pipeline_uuid: str, db: AsyncSession = Depends(get_db)) -> dict[str, str]:
     pipeline = await _get_pipeline_by_uuid(pipeline_uuid, db)
     await db.execute(update(Pipeline).where(Pipeline.pipeline_id == pipeline.pipeline_id).values(is_active=False))
@@ -704,6 +750,8 @@ async def activate_pipeline(pipeline_uuid: str, db: AsyncSession = Depends(get_d
     await db.commit()
     return {"status": "ok"}
 
+
+# === Helpers ===
 
 async def _check_pdf_sidecar(base_url: str) -> bool:
     if not base_url:

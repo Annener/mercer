@@ -2,32 +2,57 @@ class SettingsManager {
     constructor(api) {
         this.api = api;
         this.currentTab = 'domains';
+        this._initialized = false;
         this.init();
     }
 
     async init() {
-        this.attachEventListeners();
-        await this.loadTab(this.currentTab);
-        await this.updateStatusBanner();
+        try {
+            this.attachEventListeners();
+            await this.loadTab(this.currentTab);
+            await this.updateStatusBanner();
+            this._initialized = true;
+        } catch (error) {
+            console.error('SettingsManager init failed:', error);
+        }
     }
 
     attachEventListeners() {
-        document.getElementById('settings-btn')?.addEventListener('click', () => this.show());
-        document.getElementById('back-to-chat-btn')?.addEventListener('click', () => this.hide());
+        const settingsBtn = document.getElementById('settings-btn');
+        const backBtn = document.getElementById('back-to-chat-btn');
+
+        if (settingsBtn) {
+            settingsBtn.addEventListener('click', () => this.show());
+        } else {
+            console.warn('settings-btn not found');
+        }
+
+        if (backBtn) {
+            backBtn.addEventListener('click', () => this.hide());
+        }
+
         document.querySelectorAll('.settings-tabs button').forEach((button) => {
             button.addEventListener('click', () => this.loadTab(button.dataset.tab));
         });
     }
 
     show() {
-        document.querySelector('.app-container')?.classList.add('hidden');
-        document.getElementById('settings-page')?.classList.remove('hidden');
+        const appContainer = document.querySelector('.app-container');
+        const settingsPage = document.getElementById('settings-page');
+
+        if (appContainer) appContainer.classList.add('hidden');
+        if (settingsPage) settingsPage.classList.remove('hidden');
+
         this.loadTab(this.currentTab);
     }
 
     hide() {
-        document.getElementById('settings-page')?.classList.add('hidden');
-        document.querySelector('.app-container')?.classList.remove('hidden');
+        const settingsPage = document.getElementById('settings-page');
+        const appContainer = document.querySelector('.app-container');
+
+        if (settingsPage) settingsPage.classList.add('hidden');
+        if (appContainer) appContainer.classList.remove('hidden');
+
         this.updateStatusBanner();
     }
 
@@ -82,10 +107,13 @@ class SettingsManager {
     }
 
     async renderDomainsTab() {
-        const domains = await this.api._request('/settings/domains');
-        if (!domains.length) return '<div class="empty-state">Домены не найдены</div>';
-        return `
-            <div class="settings-toolbar"><button class="btn btn-primary" data-action="new-domain">+ Новый домен</button></div>
+        const resp = await this.api.getDomains();
+        const domains = resp.domains || [];
+        const toolbar = '<div class="settings-toolbar"><button class="btn btn-primary" data-action="new-domain">+ Новый домен</button></div>';
+        if (!domains.length) {
+            return toolbar + '<div class="empty-state">Домены не найдены</div>';
+        }
+        return toolbar + `
             <div class="settings-grid">
                 ${domains.map((domain) => `
                     <article class="settings-card">
@@ -104,10 +132,13 @@ class SettingsManager {
     }
 
     async renderVaultsTab() {
-        const vaults = await this.api.getSettingsVaults();
-        if (!vaults.length) return '<div class="empty-state">Vault’ы не найдены</div>';
-        return `
-            <div class="settings-toolbar"><button class="btn btn-primary" data-action="new-vault">+ Новый vault</button></div>
+        let vaults = await this.api.getSettingsVaults();
+        if (!Array.isArray(vaults)) vaults = [];
+        const toolbar = '<div class="settings-toolbar"><button class="btn btn-primary" data-action="new-vault">+ Новый vault</button></div>';
+        if (vaults.length === 0) {
+            return toolbar + '<div class="empty-state">Vault&#39;ы не найдены</div>';
+        }
+        return toolbar + `
             <div class="settings-grid">
                 ${vaults.map((vault) => `
                     <article class="settings-card">
@@ -133,23 +164,28 @@ class SettingsManager {
 
     async renderEmbeddingModelsTab() {
         const [models, vaults] = await Promise.all([this.api.getEmbeddingModels(), this.api.getSettingsVaults()]);
-        return this.renderModelList('emb', models.map((model) => ({
+        const enriched = (models || []).map((model) => ({
             ...model,
-            connected_vaults: vaults.filter((vault) => vault.embedding_model_id === model.model_id),
-        })), '+ Новая embedding-модель');
+            connected_vaults: (vaults || []).filter((vault) => vault.embedding_model_id === model.model_id),
+        }));
+        return this.renderModelList('emb', enriched, '+ Новая embedding-модель');
     }
 
     renderModelList(kind, models, label) {
-        return `
-            <div class="settings-toolbar"><button class="btn btn-primary" data-action="new-${kind}">${label}</button></div>
+        const toolbar = `<div class="settings-toolbar"><button class="btn btn-primary" data-action="new-${kind}">${label}</button></div>`;
+        if (!models || models.length === 0) {
+            return toolbar + '<div class="empty-state">Нет записей</div>';
+        }
+        return toolbar + `
             <div class="settings-grid">
                 ${models.map((model) => `
                     <article class="settings-card">
                         <div>
                             <h3>${this.escapeHtml(model.display_name || model.model_id)}</h3>
                             <p>${this.escapeHtml(model.provider || '')} ${model.dimensions ? `· ${model.dimensions}` : ''}</p>
-                            ${model.connected_vaults ? `<p>${model.connected_vaults.length} vault'ов</p>` : ''}
+                            ${model.connected_vaults ? `<p>${model.connected_vaults.length} vault&#39;ов</p>` : ''}
                             <div class="settings-actions">
+                                <button class="btn btn-sm btn-secondary" data-action="edit-${kind}" data-id="${this.escapeHtml(model.model_id)}">Редактировать</button>
                                 <button class="btn btn-sm btn-secondary" data-action="check-${kind}" data-id="${this.escapeHtml(model.model_id)}">Проверить</button>
                                 ${kind === 'gen' ? `<button class="btn btn-sm btn-secondary" data-action="activate-gen" data-id="${this.escapeHtml(model.model_id)}" ${model.is_active ? 'disabled' : ''}>Активировать</button>` : ''}
                                 <button class="btn btn-sm btn-danger" data-action="delete-${kind}" data-id="${this.escapeHtml(model.model_id)}" ${(kind === 'gen' && model.is_active) || (model.connected_vaults && model.connected_vaults.length) ? 'disabled' : ''}>Удалить</button>
@@ -157,8 +193,16 @@ class SettingsManager {
                         </div>
                         <span class="badge ${model.is_active ? 'ok' : 'muted'}">${model.is_active ? 'активна' : (model.enabled === false ? 'disabled' : 'ready')}</span>
                     </article>
-                `).join('') || '<div class="empty-state">Нет записей</div>'}
+                `).join('')}
             </div>`;
+    }
+
+    _getParamType(key) {
+        const boolKeys = [
+            'retrieval.enabled', 'reranker.enabled', 'chat.stream_answers',
+            'chat.auto_title', 'chunking.entity_aware_mode', 'pdf_sidecar.fallback_to_pdfminer'
+        ];
+        return boolKeys.includes(key) ? 'bool' : 'string';
     }
 
     async renderParamsTab() {
@@ -167,20 +211,31 @@ class SettingsManager {
         return `
             <div class="settings-toolbar"><button class="btn btn-secondary" data-action="reset-params">Сбросить все к дефолтам</button></div>
             <div class="settings-param-list">
-                ${sortedKeys.map((key) => `
-                    <label class="settings-param-row">
-                        <span>${this.escapeHtml(key)}</span>
-                        <input data-param="${this.escapeHtml(key)}" value="${this.escapeHtml(params[key] ?? '')}">
-                        <button class="btn btn-sm btn-secondary" data-action="default-param" data-id="${this.escapeHtml(key)}">Дефолт</button>
-                    </label>
-                `).join('')}
+                ${sortedKeys.map((key) => {
+                    const isBool = this._getParamType(key) === 'bool';
+                    const currentValue = params[key];
+                    const inputHtml = isBool
+                        ? `<input type="checkbox" data-param="${this.escapeHtml(key)}" ${(currentValue === true || currentValue === 'true') ? 'checked' : ''}>`
+                        : `<input data-param="${this.escapeHtml(key)}" value="${this.escapeHtml(currentValue ?? '')}">`;
+                    return `
+                        <label class="settings-param-row">
+                            <span>${this.escapeHtml(key)}</span>
+                            ${inputHtml}
+                            <button class="btn btn-sm btn-secondary" data-action="default-param" data-id="${this.escapeHtml(key)}">Дефолт</button>
+                        </label>
+                    `;
+                }).join('')}
             </div>`;
     }
 
     async renderPipelinesTab() {
-        const pipelines = await this.api.getPipelines();
-        return `
-            <div class="settings-toolbar"><button class="btn btn-primary" data-action="new-pipeline">+ Новый pipeline</button></div>
+        let pipelines = await this.api.getPipelines();
+        if (!Array.isArray(pipelines)) pipelines = [];
+        const toolbar = '<div class="settings-toolbar"><button class="btn btn-primary" data-action="new-pipeline">+ Новый pipeline</button></div>';
+        if (pipelines.length === 0) {
+            return toolbar + '<div class="empty-state">Pipeline&#39;ы не найдены</div>';
+        }
+        return toolbar + `
             <div class="settings-grid">
                 ${pipelines.map((pipeline) => `
                     <article class="settings-card">
@@ -189,20 +244,22 @@ class SettingsManager {
                             <p>${this.escapeHtml(pipeline.pipeline_id)} · ${this.escapeHtml(pipeline.version)} · ${pipeline.steps?.length || 0} шаг.</p>
                             <div class="settings-actions">
                                 <button class="btn btn-sm btn-secondary" data-action="activate-pipeline" data-id="${this.escapeHtml(pipeline.id)}">Активировать</button>
-                                <button class="btn btn-sm btn-danger" data-action="delete-pipeline" data-id="${this.escapeHtml(pipeline.id)}">Деактивировать</button>
+                                <button class="btn btn-sm btn-danger" data-action="deactivate-pipeline" data-id="${this.escapeHtml(pipeline.id)}">Отключить</button>
                             </div>
                         </div>
                         <span class="badge ${pipeline.is_active ? 'ok' : 'muted'}">${pipeline.is_active ? 'активен' : 'архив'}</span>
                     </article>
-                `).join('') || '<div class="empty-state">Pipeline’ы не найдены</div>'}
+                `).join('')}
             </div>`;
     }
 
     async renderWorldsTab() {
         const [vaults, worlds] = await Promise.all([this.api.getSettingsVaults(), this.api.getWorlds()]);
-        return `
-            <div class="settings-toolbar"><button class="btn btn-primary" data-action="new-world">+ Новый мир</button></div>
-            <p class="settings-note">Удаление миров и кампаний выполняется в файловой системе и через управление хранилищем.</p>
+        const toolbar = '<div class="settings-toolbar"><button class="btn btn-primary" data-action="new-world">+ Новый мир</button></div>';
+        if (!worlds || worlds.length === 0) {
+            return toolbar + '<div class="empty-state">Миры не найдены</div>' + '<p class="settings-note">Удаление миров и кампаний выполняется в файловой системе и через управление хранилищем.</p>';
+        }
+        return toolbar + `
             <div class="settings-grid">
                 ${worlds.map((world) => `
                     <article class="settings-card world-card">
@@ -216,8 +273,9 @@ class SettingsManager {
                         </div>
                         <span class="badge ${world.is_active ? 'ok' : 'muted'}">${world.is_active ? 'active' : 'off'}</span>
                     </article>
-                `).join('') || '<div class="empty-state">Миры не найдены</div>'}
-            </div>`;
+                `).join('')}
+            </div>
+            <p class="settings-note">Удаление миров и кампаний выполняется в файловой системе и через управление хранилищем.</p>`;
     }
 
     attachTabEventHandlers(tabId) {
@@ -226,38 +284,46 @@ class SettingsManager {
             button.addEventListener('click', () => this.handleAction(button.dataset.action, button.dataset.id, button));
         });
         content?.querySelectorAll('[data-param]').forEach((input) => {
-            input.addEventListener('blur', async () => {
-                await this.api.updateSettingsParam(input.dataset.param, input.value);
+            const saveParam = async () => {
+                let value;
+                if (input.type === 'checkbox') {
+                    value = input.checked;
+                } else {
+                    value = input.value;
+                }
+                await this.api.updateSettingsParam(input.dataset.param, value);
                 if (input.dataset.param === 'pdf_sidecar.url') await this.updateStatusBanner();
-            });
+            };
+            if (input.type === 'checkbox') {
+                input.addEventListener('change', saveParam);
+            } else {
+                input.addEventListener('blur', saveParam);
+            }
         });
     }
 
     async handleAction(action, id, button) {
         try {
-            // Domain actions
             if (action === 'new-domain') await this.showDomainModal();
             if (action === 'edit-domain') await this.showDomainModal(id);
             if (action === 'delete-domain' && confirm('Удалить домен?')) await this.api.deleteDomain(id);
-            
-            // Vault actions
+
             if (action === 'new-vault') await this.showVaultModal();
             if (action === 'edit-vault') await this.showVaultModal(id);
             if (action === 'toggle-vault') await this.api.toggleVault(id);
             if (action === 'delete-vault' && confirm('Удалить vault и его векторы?')) await this.api.deleteVault(id);
-            
-            // Generation model actions
+
             if (action === 'new-gen') await this.showGenerationModelModal();
+            if (action === 'edit-gen') await this.showGenerationModelModal(id);
             if (action === 'check-gen') alert(JSON.stringify(await this.api.checkGenerationModel(id), null, 2));
             if (action === 'activate-gen') await this.api.activateGenerationModel(id);
             if (action === 'delete-gen' && confirm('Удалить модель?')) await this.api.deleteGenerationModel(id);
-            
-            // Embedding model actions
+
             if (action === 'new-emb') await this.showEmbeddingModelModal();
+            if (action === 'edit-emb') await this.showEmbeddingModelModal(id);
             if (action === 'check-emb') alert(JSON.stringify(await this.api.checkEmbeddingModel(id), null, 2));
             if (action === 'delete-emb' && confirm('Удалить embedding-модель?')) await this.api.deleteEmbeddingModel(id);
-            
-            // Params actions
+
             if (action === 'reset-params' && confirm('Сбросить все параметры?')) {
                 await this.api.resetSettingsParams();
                 await this.loadTab(this.currentTab);
@@ -265,16 +331,14 @@ class SettingsManager {
                 return;
             }
             if (action === 'default-param') await this.api.updateSettingsParam(id, SETTINGS_DEFAULTS[id] ?? '');
-            
-            // Pipeline actions
+
             if (action === 'new-pipeline') await this.showPipelineModal();
             if (action === 'activate-pipeline') await this.api.activatePipeline(id);
-            if (action === 'delete-pipeline') await this.api.deletePipeline(id);
-            
-            // World actions
+            if (action === 'deactivate-pipeline') await this.api.deactivatePipeline(id);
+
             if (action === 'new-world') await this.showWorldModal();
             if (action === 'toggle-world') await this.api.updateWorld(id, { is_active: button.dataset.active !== '1' });
-            
+
             await this.loadTab(this.currentTab);
             await this.updateStatusBanner();
         } catch (error) {
@@ -282,32 +346,28 @@ class SettingsManager {
         }
     }
 
-    escapeHtml(text) {
-        const div = document.createElement('div');
-        div.textContent = text == null ? '' : String(text);
-        return div.innerHTML;
-    }
-
+    // === Модальные окна ===
     async showDomainModal(domainId = null) {
-        const domain = domainId ? await this.api._request(`/settings/domains/${encodeURIComponent(domainId)}`) : null;
+        let domain = null;
+        if (domainId) {
+            const resp = await this.api.getDomains();
+            domain = (resp.domains || []).find(d => d.domain_id === domainId) || null;
+        }
         const modal = document.createElement('div');
         modal.className = 'modal';
         modal.innerHTML = `
             <div class="modal-content">
                 <h3>${domain ? 'Редактировать домен' : 'Новый домен'}</h3>
                 <div class="form-group">
-                    <label for="domain-id-desc">ID домена:</label>
-                    <span class="field-desc" id="domain-id-desc">Уникальный идентификатор домена (3-32 символа, только a-z, 0-9 и _). При редактировании изменение невозможно.</span>
+                    <label>ID домена:</label>
                     <input type="text" id="domain-id-input" value="${this.escapeHtml(domain?.domain_id || '')}" ${domain ? 'disabled' : ''} pattern="[a-z0-9_]{3,32}" title="3-32 символа, только a-z, 0-9, _">
                 </div>
                 <div class="form-group">
-                    <label for="domain-name-desc">Отображаемое имя:</label>
-                    <span class="field-desc" id="domain-name-desc">Человекочитаемое название домена для отображения в интерфейсе.</span>
+                    <label>Отображаемое имя:</label>
                     <input type="text" id="domain-name-input" value="${this.escapeHtml(domain?.display_name || '')}">
                 </div>
                 <div class="form-group">
-                    <label for="domain-desc-desc">Описание:</label>
-                    <span class="field-desc" id="domain-desc-desc">Краткое описание назначения домена (опционально).</span>
+                    <label>Описание:</label>
                     <textarea id="domain-desc-input">${this.escapeHtml(domain?.description || '')}</textarea>
                 </div>
                 <div class="modal-actions">
@@ -319,8 +379,7 @@ class SettingsManager {
         document.body.appendChild(modal);
         modal.querySelector('#domain-cancel-btn')?.addEventListener('click', () => modal.remove());
         modal.querySelector('#domain-save-btn')?.addEventListener('click', async () => {
-            const domainIdInput = modal.querySelector('#domain-id-input');
-            const domainIdValue = domainIdInput.value.trim();
+            const domainIdValue = modal.querySelector('#domain-id-input').value.trim();
             if (!domainId && !/^[a-z0-9_]{3,32}$/.test(domainIdValue)) {
                 alert('ID домена должен содержать от 3 до 32 символов, только a-z, 0-9 и _');
                 return;
@@ -341,94 +400,112 @@ class SettingsManager {
     }
 
     async showVaultModal(vaultId = null) {
-        const vault = vaultId ? await this.api._request(`/settings/vaults/${encodeURIComponent(vaultId)}`) : null;
-        const domains = await this.api.getDomains();
-        const modal = document.createElement('div');
-        modal.className = 'modal';
-        modal.innerHTML = `
-            <div class="modal-content">
-                <h3>${vault ? 'Редактировать vault' : 'Новый vault'}</h3>
-                <div class="form-group">
-                    <label for="vault-id-desc">ID vault:</label>
-                    <span class="field-desc" id="vault-id-desc">Уникальный идентификатор хранилища документов. При редактировании изменение невозможно.</span>
-                    <input type="text" id="vault-id-input" value="${this.escapeHtml(vault?.vault_id || '')}" ${vault ? 'disabled' : ''}>
-                </div>
-                <div class="form-group">
-                    <label for="vault-name-desc">Отображаемое имя:</label>
-                    <span class="field-desc" id="vault-name-desc">Человекочитаемое название vault для отображения в интерфейсе (опционально).</span>
-                    <input type="text" id="vault-name-input" value="${this.escapeHtml(vault?.display_name || '')}">
-                </div>
-                <div class="form-group">
-                    <label for="vault-domain-desc">Домен:</label>
-                    <span class="field-desc" id="vault-domain-desc">Домен, к которому привязывается данный vault.</span>
-                    <select id="vault-domain-select">
-                        ${domains.map((d) => `<option value="${this.escapeHtml(d.domain_id)}" ${vault?.domain_id === d.domain_id ? 'selected' : ''}>${this.escapeHtml(d.display_name)}</option>`).join('')}
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label for="vault-path-desc">Путь к данным:</label>
-                    <span class="field-desc" id="vault-path-desc">Путь к папке с документами в файловой системе (например, /data/vaults/my_vault).</span>
-                    <input type="text" id="vault-path-input" value="${this.escapeHtml(vault?.data_path || '')}">
-                </div>
-                <div class="modal-actions">
-                    <button id="vault-save-btn" class="btn btn-primary">Сохранить</button>
-                    <button id="vault-cancel-btn" class="btn btn-secondary">Отмена</button>
-                </div>
-            </div>
-        `;
-        document.body.appendChild(modal);
-        modal.querySelector('#vault-cancel-btn')?.addEventListener('click', () => modal.remove());
-        modal.querySelector('#vault-save-btn')?.addEventListener('click', async () => {
-            const data = {
-                display_name: modal.querySelector('#vault-name-input').value,
-                domain_id: modal.querySelector('#vault-domain-select').value,
-                data_path: modal.querySelector('#vault-path-input').value,
-            };
+        try {
+            let vault = null;
             if (vaultId) {
-                await this.api.updateVault(vaultId, data);
-            } else {
-                data.vault_id = modal.querySelector('#vault-id-input').value;
-                await this.api.createVault(data);
+                const vaultsList = await this.api.getSettingsVaults();
+                vault = vaultsList.find(v => v.vault_id === vaultId);
             }
-            modal.remove();
-            await this.loadTab(this.currentTab);
-        });
+            const resp = await this.api.getDomains();
+            const domains = resp.domains || [];
+            const embModels = await this.api.getEmbeddingModels();
+            const modal = document.createElement('div');
+            modal.className = 'modal';
+            modal.innerHTML = `
+                <div class="modal-content">
+                    <h3>${vault ? 'Редактировать vault' : 'Новый vault'}</h3>
+                    <div class="form-group">
+                        <label>ID vault:</label>
+                        <input type="text" id="vault-id-input" value="${this.escapeHtml(vault?.vault_id || '')}" ${vault ? 'disabled' : ''}>
+                    </div>
+                    <div class="form-group">
+                        <label>Отображаемое имя:</label>
+                        <input type="text" id="vault-name-input" value="${this.escapeHtml(vault?.display_name || '')}">
+                    </div>
+                    <div class="form-group">
+                        <label>Домен:</label>
+                        <select id="vault-domain-select">
+                            ${domains.map((d) => `<option value="${this.escapeHtml(d.domain_id)}" ${vault?.domain_id === d.domain_id ? 'selected' : ''}>${this.escapeHtml(d.display_name)}</option>`).join('')}
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Embedding-модель:</label>
+                        <select id="vault-emb-model">
+                            <option value="">— Не выбрана —</option>
+                            ${embModels.map(m => `<option value="${this.escapeHtml(m.model_id)}" ${vault?.embedding_model_id === m.model_id ? 'selected' : ''}>${this.escapeHtml(m.display_name || m.model_id)}</option>`).join('')}
+                        </select>
+                    </div>
+                    <div class="modal-actions">
+                        <button id="vault-save-btn" class="btn btn-primary">Сохранить</button>
+                        <button id="vault-cancel-btn" class="btn btn-secondary">Отмена</button>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(modal);
+            modal.querySelector('#vault-cancel-btn')?.addEventListener('click', () => modal.remove());
+            modal.querySelector('#vault-save-btn')?.addEventListener('click', async () => {
+                const data = {
+                    display_name: modal.querySelector('#vault-name-input').value,
+                    domain_id: modal.querySelector('#vault-domain-select').value,
+                    embedding_model_id: modal.querySelector('#vault-emb-model').value || null,
+                };
+                if (vaultId) {
+                    await this.api.updateVault(vaultId, data);
+                } else {
+                    data.vault_id = modal.querySelector('#vault-id-input').value;
+                    await this.api.createVault(data);
+                }
+                modal.remove();
+                await this.loadTab(this.currentTab);
+            });
+        } catch (err) {
+            console.error('Error in showVaultModal:', err);
+            alert('Ошибка при открытии модального окна: ' + err.message);
+        }
     }
 
-    async showGenerationModelModal() {
+    async showGenerationModelModal(modelId = null) {
+        let model = null;
+        if (modelId) {
+            const models = await this.api.getGenerationModels();
+            model = models.find(m => m.model_id === modelId);
+            if (!model) {
+                alert('Модель не найдена');
+                return;
+            }
+        }
         const modal = document.createElement('div');
         modal.className = 'modal';
         modal.innerHTML = `
             <div class="modal-content">
-                <h3>Новая генеративная модель</h3>
+                <h3>${model ? 'Редактировать генеративную модель' : 'Новая генеративная модель'}</h3>
                 <div class="form-group">
-                    <label for="gen-model-id-desc">ID модели:</label>
-                    <span class="field-desc" id="gen-model-id-desc">Уникальный идентификатор модели (например, gpt-4, llama3).</span>
-                    <input type="text" id="gen-model-id-input">
+                    <label>ID модели:</label>
+                    <input type="text" id="gen-model-id" value="${this.escapeHtml(model?.model_id || '')}" ${model ? 'disabled' : ''}>
                 </div>
                 <div class="form-group">
-                    <label for="gen-model-name-desc">Отображаемое имя:</label>
-                    <span class="field-desc" id="gen-model-name-desc">Человекочитаемое название модели для отображения в интерфейсе.</span>
-                    <input type="text" id="gen-model-name-input">
+                    <label>Отображаемое имя:</label>
+                    <input type="text" id="gen-model-name" value="${this.escapeHtml(model?.display_name || '')}">
                 </div>
                 <div class="form-group">
-                    <label for="gen-model-provider-desc">Провайдер:</label>
-                    <span class="field-desc" id="gen-model-provider-desc">Поставщик модели: OpenAI, Ollama (локально), Anthropic.</span>
-                    <select id="gen-model-provider">
-                        <option value="openai">OpenAI</option>
-                        <option value="ollama">Ollama</option>
-                        <option value="anthropic">Anthropic</option>
+                    <label>Провайдер:</label>
+                    <select id="gen-model-provider" ${model ? 'disabled' : ''}>
+                        <option value="openai_compatible" ${model?.provider === 'openai_compatible' ? 'selected' : ''}>OpenAI</option>
+                        <option value="ollama" ${model?.provider === 'ollama' ? 'selected' : ''}>Ollama</option>
+                        <option value="anthropic" ${model?.provider === 'anthropic' ? 'selected' : ''}>Anthropic</option>
                     </select>
                 </div>
                 <div class="form-group">
-                    <label for="gen-model-api-key-desc">API Key:</label>
-                    <span class="field-desc" id="gen-model-api-key-desc">Ключ доступа к API провайдера. Для Ollama можно оставить пустым.</span>
-                    <input type="password" id="gen-model-api-key-input">
+                    <label>API Key (оставьте пустым, если не меняется):</label>
+                    <input type="password" id="gen-model-api-key" placeholder="Новый ключ">
                 </div>
                 <div class="form-group">
-                    <label for="gen-model-base-url-desc">Base URL (опционально):</label>
-                    <span class="field-desc" id="gen-model-base-url-desc">Адрес сервера API. Оставьте пустым для использования адреса по умолчанию.</span>
-                    <input type="text" id="gen-model-base-url-input">
+                    <label>Base URL:</label>
+                    <input type="text" id="gen-model-base-url" value="${this.escapeHtml(model?.base_url || '')}">
+                </div>
+                <div class="form-group">
+                    <label>Timeout (сек):</label>
+                    <input type="number" id="gen-model-timeout" value="${model?.timeout_seconds || 60}">
                 </div>
                 <div class="modal-actions">
                     <button id="gen-model-save-btn" class="btn btn-primary">Сохранить</button>
@@ -437,60 +514,81 @@ class SettingsManager {
             </div>
         `;
         document.body.appendChild(modal);
-        modal.querySelector('#gen-model-cancel-btn')?.addEventListener('click', () => modal.remove());
-        modal.querySelector('#gen-model-save-btn')?.addEventListener('click', async () => {
+        const closeModal = () => modal.remove();
+        modal.querySelector('#gen-model-cancel-btn').addEventListener('click', closeModal);
+        modal.querySelector('#gen-model-save-btn').addEventListener('click', async () => {
             const data = {
-                model_id: modal.querySelector('#gen-model-id-input').value,
-                display_name: modal.querySelector('#gen-model-name-input').value,
-                provider: modal.querySelector('#gen-model-provider').value,
-                api_key: modal.querySelector('#gen-model-api-key-input').value,
+                display_name: modal.querySelector('#gen-model-name').value,
+                base_url: modal.querySelector('#gen-model-base-url').value,
+                timeout_seconds: parseInt(modal.querySelector('#gen-model-timeout').value, 10),
             };
-            const baseUrl = modal.querySelector('#gen-model-base-url-input').value;
-            if (baseUrl) data.base_url = baseUrl;
-            await this.api.createGenerationModel(data);
-            modal.remove();
-            await this.loadTab(this.currentTab);
+            const apiKey = modal.querySelector('#gen-model-api-key').value;
+            if (apiKey) data.api_key = apiKey;
+            try {
+                if (modelId) {
+                    await this.api.updateGenerationModel(modelId, data);
+                } else {
+                    data.model_id = modal.querySelector('#gen-model-id').value;
+                    data.provider = modal.querySelector('#gen-model-provider').value;
+                    await this.api.createGenerationModel(data);
+                }
+                closeModal();
+                await this.loadTab(this.currentTab);
+            } catch (err) {
+                alert('Ошибка: ' + err.message);
+            }
         });
     }
 
-    async showEmbeddingModelModal() {
+    async showEmbeddingModelModal(modelId = null) {
+        let model = null;
+        if (modelId) {
+            const models = await this.api.getEmbeddingModels();
+            model = models.find(m => m.model_id === modelId);
+            if (!model) {
+                alert('Модель не найдена');
+                return;
+            }
+        }
         const modal = document.createElement('div');
         modal.className = 'modal';
         modal.innerHTML = `
             <div class="modal-content">
-                <h3>Новая embedding-модель</h3>
+                <h3>${model ? 'Редактировать embedding-модель' : 'Новая embedding-модель'}</h3>
                 <div class="form-group">
-                    <label for="emb-model-id-desc">ID модели:</label>
-                    <span class="field-desc" id="emb-model-id-desc">Уникальный идентификатор embedding-модели (например, text-embedding-3-small).</span>
-                    <input type="text" id="emb-model-id-input">
+                    <label>ID модели:</label>
+                    <input type="text" id="emb-model-id" value="${this.escapeHtml(model?.model_id || '')}" ${model ? 'disabled' : ''}>
                 </div>
                 <div class="form-group">
-                    <label for="emb-model-name-desc">Отображаемое имя:</label>
-                    <span class="field-desc" id="emb-model-name-desc">Человекочитаемое название модели для отображения в интерфейсе.</span>
-                    <input type="text" id="emb-model-name-input">
+                    <label>Отображаемое имя:</label>
+                    <input type="text" id="emb-model-name" value="${this.escapeHtml(model?.display_name || '')}">
                 </div>
                 <div class="form-group">
-                    <label for="emb-model-provider-desc">Провайдер:</label>
-                    <span class="field-desc" id="emb-model-provider-desc">Поставщик модели: OpenAI или Ollama (локально).</span>
-                    <select id="emb-model-provider">
-                        <option value="openai_compatible">OpenAI</option>
-                        <option value="ollama">Ollama</option>
+                    <label>Провайдер:</label>
+                    <select id="emb-model-provider" ${model ? 'disabled' : ''}>
+                        <option value="openai_compatible" ${model?.provider === 'openai_compatible' ? 'selected' : ''}>OpenAI</option>
+                        <option value="ollama" ${model?.provider === 'ollama' ? 'selected' : ''}>Ollama</option>
                     </select>
                 </div>
                 <div class="form-group">
-                    <label for="emb-model-api-key-desc">API Key (опционально):</label>
-                    <span class="field-desc" id="emb-model-api-key-desc">Ключ доступа к API провайдера. Для Ollama можно оставить пустым.</span>
-                    <input type="password" id="emb-model-api-key-input">
+                    <label>Model name (если отличается от ID):</label>
+                    <input type="text" id="emb-model-modelname" value="${this.escapeHtml(model?.model_name || '')}">
                 </div>
                 <div class="form-group">
-                    <label for="emb-model-dimensions-desc">Размерность:</label>
-                    <span class="field-desc" id="emb-model-dimensions-desc">Количество измерений вектора (например, 768, 1536). Уточните в документации модели.</span>
-                    <input type="number" id="emb-model-dimensions-input" value="768">
+                    <label>Размерность (dimensions):</label>
+                    <input type="number" id="emb-model-dimensions" value="${model?.dimensions || 768}">
                 </div>
                 <div class="form-group">
-                    <label for="emb-model-base-url-desc">Base URL (опционально):</label>
-                    <span class="field-desc" id="emb-model-base-url-desc">Адрес сервера API. Оставьте пустым для использования адреса по умолчанию.</span>
-                    <input type="text" id="emb-model-base-url-input">
+                    <label>Base URL:</label>
+                    <input type="text" id="emb-model-base-url" value="${this.escapeHtml(model?.base_url || '')}">
+                </div>
+                <div class="form-group">
+                    <label>API Key (оставьте пустым, если не меняется):</label>
+                    <input type="password" id="emb-model-api-key" placeholder="Новый ключ">
+                </div>
+                <div class="form-group">
+                    <label>Timeout (сек):</label>
+                    <input type="number" id="emb-model-timeout" value="${model?.timeout_seconds || 30}">
                 </div>
                 <div class="modal-actions">
                     <button id="emb-model-save-btn" class="btn btn-primary">Сохранить</button>
@@ -499,51 +597,59 @@ class SettingsManager {
             </div>
         `;
         document.body.appendChild(modal);
-        modal.querySelector('#emb-model-cancel-btn')?.addEventListener('click', () => modal.remove());
-        modal.querySelector('#emb-model-save-btn')?.addEventListener('click', async () => {
+        const closeModal = () => modal.remove();
+        modal.querySelector('#emb-model-cancel-btn').addEventListener('click', closeModal);
+        modal.querySelector('#emb-model-save-btn').addEventListener('click', async () => {
             const data = {
-                model_id: modal.querySelector('#emb-model-id-input').value,
-                display_name: modal.querySelector('#emb-model-name-input').value,
-                provider: modal.querySelector('#emb-model-provider').value,
-                model_name: modal.querySelector('#emb-model-id-input').value,
-                api_key: modal.querySelector('#emb-model-api-key-input').value || null,
-                dimensions: parseInt(modal.querySelector('#emb-model-dimensions-input').value, 10),
-                base_url: modal.querySelector('#emb-model-base-url-input').value || '',
+                display_name: modal.querySelector('#emb-model-name').value,
+                model_name: modal.querySelector('#emb-model-modelname').value,
+                dimensions: parseInt(modal.querySelector('#emb-model-dimensions').value, 10),
+                base_url: modal.querySelector('#emb-model-base-url').value,
+                timeout_seconds: parseInt(modal.querySelector('#emb-model-timeout').value, 10),
             };
-            await this.api.createEmbeddingModel(data);
-            modal.remove();
-            await this.loadTab(this.currentTab);
+            const apiKey = modal.querySelector('#emb-model-api-key').value;
+            if (apiKey) data.api_key = apiKey;
+            try {
+                if (modelId) {
+                    await this.api.updateEmbeddingModel(modelId, data);
+                } else {
+                    data.model_id = modal.querySelector('#emb-model-id').value;
+                    data.provider = modal.querySelector('#emb-model-provider').value;
+                    await this.api.createEmbeddingModel(data);
+                }
+                closeModal();
+                await this.loadTab(this.currentTab);
+            } catch (err) {
+                alert('Ошибка: ' + err.message);
+            }
         });
     }
 
     async showPipelineModal() {
-        const domains = await this.api.getDomains();
+        const resp = await this.api.getDomains();
+        const domains = resp.domains || [];
         const modal = document.createElement('div');
         modal.className = 'modal';
         modal.innerHTML = `
             <div class="modal-content">
                 <h3>Новый pipeline</h3>
                 <div class="form-group">
-                    <label for="pipeline-name-desc">Название:</label>
-                    <span class="field-desc" id="pipeline-name-desc">Человекочитаемое название pipeline для отображения в интерфейсе.</span>
+                    <label>Название:</label>
                     <input type="text" id="pipeline-name-input">
                 </div>
                 <div class="form-group">
-                    <label for="pipeline-domain-desc">Домен:</label>
-                    <span class="field-desc" id="pipeline-domain-desc">Домен, к которому будет привязан данный pipeline.</span>
+                    <label>Домен:</label>
                     <select id="pipeline-domain-select">
                         ${domains.map((d) => `<option value="${this.escapeHtml(d.domain_id)}">${this.escapeHtml(d.display_name)}</option>`).join('')}
                     </select>
                 </div>
                 <div class="form-group">
-                    <label for="pipeline-version-desc">Версия:</label>
-                    <span class="field-desc" id="pipeline-version-desc">Версия pipeline в формате semver (например, 1.0, 2.1.0).</span>
+                    <label>Версия:</label>
                     <input type="text" id="pipeline-version-input" value="1.0">
                 </div>
                 <div class="form-group">
-                    <label for="pipeline-steps-desc">Шаги (JSON):</label>
-                    <span class="field-desc" id="pipeline-steps-desc">Массив шагов обработки запроса в формате JSON. Каждый шаг должен содержать type и параметры.</span>
-                    <textarea id="pipeline-steps-input" class="json-editor">[]</textarea>
+                    <label>Шаги (JSON):</label>
+                    <textarea id="pipeline-steps-input" class="json-editor" rows="5">[]</textarea>
                 </div>
                 <div class="modal-actions">
                     <button id="pipeline-save-btn" class="btn btn-primary">Сохранить</button>
@@ -557,10 +663,12 @@ class SettingsManager {
             try {
                 const steps = JSON.parse(modal.querySelector('#pipeline-steps-input').value);
                 const data = {
+                    pipeline_id: `pipeline_${Date.now()}`,
                     name: modal.querySelector('#pipeline-name-input').value,
                     domain_id: modal.querySelector('#pipeline-domain-select').value,
                     version: modal.querySelector('#pipeline-version-input').value,
                     steps: steps,
+                    final_composition: { system_prompt: "You are a helpful assistant." }
                 };
                 await this.api.createPipeline(data);
                 modal.remove();
@@ -579,25 +687,21 @@ class SettingsManager {
             <div class="modal-content">
                 <h3>Новый мир</h3>
                 <div class="form-group">
-                    <label for="world-id-desc">ID мира:</label>
-                    <span class="field-desc" id="world-id-desc">Уникальный идентификатор мира (например, dragonlance, forgotten_realms).</span>
+                    <label>ID мира:</label>
                     <input type="text" id="world-id-input">
                 </div>
                 <div class="form-group">
-                    <label for="world-name-desc">Название:</label>
-                    <span class="field-desc" id="world-name-desc">Человекочитаемое название мира для отображения в интерфейсе.</span>
+                    <label>Название:</label>
                     <input type="text" id="world-name-input">
                 </div>
                 <div class="form-group">
-                    <label for="world-vault-desc">Vault:</label>
-                    <span class="field-desc" id="world-vault-desc">Хранилище документов (vault), к которому привязывается данный мир.</span>
+                    <label>Vault:</label>
                     <select id="world-vault-select">
                         ${vaults.map((v) => `<option value="${this.escapeHtml(v.vault_id)}">${this.escapeHtml(v.display_name || v.vault_id)}</option>`).join('')}
                     </select>
                 </div>
                 <div class="form-group">
-                    <label for="world-path-desc">Path prefix:</label>
-                    <span class="field-desc" id="world-path-desc">Префикс пути к папке с документами мира. Должен заканчиваться на '/' (например, worlds/dragonlance/).</span>
+                    <label>Path prefix (заканчивается на /):</label>
                     <input type="text" id="world-path-input" placeholder="worlds/my_world/">
                 </div>
                 <div class="modal-actions">
@@ -610,7 +714,6 @@ class SettingsManager {
         modal.querySelector('#world-cancel-btn')?.addEventListener('click', () => modal.remove());
         modal.querySelector('#world-save-btn')?.addEventListener('click', async () => {
             let pathPrefix = modal.querySelector('#world-path-input').value;
-            // Автоматически добавляем завершающий слэш если его нет
             if (pathPrefix && !pathPrefix.endsWith('/')) {
                 pathPrefix += '/';
             }
@@ -624,6 +727,12 @@ class SettingsManager {
             modal.remove();
             await this.loadTab(this.currentTab);
         });
+    }
+
+    escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text == null ? '' : String(text);
+        return div.innerHTML;
     }
 }
 
@@ -647,5 +756,9 @@ const SETTINGS_DEFAULTS = {
 };
 
 document.addEventListener('DOMContentLoaded', () => {
+    if (!window.chatAPI) {
+        console.error('chatAPI not available');
+        return;
+    }
     window.settingsManager = new SettingsManager(window.chatAPI);
 });
