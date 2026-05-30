@@ -10,10 +10,13 @@ const VaultsTabMixin = {
                     <h3>${this.escapeHtml(vault.display_name || vault.vault_id)}</h3>
                     <p>/data/vaults/${this.escapeHtml(vault.vault_id)}</p>
                 </div>
-                <div class="settings-actions">
-                    <button class="btn btn-sm btn-secondary" data-action="edit-vault" data-id="${this.escapeHtml(vault.vault_id)}">Изменить</button>
-                    <button class="btn btn-sm btn-secondary" data-action="toggle-vault" data-id="${this.escapeHtml(vault.vault_id)}">${vault.enabled ? 'Выключить' : 'Включить'}</button>
-                    <button class="btn btn-sm btn-danger" data-action="delete-vault" data-id="${this.escapeHtml(vault.vault_id)}">Удалить</button>
+                <div class="card-menu-container">
+                    <button class="card-menu-toggle" data-id="${this.escapeHtml(vault.vault_id)}" aria-label="Меню">⋮</button>
+                    <div class="card-menu">
+                        <button class="card-menu-item" data-action="edit-vault" data-id="${this.escapeHtml(vault.vault_id)}">✏️ Изменить</button>
+                        <button class="card-menu-item" data-action="toggle-vault" data-id="${this.escapeHtml(vault.vault_id)}">${vault.enabled ? '⏸️ Выключить' : '▶️ Включить'}</button>
+                        <button class="card-menu-item card-menu-danger" data-action="delete-vault" data-id="${this.escapeHtml(vault.vault_id)}">🗑️ Удалить</button>
+                    </div>
                 </div>
                 <div>
                     <span class="badge ${vault.enabled ? 'ok' : 'muted'}">${this.escapeHtml(vault.binding_status)}</span>
