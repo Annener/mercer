@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import asyncio
-
+import logging
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from shared_contracts.models import ChunkRecord, DocumentRecord, SearchHit, SearchRequest, SearchResponse, UpsertRequest, UpsertResponse
 from storage.lancedb_store import LanceDBStore
 
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/index", tags=["index"])
 
@@ -43,6 +45,10 @@ async def upsert_index(req: UpsertRequest, request: Request) -> UpsertResponse:
 
 @router.post("/search", response_model=SearchResponse)
 async def search_index(req: SearchRequest, request: Request) -> SearchResponse:
+    logger.info(
+        "HTTP /search vault='%s' top_k=%d filter=%s",
+        req.vault_id, req.top_k, req.filter or "none",
+    )
     try:
         return _store(request).search(req)
     except ValueError as exc:
@@ -82,6 +88,10 @@ async def get_document_chunks(
 
 @router.post("/search/text", response_model=TextSearchResponse)
 async def text_search(req: TextSearchRequest, request: Request) -> TextSearchResponse:
+    logger.info(
+        "HTTP /search/text vault='%s' query='%s' limit=%d",
+        req.vault_id, req.query_text, req.limit,
+    )
     return TextSearchResponse(results=_store(request).text_search(req.vault_id, req.query_text, req.limit))
 
 

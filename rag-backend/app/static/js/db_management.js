@@ -71,8 +71,10 @@ class DBManager {
         }
 
         // Глобальный обработчик для закрытия dropdown меню (навешивается ОДИН раз)
-        document.addEventListener('click', () => {
-            document.querySelectorAll('.vault-menu-dropdown').forEach(d => d.style.display = 'none');
+        document.addEventListener('click', (e) => {
+            if (!e.target.closest('.vault-menu-wrap')) {
+                document.querySelectorAll('.vault-menu-dropdown').forEach(d => d.style.display = 'none');
+            }
         });
     }
 
@@ -97,7 +99,7 @@ class DBManager {
                 chatAPI.getDomains(),
                 chatAPI.getSettingsVaults(),
             ]);
-            this.domains = domainsResp.domains || [];
+            this.domains = Array.isArray(domainsResp) ? domainsResp : (domainsResp.domains || []);
             this.allVaults = Array.isArray(vaultsResp) ? vaultsResp : [];
             this.renderDomainTabs();
             this.populateSearchDomainSelect();

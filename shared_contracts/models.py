@@ -384,7 +384,7 @@ class ChatRecord(BaseModel):
     locked_pipeline_id: str | None = None
     created_at: datetime
     updated_at: datetime
-    pipeline_versions: dict[str, str] = Field(default_factory=dict)
+    pipeline_versions: dict[str, Any] = Field(default_factory=dict)
 
 
 class PipelineContext(BaseModel):

@@ -266,9 +266,21 @@ async def send_message(
     collected = state.collected if state.stage in {"complete", "fallback"} else {}
     selected_pipeline, mode, confidence, reasoning = await pipeline_router.decide(req.content, chat, db)
     if selected_pipeline is not None:
+        # Резолвим vault_id: если чат привязан к vault — берём его,
+        # иначе берём все vault'ы домена (для pipeline executor достаточно первого bound)
+        pipeline_vault_id = chat.vault_id
+        if pipeline_vault_id is None and chat.domain_id:
+            config_for_vault = await _runtime_config_from_db(db)
+            domain_vaults = [
+                v.vault_id for v in config_for_vault.vaults.values()
+                if v.domain_id == chat.domain_id and v.enabled
+            ]
+            pipeline_vault_id = domain_vaults[0] if domain_vaults else None
+    
         chat_context = {
             "chat_id": chat.id,
-            "vault_id": chat.vault_id,
+            "vault_id": pipeline_vault_id,   # ← было chat.vault_id
+            "domain_id": chat.domain_id,
             "collected_fields": collected,
             "history": [_llm_message(message) for message in existing_messages[-8:]],
             "mode": mode,

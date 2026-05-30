@@ -29,6 +29,13 @@ class LanceDBStore:
         if not req.chunks:
             return UpsertResponse(status="ok", upserted_count=0)
 
+        logger.info(
+            "UPSERT vault='%s' chunks=%d doc_ids=%s",
+            req.vault_id,
+            len(req.chunks),
+            list({c.document_id for c in req.chunks}),
+        )
+
         expected_dimensions = self._get_expected_dimensions(req.vault_id)
         if expected_dimensions is None:
             expected_dimensions = len(req.chunks[0].vector)
@@ -62,6 +69,15 @@ class LanceDBStore:
             self._replace_rows(table, rows)
 
         status = "partial" if failed_indices else "ok"
+
+        if failed_indices:
+            logger.warning(
+                "UPSERT PARTIAL vault='%s' upserted=%d failed=%d errors=%s",
+                req.vault_id, len(rows), len(failed_indices), error_details[:3],
+            )
+        else:
+            logger.info("UPSERT OK vault='%s' upserted=%d", req.vault_id, len(rows))
+
         return UpsertResponse(
             status=status,
             upserted_count=len(rows),
@@ -83,6 +99,13 @@ class LanceDBStore:
             )
             return SearchResponse()
 
+        logger.info(
+            "SEARCH vault='%s' top_k=%d filter=%s score_threshold=%s",
+            req.vault_id,
+            req.top_k,
+            req.filter or "none",
+            req.score_threshold,
+        )
         table = self._open_table(req.vault_id)
         limit = req.top_k * 10 if req.filter else req.top_k
         query = table.search(req.vector).limit(limit)
@@ -107,6 +130,12 @@ class LanceDBStore:
             )
             if len(hits) >= req.top_k:
                 break
+        logger.info(
+            "SEARCH DONE vault='%s' hits=%d scores=[%s]",
+            req.vault_id,
+            len(hits),
+            ", ".join(f"{h.score:.3f}" for h in hits[:5]),  # первые 5 scores
+        )
         return SearchResponse(results=hits)
 
     def delete_document(self, vault_id: str, document_id: str) -> int:

@@ -5,6 +5,7 @@ import json
 from collections.abc import AsyncGenerator
 from datetime import datetime
 from typing import Any
+import logging
 
 from fastapi import Request
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,6 +15,7 @@ from app.services.prompt_pack import format_prompt
 from app.services.retrieval import format_context_with_role, retrieve
 from app.services.settings_service import settings_service
 from shared_contracts.models import PipelineRead, PipelineStep, SearchHit
+logger = logging.getLogger(__name__)
 
 
 class PipelineExecutor:
@@ -93,23 +95,30 @@ class PipelineExecutor:
         except Exception as exc:
             yield {"type": "error", "message": str(exc)}
 
-    async def _retrieve_for_step(
-        self,
-        query: str,
-        step: PipelineStep,
-        chat_context: dict[str, Any],
-        db: AsyncSession,
-    ) -> list[SearchHit]:
+    async def _retrieve_for_step(self, query, step, chat_context, db):
         top_k = step.top_k or int(await settings_service.get("retrieval.top_k", db))
         vault_id = chat_context.get("vault_id")
         config = chat_context.get("config")
+    
+        logger.info(
+            "Pipeline retrieval start: step=%s type=%s vault_id=%s document_ids=%s world_id=%s top_k=%s",
+            step.name, step.type, vault_id, step.document_ids, step.world_id, top_k
+        )
+    
         if step.type == "book":
-            return await retrieve(query, vault_id, document_ids=step.document_ids, top_k=top_k, config=config)
-        if step.type == "world":
-            return await retrieve(query, vault_id, world_id=step.world_id, categories=step.categories, top_k=top_k, config=config)
-        if step.type == "campaign":
-            return await retrieve(query, vault_id, campaign_id=step.campaign_id, top_k=top_k, config=config)
-        return []
+            hits = await retrieve(query, vault_id, document_ids=step.document_ids, top_k=top_k, config=config)
+        elif step.type == "world":
+            hits = await retrieve(query, vault_id, world_id=step.world_id, categories=step.categories, top_k=top_k, config=config)
+        elif step.type == "campaign":
+            hits = await retrieve(query, vault_id, campaign_id=step.campaign_id, top_k=top_k, config=config)
+        else:
+            hits = []
+    
+        logger.info(
+            "Pipeline retrieval done: step=%s hits=%d vault_id=%s",
+            step.name, len(hits), vault_id
+        )
+        return hits
 
     @staticmethod
     async def _check_cancelled(request: Request | None) -> None:

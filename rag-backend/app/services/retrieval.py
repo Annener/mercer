@@ -24,7 +24,15 @@ async def retrieve(
     strategy: str = "semantic",
     config: AppConfig | None = None,
 ) -> list[SearchHit]:
+    logger.info(
+        "RETRIEVE query='%s' vault_id=%s top_k=%s world_id=%s campaign_id=%s doc_ids=%s",
+        query, vault_id, top_k, world_id, campaign_id, document_ids
+    )
     if not vault_id or strategy == "none":
+        logger.warning(
+            "Retrieval skipped: vault_id=%s strategy=%s",
+            vault_id, strategy
+        )
         return []
     effective_top_k = top_k or await _default_top_k()
     if strategy != "semantic":
@@ -52,7 +60,16 @@ async def retrieve(
             campaign_id=campaign_id,
             exclude_campaigns=exclude_campaigns,
         )[:effective_top_k]
-        logger.info("Retrieval completed: vault_id=%s hits=%s", vault_id, len(results))
+        logger.info(
+            "RETRIEVE DONE vault='%s' hits=%d top_scores=[%s] top_docs=[%s]",
+            vault_id,
+            len(results),
+            ", ".join(f"{h.score:.3f}" for h in results[:3]),
+            ", ".join(
+                (h.metadata.get("source_path") or h.document_id or "?").split("/")[-1]
+                for h in results[:3]
+            ),
+        )
         return results
     except Exception:
         logger.warning("Retrieval failed; continuing without context: vault_id=%s", vault_id, exc_info=True)
@@ -74,6 +91,10 @@ async def retrieve_multi_vault(
     """Ищет во всех указанных vault'ах, объединяет результаты, сортирует по score, возвращает top_k."""
     if not vault_ids:
         return []
+    logger.info(
+        "RETRIEVE_MULTI query='%s' vaults=%s top_k=%s",
+        query, vault_ids, top_k
+    )
     effective_top_k = top_k or await _default_top_k()
     all_hits: list[SearchHit] = []
     for vault_id in vault_ids:
@@ -91,7 +112,12 @@ async def retrieve_multi_vault(
         )
         all_hits.extend(hits)
     all_hits.sort(key=lambda h: h.score, reverse=True)
-    return all_hits[:effective_top_k]
+    result = all_hits[:effective_top_k]
+    logger.info(
+        "RETRIEVE_MULTI DONE query='%s' total_hits=%d after_merge=%d",
+        query, len(all_hits), len(result)
+    )
+    return result
 
 def format_context(hits: list[SearchHit]) -> str:
     """

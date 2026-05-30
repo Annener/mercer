@@ -47,8 +47,13 @@ class OpenAICompatibleProvider(GenerationProvider):
                 logger.warning("Generation provider unavailable on attempt %s: %s", attempt + 1, exc)
             except (httpx.TimeoutException, httpx.HTTPStatusError, httpx.RequestError) as exc:
                 last_error = exc
-                logger.warning("Generation request failed on attempt %s: %s", attempt + 1, exc)
-
+                if isinstance(exc, httpx.HTTPStatusError):
+                    logger.warning(
+                        "Generation request failed on attempt %s: HTTP %s %s — body: %s",
+                        attempt + 1, exc.response.status_code, exc.request.url, exc.response.text[:500]
+                    )
+                else:
+                    logger.warning("Generation request failed on attempt %s: %s %r", attempt + 1, type(exc).__name__, exc)
             if attempt < self.max_retries - 1:
                 await asyncio.sleep(2**attempt)
 
@@ -74,7 +79,16 @@ class OpenAICompatibleProvider(GenerationProvider):
                 logger.warning("Generation provider unavailable on attempt %s: %s", attempt + 1, exc)
             except (httpx.TimeoutException, httpx.HTTPStatusError, httpx.RequestError, ValueError) as exc:
                 last_error = exc
-                logger.warning("Generation request failed on attempt %s: %s", attempt + 1, exc)
+                if isinstance(exc, httpx.HTTPStatusError):
+                    logger.warning(
+                        "Generation request failed on attempt %s: HTTP %s %s — body: %s",
+                        attempt + 1, exc.response.status_code, exc.request.url, exc.response.text[:500],
+                    )
+                else:
+                    logger.warning(
+                        "Generation request failed on attempt %s: %s %r",
+                        attempt + 1, type(exc).__name__, str(exc) or "(no message)",
+                    )
 
             if attempt < self.max_retries - 1:
                 await asyncio.sleep(2**attempt)
@@ -108,7 +122,16 @@ class OpenAICompatibleProvider(GenerationProvider):
                 logger.warning("JSON generation failed on attempt %s: %s", attempt + 1, exc)
             except (httpx.TimeoutException, httpx.HTTPStatusError, httpx.RequestError, ValueError) as exc:
                 last_error = exc
-                logger.warning("JSON request failed on attempt %s: %s", attempt + 1, exc)
+                if isinstance(exc, httpx.HTTPStatusError):
+                    logger.warning(
+                        "JSON request failed on attempt %s: HTTP %s %s — body: %s",
+                        attempt + 1, exc.response.status_code, exc.request.url, exc.response.text[:500],
+                    )
+                else:
+                    logger.warning(
+                        "JSON request failed on attempt %s: %s %r",
+                        attempt + 1, type(exc).__name__, str(exc) or "(no message)",
+                    )
 
             if attempt < self.max_retries - 1:
                 await asyncio.sleep(2**attempt)

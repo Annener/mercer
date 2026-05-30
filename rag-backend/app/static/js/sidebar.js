@@ -62,7 +62,7 @@ class SidebarManager {
     async loadDomains() {
         try {
             const data = await chatAPI.getDomains();
-            this.domains = data.domains || [];
+            this.domains = Array.isArray(data) ? data : (data.domains || []);
             this.domainCache = {};
             for (const domain of this.domains) {
                 // config_api возвращает DomainInfo без display_name — используем domain_id

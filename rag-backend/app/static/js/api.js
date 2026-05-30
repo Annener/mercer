@@ -5,20 +5,13 @@ class ChatAPI {
     }
 
     // === Chat API ===
-
     async createChat(vaultId = null, domainId = null, worldId = null) {
         const response = await fetch(`${this.baseUrl}/chat/create`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                vault_id: vaultId,
-                domain_id: domainId,
-                world_id: worldId,
-            }),
+            body: JSON.stringify({ vault_id: vaultId, domain_id: domainId, world_id: worldId }),
         });
-        if (!response.ok) {
-            throw new Error(`Failed to create chat: ${response.statusText}`);
-        }
+        if (!response.ok) throw new Error(`Failed to create chat: ${response.statusText}`);
         return response.json();
     }
 
@@ -76,33 +69,16 @@ class ChatAPI {
         });
     }
 
-    // === Config API ===
-
-    async getDomains() {
-        const response = await fetch(`${this.baseUrl}/config/domains`);
-        if (!response.ok) throw new Error(`Failed to load domains: ${response.statusText}`);
-        return response.json();
-    }
-
     // === DB Management API ===
-    // Согласно спецификации V3.0: /api/db/*
-
     async listDocuments(vaultId, limit = 100, offset = 0) {
-        const params = new URLSearchParams({
-            vault_id: vaultId,
-            limit: String(limit),
-            offset: String(offset),
-        });
+        const params = new URLSearchParams({ vault_id: vaultId, limit: String(limit), offset: String(offset) });
         const response = await fetch(`${this.baseUrl}/api/db/documents?${params}`);
         if (!response.ok) throw new Error(`Failed to list documents: ${response.statusText}`);
         return response.json();
     }
 
     async listDocumentChunks(documentId, vaultId) {
-        const params = new URLSearchParams({
-            document_id: documentId,
-            vault_id: vaultId,
-        });
+        const params = new URLSearchParams({ document_id: documentId, vault_id: vaultId });
         const response = await fetch(`${this.baseUrl}/api/db/chunks?${params}`);
         if (!response.ok) throw new Error(`Failed to list chunks: ${response.statusText}`);
         return response.json();
@@ -110,10 +86,7 @@ class ChatAPI {
 
     async deleteDocument(documentId, vaultId) {
         const params = new URLSearchParams({ vault_id: vaultId });
-        const response = await fetch(
-            `${this.baseUrl}/api/db/documents/${encodeURIComponent(documentId)}?${params}`,
-            { method: 'DELETE' },
-        );
+        const response = await fetch(`${this.baseUrl}/api/db/documents/${encodeURIComponent(documentId)}?${params}`, { method: 'DELETE' });
         if (!response.ok) throw new Error(`Failed to delete document: ${response.statusText}`);
         return response.json();
     }
@@ -152,34 +125,24 @@ class ChatAPI {
     }
 
     async detachVault(vaultId) {
-        const response = await fetch(`${this.baseUrl}/vaults/${encodeURIComponent(vaultId)}/detach`, {
-            method: 'POST',
-        });
+        const response = await fetch(`${this.baseUrl}/vaults/${encodeURIComponent(vaultId)}/detach`, { method: 'POST' });
         if (!response.ok) throw new Error(`Failed to detach vault: ${response.statusText}`);
         return response.json();
     }
 
     // === Index Tasks API ===
-    // Согласно спецификации V3.0: /index-tasks/* (не /indexer/tasks/*)
-
     async getIndexTaskState(taskId) {
-        const response = await fetch(
-            `${this.baseUrl}/index-tasks/${encodeURIComponent(taskId)}/state`,
-        );
+        const response = await fetch(`${this.baseUrl}/index-tasks/${encodeURIComponent(taskId)}/state`);
         if (!response.ok) throw new Error(`Failed to get task state: ${response.statusText}`);
         return response.json();
     }
 
     async cancelIndexTask(taskId) {
-        const response = await fetch(
-            `${this.baseUrl}/index-tasks/${encodeURIComponent(taskId)}`,
-            { method: 'DELETE' },
-        );
+        const response = await fetch(`${this.baseUrl}/index-tasks/${encodeURIComponent(taskId)}`, { method: 'DELETE' });
         if (!response.ok) throw new Error(`Failed to cancel task: ${response.statusText}`);
         return response.json();
     }
 
-    // WebSocket согласно спецификации V3.0: /ws/index-tasks/{task_id}
     connectToTaskStream(taskId) {
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         const wsUrl = `${protocol}//${window.location.host}/ws/index-tasks/${encodeURIComponent(taskId)}`;
@@ -187,8 +150,6 @@ class ChatAPI {
     }
 
     // === Settings API ===
-    // Согласно спецификации V3.0: /api/settings/*
-
     async getSettingsStatus() { return this._request('/api/settings/status'); }
     async getSettingsParams() { return this._request('/api/settings/params'); }
     async updateSettingsParam(key, value) {
@@ -199,9 +160,11 @@ class ChatAPI {
     }
     async resetSettingsParams() { return this._request('/api/settings/reset', { method: 'POST' }); }
 
+    async getDomains() { return this._request('/api/settings/domains'); }
     async createDomain(data) { return this._request('/api/settings/domains', { method: 'POST', body: JSON.stringify(data) }); }
     async updateDomain(id, data) { return this._request(`/api/settings/domains/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(data) }); }
     async deleteDomain(id) { return this._request(`/api/settings/domains/${encodeURIComponent(id)}`, { method: 'DELETE' }); }
+
     async getDomainPrompts(id) { return this._request(`/api/settings/domains/${encodeURIComponent(id)}/prompts`); }
     async updateDomainPrompt(id, type, content) {
         return this._request(`/api/settings/domains/${encodeURIComponent(id)}/prompts/${encodeURIComponent(type)}`, {
@@ -214,7 +177,6 @@ class ChatAPI {
         return this._request(`/api/settings/domains/${encodeURIComponent(id)}/fields`, { method: 'PUT', body: JSON.stringify(fields) });
     }
 
-    // Модели согласно спецификации V3.0: /models/generation, /models/embedding
     async getGenerationModels() { return this._request('/api/settings/models/generation'); }
     async createGenerationModel(data) { return this._request('/api/settings/models/generation', { method: 'POST', body: JSON.stringify(data) }); }
     async updateGenerationModel(id, data) { return this._request(`/api/settings/models/generation/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(data) }); }
@@ -258,6 +220,10 @@ class ChatAPI {
         if (domainId) url.searchParams.set('domain_id', domainId);
         return this._request(url.pathname + url.search);
     }
+
+    async getPipeline(pipelineId) {
+        return this._request(`/api/settings/pipelines/${encodeURIComponent(pipelineId)}`);
+    }
     async createPipeline(data) { return this._request('/api/settings/pipelines', { method: 'POST', body: JSON.stringify(data) }); }
     async updatePipeline(id, data) { return this._request(`/api/settings/pipelines/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(data) }); }
     async deletePipeline(id) { return this._request(`/api/settings/pipelines/${encodeURIComponent(id)}`, { method: 'DELETE' }); }
@@ -277,6 +243,5 @@ class ChatAPI {
         return response.json();
     }
 }
-
 const chatAPI = new ChatAPI();
 window.chatAPI = chatAPI;
