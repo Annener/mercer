@@ -201,6 +201,12 @@ class ChatAPI {
         if (vaultId) url.searchParams.set('vault_id', vaultId);
         return this._request(url.pathname + url.search);
     }
+    async updateWorld(worldId, data) {
+        return this._request(`/api/settings/worlds/${worldId}`, { method: 'PUT', body: JSON.stringify(data) });
+    }
+    async deleteWorld(worldId) {
+        return this._request(`/api/settings/worlds/${worldId}`, { method: 'DELETE' });
+    }
     async createWorld(data) { return this._request('/api/settings/worlds', { method: 'POST', body: JSON.stringify(data) }); }
     async updateWorld(worldId, data) { return this._request(`/api/settings/worlds/${encodeURIComponent(worldId)}`, { method: 'PUT', body: JSON.stringify(data) }); }
     async getWorldCampaigns(worldId) { return this._request(`/api/settings/worlds/${encodeURIComponent(worldId)}/campaigns`); }
@@ -228,7 +234,11 @@ class ChatAPI {
     async updatePipeline(id, data) { return this._request(`/api/settings/pipelines/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(data) }); }
     async deletePipeline(id) { return this._request(`/api/settings/pipelines/${encodeURIComponent(id)}`, { method: 'DELETE' }); }
     async activatePipeline(id) { return this._request(`/api/settings/pipelines/${encodeURIComponent(id)}/activate`, { method: 'POST' }); }
-    async deactivatePipeline(id) { return this.deletePipeline(id); }
+    
+    // ⚠️ ИСПРАВЛЕНО: теперь вызывает POST /deactivate, а не DELETE
+    async deactivatePipeline(id) { 
+        return this._request(`/api/settings/pipelines/${encodeURIComponent(id)}/deactivate`, { method: 'POST' }); 
+    }
 
     async _request(path, options = {}) {
         const response = await fetch(`${this.baseUrl}${path}`, {
@@ -243,5 +253,6 @@ class ChatAPI {
         return response.json();
     }
 }
+
 const chatAPI = new ChatAPI();
 window.chatAPI = chatAPI;

@@ -8,3 +8,4 @@ pdf-sidecar/logs/
 state/
 vaults/
 pdf-sidecar/sidecar.pid
+.aider*

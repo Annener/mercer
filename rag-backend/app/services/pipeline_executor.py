@@ -9,24 +9,19 @@ import logging
 
 from fastapi import Request
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 
-from app.db.models import Chat
+from app.db.models import Chat, World
 from app.services.prompt_pack import format_prompt
 from app.services.retrieval import format_context_with_role, retrieve
 from app.services.settings_service import settings_service
 from shared_contracts.models import PipelineRead, PipelineStep, SearchHit
+
 logger = logging.getLogger(__name__)
 
 
 class PipelineExecutor:
-    async def run(
-        self,
-        pipeline: PipelineRead,
-        query: str,
-        chat_context: dict[str, Any],
-        db: AsyncSession,
-        request: Request | None = None,
-    ) -> AsyncGenerator[dict[str, Any], None]:
+    async def run(self, pipeline, query, chat_context, db, request=None):
         try:
             await self._check_cancelled(request)
             await self._mark_started(pipeline, chat_context, db)
@@ -39,8 +34,6 @@ class PipelineExecutor:
             }
 
             steps = sorted(pipeline.steps, key=lambda step: step.order)
-            partial_results: list[str] = []
-            step_hits: list[list[SearchHit]] = []
             provider = settings_service.get_active_provider()
             if provider is None:
                 raise RuntimeError("No active generation model configured")
@@ -48,32 +41,38 @@ class PipelineExecutor:
 
             for index, step in enumerate(steps, start=1):
                 yield {"type": "progress", "step": index, "total": total, "step_name": step.name}
-                await self._check_cancelled(request)
-                hits = await self._retrieve_for_step(query, step, chat_context, db)
-                step_hits.append(hits)
-                context_block = format_context_with_role(hits, step.role)
-                prompt = format_prompt(step.system_prompt, {"context": context_block})
-                partial_result = await provider.generate(
-                    [{"role": "system", "content": prompt}, {"role": "user", "content": query}]
-                )
-                await self._check_cancelled(request)
-                partial_results.append(partial_result)
-                yield {
-                    "type": "step_done",
-                    "step": index,
-                    "step_name": step.name,
-                    "partial_length": len(partial_result),
-                }
 
-            combined_context = "\n\n---\n\n".join(partial_results)
+            logger.info("Pipeline parallel start: steps=%d pipeline=%s", total, pipeline.pipeline_id)
+            tasks = [
+                self._run_step(index, step, query, chat_context, db, provider)
+                for index, step in enumerate(steps, start=1)
+            ]
+            step_results = await asyncio.gather(*tasks)
+            logger.info("Pipeline parallel done: pipeline=%s", pipeline.pipeline_id)
+
+            step_hits: list[list[SearchHit]] = []
+            partial_results: list[str] = []
+            for index, step, hits, partial in step_results:
+                step_hits.append(hits)
+                partial_results.append(partial)
+                yield {"type": "step_done", "step": index, "step_name": step.name, "partial_length": len(partial)}
+
+            await self._check_cancelled(request)
+
+            combined_context = "\n\n---\n\n".join(filter(None, partial_results))
             final_prompt = format_prompt(
                 pipeline.final_composition.system_prompt,
                 {
                     "context": combined_context,
-                    "collected_fields": json.dumps(chat_context.get("collected_fields") or {}, ensure_ascii=False),
+                    "collected_fields": json.dumps(
+                        chat_context.get("collected_fields") or {}, ensure_ascii=False
+                    ),
                 },
             )
-            async for token in provider.generate_stream([{"role": "system", "content": final_prompt}, {"role": "user", "content": query}]):
+            async for token in provider.generate_stream([
+                {"role": "system", "content": final_prompt},
+                {"role": "user", "content": query},
+            ]):
                 await self._check_cancelled(request)
                 yield {"type": "token", "content": token}
 
@@ -90,6 +89,7 @@ class PipelineExecutor:
                 ],
             }
             await self._mark_completed(chat_context, db)
+
         except asyncio.CancelledError:
             return
         except Exception as exc:
@@ -102,13 +102,18 @@ class PipelineExecutor:
     
         logger.info(
             "Pipeline retrieval start: step=%s type=%s vault_id=%s document_ids=%s world_id=%s top_k=%s",
-            step.name, step.type, vault_id, step.document_ids, step.world_id, top_k
+            step.name, step.type, vault_id, step.document_ids, step.world_id, top_k,
         )
     
         if step.type == "book":
             hits = await retrieve(query, vault_id, document_ids=step.document_ids, top_k=top_k, config=config)
         elif step.type == "world":
-            hits = await retrieve(query, vault_id, world_id=step.world_id, categories=step.categories, top_k=top_k, config=config)
+            world = await db.execute(select(World).where(World.world_id == step.world_id))
+            world = world.scalar_one_or_none()
+            world_path_prefix = world.path_prefix if world else None
+            logger.info("World lookup: world_id=%s found=%s path_prefix=%s", 
+                step.world_id, world is not None, world_path_prefix)
+            hits = await retrieve(query, vault_id, world_id=step.world_id, world_path_prefix=world_path_prefix, categories=step.categories, top_k=top_k, config=config)
         elif step.type == "campaign":
             hits = await retrieve(query, vault_id, campaign_id=step.campaign_id, top_k=top_k, config=config)
         else:
@@ -116,9 +121,56 @@ class PipelineExecutor:
     
         logger.info(
             "Pipeline retrieval done: step=%s hits=%d vault_id=%s",
-            step.name, len(hits), vault_id
+            step.name, len(hits), vault_id,
         )
         return hits
+
+    async def _run_step(
+        self,
+        index: int,
+        step: PipelineStep,
+        query: str,
+        chat_context: dict[str, Any],
+        db: AsyncSession,
+        provider,
+    ) -> tuple[int, PipelineStep, list[SearchHit], str]:
+        hits = await self._retrieve_for_step(query, step, chat_context, db)
+
+        # Пропускаем LLM-вызов если retrieval вернул пустой результат
+        if not hits:
+            logger.info(
+                "Step skipped (no hits): step=%s type=%s",
+                step.name, step.type,
+            )
+            return index, step, hits, ""
+
+        context_block = format_context_with_role(hits, step.role)
+        prompt = format_prompt(step.system_prompt, {"context": context_block, "query": query})
+
+        # Логируем запрос в модель
+        logger.info(
+            "Step LLM request: step=%s role=%s prompt_chars=%d messages=[system(%d chars), user(%d chars)]",
+            step.name, step.role, len(prompt), len(prompt), len(query),
+        )
+        logger.info(
+            "Step LLM prompt full: step=%s\n--- SYSTEM ---\n%s\n--- USER ---\n%s",
+            step.name, prompt, query,
+        )
+
+        partial = await provider.generate([
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": query},
+        ])
+
+        # Логируем ответ модели
+        logger.info(
+            "Step LLM response: step=%s chars=%d preview='%s'",
+            step.name,
+            len(partial),
+            partial[:120].replace("\n", " "),
+        )
+
+        return index, step, hits, partial
 
     @staticmethod
     async def _check_cancelled(request: Request | None) -> None:

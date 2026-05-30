@@ -4,7 +4,12 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>MattMercer — RAG Chat Platform</title>
-    <link rel="stylesheet" href="/static/css/chat.css">
+    <link rel="stylesheet" href="/static/css/base.css">
+    <link rel="stylesheet" href="/static/css/sidebar.css">
+    <link rel="stylesheet" href="/static/css/chat-area.css">
+    <link rel="stylesheet" href="/static/css/markdown.css">
+    <link rel="stylesheet" href="/static/css/settings.css">
+    <link rel="stylesheet" href="/static/css/db-management.css">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github.min.css">
 </head>
 <body>
@@ -168,7 +173,17 @@
 
     <script src="/static/js/api.js"></script>
     <script src="/static/js/pipeline_builder.js"></script>
+    <!-- Сначала класс -->
     <script src="/static/js/settings.js"></script>
+
+    <!-- Потом миксины -->
+    <script src="/static/js/settings/tab-domains.js"></script>
+    <script src="/static/js/settings/tab-vaults.js"></script>
+    <script src="/static/js/settings/tab-gen-models.js"></script>
+    <script src="/static/js/settings/tab-emb-models.js"></script>
+    <script src="/static/js/settings/tab-params.js"></script>
+    <script src="/static/js/settings/tab-pipelines.js"></script>
+    <script src="/static/js/settings/tab-worlds.js"></script>
     <script src="/static/js/chat.js"></script>
     <script src="/static/js/sidebar.js"></script>
     <script src="/static/js/db_management.js"></script>

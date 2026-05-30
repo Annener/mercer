@@ -1,6 +1,7 @@
 from __future__ import annotations
 import asyncio
 import logging
+import json
 import os
 from typing import Any
 import httpx
@@ -17,6 +18,7 @@ async def retrieve(
     *,
     document_ids: list[str] | None = None,
     world_id: str | None = None,
+    world_path_prefix: str | None = None,
     categories: list[str] | None = None,
     campaign_id: str | None = None,
     exclude_campaigns: list[str] | None = None,
@@ -43,8 +45,13 @@ async def retrieve(
             raise ValueError("Embedding configuration is not available.")
         embedding_model = _select_embedding_model(config)
         vector = await _embed_query(query, embedding_model)
-        request_filter = _exact_filter(world_id=world_id, campaign_id=campaign_id)
-        search_top_k = effective_top_k * 10 if _has_filters(document_ids, world_id, categories, campaign_id, exclude_campaigns) else effective_top_k
+        request_filter = _exact_filter(world_id=world_id if not world_path_prefix else None, campaign_id=campaign_id)
+        if world_path_prefix:
+            search_top_k = 5000
+        elif _has_filters(document_ids, world_id, categories, campaign_id, exclude_campaigns):
+            search_top_k = effective_top_k * 10
+        else:
+            search_top_k = effective_top_k
         async with httpx.AsyncClient(base_url=STORAGE_API_URL, timeout=15) as client:
             response = await client.post(
                 "/index/search",
@@ -56,6 +63,7 @@ async def retrieve(
             search_response.results,
             document_ids=document_ids,
             world_id=world_id,
+            world_path_prefix=world_path_prefix,
             categories=categories,
             campaign_id=campaign_id,
             exclude_campaigns=exclude_campaigns,
@@ -196,6 +204,7 @@ def _filter_hits(
     *,
     document_ids: list[str] | None,
     world_id: str | None,
+    world_path_prefix: str | None,
     categories: list[str] | None,
     campaign_id: str | None,
     exclude_campaigns: list[str] | None,
@@ -205,10 +214,14 @@ def _filter_hits(
     exclude_set = set(exclude_campaigns or [])
     filtered: list[SearchHit] = []
     for hit in hits:
-        metadata = hit.metadata or {}
+        raw = hit.metadata or {}
+        metadata = json.loads(raw) if isinstance(raw, str) else raw
         if document_set and hit.document_id not in document_set and metadata.get("document_id") not in document_set:
             continue
-        if world_id and metadata.get("world_id") != world_id:
+        if world_path_prefix:
+            if not (metadata.get("source_path") or "").startswith(world_path_prefix):
+                continue
+        elif world_id and metadata.get("world_id") != world_id:
             continue
         if category_set and metadata.get("category") not in category_set:
             continue
@@ -217,6 +230,11 @@ def _filter_hits(
         if exclude_set and metadata.get("campaign_id") in exclude_set:
             continue
         filtered.append(hit)
+    logger.info(
+        "FILTER_HITS in=%d out=%d world_id=%s world_path_prefix=%s sample_meta=%s",
+        len(hits), len(filtered), world_id, world_path_prefix,
+        [h.metadata for h in hits[:3]]
+    )
     return filtered
 
 def _select_embedding_model(config: AppConfig) -> EmbeddingModelConfig:
