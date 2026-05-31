@@ -9,7 +9,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Campaign, EmbeddingModel, Pipeline, Vault, World
+from app.db.models import Campaign, EmbeddingModel, Pipeline, Vault
 from app.services.settings_service import settings_service
 
 STORAGE_API_URL = os.getenv("STORAGE_API_URL", "http://db-api-server:8080")
@@ -79,21 +79,15 @@ def vault_dict(vault: Vault) -> dict[str, Any]:
     }
 
 
-def world_dict(world: World) -> dict[str, Any]:
-    return {
-        "id": str(world.id), "world_id": world.world_id, "vault_id": world.vault_id,
-        "name": world.name, "description": world.description, "path_prefix": world.path_prefix,
-        "is_active": world.is_active, "created_at": world.created_at, "updated_at": world.updated_at,
-    }
-
-
 def campaign_dict(campaign: Campaign) -> dict[str, Any]:
     return {
-        "id": str(campaign.id), "campaign_id": campaign.campaign_id,
-        "world_id": campaign.world_id, "vault_id": campaign.vault_id,
-        "name": campaign.name, "description": campaign.description,
-        "path_prefix": campaign.path_prefix, "is_active": campaign.is_active,
-        "created_at": campaign.created_at, "updated_at": campaign.updated_at,
+        "id": str(campaign.id),
+        "vault_id": campaign.vault_id,
+        "name": campaign.name,
+        "description": campaign.description,
+        "system_prompt": campaign.system_prompt,
+        "last_session_at": campaign.last_session_at,
+        "created_at": campaign.created_at,
     }
 
 
@@ -107,20 +101,11 @@ def pipeline_dict(pipeline: Pipeline) -> dict[str, Any]:
     }
 
 
-async def _get_world_by_slug(world_id: str, db: AsyncSession) -> World:
-    result = await db.execute(select(World).where(World.world_id == world_id))
-    world = result.scalar_one_or_none()
-    if world is None:
-        raise HTTPException(status_code=404, detail="World not found")
-    return world
-
-
-async def _get_campaign(world_id: str, campaign_id: str, db: AsyncSession) -> Campaign:
-    result = await db.execute(select(Campaign).where(Campaign.world_id == world_id, Campaign.campaign_id == campaign_id))
-    campaign = result.scalar_one_or_none()
-    if campaign is None:
+async def _get_campaign(campaign_id: str, db: AsyncSession) -> Campaign:
+    result = await db.get(Campaign, uuid.UUID(campaign_id))
+    if result is None:
         raise HTTPException(status_code=404, detail="Campaign not found")
-    return campaign
+    return result
 
 
 async def _get_pipeline_by_uuid(pipeline_uuid: str, db: AsyncSession) -> Pipeline:
@@ -137,22 +122,36 @@ async def _get_pipeline_by_uuid(pipeline_uuid: str, db: AsyncSession) -> Pipelin
 def _validate_pipeline_json(steps: list[dict[str, Any]], final_composition: dict[str, Any]) -> None:
     if not isinstance(steps, list) or not steps:
         raise HTTPException(status_code=422, detail="steps must be a non-empty list")
+
     orders: set[int] = set()
+    final_count = 0
+
     for step in steps:
-        for key in ["order", "type", "name", "role", "system_prompt"]:
+        for key in ["order", "type", "name", "system_prompt"]:
             if key not in step:
                 raise HTTPException(status_code=422, detail=f"Pipeline step missing key: {key}")
         if not isinstance(step["order"], int) or step["order"] in orders:
             raise HTTPException(status_code=422, detail="Pipeline step order must be unique int")
         orders.add(step["order"])
-        if step["type"] == "book" and not step.get("document_ids"):
-            raise HTTPException(status_code=422, detail="book step requires document_ids")
-        if step["type"] == "world" and not step.get("world_id"):
-            raise HTTPException(status_code=422, detail="world step requires world_id")
-        if step["type"] == "campaign" and not step.get("campaign_id"):
-            raise HTTPException(status_code=422, detail="campaign step requires campaign_id")
-        if step["type"] not in ["book", "world", "campaign"]:
-            raise HTTPException(status_code=422, detail="Invalid pipeline step type")
+
+        step_type = step.get("type")
+        if step_type not in ("retrieval", "final"):
+            raise HTTPException(
+                status_code=422,
+                detail=f"Invalid step type: {step_type!r}. Must be 'retrieval' or 'final'",
+            )
+
+        if step.get("is_final"):
+            final_count += 1
+            if step.get("tag_ids"):
+                raise HTTPException(status_code=422, detail="Final step must not have tag_ids")
+
+    if final_count != 1:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Pipeline must have exactly one final step (is_final=True), got {final_count}",
+        )
+
     if not isinstance(final_composition, dict) or not isinstance(final_composition.get("system_prompt"), str):
         raise HTTPException(status_code=422, detail="final_composition.system_prompt is required")
 
