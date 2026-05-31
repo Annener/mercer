@@ -5,6 +5,7 @@ import hashlib
 import logging
 import os
 from collections.abc import Awaitable, Callable
+from datetime import datetime, timezone
 from typing import Any
 
 from app.db_client import IndexerDBClient
@@ -57,14 +58,8 @@ CancelCallable = Callable[[str], bool]
 
 STORAGE_API_URL = os.getenv("STORAGE_API_URL", "http://db-api-server:8080")
 
-# Эмпирический коэффициент: средний word+space в символах.
 _AVG_WORD_LEN_CHARS = 6
-
-# Как часто отправлять прогресс по чанкам (каждые N чанков)
 CHUNK_PROGRESS_REPORT_INTERVAL = 10
-
-# Интервал отправки «heartbeat» прогресса на стадии parsing (секунды).
-# Во время парсинга PDF sidecar работает долго — без тиков UI не обновляется.
 _PARSING_HEARTBEAT_INTERVAL = 3.0
 
 
@@ -116,7 +111,6 @@ async def run_indexing(
         entity_aware = vault.get("entity_aware_mode")
         if entity_aware is None:
             entity_aware = settings["chunking.entity_aware_mode"]
-        worlds = await db_client.get_worlds_for_vault(vault_id)
         parser_settings = {
             "sidecar_url": settings["pdf_sidecar.url"],
             "timeout_seconds": float(settings["pdf_sidecar.timeout_seconds"]),
@@ -131,7 +125,6 @@ async def run_indexing(
             if not relative_path:
                 logger.warning("Skipping file with missing relative_path: %s", f.get("path", "unknown"))
                 continue
-
             files_info.append({
                 "relative_path": relative_path,
                 "path": str(f["path"]),
@@ -156,18 +149,29 @@ async def run_indexing(
                 logger.warning("Skipping file with missing relative_path")
                 continue
 
-            previous_file_state = _previous_file_state(last_state, relative_path)
-            skip_reason = _should_skip(previous_file_state, file_info["checksum"])
-            if skip_reason is not None:
-                logger.debug("Skipping file %s: %s", relative_path, skip_reason)
+            absolute_path = str(file_info["path"])
+            md5 = file_info["checksum"]
+            mtime = int(file_info.get("last_modified") or 0)
+
+            # Проверяем запись в таблице documents
+            doc = await db_client.get_document_by_path(vault_id, relative_path)
+
+            if doc is None:
+                # Новый файл — создаём запись
+                doc = await db_client.create_document(vault_id, relative_path, md5, mtime)
+                logger.info("New document registered: %s id=%s", relative_path, doc["id"])
+            elif not force_reindex and doc["md5"] == md5 and doc["mtime"] == mtime and doc["status"] == "indexed":
+                # Файл не изменился — пропускаем
+                logger.debug("Skipping unchanged file: %s", relative_path)
+                previous_file_state = _previous_file_state(last_state, relative_path)
                 await update_file_status(
                     task_id,
                     relative_path,
                     status="done",
                     progress_pct=100,
-                    chunk_ids=previous_file_state.chunk_ids,  # type: ignore[union-attr]
-                    chunks_total=len(previous_file_state.chunk_ids),  # type: ignore[union-attr]
-                    chunks_processed=len(previous_file_state.chunk_ids),  # type: ignore[union-attr]
+                    chunk_ids=previous_file_state.chunk_ids if previous_file_state else [],
+                    chunks_total=len(previous_file_state.chunk_ids) if previous_file_state else 0,
+                    chunks_processed=len(previous_file_state.chunk_ids) if previous_file_state else 0,
                     error=None,
                 )
                 indexed_count += 1
@@ -175,25 +179,30 @@ async def run_indexing(
                     task_id,
                     relative_path,
                     "done",
-                    chunks_total=len(previous_file_state.chunk_ids),  # type: ignore[union-attr]
-                    chunks_processed=len(previous_file_state.chunk_ids),  # type: ignore[union-attr]
+                    chunks_total=len(previous_file_state.chunk_ids) if previous_file_state else 0,
+                    chunks_processed=len(previous_file_state.chunk_ids) if previous_file_state else 0,
                     broadcast=broadcast,
                 )
                 continue
-
-            if previous_file_state is not None:
+            else:
+                # Файл изменился или force_reindex — удаляем старые чанки и переиндексируем
                 logger.info(
-                    "Re-indexing file %s (prev_status=%s checksum_match=%s)",
-                    relative_path,
-                    previous_file_state.status,
-                    previous_file_state.checksum_md5 == file_info["checksum"],
+                    "Re-indexing file (changed or forced): %s id=%s force=%s",
+                    relative_path, doc["id"], force_reindex,
                 )
+                await _delete_chunks_from_lancedb(str(doc["id"]), vault_id, storage_client)
+                await db_client.update_document_status(
+                    str(doc["id"]), "pending", md5=md5, mtime=mtime
+                )
+                # Перечитываем doc с обновлёнными md5/mtime
+                doc = await db_client.get_document_by_path(vault_id, relative_path)
 
             try:
-                chunk_ids, _document_id_uploaded = await _process_file(
+                chunk_ids, _doc_id = await _process_file(
                     task_id=task_id,
                     vault_id=vault_id,
                     file_info=file_info,
+                    doc=doc,
                     embedding_model=embedding_model,
                     provider=provider,
                     storage_client=storage_client,
@@ -201,11 +210,11 @@ async def run_indexing(
                     chunk_size=int(chunk_size),
                     overlap=int(overlap),
                     entity_aware=bool(entity_aware),
-                    worlds=worlds,
                     parser_settings=parser_settings,
                     uploaded_document_ids=uploaded_document_ids,
                     is_cancelled=is_cancelled,
                     broadcast=broadcast,
+                    db_client=db_client,
                 )
                 indexed_count += 1
                 await db_client.update_vault_chunk_count(vault_id, len(chunk_ids))
@@ -245,9 +254,6 @@ async def run_indexing(
         await db_client.update_vault_binding_status(vault_id, "bound")
         final_state = await load_state(task_id)
         if final_state is not None:
-            # Сохраняем полный state как есть — включая файлы с error.
-            # При следующем запуске error-файлы будут переиндексированы,
-            # done/indexed — пропущены (если checksum совпадает).
             await save_last_successful_state(final_state)
         await _broadcast_task_complete(
             task_id, files_total=len(files_info), files_indexed=indexed_count, broadcast=broadcast
@@ -264,9 +270,6 @@ async def run_indexing(
             if await load_state(task_id) is None:
                 await create_state(task_id, vault_id, [])
             await mark_task_done(task_id, error=str(exc))
-            # Сохраняем частичный state даже при падении задачи.
-            # Файлы которые успели завершиться (done/indexed/empty) не будут
-            # переиндексированы при следующем запуске; error-файлы — будут.
             partial_state = await load_state(task_id)
             if partial_state is not None:
                 await save_last_successful_state(partial_state)
@@ -274,10 +277,27 @@ async def run_indexing(
             logger.warning("Failed to mark task as error: %s", task_id, exc_info=True)
 
 
+async def _delete_chunks_from_lancedb(
+    document_id: str,
+    vault_id: str,
+    storage_client: StorageClient,
+) -> None:
+    """Удаляет все чанки документа из LanceDB перед переиндексацией."""
+    try:
+        await storage_client.delete_document(document_id, vault_id)
+        logger.info("Deleted LanceDB chunks for document_id=%s vault_id=%s", document_id, vault_id)
+    except Exception:
+        logger.warning(
+            "Failed to delete LanceDB chunks for document_id=%s vault_id=%s",
+            document_id, vault_id, exc_info=True,
+        )
+
+
 async def _process_file(
     task_id: str,
     vault_id: str,
     file_info: dict[str, Any],
+    doc: dict[str, Any],
     embedding_model: EmbeddingModelConfig,
     provider: EmbeddingProvider,
     storage_client: StorageClient,
@@ -285,14 +305,16 @@ async def _process_file(
     chunk_size: int,
     overlap: int,
     entity_aware: bool,
-    worlds: list[dict[str, Any]],
     parser_settings: dict[str, Any],
     uploaded_document_ids: list[str],
     is_cancelled: CancelCallable,
     broadcast: BroadcastCallable,
+    db_client: IndexerDBClient,
 ) -> tuple[list[str], str]:
     absolute_path = str(file_info["path"])
     relative_path = str(file_info.get("relative_path", ""))
+    # document_id в LanceDB = UUID из таблицы documents
+    pg_document_id = str(doc["id"])
 
     await _ensure_not_cancelled(task_id, is_cancelled)
     await update_file_status(task_id, relative_path, "parsing", 10)
@@ -319,8 +341,6 @@ async def _process_file(
         "extension": file_info.get("extension", ""),
         "domain_id": vault.get("domain_id"),
     })
-    base_metadata.update(_extract_world_metadata(relative_path, worlds))
-    document_id = _document_id(vault_id, relative_path)
 
     is_pdf = "pages" in parsed
 
@@ -342,13 +362,15 @@ async def _process_file(
         logger.warning("No text extracted from file: %s", relative_path)
         await update_file_status(task_id, relative_path, "empty", 100, chunk_ids=[])
         await _broadcast_chunk_progress(task_id, relative_path, "empty", broadcast=broadcast)
-        return [], document_id
+        await db_client.update_document_status(pg_document_id, "indexed",
+                                                indexed_at=datetime.now(tz=timezone.utc))
+        return [], pg_document_id
 
     if entity_aware:
         chunks, _entities = await asyncio.to_thread(
             chunk_with_entities,
             text_for_chunking,
-            document_id,
+            pg_document_id,
             vault_id,
             chunk_size,
             overlap,
@@ -358,7 +380,7 @@ async def _process_file(
         chunks = await asyncio.to_thread(
             chunk_text,
             text_for_chunking,
-            document_id,
+            pg_document_id,
             vault_id,
             chunk_size,
             overlap,
@@ -369,13 +391,12 @@ async def _process_file(
         logger.warning("No valid chunks generated for file: %s", relative_path)
         await update_file_status(task_id, relative_path, "empty", 100, chunk_ids=[])
         await _broadcast_chunk_progress(task_id, relative_path, "empty", broadcast=broadcast)
-        return [], document_id
+        await db_client.update_document_status(pg_document_id, "indexed",
+                                                indexed_at=datetime.now(tz=timezone.utc))
+        return [], pg_document_id
 
-    # Препроцессинг ПОСЛЕ чанкинга — на каждом чанке отдельно (V3.0)
     for idx, chunk in enumerate(chunks):
         source_hint = f"{relative_path}:chunk_{idx}"
-        # Удаляем <!--PAGE:N--> из текста чанка — они нужны только для
-        # восстановления page_number, в чанках LLM они мешают пониманию текста.
         chunk.text = strip_page_markers(chunk.text)
         cleaned = await asyncio.to_thread(preprocess, chunk.text, source_hint)
         chunk.text = cleaned
@@ -386,20 +407,18 @@ async def _process_file(
         logger.warning("All chunks empty after preprocessing: %s", relative_path)
         await update_file_status(task_id, relative_path, "empty", 100, chunk_ids=[])
         await _broadcast_chunk_progress(task_id, relative_path, "empty", broadcast=broadcast)
-        return [], document_id
+        await db_client.update_document_status(pg_document_id, "indexed",
+                                                indexed_at=datetime.now(tz=timezone.utc))
+        return [], pg_document_id
 
-    # Для PDF: восстановление page_number и активного заголовка
     if is_pdf:
         _assign_page_numbers_and_headers(chunks, page_offsets, placed_headings)
 
-    # Формирование embedding_text (V3.0 Dual-Text Pattern)
     for chunk in chunks:
         source_path = chunk.metadata.get("source_path", relative_path)
         headers = chunk.metadata.get("headers")
-
         if not is_pdf and not headers:
             headers = extract_markdown_headers(chunk.text)
-
         embedding_text = build_embedding_text(
             chunk_text=chunk.text,
             source_path=source_path,
@@ -410,40 +429,27 @@ async def _process_file(
         if headers:
             chunk.metadata["headers"] = headers
 
-    # Embedding по embedding_text (V3.0)
     await _ensure_not_cancelled(task_id, is_cancelled)
     await update_file_status(
-        task_id,
-        relative_path,
-        "indexing",
-        65,
-        chunks_total=len(chunks),
-        chunks_processed=0,
+        task_id, relative_path, "indexing", 65,
+        chunks_total=len(chunks), chunks_processed=0,
     )
     await _broadcast_chunk_progress(
-        task_id,
-        relative_path,
-        "indexing",
-        chunks_total=len(chunks),
-        chunks_processed=0,
-        broadcast=broadcast,
+        task_id, relative_path, "indexing",
+        chunks_total=len(chunks), chunks_processed=0, broadcast=broadcast,
     )
 
     vectors = await _embed_chunks(
-        chunks,
-        embedding_model,
-        provider,
-        task_id=task_id,
-        file_path=relative_path,
-        broadcast=broadcast,
-        is_cancelled=is_cancelled,
+        chunks, embedding_model, provider,
+        task_id=task_id, file_path=relative_path,
+        broadcast=broadcast, is_cancelled=is_cancelled,
     )
     if len(vectors) != len(chunks):
         raise ValueError("Embedding provider returned an unexpected number of vectors.")
 
     upsert_chunks = [
         UpsertChunk(
-            document_id=document_id,
+            document_id=pg_document_id,  # UUID из PostgreSQL documents.id
             chunk_index=index,
             text=chunk.text,
             vector=vectors[index],
@@ -457,27 +463,27 @@ async def _process_file(
     )
     if response.status == "partial":
         raise ValueError(f"Failed to upsert chunk indices: {response.failed_indices}")
-    uploaded_document_ids.append(document_id)
+    uploaded_document_ids.append(pg_document_id)
 
-    chunk_ids = [f"{document_id}_{index}" for index in range(len(upsert_chunks))]
+    # Обновляем статус в PostgreSQL
+    await db_client.update_document_status(
+        pg_document_id,
+        "indexed",
+        indexed_at=datetime.now(tz=timezone.utc),
+    )
+
+    chunk_ids = [f"{pg_document_id}_{index}" for index in range(len(upsert_chunks))]
     await update_file_status(
-        task_id,
-        relative_path,
-        "done",
-        100,
+        task_id, relative_path, "done", 100,
         chunk_ids=chunk_ids,
         chunks_total=len(chunks),
         chunks_processed=len(chunks),
     )
     await _broadcast_chunk_progress(
-        task_id,
-        relative_path,
-        "done",
-        chunks_total=len(chunks),
-        chunks_processed=len(chunks),
-        broadcast=broadcast,
+        task_id, relative_path, "done",
+        chunks_total=len(chunks), chunks_processed=len(chunks), broadcast=broadcast,
     )
-    return chunk_ids, document_id
+    return chunk_ids, pg_document_id
 
 
 def _assign_page_numbers_and_headers(
@@ -485,19 +491,12 @@ def _assign_page_numbers_and_headers(
     page_offsets: list[tuple[int, int]],
     placed_headings: list[dict[str, Any]],
 ) -> None:
-    """
-    Для каждого PDF-чанка восстанавливает:
-    - metadata["page_number"]
-    - metadata["headers"]
-    """
     for chunk in chunks:
         word_start = int(chunk.metadata.get("word_start", 0))
         estimated_char_offset = word_start * _AVG_WORD_LEN_CHARS
-
         page_number = page_number_for_offset(page_offsets, estimated_char_offset)
         if page_number is not None:
             chunk.metadata["page_number"] = page_number
-
         headers = resolve_headers_at_offset(placed_headings, estimated_char_offset)
         if headers:
             chunk.metadata["headers"] = headers
@@ -525,18 +524,9 @@ async def _parse_file_with_progress(
     is_cancelled: CancelCallable | None = None,
     parser_settings: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """
-    Запускает _parse_file в потоке и параллельно каждые _PARSING_HEARTBEAT_INTERVAL
-    секунд шлёт в UI heartbeat-событие stage=parsing, чтобы прогресс-бар не замирал.
-    Если is_cancelled() вернёт True — отменяет parse_task и бросает CancelledError.
-    Замечание: asyncio.to_thread дождётся завершения текущего HTTP-запроса к sidecar,
-    но следующую страницу/батч уже не запустит.
-    """
     parse_task = asyncio.ensure_future(
         asyncio.to_thread(_parse_file, absolute_path, extension, parser_settings or {})
     )
-
-    # Для не-PDF heartbeat не нужен — парсинг быстрый
     if extension == ".pdf":
         while not parse_task.done():
             try:
@@ -544,11 +534,9 @@ async def _parse_file_with_progress(
                     asyncio.shield(parse_task), timeout=_PARSING_HEARTBEAT_INTERVAL
                 )
             except asyncio.TimeoutError:
-                # Проверяем флаг отмены — если выставлен, прерываем парсинг немедленно
                 if is_cancelled is not None and is_cancelled(task_id):
                     parse_task.cancel()
                     raise asyncio.CancelledError
-                # Парсинг ещё идёт — шлём тик в UI
                 await _broadcast_chunk_progress(
                     task_id, relative_path, "parsing", broadcast=broadcast
                 )
@@ -556,8 +544,7 @@ async def _parse_file_with_progress(
                 parse_task.cancel()
                 raise
             except Exception:
-                break  # ошибка поймается ниже при await parse_task
-
+                break
     return await parse_task
 
 
@@ -570,11 +557,6 @@ async def _embed_chunks(
     broadcast: BroadcastCallable | None = None,
     is_cancelled: CancelCallable | None = None,
 ) -> list[list[float]]:
-    """
-    V3.0: кэш и embedding по chunk.metadata["embedding_text"] (обогащённый текст).
-    Отправляет прогресс по чанкам каждые CHUNK_PROGRESS_REPORT_INTERVAL чанков.
-    Проверяет is_cancelled() перед каждым embed вызовом и бросает CancelledError.
-    """
     vectors: list[list[float] | None] = []
     missing_texts: list[str] = []
     missing_indices: list[int] = []
@@ -591,7 +573,6 @@ async def _embed_chunks(
         else:
             vectors.append(cached)
 
-    # Количество чанков с кэш-попаданием — они уже «обработаны» до начала embed
     cached_count = len(chunks) - len(missing_texts)
 
     if missing_texts:
@@ -601,10 +582,7 @@ async def _embed_chunks(
         )
         embed_start_time = asyncio.get_event_loop().time()
 
-        # Embed по одному чанку — чтобы прогресс транслировался после каждого,
-        # а не после окончания всего батча (fix: 8.5-минутная тишина).
         for offset, embedding_text in enumerate(missing_texts):
-            # Проверяем отмену перед каждым embed-вызовом
             if is_cancelled is not None and task_id is not None and is_cancelled(task_id):
                 raise asyncio.CancelledError
             result = await provider.embed([embedding_text])
@@ -623,10 +601,8 @@ async def _embed_chunks(
                 vector,
             )
 
-            # processed_count = уже закэшированные + только что обработанные
             processed_count = cached_count + offset + 1
 
-            # Лог прогресса embedding есть здесь: каждые N чанков или последний
             if processed_count % CHUNK_PROGRESS_REPORT_INTERVAL == 0 or processed_count == len(chunks):
                 elapsed = asyncio.get_event_loop().time() - embed_start_time
                 rate = (offset + 1) / elapsed if elapsed > 0 else 0
@@ -636,7 +612,6 @@ async def _embed_chunks(
                     file_path or "?", processed_count, len(chunks), rate, eta,
                 )
 
-            # Прогресс по чанкам каждые N или на последнем
             if (
                 broadcast is not None
                 and task_id is not None
@@ -647,9 +622,7 @@ async def _embed_chunks(
                 )
             ):
                 await _broadcast_chunk_progress(
-                    task_id,
-                    file_path,
-                    "indexing",
+                    task_id, file_path, "indexing",
                     chunks_total=len(chunks),
                     chunks_processed=processed_count,
                     broadcast=broadcast,
@@ -701,47 +674,22 @@ def _build_provider(embedding_model: EmbeddingModelConfig, api_key: str = "") ->
 def _previous_file_state(
     last_state: IndexState | None, relative_path: str
 ) -> FileIndexState | None:
-    """Возвращает FileIndexState из last_state если файл там есть.
-
-    Возвращает состояние для любого статуса (done, indexed, empty, error).
-    Вызывающий код сам решает что делать:
-    - done/indexed + checksum совпадает → пропустить
-    - error → переиндексировать (даже если checksum тот же)
-    - empty → пропустить (файл уже пытались — он пустой)
-    - None (файла нет в стейте) → новый файл, индексировать
-    """
     if last_state is None:
         return None
     return last_state.files.get(relative_path)
 
 
 def _should_skip(previous: FileIndexState | None, current_checksum: str) -> str | None:
-    """Определяет нужно ли пропустить файл.
-
-    Возвращает строку-причину если нужно пропустить, None — если нужно индексировать.
-
-    Правила:
-    - Файла нет в стейте (previous=None) → новый, индексировать
-    - done/indexed + checksum совпадает → пропустить
-    - done/indexed + checksum изменился → файл изменён, индексировать
-    - empty + checksum совпадает → пропустить (файл уже пытались, он пустой)
-    - error → переиндексировать (даже если checksum тот же)
-    - cancelled/pending/parsing/chunking/indexing → индексировать (задача была прервана)
-    """
     if previous is None:
-        return None  # новый файл
-
+        return None
     if previous.status in ("done", "indexed"):
         if previous.checksum_md5 == current_checksum:
             return f"already indexed (status={previous.status})"
-        return None  # файл изменён — переиндексировать
-
+        return None
     if previous.status == "empty":
         if previous.checksum_md5 == current_checksum:
             return "previously empty, checksum unchanged"
-        return None  # файл изменился — попытаться ещё раз
-
-    # error / cancelled / pending / parsing / chunking / indexing — переиндексировать
+        return None
     return None
 
 
@@ -751,29 +699,6 @@ def _document_id(vault_id: str, relative_path: str) -> str:
 
 
 document_id = _document_id
-
-
-def _extract_world_metadata(relative_path: str, worlds: list[dict[str, Any]]) -> dict[str, Any]:
-    normalized_path = relative_path.lstrip("/")
-    for world in worlds:
-        prefix = str(world.get("path_prefix", "")).strip("/")
-        if not prefix:
-            continue
-        prefix_with_sep = f"{prefix}/"
-        if normalized_path != prefix and not normalized_path.startswith(prefix_with_sep):
-            continue
-        remainder = normalized_path.removeprefix(prefix_with_sep)
-        parts = [part for part in remainder.split("/") if part]
-        category = parts[0] if parts else None
-        campaign_id = None
-        if category == "campaigns" and len(parts) > 1:
-            campaign_id = parts[1]
-        return {
-            "world_id": world.get("world_id"),
-            "category": category,
-            "campaign_id": campaign_id,
-        }
-    return {}
 
 
 async def _ensure_not_cancelled(task_id: str, is_cancelled: CancelCallable) -> None:
@@ -796,7 +721,6 @@ async def _broadcast_chunk_progress(
     broadcast: BroadcastCallable | None = None,
     error: str | None = None,
 ) -> None:
-    """Отправляет WSFileChunkProgressMessage (V3.0)."""
     if broadcast is None:
         return
     event = WSFileChunkProgressMessage(
