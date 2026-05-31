@@ -268,25 +268,28 @@ async def send_message(
     collected = state.collected if state.stage in {"complete", "fallback"} else {}
     selected_pipeline, mode, confidence, reasoning = await pipeline_router.decide(req.content, chat, db)
     if selected_pipeline is not None:
-        pipeline_vault_id = chat.vault_id
-        if pipeline_vault_id is None and chat.domain_id:
-            config_for_vault = await _runtime_config_from_db(db)
-            domain_vaults = [
-                v.vault_id for v in config_for_vault.vaults.values()
-                if v.domain_id == chat.domain_id and v.enabled
-            ]
-            pipeline_vault_id = domain_vaults[0] if domain_vaults else None
+        domain_id = await _domain_id_for_chat(chat, db) or chat.domain_id
+        config_for_vault = await _runtime_config_from_db(db)
+        # vault_ids — все enabled-Vault домена (не один)
+        vault_ids: list[str] = [
+            v.vault_id for v in config_for_vault.vaults.values()
+            if v.domain_id == domain_id and v.enabled
+        ] if domain_id else []
+        # Обратная совместимость: если vault_ids пуст, но chat.vault_id есть — используем его
+        if not vault_ids and chat.vault_id:
+            vault_ids = [chat.vault_id]
 
         chat_context = {
             "chat_id": chat.id,
-            "vault_id": pipeline_vault_id,
-            "domain_id": chat.domain_id,
+            "vault_ids": vault_ids,
+            "domain_id": domain_id,
+            "campaign_id": str(chat.campaign_id) if chat.campaign_id else None,
             "collected_fields": collected,
             "history": [_llm_message(message) for message in existing_messages[-8:]],
             "mode": mode,
             "confidence": confidence,
             "reasoning": reasoning,
-            "config": await _runtime_config_from_db(db),
+            "config": config_for_vault,
         }
         return StreamingResponse(
             _pipeline_sse_response(
@@ -328,24 +331,31 @@ async def _generate_answer(
     queries = [req.content]
     top_k = int(await settings_service.get("retrieval.top_k", db))
 
+    domain_id = await _domain_id_for_chat(chat, db)
+
     # --- Определяем document_ids по тегам кампании ---
     document_ids: list[str] | None = None
     campaign: Campaign | None = None
 
-    if hasattr(chat, "campaign_id") and chat.campaign_id is not None:
+    if chat.campaign_id is not None:
         campaign = await db.get(Campaign, chat.campaign_id)
 
-    if campaign is not None:
+    if campaign is not None and domain_id:
         from app.services.retrieval import get_allowed_tag_ids, get_document_ids_by_tags
         all_tag_ids = await get_allowed_tag_ids(
-            vault_id=chat.vault_id,
+            domain_id=domain_id,
             campaign_id=str(campaign.id),
             db=db,
         )
         if all_tag_ids:
-            document_ids = await get_document_ids_by_tags(list(all_tag_ids), chat.vault_id, db)
+            document_ids = await get_document_ids_by_tags(
+                tag_ids=list(all_tag_ids),
+                domain_id=domain_id,
+                db=db,
+            )
         else:
-            document_ids = None  # пустой allowed → весь vault
+            # Кампания есть, тегов нет → не расширяться на весь домен (document_ids=[])
+            document_ids = []
 
     if decision.retrieval_strategy == "semantic" and await settings_service.get("retrieval.enabled", db):
         try:
@@ -353,7 +363,7 @@ async def _generate_answer(
             history_texts = [m.content for m in existing_messages[-4:]]
             queries = await planner.decompose(
                 req.content,
-                await _domain_id_for_chat(chat, db) or "default",
+                domain_id or "default",
                 history_texts,
             )
         except Exception as e:
@@ -362,7 +372,7 @@ async def _generate_answer(
 
     all_hits: list[SearchHit] = []
 
-    # Если document_ids == [] (пустой список) — возвращаем [] без запроса в LanceDB (инвариант 4)
+    # Инвариант: document_ids=[] → нет документов → возвращаем [] без запроса в LanceDB
     if isinstance(document_ids, list) and len(document_ids) == 0:
         all_hits = []
     elif chat.vault_id:
@@ -376,15 +386,19 @@ async def _generate_answer(
                 document_ids=document_ids,
             )
             all_hits.extend(hits)
-    elif chat.domain_id and decision.retrieval_strategy == "semantic":
-        vault_ids = [v.vault_id for v in config.vaults.values() if v.domain_id == chat.domain_id and v.enabled]
+    elif domain_id and decision.retrieval_strategy == "semantic":
+        vault_ids_for_domain = [
+            v.vault_id for v in config.vaults.values()
+            if v.domain_id == domain_id and v.enabled
+        ]
         for q in queries:
             hits = await retrieve_multi_vault(
                 query=q,
-                vault_ids=vault_ids,
+                vault_ids=vault_ids_for_domain,
                 top_k=top_k,
                 strategy=decision.retrieval_strategy,
                 config=config,
+                document_ids=document_ids,
             )
             all_hits.extend(hits)
 
@@ -397,18 +411,8 @@ async def _generate_answer(
     unique_hits.sort(key=lambda h: h.score, reverse=True)
     hits = unique_hits[: top_k * 2]
 
-    pipeline_results = await _run_pipelines(
-        request=request,
-        chat=chat,
-        query=req.content,
-        hits=hits,
-        existing_messages=existing_messages,
-        collected=collected,
-        decision=decision,
-    )
-
     # Собираем system_prompt: кампания → campaign.system_prompt, иначе domain prompt
-    context_text = _combined_context(hits, pipeline_results)
+    context_text = _combined_context(hits, [])
     if campaign is not None and campaign.system_prompt:
         system_prompt = campaign.system_prompt
         if context_text:
@@ -546,7 +550,6 @@ async def _add_assistant_message(
     chat_id: str,
     pipeline_id: uuid.UUID | None = None,
 ) -> Message:
-    # pipeline_id=None для role='user' (инвариант 6), здесь только для role='assistant'
     assistant_message = Message(
         chat_id=chat_uuid,
         role="assistant",
@@ -720,6 +723,11 @@ async def _prompt_pack_for_chat(chat: Chat, db: AsyncSession) -> PromptPack:
 
 
 async def _domain_id_for_chat(chat: Chat, db: AsyncSession) -> str | None:
+    """
+    Основной источник domain_id — chat.domain_id.
+    vault-fallback оставлен для обратной совместимости (переходный период).
+    TODO(iter4): удалить vault-fallback после того как все чаты будут иметь domain_id.
+    """
     if chat.domain_id is not None:
         return chat.domain_id
     if chat.vault_id:
@@ -732,19 +740,6 @@ async def _domain_id_for_chat(chat: Chat, db: AsyncSession) -> str | None:
 async def _pipeline_versions(request: Request) -> dict[str, str]:
     _ = request
     return {}
-
-
-async def _run_pipelines(
-    request: Request,
-    chat: Chat,
-    query: str,
-    hits: list[SearchHit],
-    existing_messages: list[Message],
-    collected: dict[str, Any],
-    decision: PlannerDecision,
-) -> list[PipelineResult]:
-    _ = request, chat, query, hits, existing_messages, collected, decision
-    return []
 
 
 def _hit_to_chunk(hit: SearchHit, vault_id: str) -> ChunkRecord:
