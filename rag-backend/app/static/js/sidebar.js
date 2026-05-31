@@ -18,7 +18,9 @@ class SidebarManager {
         this.domainCache = {};
         this.currentDomain = localStorage.getItem('currentDomain') || null;
         // currentVaultId удалён — привязка через domain_id [iter2]
-        this.currentCampaignId = localStorage.getItem('currentCampaignId') || '';
+        // BUG FIX #3: используем null вместо пустой строки для безопасной передачи в createChat
+        const storedCampaignId = localStorage.getItem('currentCampaignId');
+        this.currentCampaignId = storedCampaignId || null;
 
         this.initEventListeners();
         this.loadDomains();
@@ -35,8 +37,13 @@ class SidebarManager {
         });
 
         this.campaignSelect?.addEventListener('change', (e) => {
-            this.currentCampaignId = e.target.value;
-            localStorage.setItem('currentCampaignId', this.currentCampaignId);
+            // BUG FIX #3: сохраняем null вместо пустой строки при выборе «общего режима»
+            this.currentCampaignId = e.target.value || null;
+            if (this.currentCampaignId) {
+                localStorage.setItem('currentCampaignId', this.currentCampaignId);
+            } else {
+                localStorage.removeItem('currentCampaignId');
+            }
         });
 
         this.renameModal?.addEventListener('click', (e) => {
@@ -60,6 +67,8 @@ class SidebarManager {
     async loadDomains() {
         try {
             const data = await chatAPI.getDomains();
+            // BUG FIX #7: унифицирован парсинг ответа — поддерживаем оба формата:
+            // прямой массив [] или объект { domains: [] }
             this.domains = Array.isArray(data) ? data : (data.domains || []);
             this.domainCache = {};
             for (const domain of this.domains) {
@@ -103,6 +112,8 @@ class SidebarManager {
             if (domain.domain_id === 'default') continue;
             const opt = document.createElement('option');
             opt.value = domain.domain_id;
+            // BUG FIX #8: formatDomainName больше не вызывается с 'default' —
+            // строка continue выше уже её отсеивает, поэтому null-ветка в formatDomainName удалена.
             let label = this.formatDomainName(domain.domain_id);
             if (domain.has_vault === false || domain.vault_enabled === false) {
                 label += domain.has_vault === false ? ' (без хранилища)' : ' (хранилище отключено)';
@@ -113,7 +124,9 @@ class SidebarManager {
     }
 
     formatDomainName(domainId) {
-        if (domainId === 'default') return null;
+        // BUG FIX #8: удалена мёртвая ветка 'default' —
+        // в renderDomainOptions есть continue для 'default', так что сюда он никогда не попадёт.
+        // Сохранен для возможного вызова из других мест и возвращает прочитаемый лейбл.
         const specialNames = { 'dnd': 'D&D', 'work': 'Работа' };
         if (specialNames[domainId]) return specialNames[domainId];
         return this.domainCache[domainId] || domainId.toUpperCase();
@@ -123,9 +136,9 @@ class SidebarManager {
         if (domainId === this.currentDomain) return;
         this.currentDomain = domainId;
         localStorage.setItem('currentDomain', domainId);
-        // Сбрасываем кампанию при смене домена
-        this.currentCampaignId = '';
-        localStorage.setItem('currentCampaignId', '');
+        // BUG FIX #3: сбрасываем в null, не в ''
+        this.currentCampaignId = null;
+        localStorage.removeItem('currentCampaignId');
         if (window.chatManager) window.chatManager.reset();
         this.closeAllDropdowns();
         await this.loadChats();
@@ -228,7 +241,7 @@ class SidebarManager {
             return;
         }
         try {
-            // vault_id удалён — createChat принимает (domainId, campaignId) [iter2]
+            // BUG FIX #3: передаём null (не пустую строку) — createChat корректно сериализует null в JSON
             const response = await chatAPI.createChat(
                 this.currentDomain,
                 this.currentCampaignId || null
@@ -252,7 +265,6 @@ class SidebarManager {
         }
 
         try {
-            // Прямой запрос по domain_id — vault больше не нужен [iter2]
             const campaigns = await chatAPI.getCampaigns(this.currentDomain);
             const campArr = Array.isArray(campaigns) ? campaigns : (campaigns.campaigns || []);
 
@@ -261,7 +273,6 @@ class SidebarManager {
                 return;
             }
 
-            // Опция «общий режим» — чат без привязки к кампании
             select.innerHTML = '<option value="">— общий режим —</option>';
             for (const c of campArr) {
                 const opt = document.createElement('option');
@@ -273,7 +284,8 @@ class SidebarManager {
             if (this.currentCampaignId && campArr.some(c => String(c.id) === this.currentCampaignId)) {
                 select.value = this.currentCampaignId;
             } else {
-                this.currentCampaignId = '';
+                // BUG FIX #3: сбрасываем в null, не в ''
+                this.currentCampaignId = null;
                 select.value = '';
             }
 
