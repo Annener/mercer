@@ -163,15 +163,23 @@ class Vault(Base):
 
 
 class Tag(Base):
+    """
+    Тег принадлежит домену (не Vault).
+    UNIQUE: (name, domain_id, campaign_id) — теги уникальны в пределах домена и кампании.
+    campaign_id=NULL означает общедоменный тег.
+    """
     __tablename__ = "tags"
     __table_args__ = (
-        UniqueConstraint("name", "vault_id", "campaign_id", name="uq_tags_name_vault_campaign"),
-        Index("idx_tags_vault", "vault_id"),
+        UniqueConstraint("name", "domain_id", "campaign_id", name="uq_tags_name_domain_campaign"),
+        Index("idx_tags_domain", "domain_id"),
         Index("idx_tags_campaign", "campaign_id"),
     )
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
-    vault_id: Mapped[str] = mapped_column(String(64), ForeignKey("vaults.vault_id", ondelete="CASCADE"))
+    # domain_id — принадлежность тега; заменяет vault_id
+    domain_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("domains.domain_id", ondelete="CASCADE"), nullable=False
+    )
     campaign_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("campaigns.id", ondelete="CASCADE"), nullable=True
     )
@@ -207,21 +215,22 @@ class DocumentLabel(Base):
     )
 
 
-class PipelineLabel(Base):
-    __tablename__ = "pipeline_labels"
-    pipeline_uuid: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("pipelines.id", ondelete="CASCADE"), primary_key=True
-    )
-    tag_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("tags.id", ondelete="CASCADE"), primary_key=True
-    )
+# PipelineLabel удалён: пайплайны не привязываются к тегам напрямую.
+# Доступность пайплайна определяется campaign_id на Pipeline.
 
 
 class Campaign(Base):
+    """
+    Кампания принадлежит домену (не Vault).
+    Теги кампании определяют, какие документы видны в рамках кампании.
+    """
     __tablename__ = "campaigns"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    vault_id: Mapped[str] = mapped_column(String(64), ForeignKey("vaults.vault_id"), nullable=False)
+    # domain_id — принадлежность кампании; заменяет vault_id
+    domain_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("domains.domain_id", ondelete="CASCADE"), nullable=False
+    )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     system_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -236,10 +245,15 @@ class Campaign(Base):
 
 
 class Chat(Base):
+    """
+    vault_id оставлен nullable для обратной совместимости на переходный период.
+    TODO(iter4): удалить vault_id после полного перехода на domain_id.
+    """
     __tablename__ = "chats"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     title: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    # vault_id: переходный период — будет удалён в итерации 4
     vault_id: Mapped[str | None] = mapped_column(String(64), ForeignKey("vaults.vault_id"), nullable=True)
     domain_id: Mapped[str | None] = mapped_column(String(32), ForeignKey("domains.domain_id"), nullable=True)
     campaign_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -315,15 +329,23 @@ class AuditLog(Base):
 
 
 class Pipeline(Base):
+    """
+    campaign_id=NULL — общедоменный пайплайн (доступен в любом чате домена).
+    campaign_id=<id> — кампанийный пайплайн (доступен только в чате с этой кампанией).
+    """
     __tablename__ = "pipelines"
     __table_args__ = (
         UniqueConstraint("pipeline_id", "version", name="uq_pipelines_id_version"),
-        Index("idx_pipelines_domain", "domain_id", "is_active"),
+        Index("idx_pipelines_domain_campaign", "domain_id", "campaign_id", "is_active"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     pipeline_id: Mapped[str] = mapped_column(String(64), nullable=False)
     domain_id: Mapped[str] = mapped_column(String(32), ForeignKey("domains.domain_id"), nullable=False)
+    # campaign_id=NULL → общий пайплайн; campaign_id=<id> → кампанийный пайплайн
+    campaign_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("campaigns.id", ondelete="CASCADE"), nullable=True
+    )
     version: Mapped[str] = mapped_column(String(16), nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
