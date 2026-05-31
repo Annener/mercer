@@ -27,7 +27,6 @@ const DocumentsTabMixin = {
         </div>`;
     },
 
-    // Гарантированно получить vault_id: сначала из кэша, затем запросить заново
     async _resolveVaultId() {
         if (this._activeVaultId) return this._activeVaultId;
         try {
@@ -111,7 +110,10 @@ const DocumentsTabMixin = {
         panel.innerHTML = `<div style="padding:var(--space-4);"><b>Теги: ${this.escapeHtml(doc.source_path || String(doc.id))}</b><div class="empty-state" style="padding:var(--space-4)">Загрузка тегов...</div></div>`;
         try {
             const allTagsResp = vaultId ? await this.api.getTags(vaultId) : [];
-            this._docsAllTags = Array.isArray(allTagsResp) ? allTagsResp : (allTagsResp.tags || []);
+            const grouped = Array.isArray(allTagsResp) ? { global_tags: allTagsResp, by_campaign: {} } : (allTagsResp || {});
+            const globalTags = Array.isArray(grouped.global_tags) ? grouped.global_tags : [];
+            const byCampaign = grouped.by_campaign && typeof grouped.by_campaign === 'object' ? Object.values(grouped.by_campaign).flat() : [];
+            this._docsAllTags = [...globalTags, ...byCampaign];
             this._docsCurrentTags = [...(doc.tags || [])];
             this._renderDocsSidePanel(doc);
         } catch (e) {
@@ -193,7 +195,7 @@ const DocumentsTabMixin = {
             const status = document.getElementById('docs-indexer-status');
             if (status) status.textContent = '⏳ Индексация запущена...';
             try {
-                await this.api.runIndexer(vaultId);
+                await this.api.reindexVault(vaultId, false);
                 if (status) status.textContent = '✅ Индексация запущена';
                 setTimeout(() => this.loadDocumentsData(), 3000);
             } catch (e) {

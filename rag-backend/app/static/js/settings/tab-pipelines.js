@@ -24,6 +24,10 @@ const PipelinesTabMixin = {
     },
 
     async showPipelineModal() {
+        if (!window.PipelineBuilder || typeof window.PipelineBuilder.openCreate !== 'function') {
+            alert('Редактор pipeline не загружен');
+            return;
+        }
         await window.PipelineBuilder.openCreate(this.api, () => this.loadTab(this.currentTab));
     },
 
@@ -31,7 +35,14 @@ const PipelinesTabMixin = {
         const all = await this.api.getPipelines();
         const list = Array.isArray(all) ? all : (all.pipelines || []);
         const pipeline = list.find(p => p.id === pipelineUuid);
-        if (!pipeline) { alert('Pipeline не найден'); return; }
+        if (!pipeline) {
+            alert('Pipeline не найден');
+            return;
+        }
+        if (!window.PipelineBuilder || typeof window.PipelineBuilder.openEdit !== 'function') {
+            alert('Редактор pipeline не загружен');
+            return;
+        }
         await window.PipelineBuilder.openEdit(this.api, pipeline, () => this.loadTab(this.currentTab));
     },
 };

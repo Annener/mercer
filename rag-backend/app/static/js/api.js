@@ -198,51 +198,51 @@ class ChatAPI {
 
     // === Tags API ===
     async getTags(vaultId, campaignId = null) {
-        const url = new URL(`${this.baseUrl}/tags`, window.location.origin);
+        const url = new URL(`${this.baseUrl}/api/settings/tags`, window.location.origin);
         url.searchParams.set('vault_id', vaultId);
         if (campaignId) url.searchParams.set('campaign_id', campaignId);
         return this._request(url.pathname + url.search);
     }
-    async createTag(data) { return this._request('/tags', { method: 'POST', body: JSON.stringify(data) }); }
-    async updateTag(tagId, data) { return this._request(`/tags/${encodeURIComponent(tagId)}`, { method: 'PUT', body: JSON.stringify(data) }); }
-    async deleteTag(tagId) { return this._request(`/tags/${encodeURIComponent(tagId)}`, { method: 'DELETE' }); }
-    async getCampaignTags(campaignId) { return this._request(`/campaigns/${encodeURIComponent(campaignId)}/tags`); }
+    async createTag(data) { return this._request('/api/settings/tags', { method: 'POST', body: JSON.stringify(data) }); }
+    async updateTag(tagId, data) { return this._request(`/api/settings/tags/${encodeURIComponent(tagId)}`, { method: 'PUT', body: JSON.stringify(data) }); }
+    async deleteTag(tagId) { return this._request(`/api/settings/tags/${encodeURIComponent(tagId)}`, { method: 'DELETE' }); }
+    async getCampaignTags(campaignId) { return this._request(`/api/settings/campaigns/${encodeURIComponent(campaignId)}/tags`); }
     async createCampaignTag(campaignId, data) {
-        return this._request(`/campaigns/${encodeURIComponent(campaignId)}/tags`, { method: 'POST', body: JSON.stringify(data) });
+        return this._request(`/api/settings/campaigns/${encodeURIComponent(campaignId)}/tags`, { method: 'POST', body: JSON.stringify(data) });
     }
 
     // === Campaigns API ===
     async getCampaigns(vaultId = null) {
-        const url = new URL(`${this.baseUrl}/campaigns`, window.location.origin);
+        const url = new URL(`${this.baseUrl}/api/settings/campaigns`, window.location.origin);
         if (vaultId) url.searchParams.set('vault_id', vaultId);
         return this._request(url.pathname + url.search);
     }
-    async getCampaign(id) { return this._request(`/campaigns/${encodeURIComponent(id)}`); }
-    async createCampaign(data) { return this._request('/campaigns', { method: 'POST', body: JSON.stringify(data) }); }
+    async getCampaign(id) { return this._request(`/api/settings/campaigns/${encodeURIComponent(id)}`); }
+    async createCampaign(data) { return this._request('/api/settings/campaigns', { method: 'POST', body: JSON.stringify(data) }); }
     async updateCampaign(id, data) {
-        return this._request(`/campaigns/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(data) });
+        return this._request(`/api/settings/campaigns/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(data) });
     }
-    async deleteCampaign(id) { return this._request(`/campaigns/${encodeURIComponent(id)}`, { method: 'DELETE' }); }
+    async deleteCampaign(id) { return this._request(`/api/settings/campaigns/${encodeURIComponent(id)}`, { method: 'DELETE' }); }
 
     // === Documents API (PostgreSQL registry) ===
     async getDocuments(vaultId) {
-        const url = new URL(`${this.baseUrl}/documents`, window.location.origin);
+        const url = new URL(`${this.baseUrl}/api/settings/documents`, window.location.origin);
         url.searchParams.set('vault_id', vaultId);
         return this._request(url.pathname + url.search);
     }
     async deleteDocumentById(documentId) {
-        return this._request(`/documents/${encodeURIComponent(documentId)}`, { method: 'DELETE' });
+        return this._request(`/api/settings/documents/${encodeURIComponent(documentId)}`, { method: 'DELETE' });
     }
     async updateDocumentLabels(documentId, tagIds) {
-        return this._request(`/documents/${encodeURIComponent(documentId)}/labels`, {
+        return this._request(`/api/settings/documents/${encodeURIComponent(documentId)}/labels`, {
             method: 'PUT',
             body: JSON.stringify({ tag_ids: tagIds }),
         });
     }
 
     // === Indexer API ===
-    async runIndexer(vaultId) {
-        return this._request(`/indexer/run?vault_id=${encodeURIComponent(vaultId)}`, { method: 'POST' });
+    async runIndexer(vaultId, forceReindex = false) {
+        return this.reindexVault(vaultId, forceReindex);
     }
 
     // === Pipelines API ===

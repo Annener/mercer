@@ -44,8 +44,8 @@ const CampaignsTabMixin = {
         if (vaultId) {
             try {
                 const tagsResp = await this.api.getTags(vaultId);
-                const all = Array.isArray(tagsResp) ? tagsResp : (tagsResp.tags || []);
-                globalTags = all.filter(t => t.is_global);
+                const grouped = Array.isArray(tagsResp) ? { global_tags: tagsResp, by_campaign: {} } : (tagsResp || {});
+                globalTags = Array.isArray(grouped.global_tags) ? grouped.global_tags : [];
             } catch (e) { /* ignore */ }
         }
 
@@ -144,8 +144,16 @@ const CampaignsTabMixin = {
             };
             if (!data.name) { alert('Введите название'); return; }
             try {
-                if (isEdit) { await this.api.updateCampaign(campaignId, data); }
-                else { if (this._activeVaultId) data.vault_id = this._activeVaultId; await this.api.createCampaign(data); }
+                if (isEdit) {
+                    await this.api.updateCampaign(campaignId, data);
+                } else {
+                    if (!this._activeVaultId) {
+                        alert('Vault не выбран. Сначала добавьте или активируйте Vault в настройках.');
+                        return;
+                    }
+                    data.vault_id = this._activeVaultId;
+                    await this.api.createCampaign(data);
+                }
                 overlay.remove();
                 this.loadTab('campaigns');
             } catch (e) { alert('Ошибка: ' + e.message); }
