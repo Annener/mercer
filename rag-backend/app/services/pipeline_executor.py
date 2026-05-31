@@ -11,9 +11,14 @@ from fastapi import Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
-from app.db.models import Chat, World
+from app.db.models import Chat
 from app.services.prompt_pack import format_prompt
-from app.services.retrieval import format_context_with_role, retrieve
+from app.services.retrieval import (
+    format_context_with_role,
+    retrieve,
+    get_allowed_tag_ids,
+    get_document_ids_by_tags,
+)
 from app.services.settings_service import settings_service
 from shared_contracts.models import PipelineRead, PipelineStep, SearchHit
 
@@ -95,35 +100,48 @@ class PipelineExecutor:
         except Exception as exc:
             yield {"type": "error", "message": str(exc)}
 
-    async def _retrieve_for_step(self, query, step, chat_context, db):
+    async def _retrieve_for_step(
+        self,
+        query: str,
+        step: PipelineStep,
+        chat_context: dict,
+        db: AsyncSession,
+    ) -> list:
         top_k = step.top_k or int(await settings_service.get("retrieval.top_k", db))
         vault_id = chat_context.get("vault_id")
+        campaign_id = chat_context.get("campaign_id")  # может быть None
         config = chat_context.get("config")
-    
+
+        document_ids = None  # по умолчанию — весь vault (нет фильтра)
+
+        if step.tag_ids:
+            # Фильтруем tag_ids шага по разрешённым тегам контекста
+            allowed = await get_allowed_tag_ids(vault_id, campaign_id, db)
+            effective_tag_ids = [t for t in step.tag_ids if t in allowed]
+
+            if not effective_tag_ids:
+                # Теги указаны, но ни один не разрешён в этом контексте → пустой результат
+                logger.warning(
+                    "Pipeline step skipped: all tag_ids filtered out by campaign scope. "
+                    "step=%s, campaign_id=%s", step.name, campaign_id
+                )
+                return []
+
+            document_ids = await get_document_ids_by_tags(effective_tag_ids, vault_id, db)
+
+            if document_ids == []:
+                # Теги разрешены, но нет проиндексированных документов с этими тегами
+                logger.info(
+                    "Pipeline step skipped: no indexed documents for tags. step=%s", step.name
+                )
+                return []
+
         logger.info(
-            "Pipeline retrieval start: step=%s type=%s vault_id=%s document_ids=%s world_id=%s top_k=%s",
-            step.name, step.type, vault_id, step.document_ids, step.world_id, top_k,
+            "Pipeline retrieval start: step=%s vault_id=%s document_ids=%s top_k=%s",
+            step.name, vault_id, document_ids, top_k,
         )
-    
-        if step.type == "book":
-            hits = await retrieve(query, vault_id, document_ids=step.document_ids, top_k=top_k, config=config)
-        elif step.type == "world":
-            world = await db.execute(select(World).where(World.world_id == step.world_id))
-            world = world.scalar_one_or_none()
-            world_path_prefix = world.path_prefix if world else None
-            logger.info("World lookup: world_id=%s found=%s path_prefix=%s", 
-                step.world_id, world is not None, world_path_prefix)
-            hits = await retrieve(query, vault_id, world_id=step.world_id, world_path_prefix=world_path_prefix, categories=step.categories, top_k=top_k, config=config)
-        elif step.type == "campaign":
-            hits = await retrieve(query, vault_id, campaign_id=step.campaign_id, top_k=top_k, config=config)
-        else:
-            hits = []
-    
-        logger.info(
-            "Pipeline retrieval done: step=%s hits=%d vault_id=%s",
-            step.name, len(hits), vault_id,
-        )
-        return hits
+
+        return await retrieve(query, vault_id, document_ids=document_ids, top_k=top_k, config=config)
 
     async def _run_step(
         self,
@@ -136,18 +154,16 @@ class PipelineExecutor:
     ) -> tuple[int, PipelineStep, list[SearchHit], str]:
         hits = await self._retrieve_for_step(query, step, chat_context, db)
 
-        # Пропускаем LLM-вызов если retrieval вернул пустой результат
         if not hits:
             logger.info(
-                "Step skipped (no hits): step=%s type=%s",
-                step.name, step.type,
+                "Step skipped (no hits): step=%s",
+                step.name,
             )
             return index, step, hits, ""
 
         context_block = format_context_with_role(hits, step.role)
         prompt = format_prompt(step.system_prompt, {"context": context_block, "query": query})
 
-        # Логируем запрос в модель
         logger.info(
             "Step LLM request: step=%s role=%s prompt_chars=%d messages=[system(%d chars), user(%d chars)]",
             step.name, step.role, len(prompt), len(prompt), len(query),
@@ -162,7 +178,6 @@ class PipelineExecutor:
             {"role": "user", "content": query},
         ])
 
-        # Логируем ответ модели
         logger.info(
             "Step LLM response: step=%s chars=%d preview='%s'",
             step.name,
