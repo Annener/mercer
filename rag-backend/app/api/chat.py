@@ -58,11 +58,14 @@ class ChatHistoryResponse(BaseModel):
     vault_enabled: bool = False
 
 
+# BUG FIX #5: добавлено поле vault_enabled, которое ранее вычислялось
+# в list_chats но отсутствовало в модели → Pydantic молча его отбрасывал.
 class ChatListItem(BaseModel):
     chat_id: str
     title: str
     vault_id: str | None = None
     domain_id: str | None = None
+    vault_enabled: bool = False
     created_at: datetime
     updated_at: datetime
 
@@ -86,11 +89,20 @@ async def create_chat(
     request: Request,
     db: AsyncSession = Depends(get_db),
 ) -> CreateChatResponse:
+    # BUG FIX #1: явная валидация формата campaign_id перед вызовом uuid.UUID,
+    # чтобы получить 422 вместо 500 при невалидном значении.
+    campaign_uuid: uuid.UUID | None = None
+    if req.campaign_id:
+        try:
+            campaign_uuid = uuid.UUID(req.campaign_id)
+        except ValueError as exc:
+            raise HTTPException(422, f"Invalid campaign_id format: {req.campaign_id}") from exc
+
     chat = Chat(
         title="New Chat",
         vault_id=req.vault_id,
         domain_id=req.domain_id,
-        campaign_id=uuid.UUID(req.campaign_id) if req.campaign_id else None,
+        campaign_id=campaign_uuid,
         pipeline_versions=await _pipeline_versions(request),
     )
     db.add(chat)
@@ -203,7 +215,19 @@ async def send_message(
     db.add(user_msg)
     await db.flush()
 
-    domain_id = await _domain_id_for_chat(chat, db)
+    # BUG FIX #8: domain_id и retrieval_strategy вычисляются один раз,
+    # ранее domain_id вызывался дважды (_domain_id_for_chat), а retrieval_strategy
+    # дублировался — одно присвоение при создании context и ещё одно после pipeline.
+    domain_id = await _domain_id_for_chat(chat, db) or chat.domain_id
+    vault_ids: list[str] = [
+        v.vault_id for v in config_for_vault.vaults.values()
+        if v.domain_id == domain_id and v.enabled
+    ] if domain_id else []
+
+    retrieval_strategy = (
+        "semantic" if chat.vault_id and await settings_service.get("retrieval.enabled", db)
+        else "none"
+    )
 
     context = PipelineExecutionContext(
         chat_id=str(chat.id),
@@ -212,7 +236,8 @@ async def send_message(
         domain_id=domain_id,
         campaign_id=str(chat.campaign_id) if chat.campaign_id else None,
         vault_id=chat.vault_id,
-        retrieval_strategy="semantic" if chat.vault_id and await settings_service.get("retrieval.enabled", db) else "none",
+        vault_ids=vault_ids,
+        retrieval_strategy=retrieval_strategy,
     )
 
     pipeline_router = PipelineRouter(db)
@@ -227,7 +252,7 @@ async def send_message(
     context.pipeline_version = pipeline.version
     context.steps = pipeline.steps
     context.final_composition = pipeline.final_composition
-    context.retrieval_strategy="semantic" if chat.vault_id and await settings_service.get("retrieval.enabled", db) else "none"
+    # retrieval_strategy больше не переприсваивается здесь повторно
 
     history_stmt = select(Message).where(Message.chat_id == chat.id).order_by(Message.created_at).limit(20)
     history_result = await db.execute(history_stmt)
@@ -241,18 +266,6 @@ async def send_message(
         )
         for m in history_result.scalars().all()
     ]
-
-    domain_id = await _domain_id_for_chat(chat, db) or chat.domain_id
-
-    # vault_ids — all enabled-Vaults for the domain (sourced exclusively from domain config).
-    vault_ids: list[str] = [
-        v.vault_id for v in config_for_vault.vaults.values()
-        if v.domain_id == domain_id and v.enabled
-    ] if domain_id else []
-
-    context.vault_ids = vault_ids
-    context.domain_id = domain_id
-    context.campaign_id = str(chat.campaign_id) if chat.campaign_id else None
 
     executor = PipelineExecutor(db)
     result = await executor.run(context)
@@ -289,11 +302,18 @@ async def send_message_stream(
     db.add(user_msg)
     await db.flush()
 
+    # BUG FIX #8 (stream): приведено в соответствие с send_message —
+    # retrieval_strategy вычисляется один раз и явно передаётся в context.
     domain_id = await _domain_id_for_chat(chat, db) or chat.domain_id
     vault_ids: list[str] = [
         v.vault_id for v in config_for_vault.vaults.values()
         if v.domain_id == domain_id and v.enabled
     ] if domain_id else []
+
+    retrieval_strategy = (
+        "semantic" if chat.vault_id and await settings_service.get("retrieval.enabled", db)
+        else "none"
+    )
 
     context = PipelineExecutionContext(
         chat_id=str(chat.id),
@@ -308,6 +328,7 @@ async def send_message_stream(
         steps=[],
         final_composition=None,  # type: ignore[arg-type]
         history=[],
+        retrieval_strategy=retrieval_strategy,
     )
 
     pipeline_router = PipelineRouter(db)
