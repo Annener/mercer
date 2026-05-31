@@ -9,9 +9,9 @@ class SidebarManager {
         this.renameCancelBtn = document.getElementById('rename-cancel-btn');
 
         this.domainSelector = document.getElementById('domain-select');
-        this.campaignSelectorBlock = document.getElementById('world-selector');
-        this.campaignSelect = document.getElementById('world-select');
-        this.campaignsList = document.getElementById('campaigns-list');
+        // Исправлены ID: campaign-selector / campaign-select (из index.html)
+        this.campaignSelectorBlock = document.getElementById('campaign-selector');
+        this.campaignSelect = document.getElementById('campaign-select');
 
         this.currentRenameChatId = null;
         this.domains = [];
@@ -34,7 +34,6 @@ class SidebarManager {
             this.switchDomain(e.target.value);
         });
 
-        // campaign select (replaces world-select)
         this.campaignSelect?.addEventListener('change', (e) => {
             this.currentCampaignId = e.target.value;
             localStorage.setItem('currentCampaignId', this.currentCampaignId);
@@ -226,7 +225,6 @@ class SidebarManager {
             return;
         }
         try {
-            // Передаём vault_id текущего активного vault и выбранную кампанию
             const response = await chatAPI.createChat(
                 this.currentVaultId || null,
                 this.currentDomain,
@@ -240,14 +238,12 @@ class SidebarManager {
         }
     }
 
-    // Загружает кампании для текущего домена через vault
     async loadCampaignsForDomain() {
         const block = this.campaignSelectorBlock;
         const select = this.campaignSelect;
         if (!block || !select) return;
 
         try {
-            // Находим активный vault для текущего домена
             const vaults = await chatAPI.getSettingsVaults();
             const vaultArr = Array.isArray(vaults) ? vaults : [];
             const vault = vaultArr.find(v => v.domain_id === this.currentDomain && v.enabled);
@@ -260,7 +256,6 @@ class SidebarManager {
 
             this.currentVaultId = vault.vault_id;
 
-            // Загружаем кампании для этого vault
             const campaigns = await chatAPI.getCampaigns(vault.vault_id);
             const campArr = Array.isArray(campaigns) ? campaigns : (campaigns.campaigns || []);
 
@@ -269,6 +264,7 @@ class SidebarManager {
                 return;
             }
 
+            // Сохраняем опцию «без кампании» из HTML, очищаем остальные
             select.innerHTML = '<option value="">— без кампании —</option>';
             for (const c of campArr) {
                 const opt = document.createElement('option');
@@ -277,7 +273,6 @@ class SidebarManager {
                 select.appendChild(opt);
             }
 
-            // Восстанавливаем ранее выбранную кампанию
             if (this.currentCampaignId && campArr.some(c => String(c.id) === this.currentCampaignId)) {
                 select.value = this.currentCampaignId;
             } else {
@@ -286,10 +281,6 @@ class SidebarManager {
             }
 
             block.style.display = 'block';
-
-            // Обновляем label блока
-            const label = block.querySelector('label');
-            if (label) label.textContent = 'Кампания';
 
         } catch (error) {
             console.warn('Failed to load campaigns for sidebar:', error.message);

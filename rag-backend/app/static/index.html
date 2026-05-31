@@ -27,7 +27,7 @@
                 <div class="campaign-selector" id="campaign-selector" style="display: none;">
                     <label for="campaign-select">Кампания:</label>
                     <select id="campaign-select" class="domain-select">
-                        <option value="">Без кампании</option>
+                        <option value="">— без кампании —</option>
                     </select>
                 </div>
                 <button id="new-chat-btn" class="btn btn-primary btn-full">+ Новая беседа</button>
@@ -62,12 +62,13 @@
         </main>
     </div>
 
+    <!-- Страница настроек (скрыта по умолчанию) -->
     <main id="settings-page" class="settings-page hidden">
         <div class="settings-header">
             <h2>Настройки платформы</h2>
-            <button id="back-to-chat-btn" class="btn btn-secondary">Назад к чатам</button>
+            <button id="back-to-chat-btn" class="btn btn-secondary">← Назад к чатам</button>
         </div>
-        <div class="settings-tabs">
+        <nav class="settings-tabs">
             <button data-tab="domains" class="active">Домены</button>
             <button data-tab="vaults">Vault'ы</button>
             <button data-tab="gen-models">Генеративные модели</button>
@@ -76,7 +77,7 @@
             <button data-tab="pipelines">Pipelines</button>
             <button data-tab="campaigns">Campaigns</button>
             <button data-tab="documents">Documents</button>
-        </div>
+        </nav>
         <div id="settings-content" class="settings-content"></div>
     </main>
 
@@ -102,18 +103,14 @@
                 <h3>Поиск по хранилищу</h3>
                 <button id="db-mgmt-close-btn" class="btn-close" title="Закрыть">✕</button>
             </div>
-
-            <!-- Вкладка "Поиск" -->
-            <div class="tab-content active" data-tab="search">
-                <div class="search-form2">
-                    <select id="search-domain-select" class="search-domain-sel"></select>
-                    <input type="text" id="search-query-input" placeholder="Введите текст..." class="search-query-inp">
-                    <input type="number" id="search-limit" value="20" min="1" max="200" class="search-limit-inp">
-                    <button id="search-btn" class="btn btn-primary">Найти</button>
-                </div>
-                <div id="search-results" class="search-results">
-                    <div class="empty-state">Результаты поиска появятся здесь</div>
-                </div>
+            <div class="search-form2">
+                <select id="search-domain-select" class="search-domain-sel"></select>
+                <input type="text" id="search-query-input" placeholder="Введите текст..." class="search-query-inp">
+                <input type="number" id="search-limit" value="20" min="1" max="200" class="search-limit-inp">
+                <button id="search-btn" class="btn btn-primary">Найти</button>
+            </div>
+            <div id="search-results" class="search-results">
+                <div class="empty-state">Результаты поиска появятся здесь</div>
             </div>
         </div>
     </div>
@@ -142,10 +139,7 @@
 
     <script src="/static/js/api.js"></script>
     <script src="/static/js/pipeline_builder.js"></script>
-    <!-- Сначала класс -->
     <script src="/static/js/settings.js"></script>
-
-    <!-- Потом миксины -->
     <script src="/static/js/settings/tab-domains.js"></script>
     <script src="/static/js/settings/tab-vaults.js"></script>
     <script src="/static/js/settings/tab-gen-models.js"></script>
