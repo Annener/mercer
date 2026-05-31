@@ -15,22 +15,32 @@ router = APIRouter(prefix="/tags", tags=["tags"])
 
 @router.get("", response_model=TagsGrouped)
 async def list_tags(
-    vault_id: str,
+    domain_id: str | None = None,
+    vault_id: str | None = None,  # deprecated, kept for backward compat
     campaign_id: str | None = None,
     db: AsyncSession = Depends(get_db),
 ) -> TagsGrouped:
     """
-    Возвращает теги vault'а сгруппированные.
+    Возвращает теги домена/vaultа сгруппированные.
+    Приоритет: domain_id > vault_id.
     Если campaign_id задан — возвращает только глобальные + теги этой кампании.
-    Иначе — все теги vault'а сгруппированные по кампаниям.
+    Иначе — все теги домена/vaultа сгруппированные по кампаниям.
     """
+    if domain_id:
+        base_filter = Tag.domain_id == domain_id
+    elif vault_id:
+        base_filter = Tag.vault_id == vault_id
+    else:
+        # ни domain_id ни vault_id не заданы — вернём пустой результат
+        return TagsGrouped(global_tags=[], by_campaign={})
+
     if campaign_id:
         stmt = select(Tag).where(
-            Tag.vault_id == vault_id,
+            base_filter,
             or_(Tag.campaign_id.is_(None), Tag.campaign_id == uuid.UUID(campaign_id)),
         )
     else:
-        stmt = select(Tag).where(Tag.vault_id == vault_id)
+        stmt = select(Tag).where(base_filter)
 
     result = await db.execute(stmt)
     tags = result.scalars().all()
@@ -50,6 +60,7 @@ async def create_tag(req: TagCreate, db: AsyncSession = Depends(get_db)) -> TagR
     tag = Tag(
         name=req.name,
         vault_id=req.vault_id,
+        domain_id=req.domain_id if hasattr(req, "domain_id") else None,
         campaign_id=uuid.UUID(req.campaign_id) if req.campaign_id else None,
         color=req.color,
     )
