@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 import asyncpg
@@ -40,13 +41,6 @@ class IndexerDBClient:
         row = await self._fetchrow("SELECT * FROM embedding_models WHERE model_id = $1 AND enabled = true", model_id)
         return dict(row) if row is not None else None
 
-    async def get_worlds_for_vault(self, vault_id: str) -> list[dict[str, Any]]:
-        rows = await self._fetch(
-            "SELECT * FROM worlds WHERE vault_id = $1 AND is_active = true ORDER BY path_prefix DESC",
-            vault_id,
-        )
-        return [dict(row) for row in rows]
-
     async def update_vault_chunk_count(self, vault_id: str, delta: int) -> None:
         await self._execute(
             "UPDATE vaults SET chunk_count = GREATEST(chunk_count + $2, 0), updated_at = NOW() WHERE vault_id = $1",
@@ -67,6 +61,76 @@ class IndexerDBClient:
         if self._fernet is None:
             raise RuntimeError("DB client is not connected")
         return self._fernet.decrypt(encrypted.encode("utf-8")).decode("utf-8")
+
+    # -------------------------------------------------------------------------
+    # documents registry
+    # -------------------------------------------------------------------------
+
+    async def get_document_by_path(
+        self, vault_id: str, source_path: str
+    ) -> dict[str, Any] | None:
+        row = await self._fetchrow(
+            "SELECT * FROM documents WHERE vault_id = $1 AND source_path = $2",
+            vault_id,
+            source_path,
+        )
+        return dict(row) if row is not None else None
+
+    async def create_document(
+        self,
+        vault_id: str,
+        source_path: str,
+        md5: str,
+        mtime: int,
+    ) -> dict[str, Any]:
+        """Создаёт запись в documents, возвращает весь ряд."""
+        row = await self._fetchrow(
+            """
+            INSERT INTO documents (vault_id, source_path, md5, mtime, status)
+            VALUES ($1, $2, $3, $4, 'pending')
+            RETURNING *
+            """,
+            vault_id,
+            source_path,
+            md5,
+            mtime,
+        )
+        if row is None:
+            raise RuntimeError(f"Failed to insert document: {vault_id}/{source_path}")
+        return dict(row)
+
+    async def update_document_status(
+        self,
+        document_id: str,
+        status: str,
+        md5: str | None = None,
+        mtime: int | None = None,
+        indexed_at: datetime | None = None,
+    ) -> None:
+        """Обновляет статус документа, опционально md5/mtime/indexed_at."""
+        sets = ["status = $2"]
+        params: list[Any] = [document_id, status]
+        idx = 3
+        if md5 is not None:
+            sets.append(f"md5 = ${idx}")
+            params.append(md5)
+            idx += 1
+        if mtime is not None:
+            sets.append(f"mtime = ${idx}")
+            params.append(mtime)
+            idx += 1
+        if indexed_at is not None:
+            sets.append(f"indexed_at = ${idx}")
+            params.append(indexed_at)
+            idx += 1
+        await self._execute(
+            f"UPDATE documents SET {', '.join(sets)} WHERE id = $1",
+            *params,
+        )
+
+    # -------------------------------------------------------------------------
+    # internal helpers
+    # -------------------------------------------------------------------------
 
     async def _fetch(self, query: str, *args: Any) -> list[asyncpg.Record]:
         if self.pool is None:
