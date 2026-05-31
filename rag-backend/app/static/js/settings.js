@@ -4,6 +4,7 @@ class SettingsManager {
         this.api = chatAPI;
         this.currentTab = 'domains';
         this._activeVaultId = null;
+        this._activeDomainId = null;
         this._tabContent = document.getElementById('settings-content');
         this._tabNav = document.querySelector('.settings-tabs');
         this.initNav();
@@ -34,14 +35,45 @@ class SettingsManager {
         return this._activeVaultId;
     }
 
+    /**
+     * Резолвит активный domain_id для вкладок campaigns / documents / pipelines.
+     * Приоритет: sidebar currentDomain → первый домен из API.
+     */
+    async _resolveDomainId() {
+        if (this._activeDomainId) return this._activeDomainId;
+        try {
+            // Берём домен, выбранный в sidebar (если есть)
+            const sidebarDomain = window.sidebarManager?.currentDomain || localStorage.getItem('currentDomain');
+            if (sidebarDomain) {
+                this._activeDomainId = sidebarDomain;
+                return this._activeDomainId;
+            }
+            const resp = await this.api.getDomains();
+            const domains = Array.isArray(resp) ? resp : (resp.domains || []);
+            const active = domains.find(d => d.enabled !== false) || domains[0];
+            this._activeDomainId = active?.domain_id || null;
+        } catch (e) {
+            this._activeDomainId = null;
+        }
+        return this._activeDomainId;
+    }
+
     async loadTab(tab) {
         this.currentTab = tab;
         if (!this._tabContent) return;
         this._tabContent.innerHTML = '<div class="loading-state">Загрузка...</div>';
 
-        if (tab === 'documents' || tab === 'campaigns') {
+        // Резолвим контекст для вкладок, требующих domain_id
+        if (tab === 'campaigns' || tab === 'pipelines') {
+            this._activeDomainId = null;
+            await this._resolveDomainId();
+        }
+        // Documents по-прежнему работают через vault (физическое хранилище)
+        if (tab === 'documents') {
             this._activeVaultId = null;
             await this._resolveVaultId();
+            // Также резолвим domain для тегов
+            if (!this._activeDomainId) await this._resolveDomainId();
         }
 
         try {
@@ -179,6 +211,8 @@ document.addEventListener('DOMContentLoaded', () => {
             } else {
                 window.settingsManager._tabContent = document.getElementById('settings-content');
                 window.settingsManager._tabNav = document.querySelector('.settings-tabs');
+                // Сбрасываем кешированный domain при каждом открытии настроек
+                window.settingsManager._activeDomainId = null;
                 window.settingsManager.loadTab(window.settingsManager.currentTab || 'domains');
             }
         });
