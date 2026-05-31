@@ -16,6 +16,7 @@ from app.services.prompt_pack import format_prompt
 from app.services.retrieval import (
     format_context_with_role,
     retrieve,
+    retrieve_multi_vault,
     get_allowed_tag_ids,
     get_document_ids_by_tags,
 )
@@ -108,40 +109,71 @@ class PipelineExecutor:
         db: AsyncSession,
     ) -> list:
         top_k = step.top_k or int(await settings_service.get("retrieval.top_k", db))
-        vault_id = chat_context.get("vault_id")
-        campaign_id = chat_context.get("campaign_id")  # может быть None
+        domain_id: str | None = chat_context.get("domain_id")
+        campaign_id: str | None = chat_context.get("campaign_id")
         config = chat_context.get("config")
 
-        document_ids = None  # по умолчанию — весь vault (нет фильтра)
+        # vault_ids из контекста (список всех enabled-Vault домена)
+        # Обратная совместимость: старый ключ vault_id (str) → оборачиваем в список
+        vault_ids: list[str] = chat_context.get("vault_ids") or []
+        if not vault_ids:
+            legacy = chat_context.get("vault_id")
+            if legacy:
+                vault_ids = [legacy]
+
+        document_ids: list[str] | None = None  # None = нет фильтра
 
         if step.tag_ids:
-            # Фильтруем tag_ids шага по разрешённым тегам контекста
-            allowed = await get_allowed_tag_ids(vault_id, campaign_id, db)
-            effective_tag_ids = [t for t in step.tag_ids if t in allowed]
-
-            if not effective_tag_ids:
-                # Теги указаны, но ни один не разрешён в этом контексте → пустой результат
+            if not domain_id:
+                # Нет домена — тегами управлять невозможно, пропускаем шаг
                 logger.warning(
-                    "Pipeline step skipped: all tag_ids filtered out by campaign scope. "
-                    "step=%s, campaign_id=%s", step.name, campaign_id
+                    "Pipeline step skipped: tag_ids set but no domain_id in context. step=%s",
+                    step.name,
                 )
                 return []
 
-            document_ids = await get_document_ids_by_tags(effective_tag_ids, vault_id, db)
+            allowed = await get_allowed_tag_ids(domain_id, campaign_id, db)
+            effective_tag_ids = [t for t in step.tag_ids if t in allowed]
+
+            if not effective_tag_ids:
+                logger.warning(
+                    "Pipeline step skipped: all tag_ids filtered out by campaign scope. "
+                    "step=%s, domain_id=%s, campaign_id=%s",
+                    step.name, domain_id, campaign_id,
+                )
+                return []
+
+            document_ids = await get_document_ids_by_tags(effective_tag_ids, domain_id, db)
 
             if document_ids == []:
-                # Теги разрешены, но нет проиндексированных документов с этими тегами
                 logger.info(
-                    "Pipeline step skipped: no indexed documents for tags. step=%s", step.name
+                    "Pipeline step skipped: no indexed documents for tags. step=%s domain_id=%s",
+                    step.name, domain_id,
                 )
                 return []
 
         logger.info(
-            "Pipeline retrieval start: step=%s vault_id=%s document_ids=%s top_k=%s",
-            step.name, vault_id, document_ids, top_k,
+            "Pipeline retrieval start: step=%s domain_id=%s vault_ids=%s document_ids=%s top_k=%s",
+            step.name, domain_id, vault_ids, document_ids, top_k,
         )
 
-        return await retrieve(query, vault_id, document_ids=document_ids, top_k=top_k, config=config)
+        if not vault_ids:
+            logger.warning("Pipeline step skipped: no vault_ids in context. step=%s", step.name)
+            return []
+
+        if len(vault_ids) == 1:
+            return await retrieve(
+                query, vault_ids[0],
+                document_ids=document_ids,
+                top_k=top_k,
+                config=config,
+            )
+        return await retrieve_multi_vault(
+            query, vault_ids,
+            document_ids=document_ids,
+            top_k=top_k,
+            config=config,
+        )
 
     async def _run_step(
         self,
@@ -155,10 +187,7 @@ class PipelineExecutor:
         hits = await self._retrieve_for_step(query, step, chat_context, db)
 
         if not hits:
-            logger.info(
-                "Step skipped (no hits): step=%s",
-                step.name,
-            )
+            logger.info("Step skipped (no hits): step=%s", step.name)
             return index, step, hits, ""
 
         context_block = format_context_with_role(hits, step.role)
