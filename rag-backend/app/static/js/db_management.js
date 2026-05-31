@@ -1,4 +1,4 @@
-// === DB Management — Search only (v3) ===
+// === DB Management — Search only (v3.1) ===
 class DBManager {
     constructor() {
         this.modal = document.getElementById('db-mgmt-modal');
@@ -18,6 +18,7 @@ class DBManager {
         this.chunkModalContent = document.getElementById('chunk-detail-content');
 
         this.domains = [];
+        this._domainsLoaded = false;
 
         this._initListeners();
     }
@@ -42,7 +43,11 @@ class DBManager {
 
     async open() {
         this.modal.style.display = 'flex';
-        await this._loadDomains();
+        // Загружаем домены только один раз за жизнь модала
+        if (!this._domainsLoaded) {
+            await this._loadDomains();
+            this._domainsLoaded = true;
+        }
     }
 
     close() {
@@ -53,7 +58,6 @@ class DBManager {
     async _loadDomains() {
         try {
             const resp = await chatAPI.getDomains();
-            // getDomains() возвращает массив DomainRead или {domains: [...]}
             this.domains = Array.isArray(resp) ? resp : (resp.domains || []);
         } catch (e) {
             console.error('DBManager: failed to load domains', e);
@@ -65,32 +69,29 @@ class DBManager {
     _populateDomainSelect() {
         const sel = this.searchDomainSelect;
         if (!sel) return;
-        const prev = sel.value;
         sel.innerHTML = '';
         for (const d of this.domains) {
             const opt = document.createElement('option');
             opt.value = d.domain_id;
-            // display_name из DomainRead; fallback — форматированный domain_id
             opt.textContent = d.display_name || this._formatDomainId(d.domain_id);
             sel.appendChild(opt);
-        }
-        // Восстанавливаем выбранное
-        if (prev && [...sel.options].some(o => o.value === prev)) {
-            sel.value = prev;
         }
     }
 
     _formatDomainId(id) {
         if (!id) return '';
-        const map = { dnd: 'D&D', work: 'Работа' };
-        return map[id] || (id.charAt(0).toUpperCase() + id.slice(1));
+        return id.charAt(0).toUpperCase() + id.slice(1);
     }
 
     // ─── Поиск ────────────────────────────────────────────────────────────
     async doSearch() {
         const domainId = this.searchDomainSelect?.value;
         const query    = this.searchQueryInput?.value?.trim();
-        const limit    = parseInt(this.searchLimitInput?.value || '20', 10);
+
+        // Валидация limit на клиенте — чтобы не получить 422 с бэкенда
+        const rawLimit = parseInt(this.searchLimitInput?.value || '20', 10);
+        const limit    = (!isNaN(rawLimit) && rawLimit >= 1 && rawLimit <= 200) ? rawLimit : 20;
+        if (this.searchLimitInput) this.searchLimitInput.value = limit;
 
         if (!query) {
             this.searchQueryInput?.focus();
@@ -99,16 +100,14 @@ class DBManager {
         if (!domainId) return;
         if (!this.searchResults) return;
 
-        this.searchResults.innerHTML = '<div class="empty-state">Поиск…</div>';
+        this._setResults('<div class="empty-state">Поиск…</div>');
 
         try {
             const data  = await chatAPI.textSearchByDomain(domainId, query, limit);
-            // Ответ: TextSearchResponse { results: SearchHit[] }
-            // SearchHit: { chunk_id, document_id, text, metadata, score }
             const items = data.results ?? [];
 
             if (!items.length) {
-                this.searchResults.innerHTML = '<div class="empty-state">Ничего не найдено</div>';
+                this._setResults('<div class="empty-state">Ничего не найдено</div>');
                 return;
             }
 
@@ -117,14 +116,16 @@ class DBManager {
                 this.searchResults.appendChild(this._renderHit(hit));
             }
         } catch (e) {
-            this.searchResults.innerHTML =
-                `<div class="empty-state" style="color:var(--color-error, #c0392b)">Ошибка: ${this._esc(e.message)}</div>`;
+            this._setResults(`<div class="empty-state search-error">Ошибка: ${this._esc(e.message)}</div>`);
         }
+    }
+
+    _setResults(html) {
+        if (this.searchResults) this.searchResults.innerHTML = html;
     }
 
     // ─── Карточка результата ──────────────────────────────────────────────
     _renderHit(hit) {
-        // source_path лежит в metadata (заполняется indexer'ом)
         const sourcePath = hit.metadata?.source_path || hit.metadata?.file_path || hit.document_id || '';
         const sourceName = sourcePath.split('/').pop() || sourcePath;
         const scoreStr   = hit.score != null ? hit.score.toFixed(3) : '—';
@@ -133,37 +134,61 @@ class DBManager {
 
         const el = document.createElement('div');
         el.className = 'search-hit';
-        el.innerHTML = `
-            <div class="search-hit-header">
-                <span class="search-hit-source" title="${this._esc(sourcePath)}">${this._esc(sourceName)}</span>
-                <span class="search-hit-meta">${this._esc(hit.document_id)}</span>
-                <span class="search-hit-score">score: ${scoreStr}</span>
-                <button class="search-hit-detail-btn" title="Весь текст чанка">🔍</button>
-            </div>
-            <div class="search-hit-body">
-                <div class="search-hit-preview">${this._esc(preview)}${hasFull ? '…' : ''}</div>
-                ${hasFull ? '<button class="search-hit-expand-btn">Показать полностью</button>' : ''}
-            </div>
-        `;
 
-        el.querySelector('.search-hit-detail-btn').addEventListener('click', () => this._openChunkModal(hit));
+        // Хедер — без innerHTML в атрибутах, всё через DOM API (XSS-safe)
+        const header = document.createElement('div');
+        header.className = 'search-hit-header';
+
+        const srcSpan = document.createElement('span');
+        srcSpan.className = 'search-hit-source';
+        srcSpan.textContent = sourceName;          // textContent — безопасно
+        srcSpan.title = sourcePath;                // title — безопасно
+
+        const metaSpan = document.createElement('span');
+        metaSpan.className = 'search-hit-meta';
+        metaSpan.textContent = hit.document_id;
+
+        const scoreSpan = document.createElement('span');
+        scoreSpan.className = 'search-hit-score';
+        scoreSpan.textContent = `score: ${scoreStr}`;
+
+        const detailBtn = document.createElement('button');
+        detailBtn.className = 'search-hit-detail-btn';
+        detailBtn.title = 'Весь текст чанка';
+        detailBtn.textContent = '🔍';
+        detailBtn.addEventListener('click', () => this._openChunkModal(hit));
+
+        header.append(srcSpan, metaSpan, scoreSpan, detailBtn);
+
+        // Тело
+        const body = document.createElement('div');
+        body.className = 'search-hit-body';
+
+        const previewEl = document.createElement('div');
+        previewEl.className = 'search-hit-preview';
+        previewEl.textContent = preview + (hasFull ? '…' : '');
+
+        body.appendChild(previewEl);
 
         if (hasFull) {
-            const preview$ = el.querySelector('.search-hit-preview');
-            const expand$  = el.querySelector('.search-hit-expand-btn');
-            expand$.addEventListener('click', () => {
-                if (expand$.dataset.expanded) {
-                    preview$.textContent = preview + '…';
-                    expand$.textContent  = 'Показать полностью';
-                    delete expand$.dataset.expanded;
+            const expandBtn = document.createElement('button');
+            expandBtn.className = 'search-hit-expand-btn';
+            expandBtn.textContent = 'Показать полностью';
+            expandBtn.addEventListener('click', () => {
+                if (expandBtn.dataset.expanded) {
+                    previewEl.textContent = preview + '…';
+                    expandBtn.textContent  = 'Показать полностью';
+                    delete expandBtn.dataset.expanded;
                 } else {
-                    preview$.textContent = hit.text;
-                    expand$.textContent  = 'Свернуть';
-                    expand$.dataset.expanded = '1';
+                    previewEl.textContent = hit.text;
+                    expandBtn.textContent  = 'Свернуть';
+                    expandBtn.dataset.expanded = '1';
                 }
             });
+            body.appendChild(expandBtn);
         }
 
+        el.append(header, body);
         return el;
     }
 
@@ -173,26 +198,54 @@ class DBManager {
 
         const sourcePath = hit.metadata?.source_path || hit.metadata?.file_path || hit.document_id || '—';
 
-        // Строим таблицу мета-полей
-        const metaRows = Object.entries(hit.metadata || {}).map(([k, v]) =>
-            `<tr>
-                <td class="chunk-prop-key">${this._esc(k)}</td>
-                <td class="chunk-prop-val">${this._esc(String(v))}</td>
-            </tr>`
-        ).join('');
+        // Полностью через DOM API — никакого innerHTML с данными пользователя
+        this.chunkModalContent.innerHTML = '';
 
-        this.chunkModalContent.innerHTML = `
-            <div class="chunk-modal-title">${this._esc(sourcePath)}</div>
-            <table class="chunk-props-table">
-                <tr><td class="chunk-prop-key">chunk_id</td><td class="chunk-prop-val">${this._esc(hit.chunk_id)}</td></tr>
-                <tr><td class="chunk-prop-key">document_id</td><td class="chunk-prop-val">${this._esc(hit.document_id)}</td></tr>
-                <tr><td class="chunk-prop-key">score</td><td class="chunk-prop-val">${hit.score != null ? hit.score.toFixed(6) : '—'}</td></tr>
-                ${metaRows}
-            </table>
-            <div class="chunk-modal-section-label">Текст чанка</div>
-            <div class="chunk-modal-text">${this._esc(hit.text || '')}</div>
-        `;
+        const title = document.createElement('div');
+        title.className = 'chunk-modal-title';
+        title.textContent = sourcePath;
+        this.chunkModalContent.appendChild(title);
+
+        // Таблица метаданных
+        const table = document.createElement('table');
+        table.className = 'chunk-props-table';
+
+        const fixedProps = [
+            ['chunk_id',    hit.chunk_id],
+            ['document_id', hit.document_id],
+            ['score',       hit.score != null ? hit.score.toFixed(6) : '—'],
+        ];
+        for (const [k, v] of fixedProps) {
+            table.appendChild(this._propsRow(k, v));
+        }
+        for (const [k, v] of Object.entries(hit.metadata || {})) {
+            table.appendChild(this._propsRow(k, String(v)));
+        }
+        this.chunkModalContent.appendChild(table);
+
+        const sectionLabel = document.createElement('div');
+        sectionLabel.className = 'chunk-modal-section-label';
+        sectionLabel.textContent = 'Текст чанка';
+        this.chunkModalContent.appendChild(sectionLabel);
+
+        const textEl = document.createElement('div');
+        textEl.className = 'chunk-modal-text';
+        textEl.textContent = hit.text || '';
+        this.chunkModalContent.appendChild(textEl);
+
         this.chunkModal.style.display = 'flex';
+    }
+
+    _propsRow(key, value) {
+        const tr = document.createElement('tr');
+        const td1 = document.createElement('td');
+        td1.className = 'chunk-prop-key';
+        td1.textContent = key;
+        const td2 = document.createElement('td');
+        td2.className = 'chunk-prop-val';
+        td2.textContent = value;
+        tr.append(td1, td2);
+        return tr;
     }
 
     closeChunkModal() {
@@ -200,6 +253,7 @@ class DBManager {
     }
 
     // ─── Утилиты ──────────────────────────────────────────────────────────
+    // _esc оставляем для обратной совместимости (используется в _setResults)
     _esc(text) {
         const d = document.createElement('div');
         d.textContent = text == null ? '' : String(text);
