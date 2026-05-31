@@ -341,7 +341,7 @@ async def send_message_stream(
 
     context.pipeline_id = pipeline.pipeline_id
     context.pipeline_version = pipeline.version
-        context.steps = pipeline.steps
+    context.steps = pipeline.steps
     context.final_composition = pipeline.final_composition
 
     history_stmt = select(Message).where(Message.chat_id == chat.id).order_by(Message.created_at).limit(20)
