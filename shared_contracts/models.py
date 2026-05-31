@@ -40,9 +40,9 @@ class FileIndexState(BaseModel):
         "error",
         "cancelled",
         "empty",
-        "indexed",  # back-compat с V2.1
+        "indexed",  # back-compat V2.1
     ]
-    progress_pct: int = Field(default=0, ge=0, le=100)  # deprecated, для back-compat
+    progress_pct: int = Field(default=0, ge=0, le=100)  # deprecated, back-compat
     chunks_total: int = 0
     chunks_processed: int = 0
     last_modified: datetime
@@ -275,17 +275,19 @@ class VaultUpdate(BaseModel):
 
 
 class TagRead(ORMModel):
+    """Тег принадлежит домену (не Vault)."""
     id: str
     name: str
-    vault_id: str
+    domain_id: str
     campaign_id: str | None = None
     color: str | None = None
     created_at: datetime | None = None
 
 
 class TagCreate(BaseModel):
+    """Создание тега: привязка к домену, не к Vault."""
     name: str
-    vault_id: str
+    domain_id: str
     campaign_id: str | None = None
     color: str | None = None
 
@@ -320,8 +322,9 @@ class DocumentLabelWrite(BaseModel):
 
 
 class CampaignRead(ORMModel):
+    """Кампания принадлежит домену (не Vault)."""
     id: str
-    vault_id: str
+    domain_id: str
     name: str
     description: str | None = None
     system_prompt: str | None = None
@@ -331,7 +334,8 @@ class CampaignRead(ORMModel):
 
 
 class CampaignCreate(BaseModel):
-    vault_id: str
+    """Создание кампании: привязка к домену, не к Vault."""
+    domain_id: str
     name: str
     description: str | None = None
     system_prompt: str | None = None
@@ -349,7 +353,7 @@ class PipelineStep(BaseModel):
     name: str
     system_prompt: str
     top_k: int | None = None
-    tag_ids: list[str] = []   # только для type="retrieval"; фильтруется бэкендом
+    tag_ids: list[str] = []   # только для type="retrieval"; фильтруется бэкендом по domain_id
     is_final: bool = False    # ровно один True обязателен в пайплайне
     role: str | None = None   # опциональная метка для UI
 
@@ -362,6 +366,7 @@ class PipelineRead(ORMModel):
     id: str
     pipeline_id: str
     domain_id: str
+    campaign_id: str | None = None  # None = общий пайплайн домена
     version: str
     name: str
     description: str | None = None
@@ -374,6 +379,7 @@ class PipelineRead(ORMModel):
 class PipelineCreate(BaseModel):
     pipeline_id: str
     domain_id: str
+    campaign_id: str | None = None  # None = общий пайплайн домена
     name: str
     description: str | None = None
     steps: list[PipelineStep]
@@ -405,7 +411,7 @@ class ChatMessage(BaseModel):
 class ChatRecord(BaseModel):
     chat_id: str
     title: str = "New Chat"
-    vault_id: str | None = None
+    vault_id: str | None = None   # TODO(iter4-cleanup): удалить после полного перехода фронта на domain_id
     domain_id: str | None = None
     locked_pipeline_id: str | None = None
     created_at: datetime
@@ -414,9 +420,11 @@ class ChatRecord(BaseModel):
 
 
 class PipelineContext(BaseModel):
+    """Контекст выполнения пайплайна. vault_id оставлен для back-compat (TODO: удалить в iter4-cleanup)."""
     query: str
-    vault_id: str
-    domain_id: str | None = None
+    domain_id: str
+    vault_ids: list[str] = Field(default_factory=list)  # все enabled-Vault домена
+    vault_id: str | None = None  # deprecated back-compat; используй vault_ids
     context_chunks: list[ChunkRecord] = Field(default_factory=list)
     clarification_collected: dict[str, Any] = Field(default_factory=dict)
     chat_history: list[ChatMessage] = Field(default_factory=list)
@@ -462,8 +470,13 @@ class TaskStateResponse(BaseModel):
 
 
 class CreateChatRequest(BaseModel):
-    vault_id: str | None = None
+    """
+    domain_id — основной идентификатор контекста чата.
+    vault_id оставлен nullable для back-compat (старые клиенты).
+    TODO(iter4-cleanup): сделать domain_id обязательным, убрать vault_id.
+    """
     domain_id: str | None = None
+    vault_id: str | None = None  # deprecated back-compat
 
 
 class CreateChatResponse(BaseModel):
@@ -486,9 +499,9 @@ class ClarificationResponse(BaseModel):
 class UpsertChunk(BaseModel):
     document_id: str
     chunk_index: int
-    text: str  # ← text_for_bm25: чистый текст (для BM25 и UI)
-    vector: list[float]  # ← embedding от text_for_embedding (обогащённый)
-    metadata: dict[str, Any] = Field(default_factory=dict)  # ← включает embedding_text для отладки
+    text: str
+    vector: list[float]
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class UpsertRequest(BaseModel):
