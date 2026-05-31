@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import re
+import uuid
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Domain, Pipeline
+from app.db.models import Domain, Pipeline, PipelineLabel, Tag
 from app.db.session import get_db
 from .helpers import _get_pipeline_by_uuid, _validate_pipeline_json, _increment_patch, pipeline_dict
 from .schemas import PipelineCreateRequest, PipelineUpdateRequest
@@ -17,12 +18,46 @@ SLUG_RE = re.compile(r"^[a-z0-9-]{3,64}$")
 
 
 @router.get("/pipelines")
-async def list_pipelines(domain_id: str | None = None, db: AsyncSession = Depends(get_db)) -> list[dict[str, Any]]:
+async def list_pipelines(
+    domain_id: str | None = None,
+    campaign_id: str | None = None,
+    db: AsyncSession = Depends(get_db),
+) -> list[dict[str, Any]]:
     stmt = select(Pipeline).order_by(Pipeline.pipeline_id, Pipeline.version)
     if domain_id:
         stmt = stmt.where(Pipeline.domain_id == domain_id)
+
     result = await db.execute(stmt)
-    return [pipeline_dict(pipeline) for pipeline in result.scalars().all()]
+    all_pipelines = result.scalars().all()
+
+    if not campaign_id:
+        return [pipeline_dict(p) for p in all_pipelines]
+
+    # Теги кампании
+    tag_stmt = select(Tag.id).where(Tag.campaign_id == uuid.UUID(campaign_id))
+    tag_result = await db.execute(tag_stmt)
+    campaign_tag_ids: set[uuid.UUID] = set(tag_result.scalars().all())
+
+    # PipelineLabel для всех пайплайнов из выборки
+    pipeline_ids = [p.id for p in all_pipelines]
+    if pipeline_ids:
+        pl_stmt = select(PipelineLabel).where(PipelineLabel.pipeline_uuid.in_(pipeline_ids))
+        pl_result = await db.execute(pl_stmt)
+        labels = pl_result.scalars().all()
+    else:
+        labels = []
+
+    # Группируем: pipeline_uuid → set of tag_ids
+    labeled: dict[uuid.UUID, set[uuid.UUID]] = {}
+    for lbl in labels:
+        labeled.setdefault(lbl.pipeline_uuid, set()).add(lbl.tag_id)
+
+    # Пайплайн видим если: нет labels (всегда видим) ИЛИ есть пересечение с тегами кампании
+    filtered = [
+        p for p in all_pipelines
+        if p.id not in labeled or (labeled[p.id] & campaign_tag_ids)
+    ]
+    return [pipeline_dict(p) for p in filtered]
 
 
 @router.post("/pipelines", status_code=status.HTTP_201_CREATED)

@@ -242,6 +242,9 @@ class Chat(Base):
     title: Mapped[str | None] = mapped_column(String(512), nullable=True)
     vault_id: Mapped[str | None] = mapped_column(String(64), ForeignKey("vaults.vault_id"), nullable=True)
     domain_id: Mapped[str | None] = mapped_column(String(32), ForeignKey("domains.domain_id"), nullable=True)
+    campaign_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("campaigns.id", ondelete="SET NULL"), nullable=True
+    )
     locked_pipeline_id: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
     pipeline_versions: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
