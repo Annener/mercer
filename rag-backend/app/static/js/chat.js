@@ -338,7 +338,8 @@ class ChatManager {
             this.worldName.textContent = chat.world_id ? `Мир: ${chat.world_id}` : '';
         }
         if (!this.pipelineSelect) return;
-        const pipelines = await chatAPI.getPipelines(chat.domain_id);
+        // Передаём campaign_id чтобы бэкенд фильтровал пайплайны по кампании [iter2]
+        const pipelines = await chatAPI.getPipelines(chat.domain_id, chat.campaign_id || null);
         this.pipelineSelect.innerHTML = '<option value="">Авто</option>';
         for (const pipeline of (pipelines || []).filter(p => p.is_active)) {
             const option = document.createElement('option');
@@ -346,9 +347,13 @@ class ChatManager {
             option.textContent = pipeline.name;
             this.pipelineSelect.appendChild(option);
         }
-        this.pipelineSelect.value = chat.locked_pipeline_id || '';
-        this.pipelineSelect.disabled = Boolean(chat.locked_pipeline_id);
-        if (this.lockPipelineBtn) this.lockPipelineBtn.textContent = chat.locked_pipeline_id ? '🔒' : '🔓';
+        // Если locked_pipeline_id больше не в текущем списке (смена кампании) — игнорируем
+        const lockedId = chat.locked_pipeline_id || '';
+        const lockedExists = !lockedId || Boolean(this.pipelineSelect.querySelector(`option[value="${lockedId}"]`));
+        const effectiveLocked = lockedExists ? lockedId : '';
+        this.pipelineSelect.value = effectiveLocked;
+        this.pipelineSelect.disabled = Boolean(effectiveLocked);
+        if (this.lockPipelineBtn) this.lockPipelineBtn.textContent = effectiveLocked ? '🔒' : '🔓';
     }
 
     async togglePipelineLock() {
