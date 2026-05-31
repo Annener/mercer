@@ -19,17 +19,16 @@
             <div class="sidebar-header">
                 <h2>MattMercer</h2>
                 <button id="settings-btn" class="btn btn-secondary btn-full btn-sidebar-secondary">Настройки платформы</button>
-                <button id="db-mgmt-btn" class="btn btn-secondary btn-full btn-sidebar-secondary">⚙️ Управление хранилищем</button>
+                <button id="db-mgmt-btn" class="btn btn-secondary btn-full btn-sidebar-secondary">🔍 Поиск по хранилищу</button>
                 <div class="domain-selector">
                     <label for="domain-select">Домен:</label>
                     <select id="domain-select" class="domain-select"></select>
                 </div>
-                <div class="world-selector" id="world-selector" style="display: none;">
-                    <label for="world-select">Мир:</label>
-                    <select id="world-select" class="domain-select">
-                        <option value="">Без мира</option>
+                <div class="campaign-selector" id="campaign-selector" style="display: none;">
+                    <label for="campaign-select">Кампания:</label>
+                    <select id="campaign-select" class="domain-select">
+                        <option value="">Без кампании</option>
                     </select>
-                    <div class="campaigns-list" id="campaigns-list"></div>
                 </div>
                 <button id="new-chat-btn" class="btn btn-primary btn-full">+ Новая беседа</button>
             </div>
@@ -42,7 +41,7 @@
                 <h3 id="chat-title">Выберите чат или создайте новый</h3>
             </div>
             <div class="chat-context-bar hidden" id="chat-context-bar">
-                <span class="context-world" id="context-world"><span id="world-name"></span></span>
+                <span class="context-campaign" id="context-campaign"><span id="campaign-name"></span></span>
                 <span class="context-pipeline">
                     Pipeline:
                     <select id="pipeline-select"><option value="">Авто</option></select>
@@ -75,7 +74,8 @@
             <button data-tab="emb-models">Embedding-модели</button>
             <button data-tab="params">Параметры</button>
             <button data-tab="pipelines">Pipelines</button>
-            <button data-tab="worlds">Миры</button>
+            <button data-tab="campaigns">Campaigns</button>
+            <button data-tab="documents">Documents</button>
         </div>
         <div id="settings-content" class="settings-content"></div>
     </main>
@@ -95,47 +95,16 @@
         </div>
     </div>
 
-    <!-- Модальное окно управления хранилищем -->
+    <!-- Модальное окно поиска по хранилищу -->
     <div class="modal modal-lg" id="db-mgmt-modal" style="display: none;">
         <div class="modal-content modal-content-lg">
             <div class="modal-header">
-                <h3>Хранилище</h3>
+                <h3>Поиск по хранилищу</h3>
                 <button id="db-mgmt-close-btn" class="btn-close" title="Закрыть">✕</button>
             </div>
 
-            <div class="tabs">
-                <button class="tab active" data-tab="manage">Управление</button>
-                <button class="tab" data-tab="search">Поиск</button>
-            </div>
-
-            <!-- Вкладка "Управление" -->
-            <div class="tab-content active" data-tab="manage">
-
-                <!-- Прогресс индексации -->
-                <div id="mgmt-progress-block" class="progress-block2" style="display: none;">
-                    <div class="progress-block2-top">
-                        <span id="mgmt-task-status" class="status-badge status-running">запуск</span>
-                        <span class="progress-block2-files">Файлов: <b><span id="mgmt-files-done">0</span></b> / <span id="mgmt-files-total">0</span></span>
-                        <span class="progress-block2-pct"><span id="mgmt-progress-pct">0</span>%</span>
-                        <button id="mgmt-cancel-btn" class="btn btn-sm btn-danger">Отменить</button>
-                    </div>
-                    <div class="overall-progress">
-                        <div class="overall-progress-bar" id="mgmt-overall-bar"></div>
-                    </div>
-                    <div id="mgmt-files-list" class="files-list2"></div>
-                </div>
-
-                <!-- Табы по доменам -->
-                <div id="mgmt-domain-tabs" class="domain-tabs"></div>
-
-                <!-- Список vault'ов -->
-                <div id="mgmt-vaults-container" class="vaults-container">
-                    <div class="empty-state">Загрузка...</div>
-                </div>
-            </div>
-
             <!-- Вкладка "Поиск" -->
-            <div class="tab-content" data-tab="search">
+            <div class="tab-content active" data-tab="search">
                 <div class="search-form2">
                     <select id="search-domain-select" class="search-domain-sel"></select>
                     <input type="text" id="search-query-input" placeholder="Введите текст..." class="search-query-inp">
@@ -183,7 +152,8 @@
     <script src="/static/js/settings/tab-emb-models.js"></script>
     <script src="/static/js/settings/tab-params.js"></script>
     <script src="/static/js/settings/tab-pipelines.js"></script>
-    <script src="/static/js/settings/tab-worlds.js"></script>
+    <script src="/static/js/settings/tab-campaigns.js"></script>
+    <script src="/static/js/settings/tab-documents.js"></script>
     <script src="/static/js/chat.js"></script>
     <script src="/static/js/sidebar.js"></script>
     <script src="/static/js/db_management.js"></script>
