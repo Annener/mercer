@@ -256,34 +256,6 @@ class VaultUpdate(BaseModel):
     chunk_count: int | None = None
 
 
-class WorldRead(ORMModel):
-    id: str
-    world_id: str
-    vault_id: str
-    name: str
-    description: str | None = None
-    path_prefix: str
-    is_active: bool = True
-    created_at: datetime | None = None
-    updated_at: datetime | None = None
-
-
-class WorldCreate(BaseModel):
-    world_id: str
-    vault_id: str
-    name: str
-    description: str | None = None
-    path_prefix: str
-    is_active: bool = True
-
-
-class WorldUpdate(BaseModel):
-    name: str | None = None
-    description: str | None = None
-    path_prefix: str | None = None
-    is_active: bool | None = None
-
-
 class CampaignRead(ORMModel):
     id: str
     campaign_id: str
@@ -610,9 +582,6 @@ __all__ = [
     "VaultCreate",
     "VaultRead",
     "VaultUpdate",
-    "WorldCreate",
-    "WorldRead",
-    "WorldUpdate",
     "WSFileStatusMessage",
     "WSFileChunkProgressMessage",
     "WSTaskCancelledMessage",

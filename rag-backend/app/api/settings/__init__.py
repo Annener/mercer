@@ -6,7 +6,6 @@ from .domains import router as domains_router
 from .gen_models import router as gen_models_router
 from .emb_models import router as emb_models_router
 from .vaults import router as vaults_router
-from .worlds import router as worlds_router
 from .pipelines import router as pipelines_router
 
 router = APIRouter()
@@ -17,5 +16,4 @@ router.include_router(domains_router)
 router.include_router(gen_models_router)
 router.include_router(emb_models_router)
 router.include_router(vaults_router)
-router.include_router(worlds_router)
 router.include_router(pipelines_router)
