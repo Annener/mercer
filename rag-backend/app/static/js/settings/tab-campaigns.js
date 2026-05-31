@@ -1,14 +1,17 @@
 const CampaignsTabMixin = {
     async renderCampaignsTab() {
-        const vaultId = this._activeVaultId || null;
+        // Используем domain_id (итер 2+): кампании принадлежат домену, не Vaultу
+        const domainId = this._activeDomainId || null;
         let campaigns = [];
         try {
-            const resp = await this.api.getCampaigns(vaultId);
+            const resp = await this.api.getCampaigns(domainId);
             campaigns = Array.isArray(resp) ? resp : (resp.campaigns || []);
         } catch (e) { /* ignore */ }
 
+        const domainLabel = domainId ? `<span style="color:var(--color-text-faint);font-size:var(--text-xs);margin-left:var(--space-2);">домен: ${this.escapeHtml(domainId)}</span>` : '';
         const toolbar = `<div class="settings-toolbar">
             <button class="btn btn-primary" data-action="new-campaign">+ Новая кампания</button>
+            ${domainLabel}
         </div>`;
         if (!campaigns.length) return toolbar + '<div class="empty-state">Кампаний нет. Создайте первую.</div>';
 
@@ -33,7 +36,7 @@ const CampaignsTabMixin = {
         let campaign = { name: '', description: '', system_prompt: '' };
         let campaignTags = [];
         let globalTags = [];
-        const vaultId = this._activeVaultId || null;
+        const domainId = this._activeDomainId || null;
 
         if (isEdit) {
             try {
@@ -41,9 +44,10 @@ const CampaignsTabMixin = {
                 campaignTags = campaign.tags || [];
             } catch (e) { alert('Ошибка загрузки кампании: ' + e.message); return; }
         }
-        if (vaultId) {
+        // Загружаем глобальные теги домена (через domain_id)
+        if (domainId) {
             try {
-                const tagsResp = await this.api.getTags(vaultId);
+                const tagsResp = await this.api.getTags(domainId);
                 const grouped = Array.isArray(tagsResp) ? { global_tags: tagsResp, by_campaign: {} } : (tagsResp || {});
                 globalTags = Array.isArray(grouped.global_tags) ? grouped.global_tags : [];
             } catch (e) { /* ignore */ }
@@ -147,11 +151,12 @@ const CampaignsTabMixin = {
                 if (isEdit) {
                     await this.api.updateCampaign(campaignId, data);
                 } else {
-                    if (!this._activeVaultId) {
-                        alert('Vault не выбран. Сначала добавьте или активируйте Vault в настройках.');
+                    // Используем domain_id (итер 2+): кампания принадлежит домену
+                    if (!domainId) {
+                        alert('Домен не определён. Создайте домен во вкладке «Домены».');
                         return;
                     }
-                    data.vault_id = this._activeVaultId;
+                    data.domain_id = domainId;
                     await this.api.createCampaign(data);
                 }
                 overlay.remove();
