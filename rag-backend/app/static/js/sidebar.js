@@ -17,7 +17,7 @@ class SidebarManager {
         this.domains = [];
         this.domainCache = {};
         this.currentDomain = localStorage.getItem('currentDomain') || null;
-        this.currentVaultId = null;
+        // currentVaultId удалён — привязка через domain_id [iter2]
         this.currentCampaignId = localStorage.getItem('currentCampaignId') || '';
 
         this.initEventListeners();
@@ -123,6 +123,9 @@ class SidebarManager {
         if (domainId === this.currentDomain) return;
         this.currentDomain = domainId;
         localStorage.setItem('currentDomain', domainId);
+        // Сбрасываем кампанию при смене домена
+        this.currentCampaignId = '';
+        localStorage.setItem('currentCampaignId', '');
         if (window.chatManager) window.chatManager.reset();
         this.closeAllDropdowns();
         await this.loadChats();
@@ -225,8 +228,8 @@ class SidebarManager {
             return;
         }
         try {
+            // vault_id удалён — createChat принимает (domainId, campaignId) [iter2]
             const response = await chatAPI.createChat(
-                this.currentVaultId || null,
                 this.currentDomain,
                 this.currentCampaignId || null
             );
@@ -243,20 +246,14 @@ class SidebarManager {
         const select = this.campaignSelect;
         if (!block || !select) return;
 
+        if (!this.currentDomain) {
+            block.style.display = 'none';
+            return;
+        }
+
         try {
-            const vaults = await chatAPI.getSettingsVaults();
-            const vaultArr = Array.isArray(vaults) ? vaults : [];
-            const vault = vaultArr.find(v => v.domain_id === this.currentDomain && v.enabled);
-
-            if (!vault) {
-                this.currentVaultId = null;
-                block.style.display = 'none';
-                return;
-            }
-
-            this.currentVaultId = vault.vault_id;
-
-            const campaigns = await chatAPI.getCampaigns(vault.vault_id);
+            // Прямой запрос по domain_id — vault больше не нужен [iter2]
+            const campaigns = await chatAPI.getCampaigns(this.currentDomain);
             const campArr = Array.isArray(campaigns) ? campaigns : (campaigns.campaigns || []);
 
             if (!campArr.length) {
@@ -264,8 +261,8 @@ class SidebarManager {
                 return;
             }
 
-            // Сохраняем опцию «без кампании» из HTML, очищаем остальные
-            select.innerHTML = '<option value="">— без кампании —</option>';
+            // Опция «общий режим» — чат без привязки к кампании
+            select.innerHTML = '<option value="">— общий режим —</option>';
             for (const c of campArr) {
                 const opt = document.createElement('option');
                 opt.value = String(c.id);
