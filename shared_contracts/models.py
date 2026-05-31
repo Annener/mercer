@@ -384,99 +384,126 @@ class PipelineCreate(BaseModel):
     description: str | None = None
     steps: list[PipelineStep]
     final_composition: FinalComposition
-    is_active: bool = True
 
 
-class PipelineUpdate(PipelineCreate):
-    pass
+class PipelineUpdate(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    steps: list[PipelineStep] | None = None
+    final_composition: FinalComposition | None = None
+    is_active: bool | None = None
 
 
-class ClarificationState(BaseModel):
-    stage: Literal["idle", "collecting", "complete", "fallback"] = "idle"
-    missing_fields: list[str] = Field(default_factory=list)
-    collected: dict[str, Any] = Field(default_factory=dict)
-    turn: int = 0
-    next_question: str | None = None
+class RetrievalContext(BaseModel):
+    """Контекст выполнения пайплайна. vault_id оставлен для back-compat (TODO: удалить в iter4-cleanup)."""
+    query: str
+    vault_ids: list[str] = Field(default_factory=list)  # все enabled-Vault домена
+    vault_id: str | None = None  # deprecated back-compat; используй vault_ids
+    domain_id: str | None = None
+    campaign_id: str | None = None
+    tag_ids: list[str] = Field(default_factory=list)
+    top_k: int = 5
+    metadata_filter: dict[str, Any] | None = None
+
+
+class RetrievalResult(BaseModel):
+    chunk_id: str
+    document_id: str
+    vault_id: str | None = None
+    text: str
+    score: float
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class ChatMessage(BaseModel):
     message_id: str
-    chat_id: str
     role: Literal["user", "assistant", "system"]
     content: str
     created_at: datetime
-    metadata: dict[str, Any] = Field(default_factory=dict)
+    pipeline_id: str | None = None
 
 
-class ChatRecord(BaseModel):
-    chat_id: str
-    title: str = "New Chat"
+class ChatRecord(ORMModel):
+    id: str
+    title: str
     vault_id: str | None = None   # TODO(iter4-cleanup): удалить после полного перехода фронта на domain_id
     domain_id: str | None = None
-    locked_pipeline_id: str | None = None
+    campaign_id: str | None = None
     created_at: datetime
     updated_at: datetime
-    pipeline_versions: dict[str, Any] = Field(default_factory=dict)
 
 
-class PipelineContext(BaseModel):
-    """Контекст выполнения пайплайна. vault_id оставлен для back-compat (TODO: удалить в iter4-cleanup)."""
-    query: str
+class AuditLogRead(ORMModel):
+    id: str
+    action: str
+    entity_type: str | None = None
+    entity_id: str | None = None
+    actor: str | None = None
+    payload: dict[str, Any] | None = None
+    created_at: datetime
+
+
+class VaultConfigEntry(BaseModel):
+    vault_id: str
     domain_id: str
-    vault_ids: list[str] = Field(default_factory=list)  # все enabled-Vault домена
-    vault_id: str | None = None  # deprecated back-compat; используй vault_ids
-    context_chunks: list[ChunkRecord] = Field(default_factory=list)
-    clarification_collected: dict[str, Any] = Field(default_factory=dict)
-    chat_history: list[ChatMessage] = Field(default_factory=list)
-    metadata: dict[str, Any] = Field(default_factory=dict)
+    enabled: bool = True
+    embedding_model_id: str | None = None
+    expected_dimensions: int | None = None
+    chunk_size: int | None = None
+    overlap: int | None = None
+    entity_aware_mode: bool | None = None
+    binding_status: str = "unbound"
+    chunk_count: int = 0
 
 
-class PipelineResult(BaseModel):
-    content: str
-    confidence: float | None = None
-    sources: list[str] = Field(default_factory=list)
-    metadata: dict[str, Any] = Field(default_factory=dict)
+class VaultConfig(BaseModel):
+    vaults: dict[str, VaultConfigEntry] = Field(default_factory=dict)
 
 
-class PipelineInvocation(BaseModel):
-    pipeline_id: str
-    domain: str
-    priority: int = 0
-
-
-class PlannerDecision(BaseModel):
-    retrieval_strategy: Literal["semantic", "keyword", "hybrid", "none"] = "semantic"
-    clarification_needed: bool = False
-    pipeline_invocations: list[PipelineInvocation] = Field(default_factory=list)
-    reasoning: str | None = None
-
-
-class StartIndexTaskRequest(BaseModel):
+class EmbeddingRequest(BaseModel):
     vault_id: str
-    force_reindex: bool = False
+    texts: list[str]
+    model_id: str | None = None
 
 
-class StartIndexTaskResponse(BaseModel):
+class EmbeddingResponse(BaseModel):
+    vault_id: str
+    embeddings: list[list[float]]
+    model_id: str
+
+
+class IndexRequest(BaseModel):
+    vault_id: str
+    force: bool = False
+
+
+class IndexResponse(BaseModel):
+    vault_id: str
     task_id: str
-    vault_id: str
-    status: Literal["queued", "running"]
+    status: str
 
 
-class TaskStateResponse(BaseModel):
-    task_id: str
+class IndexStatusResponse(BaseModel):
     vault_id: str
-    status: Literal["running", "done", "error", "cancelled"]
-    state: IndexState
+    task_id: str | None
+    status: str
+    progress_pct: int = 0
+    chunks_total: int = 0
+    chunks_processed: int = 0
+    error: str | None = None
+    files: dict[str, FileIndexState] = Field(default_factory=dict)
 
 
 class CreateChatRequest(BaseModel):
     """
     domain_id — основной идентификатор контекста чата.
     vault_id оставлен nullable для back-compat (старые клиенты).
+    campaign_id — опциональная привязка к кампании (iter2).
     TODO(iter4-cleanup): сделать domain_id обязательным, убрать vault_id.
     """
     domain_id: str | None = None
     vault_id: str | None = None  # deprecated back-compat
+    campaign_id: str | None = None
 
 
 class CreateChatResponse(BaseModel):
@@ -493,169 +520,43 @@ class ClarificationResponse(BaseModel):
     message_id: str
     role: Literal["assistant"] = "assistant"
     content: str
-    state: ClarificationState
+    clarification_id: str | None = None
+    stage: str | None = None
 
 
-class UpsertChunk(BaseModel):
-    document_id: str
-    chunk_index: int
-    text: str
-    vector: list[float]
+class ClarificationAnswer(BaseModel):
+    clarification_id: str
+    answers: dict[str, str]
+
+
+class PipelineExecutionContext(BaseModel):
+    """Полный контекст для запуска пайплайна."""
+    chat_id: str
+    message_id: str
+    query: str
+    domain_id: str | None = None
+    campaign_id: str | None = None
+    vault_ids: list[str] = Field(default_factory=list)
+    vault_id: str | None = None  # deprecated back-compat; используй vault_ids
+    pipeline_id: str
+    pipeline_version: str
+    steps: list[PipelineStep]
+    final_composition: FinalComposition
+    history: list[ChatMessage] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
-class UpsertRequest(BaseModel):
-    vault_id: str
-    chunks: list[UpsertChunk]
-
-
-class UpsertResponse(BaseModel):
-    status: Literal["ok", "partial"]
-    upserted_count: int
-    failed_indices: list[int] = Field(default_factory=list)
-    error_details: list[str] = Field(default_factory=list)
-
-
-class SearchRequest(BaseModel):
-    vault_id: str
-    vector: list[float]
-    top_k: int = 10
-    filter: dict[str, Any] | None = None
-    score_threshold: float | None = None
-
-
-class SearchHit(BaseModel):
-    chunk_id: str
-    document_id: str
-    text: str
-    metadata: dict[str, Any] = Field(default_factory=dict)
-    score: float
-
-
-class SearchResponse(BaseModel):
-    results: list[SearchHit] = Field(default_factory=list)
-
-
-class ErrorResponse(BaseModel):
-    code: str
-    message: str
-    details: dict[str, Any] = Field(default_factory=dict)
-    retryable: bool = False
-    trace_id: str | None = None
-
-
-class WSFileStatusMessage(BaseModel):
-    """
-    Deprecated (V2.1): оставлено для back-compat.
-    Используйте WSFileChunkProgressMessage для нового UI.
-    """
-    type: Literal["file_status"] = "file_status"
-    task_id: str
-    file_path: str
-    status: Literal["parsing", "chunking", "embedding", "indexed", "error", "done", "cancelled", "pending", "indexing", "empty"]
-    progress_pct: int = Field(default=0, ge=0, le=100)
+class PipelineStepResult(BaseModel):
+    step_order: int
+    step_name: str
+    retrieval_results: list[RetrievalResult] = Field(default_factory=list)
+    llm_output: str | None = None
     error: str | None = None
 
 
-class WSFileChunkProgressMessage(BaseModel):
-    """
-    V3.0: прогресс индексации файла по чанкам (chunks_processed / chunks_total).
-    Стадии: parsing → chunking → indexing → done | error
-    """
-    type: Literal["file_chunk_progress"] = "file_chunk_progress"
-    task_id: str
-    file_path: str
-    stage: Literal["parsing", "chunking", "indexing", "done", "error", "pending", "cancelled", "empty"]
-    chunks_total: int = 0
-    chunks_processed: int = 0
+class PipelineResult(BaseModel):
+    pipeline_id: str
+    pipeline_version: str
+    steps: list[PipelineStepResult] = Field(default_factory=list)
+    final_answer: str
     error: str | None = None
-
-
-class WSTaskCompleteMessage(BaseModel):
-    type: Literal["task_complete"] = "task_complete"
-    task_id: str
-    status: Literal["done"] = "done"
-    files_total: int
-    files_indexed: int
-
-
-class WSTaskCancelledMessage(BaseModel):
-    type: Literal["task_cancelled"] = "task_cancelled"
-    task_id: str
-    status: Literal["cancelled"] = "cancelled"
-
-
-type TaskStreamEvent = (
-    WSFileStatusMessage
-    | WSFileChunkProgressMessage
-    | WSTaskCompleteMessage
-    | WSTaskCancelledMessage
-)
-
-
-__all__ = [
-    "CampaignCreate",
-    "CampaignRead",
-    "CampaignUpdate",
-    "ChatMessage",
-    "ChatRecord",
-    "ChunkRecord",
-    "ClarificationResponse",
-    "ClarificationState",
-    "CreateChatRequest",
-    "CreateChatResponse",
-    "DocumentLabelWrite",
-    "DocumentRead",
-    "DocumentRecord",
-    "DomainClarificationFieldCreate",
-    "DomainClarificationFieldRead",
-    "DomainCreate",
-    "DomainPromptRead",
-    "DomainPromptUpdate",
-    "DomainRead",
-    "DomainUpdate",
-    "EmbeddingModelCreate",
-    "EmbeddingModelRead",
-    "EmbeddingModelUpdate",
-    "EntityRecord",
-    "ErrorResponse",
-    "FileIndexState",
-    "FinalComposition",
-    "GenerationModelCreate",
-    "GenerationModelRead",
-    "GenerationModelUpdate",
-    "IndexState",
-    "PipelineCreate",
-    "PipelineContext",
-    "PipelineInvocation",
-    "PipelineRead",
-    "PipelineResult",
-    "PipelineStep",
-    "PipelineUpdate",
-    "PlatformSettingRead",
-    "PlatformSettingUpdate",
-    "PlannerDecision",
-    "SearchHit",
-    "SearchRequest",
-    "SearchResponse",
-    "SendMessageRequest",
-    "StartIndexTaskRequest",
-    "StartIndexTaskResponse",
-    "TagCreate",
-    "TagRead",
-    "TagUpdate",
-    "TagsGrouped",
-    "TaskStateResponse",
-    "TaskStreamEvent",
-    "UpsertChunk",
-    "UpsertRequest",
-    "UpsertResponse",
-    "VaultBinding",
-    "VaultCreate",
-    "VaultRead",
-    "VaultUpdate",
-    "WSFileStatusMessage",
-    "WSFileChunkProgressMessage",
-    "WSTaskCancelledMessage",
-    "WSTaskCompleteMessage",
-]
