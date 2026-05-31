@@ -19,6 +19,27 @@ logger = logging.getLogger(__name__)
 STORAGE_API_URL = os.getenv("STORAGE_API_URL", "http://db-api-server:8080")
 
 
+async def delete_document_chunks(document_id: str, vault_id: str) -> None:
+    """
+    Удаляет чанки документа из LanceDB через storage API.
+    Физический файл НЕ удаляется.
+    """
+    try:
+        async with httpx.AsyncClient(base_url=STORAGE_API_URL, timeout=15) as client:
+            response = await client.delete(
+                f"/index/documents/{document_id}",
+                params={"vault_id": vault_id},
+            )
+            if response.status_code not in (200, 204, 404):
+                response.raise_for_status()
+    except Exception:
+        logger.warning(
+            "Failed to delete chunks for document_id=%s vault_id=%s",
+            document_id, vault_id,
+            exc_info=True,
+        )
+
+
 async def get_allowed_tag_ids(
     vault_id: str,
     campaign_id: str | None,
