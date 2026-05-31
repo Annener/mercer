@@ -560,3 +560,47 @@ class PipelineResult(BaseModel):
     steps: list[PipelineStepResult] = Field(default_factory=list)
     final_answer: str
     error: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# LanceDB / db-api-server contracts
+# ---------------------------------------------------------------------------
+
+class UpsertChunk(BaseModel):
+    """\u041e\u0434\u0438\u043d \u0447\u0430\u043d\u043a \u0434\u043b\u044f \u0437\u0430\u043f\u0438\u0441\u0438 \u0432 LanceDB."""
+    document_id: str
+    chunk_index: int
+    text: str
+    vector: list[float]
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class UpsertRequest(BaseModel):
+    vault_id: str
+    chunks: list[UpsertChunk]
+
+
+class UpsertResponse(BaseModel):
+    status: Literal["ok", "partial"]
+    upserted_count: int = 0
+    failed_indices: list[int] = Field(default_factory=list)
+
+
+class SearchHit(BaseModel):
+    chunk_id: str
+    document_id: str
+    text: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    score: float
+
+
+class SearchRequest(BaseModel):
+    vault_id: str
+    vector: list[float]
+    top_k: int = Field(default=10, ge=1, le=200)
+    score_threshold: float | None = None
+    filter: dict[str, Any] | None = None
+
+
+class SearchResponse(BaseModel):
+    results: list[SearchHit] = Field(default_factory=list)
