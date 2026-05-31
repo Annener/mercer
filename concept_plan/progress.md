@@ -5,8 +5,8 @@
 | # | Название | Статус | Коммит |
 |---|---|---|---|
 | 1 | Миграция схемы БД (models.py + Alembic) | ✅ Готово | [42089da](https://github.com/Annener/mercer/commit/42089daa5c7b8fa7489d1392baa169a902145ab5) / [4224c01](https://github.com/Annener/mercer/commit/4224c0182f492ffa43f044bdb2f55306ea2c8db2) |
-| 2 | Retrieval: multi-vault + domain_id | 🔜 Ожидает | — |
-| 3 | Pipeline router + executor | 🔜 Ожидает | — |
+| 2 | Retrieval: multi-vault + domain_id | ✅ Готово | [d08a45f](https://github.com/Annener/mercer/commit/d08a45fd674b148d452d107e5de9447072695c1c) / [d5f0e22](https://github.com/Annener/mercer/commit/d5f0e220ae16874e588ea1c597a40ad93b52852c) |
+| 3 | Pipeline executor: domain_id + multi-vault | ✅ Готово | [effd91a](https://github.com/Annener/mercer/commit/effd91a6eff08d1a71f2648082290af0c294357e) |
 | 4 | API-контракты, CreateChatRequest, shared_contracts | 🔜 Ожидает | — |
 | 5 | Интеграционная проверка | 🔜 Ожидает | — |
 
@@ -35,36 +35,48 @@
 
 ### Важно
 
-В `0005_iter1_domain_schema.py` есть `server_default="default"` для `domain_id` в `tags` и `campaigns` — это временный дефолт для существующих строк. С чистой БД его не будет. Перед применением на боевой БД — нужно ручно сделать data-миграцию для существующих данных.
+В `0005_iter1_domain_schema.py` есть `server_default="default"` для `domain_id` в `tags` и `campaigns` — это временный дефолт для существующих строк. Перед применением на боевой БД — нужна ручная data-миграция.
 
 ---
 
-## 🔜 Итерация 2 — Retrieval: multi-vault + domain_id
+## ✅ Итерация 2 — Retrieval: multi-vault + domain_id
 
-**Цель:** перевести retrieval-слой с single-vault на multi-vault, привязка к domain_id.
+**Статус:** завершено
 
-### Планируемые изменения
+### Что сделано
 
-- [ ] `chat_context` в `chat.py`: `vault_id` → `vault_ids: list[str]`
-- [ ] `pipeline_executor._retrieve_for_step`: `retrieve(vault_id=...)` → `retrieve_multi_vault(vault_ids=...)`
-- [ ] `get_allowed_tag_ids(vault_id, ...)` → `get_allowed_tag_ids(domain_id, ...)`
-- [ ] `get_document_ids_by_tags(...)` → работает через domain_id
-- [ ] Инвариант пустого контекста: `allowed == []` → `document_ids = []` (не `None`)
+- [x] `get_allowed_tag_ids(vault_id, ...)` → `get_allowed_tag_ids(domain_id, ...)` — фильтрует теги по `Tag.domain_id`
+- [x] `get_document_ids_by_tags(tag_ids, vault_id, ...)` → `get_document_ids_by_tags(tag_ids, domain_id, ...)` — JOIN с `Vault` таблицей, ищет документы по всем enabled-Vault домена
+- [x] `retrieve_multi_vault`: добавлен guard `document_ids=[]` → `return []` без запросов к LanceDB
+- [x] `chat.py`: `chat_context["vault_ids"]` — список всех enabled-Vault домена
+- [x] `chat.py`: инвариант «кампания без тегов → `document_ids=[]`» (не расширяется на весь домен)
+- [x] `_generate_answer`: если `chat.vault_id` задан → `retrieve`, иначе → `retrieve_multi_vault` по всем vault'ам домена
+- [x] `_domain_id_for_chat` вынесена как async-метод с vault-fallback + TODO(iter4)
+
+### Изменённые файлы
+
+- `rag-backend/app/services/retrieval.py`
+- `rag-backend/app/api/chat.py`
 
 ---
 
-## 🔜 Итерация 3 — Pipeline router + executor
+## ✅ Итерация 3 — Pipeline executor: domain_id + multi-vault
 
-**Цель:** жёсткая фильтрация пайплайнов по режиму/кампании, правильная структура шагов.
+**Статус:** завершено
 
-### Планируемые изменения
+### Что сделано
 
-- [ ] `pipeline_router.decide`: предфильтрация по `campaign_id` и режиму чата
-- [ ] `pipeline_router.decide`: проверка совместимости `locked_pipeline_id` с режимом
-- [ ] `pipeline_executor`: шаги используют `tag_id` (один), не `tag_ids`
-- [ ] `pipeline_executor._run_step`: передавать `history` в LLM
-- [ ] `pipeline_executor.run`: добавить SSE `step_started`, `step_skipped_no_docs`, `final_started`
-- [ ] `chat.py`: удалить функцию `_run_pipelines` (заглушка)
+- [x] `_retrieve_for_step`: `vault_id` → `domain_id` для вызовов `get_allowed_tag_ids` и `get_document_ids_by_tags`
+- [x] `_retrieve_for_step`: читает `vault_ids: list[str]` из `chat_context` (вместо `vault_id`)
+- [x] Обратная совместимость: если `vault_ids` нет, fallback на `chat_context["vault_id"]` (переходный период)
+- [x] Логика выбора: `len(vault_ids)==1` → `retrieve(...)`, `>1` → `retrieve_multi_vault(...)`
+- [x] Guard: нет `domain_id` при наличии `step.tag_ids` → warning + `return []`
+- [x] Guard: нет `vault_ids` → warning + `return []`
+- [x] Подробное логирование: `domain_id`, `vault_ids` в каждом `Pipeline retrieval start`
+
+### Изменённые файлы
+
+- `rag-backend/app/services/pipeline_executor.py`
 
 ---
 
