@@ -43,6 +43,10 @@ const PipelineBuilder = (() => {
 
   // ─── data loading ───────────────────────────────────────────────────────────────────────────
 
+  // BUG 3 FIX: принимаем domainId явно и используем его для getTags(),
+  //            vault_id больше не передаётся в getTags.
+  // BUG 4 FIX: бэкенд возвращает TagsGrouped { global_tags, by_campaign },
+  //            а не массив и не { tags: [] } — распаковываем корректно.
   async function _loadReferences(domainId = null, campaignId = null) {
     try {
       const resp = await _api.getDomains();
@@ -54,14 +58,28 @@ const PipelineBuilder = (() => {
       _vaults = Array.isArray(v) ? v : [];
     } catch (e) { _vaults = []; }
 
-    // Загрузить теги
+    // Загрузить теги по domainId (приоритет), либо взять у первого vault
     _tags = [];
-    const activeVault = _vaults.find(v => v.is_active) || _vaults[0];
-    if (activeVault) {
+    // Определяем domainId: явный параметр → домен из первого vault → null
+    const effectiveDomainId = domainId
+      || (_vaults.find(v => v.is_active) || _vaults[0])?.domain_id
+      || null;
+
+    if (effectiveDomainId) {
       try {
-        const vaultId = activeVault.vault_id || activeVault.id;
-        const tagsResp = await _api.getTags(vaultId, campaignId || null);
-        _tags = Array.isArray(tagsResp) ? tagsResp : (tagsResp.tags || []);
+        // BUG 3: передаём domain_id, а не vault_id
+        const tagsResp = await _api.getTags(effectiveDomainId, campaignId || null);
+        // BUG 4: бэкенд возвращает TagsGrouped { global_tags: [], by_campaign: {} }
+        if (Array.isArray(tagsResp)) {
+          _tags = tagsResp;
+        } else if (tagsResp && (tagsResp.global_tags || tagsResp.by_campaign)) {
+          _tags = [
+            ...(tagsResp.global_tags || []),
+            ...Object.values(tagsResp.by_campaign || {}).flat(),
+          ];
+        } else {
+          _tags = tagsResp?.tags || [];
+        }
       } catch (e) { _tags = []; }
     }
   }
@@ -151,6 +169,16 @@ const PipelineBuilder = (() => {
     q('#pb-cancel-btn')?.addEventListener('click', _close);
     q('#pb-save-btn')?.addEventListener('click', _save);
     q('#pb-add-step-btn')?.addEventListener('click', _addStep);
+
+    // BUG 7 FIX: при смене домена перезагружаем теги и перерисовываем шаги
+    q('#pb-domain')?.addEventListener('change', async (e) => {
+      const newDomainId = e.target.value || null;
+      if (newDomainId) {
+        _syncAllSteps();
+        await _loadReferences(newDomainId);
+        _renderStepsList();
+      }
+    });
   }
 
   // ─── steps ──────────────────────────────────────────────────────────────────────────────────
@@ -221,8 +249,9 @@ const PipelineBuilder = (() => {
   }
 
   function _stepTypeFieldsHTML(step, idx) {
-    // Только retrieval-шаги имеют мультиселект тегов
-    if (step.type === 'retrieval') {
+    // Только retrieval-шаги без is_final имеют мультиселект тегов.
+    // BUG 5 FIX: финальный шаг (is_final=true) не должен иметь tag_ids — бэкенд вернёт 422.
+    if (step.type === 'retrieval' && !step.is_final) {
       const tagOptions = _tags.map(t =>
         `<option value="${_esc(String(t.id))}" ${(step.tag_ids || []).map(String).includes(String(t.id)) ? 'selected' : ''}>${_esc(t.name)}</option>`
       ).join('');
@@ -252,6 +281,20 @@ const PipelineBuilder = (() => {
       });
     });
 
+    // BUG 5 FIX: при переключении is_final сбрасываем tag_ids и перерисовываем шаг,
+    //            чтобы мультиселект тегов скрылся/появился.
+    container.querySelectorAll('.pb-step-is-final').forEach(chk => {
+      chk.addEventListener('change', e => {
+        const idx = parseInt(e.target.dataset.idx);
+        _syncStepFromDOM(idx);
+        if (_steps[idx].is_final) {
+          // финальный шаг не может иметь tag_ids
+          _steps[idx].tag_ids = undefined;
+        }
+        _renderStepsList();
+      });
+    });
+
     container.querySelectorAll('[data-action]').forEach(btn => {
       const action = btn.dataset.action;
       const idx = parseInt(btn.dataset.idx);
@@ -275,7 +318,8 @@ const PipelineBuilder = (() => {
     step.is_final      = get('.pb-step-is-final')?.checked     || false;
     const topk = parseInt(get('.pb-step-topk')?.value);
     step.top_k = isNaN(topk) ? undefined : topk;
-    if (step.type === 'retrieval') {
+    // BUG 5 FIX: tag_ids только для retrieval-шагов без is_final
+    if (step.type === 'retrieval' && !step.is_final) {
       const tagSel = get('.pb-step-tag-ids');
       step.tag_ids = tagSel ? Array.from(tagSel.selectedOptions).map(o => o.value) : [];
     } else {
@@ -311,9 +355,10 @@ const PipelineBuilder = (() => {
     if (!finalPrompt)   return _showError('Заполните system prompt финальной композиции');
     if (!_steps.length) return _showError('Добавьте хотя бы один шаг');
 
-    // Проверка: только один is_final
+    // BUG 2 FIX: бэкенд требует exactly one is_final=true. Проверяем оба случая на фронте.
     const finalSteps = _steps.filter(s => s.is_final);
-    if (finalSteps.length > 1) return _showError('Только один шаг может быть отмечен как is_final');
+    if (finalSteps.length === 0) return _showError('Отметьте ровно один шаг как is_final');
+    if (finalSteps.length > 1)   return _showError('Только один шаг может быть отмечен как is_final');
 
     for (let i = 0; i < _steps.length; i++) {
       const s = _steps[i];
