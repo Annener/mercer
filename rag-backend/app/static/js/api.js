@@ -5,11 +5,12 @@ class ChatAPI {
     }
 
     // === Chat API ===
-    async createChat(vaultId = null, domainId = null, campaignId = null) {
+    async createChat(domainId = null, campaignId = null) {
+        // vault_id больше не передаётся — привязка перешла на domain_id
         const response = await fetch(`${this.baseUrl}/chat/create`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ vault_id: vaultId, domain_id: domainId, campaign_id: campaignId }),
+            body: JSON.stringify({ domain_id: domainId, campaign_id: campaignId }),
         });
         if (!response.ok) throw new Error(`Failed to create chat: ${response.statusText}`);
         return response.json();
@@ -197,7 +198,15 @@ class ChatAPI {
     async toggleVault(id) { return this._request(`/api/settings/vaults/${encodeURIComponent(id)}/toggle`, { method: 'POST' }); }
 
     // === Tags API ===
-    async getTags(vaultId, campaignId = null) {
+    // Приоритет: domain_id. vault_id оставлен для обратной совместимости (например, settings.js ещё может слать vault_id).
+    async getTags(domainId, campaignId = null) {
+        const url = new URL(`${this.baseUrl}/api/settings/tags`, window.location.origin);
+        url.searchParams.set('domain_id', domainId);
+        if (campaignId) url.searchParams.set('campaign_id', campaignId);
+        return this._request(url.pathname + url.search);
+    }
+    // Старый метод через vault — оставлен для кода, который ещё не перешёл на domain_id
+    async getTagsByVault(vaultId, campaignId = null) {
         const url = new URL(`${this.baseUrl}/api/settings/tags`, window.location.origin);
         url.searchParams.set('vault_id', vaultId);
         if (campaignId) url.searchParams.set('campaign_id', campaignId);
@@ -212,9 +221,10 @@ class ChatAPI {
     }
 
     // === Campaigns API ===
-    async getCampaigns(vaultId = null) {
+    // getCampaigns(домен): приоритет domain_id. vault_id удалён.
+    async getCampaigns(domainId = null) {
         const url = new URL(`${this.baseUrl}/api/settings/campaigns`, window.location.origin);
-        if (vaultId) url.searchParams.set('vault_id', vaultId);
+        if (domainId) url.searchParams.set('domain_id', domainId);
         return this._request(url.pathname + url.search);
     }
     async getCampaign(id) { return this._request(`/api/settings/campaigns/${encodeURIComponent(id)}`); }
@@ -246,9 +256,11 @@ class ChatAPI {
     }
 
     // === Pipelines API ===
-    async getPipelines(domainId = null) {
+    // getPipelines(домен, кампания): бэкенд фильтрует пайплайны по тегам кампании если campaign_id задан
+    async getPipelines(domainId = null, campaignId = null) {
         const url = new URL(`${this.baseUrl}/api/settings/pipelines`, window.location.origin);
         if (domainId) url.searchParams.set('domain_id', domainId);
+        if (campaignId) url.searchParams.set('campaign_id', campaignId);
         return this._request(url.pathname + url.search);
     }
 
