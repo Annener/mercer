@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, AsyncIterator
 from datetime import datetime
 from typing import Any
 import logging
+import uuid
 
 from fastapi import Request
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,7 +22,7 @@ from app.services.retrieval import (
     get_document_ids_by_tags,
 )
 from app.services.settings_service import settings_service
-from shared_contracts.models import PipelineRead, PipelineStep, SearchHit
+from shared_contracts.models import PipelineExecutionContext, PipelineRead, PipelineStep, SearchHit
 
 logger = logging.getLogger(__name__)
 
@@ -29,8 +30,77 @@ logger = logging.getLogger(__name__)
 _SKIPPED = object()
 
 
+class _ExecutionResult:
+    """Result of a non-streaming pipeline execution."""
+    __slots__ = ("final_answer", "sources")
+
+    def __init__(self, final_answer: str, sources: list[dict[str, Any]]) -> None:
+        self.final_answer = final_answer
+        self.sources = sources
+
+
 class PipelineExecutor:
-    async def run(self, pipeline, query, chat_context, db, request=None):
+    """Executes a pipeline against a PipelineExecutionContext.
+
+    Public API:
+        run(context)         -> _ExecutionResult          # non-streaming, used by /send
+        run_stream(context)  -> AsyncIterator[dict]       # SSE chunks, used by /send_stream
+    """
+
+    # ------------------------------------------------------------------
+    # Non-streaming entry point  (used by chat.py /send)
+    # ------------------------------------------------------------------
+
+    async def run(self, context: PipelineExecutionContext) -> _ExecutionResult:
+        """Execute pipeline and return the final answer as a string.
+
+        Collects all SSE chunks internally; does NOT stream to client.
+        """
+        if context.db is None:  # type: ignore[attr-defined]
+            raise ValueError("context.db must be set before calling PipelineExecutor.run()")
+        db: AsyncSession = context.db  # type: ignore[attr-defined]
+        pipeline = _pipeline_from_context(context)
+        final_answer = ""
+        sources: list[dict[str, Any]] = []
+        async for chunk in self._execute(pipeline, context.query, _ctx_dict(context), db, request=None):
+            if chunk.get("type") == "token":
+                final_answer += chunk.get("content", "")
+            elif chunk.get("type") == "sources":
+                for group in chunk.get("step_groups", []):
+                    sources.extend(group.get("sources", []))
+            elif chunk.get("type") == "error":
+                logger.error("Pipeline run() got error chunk: %s", chunk.get("message"))
+                raise RuntimeError(chunk.get("message", "Pipeline execution error"))
+        return _ExecutionResult(final_answer=final_answer, sources=sources)
+
+    # ------------------------------------------------------------------
+    # Streaming entry point  (used by chat.py /send_stream)
+    # ------------------------------------------------------------------
+
+    async def run_stream(
+        self,
+        context: PipelineExecutionContext,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Yield SSE-ready dicts for streaming response."""
+        if context.db is None:  # type: ignore[attr-defined]
+            raise ValueError("context.db must be set before calling PipelineExecutor.run_stream()")
+        db: AsyncSession = context.db  # type: ignore[attr-defined]
+        pipeline = _pipeline_from_context(context)
+        async for chunk in self._execute(pipeline, context.query, _ctx_dict(context), db, request=None):
+            yield chunk
+
+    # ------------------------------------------------------------------
+    # Core async generator (shared between run() and run_stream())
+    # ------------------------------------------------------------------
+
+    async def _execute(
+        self,
+        pipeline: PipelineRead,
+        query: str,
+        chat_context: dict[str, Any],
+        db: AsyncSession,
+        request: Request | None = None,
+    ) -> AsyncGenerator[dict[str, Any], None]:
         try:
             await self._check_cancelled(request)
             await self._mark_started(pipeline, chat_context, db)
@@ -42,7 +112,7 @@ class PipelineExecutor:
                 "mode": chat_context.get("mode", "auto"),
             }
 
-            steps = sorted(pipeline.steps, key=lambda step: step.order)
+            steps = sorted(pipeline.steps, key=lambda s: s.order)
             provider = settings_service.get_active_provider()
             if provider is None:
                 raise RuntimeError("No active generation model configured")
@@ -64,13 +134,12 @@ class PipelineExecutor:
             for index, step, hits, partial in step_results:
                 step_hits.append(hits)
                 if partial is _SKIPPED:
-                    # Step was skipped: no documents found for its tags.
                     yield {
                         "type": "step_skipped_no_docs",
                         "step": index,
                         "step_name": step.name,
                     }
-                    partial_results.append("")  # empty contribution to final composition
+                    partial_results.append("")
                 else:
                     partial_results.append(partial)
                     yield {
@@ -116,8 +185,16 @@ class PipelineExecutor:
         except asyncio.CancelledError:
             return
         except Exception as exc:
-            logger.error("Pipeline execution error: pipeline=%s", getattr(pipeline, "pipeline_id", None), exc_info=True)
+            logger.error(
+                "Pipeline execution error: pipeline=%s",
+                getattr(pipeline, "pipeline_id", None),
+                exc_info=True,
+            )
             yield {"type": "error", "message": str(exc)}
+
+    # ------------------------------------------------------------------
+    # Retrieval helpers
+    # ------------------------------------------------------------------
 
     async def _retrieve_for_step(
         self,
@@ -194,7 +271,7 @@ class PipelineExecutor:
         query: str,
         chat_context: dict[str, Any],
         db: AsyncSession,
-        provider,
+        provider: Any,
     ) -> tuple[int, PipelineStep, list[SearchHit], Any]:
         hits = await self._retrieve_for_step(query, step, chat_context, db)
 
@@ -228,13 +305,22 @@ class PipelineExecutor:
 
         return index, step, hits, partial
 
+    # ------------------------------------------------------------------
+    # Lifecycle helpers
+    # ------------------------------------------------------------------
+
     @staticmethod
     async def _check_cancelled(request: Request | None) -> None:
         if request is not None and await request.is_disconnected():
             raise asyncio.CancelledError
 
-    async def _mark_started(self, pipeline: PipelineRead, chat_context: dict[str, Any], db: AsyncSession) -> None:
-        chat = await db.get(Chat, chat_context["chat_id"])
+    async def _mark_started(
+        self, pipeline: PipelineRead, chat_context: dict[str, Any], db: AsyncSession
+    ) -> None:
+        chat_id = chat_context.get("chat_id")
+        if not chat_id:
+            return
+        chat = await db.get(Chat, uuid.UUID(str(chat_id)))
         if chat is None:
             return
         versions = dict(chat.pipeline_versions or {})
@@ -246,8 +332,13 @@ class PipelineExecutor:
         chat.pipeline_versions = versions
         await db.commit()
 
-    async def _mark_completed(self, chat_context: dict[str, Any], db: AsyncSession) -> None:
-        chat = await db.get(Chat, chat_context["chat_id"])
+    async def _mark_completed(
+        self, chat_context: dict[str, Any], db: AsyncSession
+    ) -> None:
+        chat_id = chat_context.get("chat_id")
+        if not chat_id:
+            return
+        chat = await db.get(Chat, uuid.UUID(str(chat_id)))
         if chat is None:
             return
         versions = dict(chat.pipeline_versions or {})
@@ -272,6 +363,39 @@ class PipelineExecutor:
             seen.add(key)
             sources.append({"path": path, "page": page, "vault_id": vault_id})
         return sources
+
+
+# ------------------------------------------------------------------
+# Helpers
+# ------------------------------------------------------------------
+
+def _pipeline_from_context(context: PipelineExecutionContext) -> PipelineRead:
+    """Re-create a PipelineRead stub from the context fields set by PipelineRouter.select()."""
+    return PipelineRead(
+        pipeline_id=context.pipeline_id,
+        version=context.pipeline_version,
+        name=context.pipeline_id,  # fallback name
+        steps=context.steps,
+        final_composition=context.final_composition,
+        campaign_id=context.campaign_id,
+    )
+
+
+def _ctx_dict(context: PipelineExecutionContext) -> dict[str, Any]:
+    """Convert PipelineExecutionContext to the dict format expected by _execute()."""
+    return {
+        "chat_id": context.chat_id,
+        "domain_id": context.domain_id,
+        "campaign_id": context.campaign_id,
+        "vault_ids": getattr(context, "vault_ids", []) or [],
+        "vault_id": getattr(context, "vault_id", None),
+        "history": context.history or [],
+        "collected_fields": getattr(context, "collected_fields", {}) or {},
+        "mode": getattr(context, "mode", "general"),
+        "confidence": getattr(context, "confidence", None),
+        "reasoning": getattr(context, "reasoning", ""),
+        "config": getattr(context, "config", None),
+    }
 
 
 pipeline_executor = PipelineExecutor()
