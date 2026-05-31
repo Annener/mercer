@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Campaign, Domain, EmbeddingModel, Vault, World
+from app.db.models import Campaign, Domain, EmbeddingModel, Vault
 from app.db.session import get_db
 from .helpers import _delete_vault_vectors, vault_dict
 from .schemas import VaultCreateRequest, VaultUpdateRequest
@@ -102,7 +102,6 @@ async def delete_vault(vault_id: str, db: AsyncSession = Depends(get_db)) -> Res
         await _delete_vault_vectors(vault_id, strict=False)
     finally:
         await db.execute(delete(Campaign).where(Campaign.vault_id == vault_id))
-        await db.execute(delete(World).where(World.vault_id == vault_id))
         await db.delete(vault)
         await db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
