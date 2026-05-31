@@ -25,6 +25,9 @@ from shared_contracts.models import PipelineRead, PipelineStep, SearchHit
 
 logger = logging.getLogger(__name__)
 
+# Sentinel returned from _run_step when the step is skipped due to no documents.
+_SKIPPED = object()
+
 
 class PipelineExecutor:
     async def run(self, pipeline, query, chat_context, db, request=None):
@@ -60,8 +63,22 @@ class PipelineExecutor:
             partial_results: list[str] = []
             for index, step, hits, partial in step_results:
                 step_hits.append(hits)
-                partial_results.append(partial)
-                yield {"type": "step_done", "step": index, "step_name": step.name, "partial_length": len(partial)}
+                if partial is _SKIPPED:
+                    # Step was skipped: no documents found for its tags.
+                    yield {
+                        "type": "step_skipped_no_docs",
+                        "step": index,
+                        "step_name": step.name,
+                    }
+                    partial_results.append("")  # empty contribution to final composition
+                else:
+                    partial_results.append(partial)
+                    yield {
+                        "type": "step_done",
+                        "step": index,
+                        "step_name": step.name,
+                        "partial_length": len(partial),
+                    }
 
             await self._check_cancelled(request)
 
@@ -99,6 +116,7 @@ class PipelineExecutor:
         except asyncio.CancelledError:
             return
         except Exception as exc:
+            logger.error("Pipeline execution error: pipeline=%s", getattr(pipeline, "pipeline_id", None), exc_info=True)
             yield {"type": "error", "message": str(exc)}
 
     async def _retrieve_for_step(
@@ -113,19 +131,13 @@ class PipelineExecutor:
         campaign_id: str | None = chat_context.get("campaign_id")
         config = chat_context.get("config")
 
-        # vault_ids из контекста (список всех enabled-Vault домена)
-        # Обратная совместимость: старый ключ vault_id (str) → оборачиваем в список
+        # vault_ids sourced exclusively from domain enabled-Vaults (no legacy fallback).
         vault_ids: list[str] = chat_context.get("vault_ids") or []
-        if not vault_ids:
-            legacy = chat_context.get("vault_id")
-            if legacy:
-                vault_ids = [legacy]
 
-        document_ids: list[str] | None = None  # None = нет фильтра
+        document_ids: list[str] | None = None  # None = no filter
 
         if step.tag_ids:
             if not domain_id:
-                # Нет домена — тегами управлять невозможно, пропускаем шаг
                 logger.warning(
                     "Pipeline step skipped: tag_ids set but no domain_id in context. step=%s",
                     step.name,
@@ -183,12 +195,12 @@ class PipelineExecutor:
         chat_context: dict[str, Any],
         db: AsyncSession,
         provider,
-    ) -> tuple[int, PipelineStep, list[SearchHit], str]:
+    ) -> tuple[int, PipelineStep, list[SearchHit], Any]:
         hits = await self._retrieve_for_step(query, step, chat_context, db)
 
         if not hits:
             logger.info("Step skipped (no hits): step=%s", step.name)
-            return index, step, hits, ""
+            return index, step, hits, _SKIPPED
 
         context_block = format_context_with_role(hits, step.role)
         prompt = format_prompt(step.system_prompt, {"context": context_block, "query": query})

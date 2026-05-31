@@ -270,14 +270,11 @@ async def send_message(
     if selected_pipeline is not None:
         domain_id = await _domain_id_for_chat(chat, db) or chat.domain_id
         config_for_vault = await _runtime_config_from_db(db)
-        # vault_ids — все enabled-Vault домена (не один)
+        # vault_ids — all enabled-Vaults for the domain (sourced exclusively from domain config).
         vault_ids: list[str] = [
             v.vault_id for v in config_for_vault.vaults.values()
             if v.domain_id == domain_id and v.enabled
         ] if domain_id else []
-        # Обратная совместимость: если vault_ids пуст, но chat.vault_id есть — используем его
-        if not vault_ids and chat.vault_id:
-            vault_ids = [chat.vault_id]
 
         chat_context = {
             "chat_id": chat.id,
@@ -724,9 +721,9 @@ async def _prompt_pack_for_chat(chat: Chat, db: AsyncSession) -> PromptPack:
 
 async def _domain_id_for_chat(chat: Chat, db: AsyncSession) -> str | None:
     """
-    Основной источник domain_id — chat.domain_id.
-    vault-fallback оставлен для обратной совместимости (переходный период).
-    TODO(iter4): удалить vault-fallback после того как все чаты будут иметь domain_id.
+    Primary source of domain_id is chat.domain_id.
+    vault-fallback retained only for _generate_answer path (non-pipeline RAG)
+    during the transitional period until vault_id is removed from Chat.
     """
     if chat.domain_id is not None:
         return chat.domain_id
