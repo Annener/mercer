@@ -5,11 +5,11 @@ class ChatAPI {
     }
 
     // === Chat API ===
-    async createChat(vaultId = null, domainId = null, worldId = null) {
+    async createChat(vaultId = null, domainId = null, campaignId = null) {
         const response = await fetch(`${this.baseUrl}/chat/create`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ vault_id: vaultId, domain_id: domainId, world_id: worldId }),
+            body: JSON.stringify({ vault_id: vaultId, domain_id: domainId, campaign_id: campaignId }),
         });
         if (!response.ok) throw new Error(`Failed to create chat: ${response.statusText}`);
         return response.json();
@@ -69,7 +69,7 @@ class ChatAPI {
         });
     }
 
-    // === DB Management API ===
+    // === DB Management API (LanceDB) ===
     async listDocuments(vaultId, limit = 100, offset = 0) {
         const params = new URLSearchParams({ vault_id: vaultId, limit: String(limit), offset: String(offset) });
         const response = await fetch(`${this.baseUrl}/api/db/documents?${params}`);
@@ -196,31 +196,56 @@ class ChatAPI {
     async deleteVault(id) { return this._request(`/api/settings/vaults/${encodeURIComponent(id)}`, { method: 'DELETE' }); }
     async toggleVault(id) { return this._request(`/api/settings/vaults/${encodeURIComponent(id)}/toggle`, { method: 'POST' }); }
 
-    async getWorlds(vaultId = null) {
-        const url = new URL(`${this.baseUrl}/api/settings/worlds`, window.location.origin);
+    // === Tags API ===
+    async getTags(vaultId, campaignId = null) {
+        const url = new URL(`${this.baseUrl}/tags`, window.location.origin);
+        url.searchParams.set('vault_id', vaultId);
+        if (campaignId) url.searchParams.set('campaign_id', campaignId);
+        return this._request(url.pathname + url.search);
+    }
+    async createTag(data) { return this._request('/tags', { method: 'POST', body: JSON.stringify(data) }); }
+    async updateTag(tagId, data) { return this._request(`/tags/${encodeURIComponent(tagId)}`, { method: 'PUT', body: JSON.stringify(data) }); }
+    async deleteTag(tagId) { return this._request(`/tags/${encodeURIComponent(tagId)}`, { method: 'DELETE' }); }
+    async getCampaignTags(campaignId) { return this._request(`/campaigns/${encodeURIComponent(campaignId)}/tags`); }
+    async createCampaignTag(campaignId, data) {
+        return this._request(`/campaigns/${encodeURIComponent(campaignId)}/tags`, { method: 'POST', body: JSON.stringify(data) });
+    }
+
+    // === Campaigns API ===
+    async getCampaigns(vaultId = null) {
+        const url = new URL(`${this.baseUrl}/campaigns`, window.location.origin);
         if (vaultId) url.searchParams.set('vault_id', vaultId);
         return this._request(url.pathname + url.search);
     }
-    async updateWorld(worldId, data) {
-        return this._request(`/api/settings/worlds/${worldId}`, { method: 'PUT', body: JSON.stringify(data) });
+    async getCampaign(id) { return this._request(`/campaigns/${encodeURIComponent(id)}`); }
+    async createCampaign(data) { return this._request('/campaigns', { method: 'POST', body: JSON.stringify(data) }); }
+    async updateCampaign(id, data) {
+        return this._request(`/campaigns/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(data) });
     }
-    async deleteWorld(worldId) {
-        return this._request(`/api/settings/worlds/${worldId}`, { method: 'DELETE' });
+    async deleteCampaign(id) { return this._request(`/campaigns/${encodeURIComponent(id)}`, { method: 'DELETE' }); }
+
+    // === Documents API (PostgreSQL registry) ===
+    async getDocuments(vaultId) {
+        const url = new URL(`${this.baseUrl}/documents`, window.location.origin);
+        url.searchParams.set('vault_id', vaultId);
+        return this._request(url.pathname + url.search);
     }
-    async createWorld(data) { return this._request('/api/settings/worlds', { method: 'POST', body: JSON.stringify(data) }); }
-    async updateWorld(worldId, data) { return this._request(`/api/settings/worlds/${encodeURIComponent(worldId)}`, { method: 'PUT', body: JSON.stringify(data) }); }
-    async getWorldCampaigns(worldId) { return this._request(`/api/settings/worlds/${encodeURIComponent(worldId)}/campaigns`); }
-    async createCampaign(worldId, data) { return this._request(`/api/settings/worlds/${encodeURIComponent(worldId)}/campaigns`, { method: 'POST', body: JSON.stringify(data) }); }
-    async updateCampaign(worldId, campaignId, data) {
-        return this._request(`/api/settings/worlds/${encodeURIComponent(worldId)}/campaigns/${encodeURIComponent(campaignId)}`, {
+    async deleteDocumentById(documentId) {
+        return this._request(`/documents/${encodeURIComponent(documentId)}`, { method: 'DELETE' });
+    }
+    async updateDocumentLabels(documentId, tagIds) {
+        return this._request(`/documents/${encodeURIComponent(documentId)}/labels`, {
             method: 'PUT',
-            body: JSON.stringify(data),
+            body: JSON.stringify({ tag_ids: tagIds }),
         });
     }
-    async toggleCampaign(worldId, campaignId) {
-        return this._request(`/api/settings/worlds/${encodeURIComponent(worldId)}/campaigns/${encodeURIComponent(campaignId)}/toggle`, { method: 'POST' });
+
+    // === Indexer API ===
+    async runIndexer(vaultId) {
+        return this._request(`/indexer/run?vault_id=${encodeURIComponent(vaultId)}`, { method: 'POST' });
     }
 
+    // === Pipelines API ===
     async getPipelines(domainId = null) {
         const url = new URL(`${this.baseUrl}/api/settings/pipelines`, window.location.origin);
         if (domainId) url.searchParams.set('domain_id', domainId);
@@ -234,10 +259,8 @@ class ChatAPI {
     async updatePipeline(id, data) { return this._request(`/api/settings/pipelines/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(data) }); }
     async deletePipeline(id) { return this._request(`/api/settings/pipelines/${encodeURIComponent(id)}`, { method: 'DELETE' }); }
     async activatePipeline(id) { return this._request(`/api/settings/pipelines/${encodeURIComponent(id)}/activate`, { method: 'POST' }); }
-    
-    // ⚠️ ИСПРАВЛЕНО: теперь вызывает POST /deactivate, а не DELETE
-    async deactivatePipeline(id) { 
-        return this._request(`/api/settings/pipelines/${encodeURIComponent(id)}/deactivate`, { method: 'POST' }); 
+    async deactivatePipeline(id) {
+        return this._request(`/api/settings/pipelines/${encodeURIComponent(id)}/deactivate`, { method: 'POST' });
     }
 
     async _request(path, options = {}) {
