@@ -6,7 +6,6 @@ class ChatAPI {
 
     // === Chat API ===
     async createChat(domainId = null, campaignId = null) {
-        // vault_id больше не передаётся — привязка перешла на domain_id
         const response = await fetch(`${this.baseUrl}/chat/create`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -24,7 +23,6 @@ class ChatAPI {
         return response.json();
     }
 
-    // FIX: бэкенд отдаёт {chat, messages} только на /chat/{id}/history, а не на /chat/{id}
     async getChat(chatId) {
         const response = await fetch(`${this.baseUrl}/chat/${chatId}/history`);
         if (!response.ok) throw new Error(`Failed to get chat: ${response.statusText}`);
@@ -34,7 +32,7 @@ class ChatAPI {
     async deleteChat(chatId) {
         const response = await fetch(`${this.baseUrl}/chat/${chatId}`, { method: 'DELETE' });
         if (!response.ok) throw new Error(`Failed to delete chat: ${response.statusText}`);
-        return null; // 204 No Content
+        return null;
     }
 
     async renameChat(chatId, title) {
@@ -47,10 +45,6 @@ class ChatAPI {
         return response.json();
     }
 
-    // FIX: эндпоинт /chat/{id}/message не существует.
-    //   stream=true  → POST /chat/{id}/send_stream (SSE, text/event-stream)
-    //   stream=false → POST /chat/{id}/send        (JSON)
-    // SendMessageRequest принимает только { content }, параметра stream нет.
     async sendMessage(chatId, content, stream = true) {
         const endpoint = stream
             ? `${this.baseUrl}/chat/${chatId}/send_stream`
@@ -71,7 +65,6 @@ class ChatAPI {
         return response.json();
     }
 
-    // FIX: метод был PUT /chat/{id}/pipeline, бэкенд ждёт POST /chat/{id}/lock_pipeline
     async lockPipeline(chatId, pipelineId) {
         return this._request(`/chat/${encodeURIComponent(chatId)}/lock_pipeline`, {
             method: 'POST',
@@ -163,7 +156,6 @@ class ChatAPI {
     async getSettingsStatus() { return this._request('/api/settings/status'); }
     async getSettingsParams() { return this._request('/api/settings/params'); }
 
-    // FIX: был /api/settings/param/{key} (singular) → правильно /api/settings/params/{key} (plural)
     async updateSettingsParam(key, value) {
         return this._request(`/api/settings/params/${encodeURIComponent(key)}`, {
             method: 'PUT',
@@ -209,14 +201,12 @@ class ChatAPI {
     async toggleVault(id) { return this._request(`/api/settings/vaults/${encodeURIComponent(id)}/toggle`, { method: 'POST' }); }
 
     // === Tags API ===
-    // Приоритет: domain_id. vault_id оставлен для обратной совместимости (например, settings.js ещё может слать vault_id).
     async getTags(domainId, campaignId = null) {
         const url = new URL(`${this.baseUrl}/api/settings/tags`, window.location.origin);
         url.searchParams.set('domain_id', domainId);
         if (campaignId) url.searchParams.set('campaign_id', campaignId);
         return this._request(url.pathname + url.search);
     }
-    // Старый метод через vault — оставлен для кода, который ещё не перешёл на domain_id
     async getTagsByVault(vaultId, campaignId = null) {
         const url = new URL(`${this.baseUrl}/api/settings/tags`, window.location.origin);
         url.searchParams.set('vault_id', vaultId);
@@ -232,7 +222,6 @@ class ChatAPI {
     }
 
     // === Campaigns API ===
-    // getCampaigns(домен): приоритет domain_id. vault_id удалён.
     async getCampaigns(domainId = null) {
         const url = new URL(`${this.baseUrl}/api/settings/campaigns`, window.location.origin);
         if (domainId) url.searchParams.set('domain_id', domainId);
@@ -246,6 +235,20 @@ class ChatAPI {
     async deleteCampaign(id) { return this._request(`/api/settings/campaigns/${encodeURIComponent(id)}`, { method: 'DELETE' }); }
 
     // === Documents API (PostgreSQL registry) ===
+    /**
+     * Загружает документы по domain_id (все Vault домена) — основной метод.
+     * Параметры status и tagId — опциональные фильтры.
+     */
+    async getDocumentsByDomain(domainId, status = null, tagId = null) {
+        const url = new URL(`${this.baseUrl}/api/settings/documents`, window.location.origin);
+        url.searchParams.set('domain_id', domainId);
+        if (status) url.searchParams.set('status', status);
+        if (tagId) url.searchParams.set('tag_id', tagId);
+        return this._request(url.pathname + url.search);
+    }
+    /**
+     * Загружает документы по vault_id — оставлен для обратной совместимости.
+     */
     async getDocuments(vaultId) {
         const url = new URL(`${this.baseUrl}/api/settings/documents`, window.location.origin);
         url.searchParams.set('vault_id', vaultId);
@@ -255,9 +258,10 @@ class ChatAPI {
         return this._request(`/api/settings/documents/${encodeURIComponent(documentId)}`, { method: 'DELETE' });
     }
     async updateDocumentLabels(documentId, tagIds) {
+        // tagIds — массив UUID-строк
         return this._request(`/api/settings/documents/${encodeURIComponent(documentId)}/labels`, {
             method: 'PUT',
-            body: JSON.stringify({ tag_ids: tagIds }),
+            body: JSON.stringify({ tag_ids: tagIds.map(String) }),
         });
     }
 
@@ -267,7 +271,6 @@ class ChatAPI {
     }
 
     // === Pipelines API ===
-    // getPipelines(домен, кампания): бэкенд фильтрует пайплайны по тегам кампании если campaign_id задан
     async getPipelines(domainId = null, campaignId = null) {
         const url = new URL(`${this.baseUrl}/api/settings/pipelines`, window.location.origin);
         if (domainId) url.searchParams.set('domain_id', domainId);

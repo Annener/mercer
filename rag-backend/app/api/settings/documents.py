@@ -8,13 +8,12 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Document, DocumentLabel, Tag
+from app.db.models import Document, DocumentLabel, Tag, Vault
 from app.db.session import get_db
 from shared_contracts.models import DocumentLabelWrite, DocumentRead, TagRead
 
 logger = logging.getLogger(__name__)
 
-# Safe import: storage service may not be available in all environments
 try:
     from app.services.retrieval import delete_document_chunks
 except ImportError:
@@ -26,12 +25,32 @@ router = APIRouter(prefix="/documents", tags=["documents"])
 
 @router.get("", response_model=list[DocumentRead])
 async def list_documents(
-    vault_id: str,
+    vault_id: str | None = None,
+    domain_id: str | None = None,
     status: str | None = None,
     tag_id: str | None = None,
     db: AsyncSession = Depends(get_db),
 ) -> list[DocumentRead]:
-    stmt = select(Document).where(Document.vault_id == vault_id)
+    """
+    Возвращает документы.
+    - Если передан domain_id — возвращает документы всех Vault этого домена.
+    - Если передан vault_id — фильтрует по конкретному Vault (обратная совместимость).
+    - Параметры status и tag_id работают в обоих режимах.
+    """
+    if domain_id:
+        # Получаем все vault_id домена
+        vaults_result = await db.execute(
+            select(Vault.vault_id).where(Vault.domain_id == domain_id)
+        )
+        vault_ids = [row[0] for row in vaults_result.all()]
+        if not vault_ids:
+            return []
+        stmt = select(Document).where(Document.vault_id.in_(vault_ids))
+    elif vault_id:
+        stmt = select(Document).where(Document.vault_id == vault_id)
+    else:
+        raise HTTPException(400, "Either domain_id or vault_id is required")
+
     if status:
         stmt = stmt.where(Document.status == status)
     if tag_id:
@@ -62,13 +81,32 @@ async def replace_document_labels(
     if not doc:
         raise HTTPException(404, "Document not found")
 
+    # Получаем domain_id документа через его Vault
+    vault = await db.execute(select(Vault).where(Vault.vault_id == doc.vault_id))
+    vault_obj = vault.scalar_one_or_none()
+    doc_domain_id = vault_obj.domain_id if vault_obj else None
+
+    # Валидация: все теги должны принадлежать тому же домену
+    if doc_domain_id and req.tag_ids:
+        tags_result = await db.execute(
+            select(Tag).where(Tag.id.in_([uuid.UUID(tid) for tid in req.tag_ids]))
+        )
+        tags = tags_result.scalars().all()
+        for tag in tags:
+            if tag.domain_id != doc_domain_id:
+                raise HTTPException(
+                    400,
+                    f"Tag '{tag.name}' (id={tag.id}) belongs to domain '{tag.domain_id}', "
+                    f"but document belongs to domain '{doc_domain_id}'"
+                )
+
     await db.execute(
         delete(DocumentLabel).where(DocumentLabel.document_id == uuid.UUID(document_id))
     )
     for tag_id in req.tag_ids:
         db.add(DocumentLabel(
             document_id=uuid.UUID(document_id),
-            tag_id=uuid.UUID(tag_id),
+            tag_id=uuid.UUID(str(tag_id)),
         ))
     await db.commit()
     return await _doc_with_tags(doc, db)
@@ -86,7 +124,7 @@ async def batch_label_documents(
         for tag_id in tag_ids:
             db.add(DocumentLabel(
                 document_id=uuid.UUID(doc_id),
-                tag_id=uuid.UUID(tag_id),
+                tag_id=uuid.UUID(str(tag_id)),
             ))
     try:
         await db.commit()
@@ -102,7 +140,7 @@ async def delete_document(
 ) -> None:
     """
     Удаляет документ:
-    1. Удаляет чанки из LanceDB
+    1. Удаляет чанки из LanceDB (если vault_id доступен)
     2. Удаляет запись из PostgreSQL (CASCADE на document_labels)
     Физический файл НЕ удаляется.
     """
@@ -110,7 +148,11 @@ async def delete_document(
     if not doc:
         raise HTTPException(404, "Document not found")
 
-    await delete_document_chunks(document_id, doc.vault_id)
+    if doc.vault_id:
+        await delete_document_chunks(document_id, doc.vault_id)
+    else:
+        logger.warning("Document %s has no vault_id; skipping LanceDB chunk deletion", document_id)
+
     await db.delete(doc)
     await db.commit()
 
