@@ -150,8 +150,8 @@ class SettingsManager {
         await this.handleCampaignsAction(action, id);
         return;
       }
-      // documents
-      if (['run-indexer', 'delete-doc'].includes(action)) {
+      // documents — все действия вкладки Documents
+      if (['run-indexer', 'delete-doc', 'close-docs-panel', 'add-doc-tag', 'save-doc-tags'].includes(action)) {
         await this.handleDocumentsAction(action, button);
         return;
       }
