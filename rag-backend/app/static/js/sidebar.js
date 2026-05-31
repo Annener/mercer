@@ -276,12 +276,16 @@ class SidebarManager {
             select.innerHTML = '<option value="">— общий режим —</option>';
             for (const c of campArr) {
                 const opt = document.createElement('option');
-                opt.value = String(c.id);
+                // BUG FIX A: CampaignRead возвращает campaign_id, а не id.
+                // Ранее c.id был undefined → все option имели value="undefined"
+                // → currentCampaignId никогда не совпадал → createChat всегда слал null.
+                opt.value = String(c.campaign_id);
                 opt.textContent = c.name;
                 select.appendChild(opt);
             }
 
-            if (this.currentCampaignId && campArr.some(c => String(c.id) === this.currentCampaignId)) {
+            // BUG FIX A: то же поле campaign_id для поиска совпадения
+            if (this.currentCampaignId && campArr.some(c => String(c.campaign_id) === this.currentCampaignId)) {
                 select.value = this.currentCampaignId;
             } else {
                 // BUG FIX #3: сбрасываем в null, не в ''

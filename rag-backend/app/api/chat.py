@@ -341,7 +341,7 @@ async def send_message_stream(
 
     context.pipeline_id = pipeline.pipeline_id
     context.pipeline_version = pipeline.version
-    context.steps = pipeline.steps
+        context.steps = pipeline.steps
     context.final_composition = pipeline.final_composition
 
     history_stmt = select(Message).where(Message.chat_id == chat.id).order_by(Message.created_at).limit(20)
@@ -363,9 +363,14 @@ async def send_message_stream(
         assistant_msg_id: str | None = None
 
         async for chunk in executor.run_stream(context):
+            # BUG FIX C: переименован тип чанка delta→token.
+            # chat.js обрабатывает только type==="token" для рендера текста во время стриминга.
+            # С type==="delta" текст накапливался внутри but not рендерился до конца стрима.
+            if chunk.get("type") == "delta":
+                chunk = {**chunk, "type": "token"}
             data = json.dumps(chunk, ensure_ascii=False)
             yield f"data: {data}\n\n"
-            if chunk.get("type") == "delta":
+            if chunk.get("type") == "token":
                 full_answer += chunk.get("content", "")
             elif chunk.get("type") == "done":
                 assistant_msg_id = chunk.get("message_id")
@@ -382,6 +387,11 @@ async def send_message_stream(
             if chat.title == "New Chat":
                 chat.title = _auto_title(req.content)
                 await db.commit()
+
+        # BUG FIX B: эмитим [DONE] в конце стрима.
+        # chat.js ждёт 'data: [DONE]' чтобы выставить флаг streamDone.
+        # Без этого флаг не выставлялся, хотя цикл всё равно завершался через reader.read() done.
+        yield "data: [DONE]\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
