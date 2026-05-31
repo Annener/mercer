@@ -24,8 +24,9 @@ class ChatAPI {
         return response.json();
     }
 
+    // FIX: бэкенд отдаёт {chat, messages} только на /chat/{id}/history, а не на /chat/{id}
     async getChat(chatId) {
-        const response = await fetch(`${this.baseUrl}/chat/${chatId}`);
+        const response = await fetch(`${this.baseUrl}/chat/${chatId}/history`);
         if (!response.ok) throw new Error(`Failed to get chat: ${response.statusText}`);
         return response.json();
     }
@@ -33,7 +34,7 @@ class ChatAPI {
     async deleteChat(chatId) {
         const response = await fetch(`${this.baseUrl}/chat/${chatId}`, { method: 'DELETE' });
         if (!response.ok) throw new Error(`Failed to delete chat: ${response.statusText}`);
-        return response.json();
+        return null; // 204 No Content
     }
 
     async renameChat(chatId, title) {
@@ -46,11 +47,18 @@ class ChatAPI {
         return response.json();
     }
 
+    // FIX: эндпоинт /chat/{id}/message не существует.
+    //   stream=true  → POST /chat/{id}/send_stream (SSE, text/event-stream)
+    //   stream=false → POST /chat/{id}/send        (JSON)
+    // SendMessageRequest принимает только { content }, параметра stream нет.
     async sendMessage(chatId, content, stream = true) {
-        const response = await fetch(`${this.baseUrl}/chat/${chatId}/message`, {
+        const endpoint = stream
+            ? `${this.baseUrl}/chat/${chatId}/send_stream`
+            : `${this.baseUrl}/chat/${chatId}/send`;
+        const response = await fetch(endpoint, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ content, stream }),
+            body: JSON.stringify({ content }),
         });
         if (!response.ok) {
             const errorData = await response.json().catch(() => ({}));
@@ -63,9 +71,10 @@ class ChatAPI {
         return response.json();
     }
 
+    // FIX: метод был PUT /chat/{id}/pipeline, бэкенд ждёт POST /chat/{id}/lock_pipeline
     async lockPipeline(chatId, pipelineId) {
-        return this._request(`/chat/${encodeURIComponent(chatId)}/pipeline`, {
-            method: 'PUT',
+        return this._request(`/chat/${encodeURIComponent(chatId)}/lock_pipeline`, {
+            method: 'POST',
             body: JSON.stringify({ pipeline_id: pipelineId }),
         });
     }
@@ -153,8 +162,10 @@ class ChatAPI {
     // === Settings API ===
     async getSettingsStatus() { return this._request('/api/settings/status'); }
     async getSettingsParams() { return this._request('/api/settings/params'); }
+
+    // FIX: был /api/settings/param/{key} (singular) → правильно /api/settings/params/{key} (plural)
     async updateSettingsParam(key, value) {
-        return this._request(`/api/settings/param/${encodeURIComponent(key)}`, {
+        return this._request(`/api/settings/params/${encodeURIComponent(key)}`, {
             method: 'PUT',
             body: JSON.stringify({ value }),
         });
