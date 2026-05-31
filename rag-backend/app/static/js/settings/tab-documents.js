@@ -91,12 +91,15 @@ const DocumentsTabMixin = {
     async _openDocsSidePanel(doc) {
         this._docsCurrentDoc = doc;
         const vaultId = await this._resolveVaultId();
+        const domainId = this._activeDomainId || await this._resolveDomainId();
         const panel = document.getElementById('docs-side-panel');
         if (!panel) return;
         panel.style.display = 'block';
         panel.innerHTML = `<div style="padding:var(--space-4);"><b>Теги: ${this.escapeHtml(doc.source_path || String(doc.id))}</b><div class="empty-state" style="padding:var(--space-4)">Загрузка тегов...</div></div>`;
         try {
-            const allTagsResp = vaultId ? await this.api.getTags(vaultId) : [];
+            const allTagsResp = domainId
+                ? await this.api.getTags(domainId)
+                : (vaultId ? await this.api.getTagsByVault(vaultId) : []);
             const grouped = Array.isArray(allTagsResp) ? { global_tags: allTagsResp, by_campaign: {} } : (allTagsResp || {});
             const globalTags = Array.isArray(grouped.global_tags) ? grouped.global_tags : [];
             const byCampaign = grouped.by_campaign && typeof grouped.by_campaign === 'object' ? Object.values(grouped.by_campaign).flat() : [];
