@@ -2,9 +2,8 @@
 class SettingsManager {
     constructor() {
         this.api = chatAPI;
-        this.currentTab = 'status';
+        this.currentTab = 'domains';
         this._activeVaultId = null;
-        // Используем правильные ID из index.html
         this._tabContent = document.getElementById('settings-content');
         this._tabNav = document.querySelector('.settings-tabs');
         this.initNav();
@@ -22,6 +21,19 @@ class SettingsManager {
         });
     }
 
+    async _resolveVaultId() {
+        if (this._activeVaultId) return this._activeVaultId;
+        try {
+            const vaults = await this.api.getSettingsVaults();
+            const arr = Array.isArray(vaults) ? vaults : [];
+            const active = arr.find(v => v.enabled) || arr[0];
+            this._activeVaultId = active?.vault_id || active?.id || null;
+        } catch (e) {
+            this._activeVaultId = null;
+        }
+        return this._activeVaultId;
+    }
+
     async loadTab(tab) {
         this.currentTab = tab;
         if (!this._tabContent) return;
@@ -29,21 +41,18 @@ class SettingsManager {
 
         if (tab === 'documents' || tab === 'campaigns') {
             this._activeVaultId = null;
+            await this._resolveVaultId();
         }
 
         try {
-            if (tab === 'documents' || tab === 'campaigns') {
-                await this._resolveVaultId();
-            }
-
             let html = '';
             switch (tab) {
                 case 'status':      html = await this.renderStatusTab(); break;
                 case 'params':      html = await this.renderParamsTab(); break;
                 case 'domains':     html = await this.renderDomainsTab(); break;
                 case 'vaults':      html = await this.renderVaultsTab(); break;
-                case 'gen-models':  html = await this.renderGenModelsTab(); break;
-                case 'emb-models':  html = await this.renderEmbModelsTab(); break;
+                case 'gen-models':  html = await this.renderGenerationModelsTab(); break;
+                case 'emb-models':  html = await this.renderEmbeddingModelsTab(); break;
                 case 'pipelines':   html = await this.renderPipelinesTab(); break;
                 case 'campaigns':   html = await this.renderCampaignsTab(); break;
                 case 'documents':   html = await this.renderDocumentsTab(); break;
@@ -55,24 +64,35 @@ class SettingsManager {
                 await this.loadDocumentsData();
             }
 
-            this.bindTabEvents(tab);
+            this._bindTabEvents(tab);
         } catch (e) {
             this._tabContent.innerHTML = `<div class="empty-state" style="color:var(--color-error)">Ошибка загрузки: ${this.escapeHtml(e.message)}</div>`;
         }
     }
 
-    bindTabEvents(tab) {
+    async renderStatusTab() {
+        try {
+            const status = await this.api.getSettingsStatus();
+            const rows = Object.entries(status || {}).map(([k, v]) =>
+                `<tr><td style="color:var(--color-text-muted);">${this.escapeHtml(k)}</td><td>${this.escapeHtml(String(v))}</td></tr>`
+            ).join('');
+            return `<table class="data-table"><thead><tr><th>Параметр</th><th>Значение</th></tr></thead><tbody>${rows || '<tr><td colspan="2" class="empty-state">Данных нет</td></tr>'}</tbody></table>`;
+        } catch (e) {
+            return `<div class="empty-state" style="color:var(--color-error)">Ошибка загрузки статуса: ${this.escapeHtml(e.message)}</div>`;
+        }
+    }
+
+    _bindTabEvents(tab) {
         if (!this._tabContent) return;
 
         this._tabContent.addEventListener('click', async (e) => {
             const btn = e.target.closest('[data-action]');
             if (!btn) return;
             const action = btn.dataset.action;
-            if (action === undefined) return;
 
             try {
                 switch (tab) {
-                    case 'status':      await this.handleStatusAction(action, btn); break;
+                    case 'status':      break;
                     case 'params':      await this.handleParamsAction(action, btn); break;
                     case 'domains':     await this.handleDomainsAction(action, btn.dataset.id || null); break;
                     case 'vaults':      await this.handleVaultsAction(action, btn.dataset.id || null); break;
@@ -108,12 +128,13 @@ class SettingsManager {
         }, { once: true });
     }
 
-    async handleStatusAction(action, btn) {}
+    // Заглушки для вкладок без отдельных файлов
     async handleParamsAction(action, btn) {}
     async handleDomainsAction(action, id) {}
     async handleVaultsAction(action, id) {}
     async handleGenModelsAction(action, id) {}
     async handleEmbModelsAction(action, id) {}
+
     async handlePipelinesAction(action, id) {
         if (action === 'new-pipeline') { await this.showPipelineModal(); return; }
         if (action === 'edit-pipeline') { await this.showPipelineEditModal(id); return; }
@@ -144,7 +165,6 @@ document.addEventListener('DOMContentLoaded', () => {
         return;
     }
 
-    // Кнопка «Настройки платформы» — показываем/скрываем settings-page
     const settingsBtn = document.getElementById('settings-btn');
     const settingsPage = document.getElementById('settings-page');
     const mainApp = document.querySelector('.app-container');
@@ -154,11 +174,9 @@ document.addEventListener('DOMContentLoaded', () => {
         settingsBtn.addEventListener('click', () => {
             settingsPage.classList.remove('hidden');
             if (mainApp) mainApp.style.display = 'none';
-            // Инициализируем менеджер если ещё не создан
             if (!window.settingsManager) {
                 window.settingsManager = new SettingsManager();
             } else {
-                // Обновляем ссылки на DOM (на случай если они изменились)
                 window.settingsManager._tabContent = document.getElementById('settings-content');
                 window.settingsManager._tabNav = document.querySelector('.settings-tabs');
                 window.settingsManager.loadTab(window.settingsManager.currentTab || 'domains');

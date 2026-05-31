@@ -27,20 +27,6 @@ const DocumentsTabMixin = {
         </div>`;
     },
 
-    async _resolveVaultId() {
-        if (this._activeVaultId) return this._activeVaultId;
-        try {
-            const vaults = await this.api.getSettingsVaults();
-            const arr = Array.isArray(vaults) ? vaults : [];
-            // Приоритет: enabled vault, затем любой первый
-            const active = arr.find(v => v.enabled) || arr[0];
-            this._activeVaultId = active?.vault_id || active?.id || null;
-        } catch (e) {
-            this._activeVaultId = null;
-        }
-        return this._activeVaultId;
-    },
-
     async loadDocumentsData() {
         const vaultId = await this._resolveVaultId();
         if (!vaultId) {
@@ -115,108 +101,90 @@ const DocumentsTabMixin = {
             const globalTags = Array.isArray(grouped.global_tags) ? grouped.global_tags : [];
             const byCampaign = grouped.by_campaign && typeof grouped.by_campaign === 'object' ? Object.values(grouped.by_campaign).flat() : [];
             this._docsAllTags = [...globalTags, ...byCampaign];
-            this._docsCurrentTags = [...(doc.tags || [])];
-            this._renderDocsSidePanel(doc);
+            this._docsCurrentTags = Array.isArray(doc.tags) ? doc.tags.map(t => (typeof t === 'object' ? t.id : t)) : [];
+
+            panel.innerHTML = `
+                <div style="padding:var(--space-4);">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:var(--space-3);">
+                        <b style="font-size:var(--text-sm);">${this.escapeHtml((doc.source_path || String(doc.id)).split('/').pop())}</b>
+                        <button data-action="close-panel" style="background:none;border:none;cursor:pointer;color:var(--color-text-muted);font-size:1.2rem;">✕</button>
+                    </div>
+                    <div style="margin-bottom:var(--space-3);">
+                        <label style="font-size:var(--text-sm);color:var(--color-text-muted);">ID: ${this.escapeHtml(String(doc.id))}</label>
+                    </div>
+                    <div style="margin-bottom:var(--space-4);">
+                        <p style="font-size:var(--text-sm);margin-bottom:var(--space-2);"><b>Присвоить теги:</b></p>
+                        <div style="display:flex;flex-wrap:wrap;gap:4px;">
+                            ${this._docsAllTags.map(t => {
+                                const assigned = this._docsCurrentTags.includes(t.id);
+                                return `<span class="badge docs-tag-toggle" data-tag-id="${t.id}" style="background:${assigned ? (t.color || 'var(--color-primary)') : 'var(--color-surface-offset)'};color:${assigned ? 'white' : 'var(--color-text)'};cursor:pointer;">${this.escapeHtml(t.name)}</span>`;
+                            }).join('') || '<span style="color:var(--color-text-faint)">тегов нет</span>'}
+                        </div>
+                    </div>
+                    <button class="btn btn-primary" data-action="save-doc-tags" style="width:100%;">Сохранить теги</button>
+                </div>`;
+
+            panel.querySelectorAll('.docs-tag-toggle').forEach(el => {
+                el.addEventListener('click', () => {
+                    const tid = Number(el.dataset.tagId);
+                    if (this._docsCurrentTags.includes(tid)) {
+                        this._docsCurrentTags = this._docsCurrentTags.filter(x => x !== tid);
+                        el.style.background = 'var(--color-surface-offset)';
+                        el.style.color = 'var(--color-text)';
+                    } else {
+                        this._docsCurrentTags.push(tid);
+                        const tag = this._docsAllTags.find(t => t.id === tid);
+                        el.style.background = tag?.color || 'var(--color-primary)';
+                        el.style.color = 'white';
+                    }
+                });
+            });
+
+            panel.querySelector('[data-action="close-panel"]')?.addEventListener('click', () => {
+                panel.style.display = 'none';
+            });
+
+            panel.querySelector('[data-action="save-doc-tags"]')?.addEventListener('click', async () => {
+                try {
+                    await this.api.updateDocumentLabels(doc.id, this._docsCurrentTags);
+                    await this.loadDocumentsData();
+                    panel.style.display = 'none';
+                } catch (e) {
+                    alert('Ошибка: ' + e.message);
+                }
+            });
+
         } catch (e) {
-            panel.innerHTML = `<div style="padding:var(--space-4);color:var(--color-error)">Ошибка: ${this.escapeHtml(e.message)}</div>`;
+            panel.innerHTML = `<div style="padding:var(--space-4);color:var(--color-error);">Ошибка загрузки тегов: ${this.escapeHtml(e.message)}</div>`;
         }
     },
 
-    _renderDocsSidePanel(doc) {
-        const panel = document.getElementById('docs-side-panel');
-        if (!panel) return;
-        const currentTagIds = new Set(this._docsCurrentTags.map(t => String(t.id)));
-        const available = this._docsAllTags.filter(t => !currentTagIds.has(String(t.id)));
-        const currentHtml = this._docsCurrentTags.length
-            ? this._docsCurrentTags.map(t =>
-                `<span class="badge" style="background:${t.color || 'var(--color-primary-highlight)'};color:var(--color-text);margin:2px;cursor:pointer;" data-remove-tag="${this.escapeHtml(String(t.id))}">${this.escapeHtml(t.name)} ×</span>`
-              ).join('')
-            : '<span style="color:var(--color-text-faint)">нет тегов</span>';
-        const availableOptions = available.map(t =>
-            `<option value="${this.escapeHtml(String(t.id))}">${this.escapeHtml(t.name)}</option>`
-        ).join('');
-        const shortName = (doc.source_path || String(doc.id)).split('/').pop();
-
-        panel.innerHTML = `
-        <div style="padding:var(--space-4);border-left:1px solid var(--color-border);">
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:var(--space-4);">
-                <b style="font-size:var(--text-sm);">Теги: ${this.escapeHtml(shortName)}</b>
-                <button class="btn" style="padding:2px 8px;" id="docs-close-panel">✕</button>
-            </div>
-            <div style="margin-bottom:var(--space-3);">
-                <div style="font-size:var(--text-xs);color:var(--color-text-muted);margin-bottom:var(--space-2);">Текущие теги:</div>
-                <div id="docs-current-tags">${currentHtml}</div>
-            </div>
-            <div style="margin-bottom:var(--space-4);">
-                <div style="font-size:var(--text-xs);color:var(--color-text-muted);margin-bottom:var(--space-2);">Добавить тег:</div>
-                <div style="display:flex;gap:var(--space-2);">
-                    <select id="docs-tag-select" class="input-field" style="flex:1;">
-                        <option value="">— выбрать —</option>
-                        ${availableOptions}
-                    </select>
-                    <button class="btn btn-secondary" style="padding:4px 10px;font-size:var(--text-sm);" id="docs-add-tag-btn">+ Добавить</button>
-                </div>
-            </div>
-            <button class="btn btn-primary" style="width:100%;" id="docs-save-tags-btn">Сохранить</button>
-        </div>`;
-
-        panel.querySelector('#docs-close-panel').onclick = () => { panel.style.display = 'none'; };
-
-        panel.querySelectorAll('[data-remove-tag]').forEach(el => {
-            el.addEventListener('click', () => {
-                const id = el.dataset.removeTag;
-                this._docsCurrentTags = this._docsCurrentTags.filter(t => String(t.id) !== id);
-                this._renderDocsSidePanel(doc);
-            });
-        });
-
-        panel.querySelector('#docs-add-tag-btn').onclick = () => {
-            const sel = panel.querySelector('#docs-tag-select');
-            const tagId = sel?.value;
-            if (!tagId) return;
-            const tag = this._docsAllTags.find(t => String(t.id) === tagId);
-            if (tag) { this._docsCurrentTags.push(tag); this._renderDocsSidePanel(doc); }
-        };
-
-        panel.querySelector('#docs-save-tags-btn').onclick = async () => {
-            try {
-                await this.api.updateDocumentLabels(doc.id, this._docsCurrentTags.map(t => t.id));
-                doc.tags = [...this._docsCurrentTags];
-                this._renderDocsRows(this._docsAllDocs);
-                const btn = panel.querySelector('#docs-save-tags-btn');
-                if (btn) { btn.textContent = '✅ Сохранено'; setTimeout(() => { if (btn) btn.textContent = 'Сохранить'; }, 1500); }
-            } catch (e) { alert('Ошибка: ' + e.message); }
-        };
-    },
-
-    async handleDocumentsAction(action, target) {
+    async handleDocumentsAction(action, btn) {
         if (action === 'run-indexer') {
             const vaultId = await this._resolveVaultId();
-            if (!vaultId) { alert('Vault не найден. Добавьте Vault в настройках.'); return; }
+            if (!vaultId) { alert('Vault не выбран'); return; }
             const status = document.getElementById('docs-indexer-status');
-            if (status) status.textContent = '⏳ Индексация запущена...';
             try {
+                if (status) status.textContent = 'Запуск...';
+                // Используем reindexVault (правильный метод, runIndexer=alias)
                 await this.api.reindexVault(vaultId, false);
-                if (status) status.textContent = '✅ Индексация запущена';
-                setTimeout(() => this.loadDocumentsData(), 3000);
+                if (status) status.textContent = 'Индексация запущена';
+                setTimeout(() => { if (status) status.textContent = ''; }, 4000);
             } catch (e) {
-                if (status) status.textContent = `❌ ${e.message}`;
+                if (status) status.textContent = 'Ошибка: ' + e.message;
             }
             return;
         }
         if (action === 'delete-doc') {
-            const docId = target.dataset.id;
-            const docPath = target.dataset.path;
-            if (!confirm(`Удалить ${docPath}?\nФизический файл останется, будут удалены только данные индекса.`)) return;
+            const id = btn.dataset?.id || btn;
+            const path = typeof btn === 'object' ? btn.dataset?.path || id : id;
+            if (!confirm(`Удалить документ "${path}"?`)) return;
             try {
-                await this.api.deleteDocumentById(docId);
-                this._docsAllDocs = (this._docsAllDocs || []).filter(d => String(d.id) !== docId);
-                this._renderDocsRows(this._docsAllDocs);
-                const panel = document.getElementById('docs-side-panel');
-                if (this._docsCurrentDoc && String(this._docsCurrentDoc.id) === docId && panel) {
-                    panel.style.display = 'none';
-                }
-            } catch (e) { alert('Ошибка удаления: ' + e.message); }
+                await this.api.deleteDocumentById(String(id));
+                await this.loadDocumentsData();
+            } catch (e) {
+                alert('Ошибка: ' + e.message);
+            }
         }
     },
 };
