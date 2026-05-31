@@ -29,68 +29,141 @@ depends_on = None
 
 
 def upgrade() -> None:
+    conn = op.get_bind()
+
     # ------------------------------------------------------------------
     # 1. tags: vault_id -> domain_id
     # ------------------------------------------------------------------
-    # Drop old constraints/indexes
-    op.drop_constraint("uq_tags_name_vault_campaign", "tags", type_="unique")
-    op.drop_index("idx_tags_vault", table_name="tags")
+    # Check whether the tags table exists at all (may be missing on a
+    # fresh DB that never ran 0002 cleanly).
+    tags_exists = conn.execute(
+        sa.text(
+            "SELECT 1 FROM information_schema.tables "
+            "WHERE table_schema = 'public' AND table_name = 'tags'"
+        )
+    ).fetchone()
 
-    # Drop FK on vault_id before dropping column
-    # (Alembic on PostgreSQL names it automatically; use batch if needed)
-    op.drop_column("tags", "vault_id")
+    if tags_exists:
+        # Drop old constraints / indexes using raw SQL so we can use IF EXISTS
+        conn.execute(sa.text(
+            "ALTER TABLE tags DROP CONSTRAINT IF EXISTS uq_tags_name_vault_campaign"
+        ))
+        conn.execute(sa.text(
+            "DROP INDEX IF EXISTS idx_tags_vault"
+        ))
 
-    # Add new column domain_id
-    op.add_column(
-        "tags",
-        sa.Column(
-            "domain_id",
-            sa.String(32),
-            sa.ForeignKey("domains.domain_id", ondelete="CASCADE"),
-            nullable=False,
-            server_default="default",  # temporary default for existing rows
-        ),
-    )
-    # Remove the temporary server_default so new rows must supply a value
-    op.alter_column("tags", "domain_id", server_default=None)
+        # Drop FK constraint on vault_id (Postgres names it automatically)
+        conn.execute(sa.text(
+            """
+            DO $$
+            DECLARE r RECORD;
+            BEGIN
+                FOR r IN
+                    SELECT tc.constraint_name
+                    FROM information_schema.table_constraints tc
+                    JOIN information_schema.key_column_usage kcu
+                        ON tc.constraint_name = kcu.constraint_name
+                    WHERE tc.table_name = 'tags'
+                      AND tc.constraint_type = 'FOREIGN KEY'
+                      AND kcu.column_name = 'vault_id'
+                LOOP
+                    EXECUTE 'ALTER TABLE tags DROP CONSTRAINT IF EXISTS ' || quote_ident(r.constraint_name);
+                END LOOP;
+            END $$;
+            """
+        ))
 
-    # New UNIQUE constraint and index
-    op.create_unique_constraint(
-        "uq_tags_name_domain_campaign",
-        "tags",
-        ["name", "domain_id", "campaign_id"],
-    )
-    op.create_index("idx_tags_domain", "tags", ["domain_id"])
+        # Drop vault_id column if it still exists
+        conn.execute(sa.text(
+            "ALTER TABLE tags DROP COLUMN IF EXISTS vault_id"
+        ))
+
+        # Add domain_id only if it is not there yet
+        col_exists = conn.execute(
+            sa.text(
+                "SELECT 1 FROM information_schema.columns "
+                "WHERE table_name='tags' AND column_name='domain_id'"
+            )
+        ).fetchone()
+        if not col_exists:
+            op.add_column(
+                "tags",
+                sa.Column(
+                    "domain_id",
+                    sa.String(32),
+                    sa.ForeignKey("domains.domain_id", ondelete="CASCADE"),
+                    nullable=False,
+                    server_default="default",
+                ),
+            )
+            op.alter_column("tags", "domain_id", server_default=None)
+
+        # New UNIQUE constraint and index (idempotent)
+        conn.execute(sa.text(
+            "ALTER TABLE tags DROP CONSTRAINT IF EXISTS uq_tags_name_domain_campaign"
+        ))
+        op.create_unique_constraint(
+            "uq_tags_name_domain_campaign",
+            "tags",
+            ["name", "domain_id", "campaign_id"],
+        )
+        conn.execute(sa.text("DROP INDEX IF EXISTS idx_tags_domain"))
+        op.create_index("idx_tags_domain", "tags", ["domain_id"])
 
     # ------------------------------------------------------------------
     # 2. campaigns: vault_id -> domain_id
     # ------------------------------------------------------------------
-    op.drop_column("campaigns", "vault_id")
-    op.add_column(
-        "campaigns",
-        sa.Column(
-            "domain_id",
-            sa.String(32),
-            sa.ForeignKey("domains.domain_id", ondelete="CASCADE"),
-            nullable=False,
-            server_default="default",  # temporary default for existing rows
-        ),
-    )
-    op.alter_column("campaigns", "domain_id", server_default=None)
+    campaigns_vault = conn.execute(
+        sa.text(
+            "SELECT 1 FROM information_schema.columns "
+            "WHERE table_name='campaigns' AND column_name='vault_id'"
+        )
+    ).fetchone()
+    if campaigns_vault:
+        op.drop_column("campaigns", "vault_id")
+
+    campaigns_domain = conn.execute(
+        sa.text(
+            "SELECT 1 FROM information_schema.columns "
+            "WHERE table_name='campaigns' AND column_name='domain_id'"
+        )
+    ).fetchone()
+    if not campaigns_domain:
+        op.add_column(
+            "campaigns",
+            sa.Column(
+                "domain_id",
+                sa.String(32),
+                sa.ForeignKey("domains.domain_id", ondelete="CASCADE"),
+                nullable=False,
+                server_default="default",
+            ),
+        )
+        op.alter_column("campaigns", "domain_id", server_default=None)
 
     # ------------------------------------------------------------------
     # 3. pipelines: add campaign_id, update index
     # ------------------------------------------------------------------
-    op.drop_index("idx_pipelines_domain", table_name="pipelines")
-    op.add_column(
-        "pipelines",
-        sa.Column(
-            "campaign_id",
-            postgresql.UUID(as_uuid=True),
-            sa.ForeignKey("campaigns.id", ondelete="CASCADE"),
-            nullable=True,
-        ),
-    )
+    conn.execute(sa.text("DROP INDEX IF EXISTS idx_pipelines_domain"))
+
+    pipelines_campaign = conn.execute(
+        sa.text(
+            "SELECT 1 FROM information_schema.columns "
+            "WHERE table_name='pipelines' AND column_name='campaign_id'"
+        )
+    ).fetchone()
+    if not pipelines_campaign:
+        op.add_column(
+            "pipelines",
+            sa.Column(
+                "campaign_id",
+                postgresql.UUID(as_uuid=True),
+                sa.ForeignKey("campaigns.id", ondelete="CASCADE"),
+                nullable=True,
+            ),
+        )
+
+    conn.execute(sa.text("DROP INDEX IF EXISTS idx_pipelines_domain_campaign"))
     op.create_index(
         "idx_pipelines_domain_campaign",
         "pipelines",
@@ -98,12 +171,14 @@ def upgrade() -> None:
     )
 
     # ------------------------------------------------------------------
-    # 4. pipeline_labels: DROP TABLE
+    # 4. pipeline_labels: DROP TABLE IF EXISTS
     # ------------------------------------------------------------------
-    op.drop_table("pipeline_labels")
+    conn.execute(sa.text("DROP TABLE IF EXISTS pipeline_labels"))
 
 
 def downgrade() -> None:
+    conn = op.get_bind()
+
     # ------------------------------------------------------------------
     # 4. Restore pipeline_labels
     # ------------------------------------------------------------------
@@ -126,14 +201,17 @@ def downgrade() -> None:
     # ------------------------------------------------------------------
     # 3. pipelines: remove campaign_id, restore old index
     # ------------------------------------------------------------------
-    op.drop_index("idx_pipelines_domain_campaign", table_name="pipelines")
+    conn.execute(sa.text("DROP INDEX IF EXISTS idx_pipelines_domain_campaign"))
     op.drop_column("pipelines", "campaign_id")
+    conn.execute(sa.text("DROP INDEX IF EXISTS idx_pipelines_domain"))
     op.create_index("idx_pipelines_domain", "pipelines", ["domain_id", "is_active"])
 
     # ------------------------------------------------------------------
     # 2. campaigns: domain_id -> vault_id
     # ------------------------------------------------------------------
-    op.drop_column("campaigns", "domain_id")
+    conn.execute(sa.text(
+        "ALTER TABLE campaigns DROP COLUMN IF EXISTS domain_id"
+    ))
     op.add_column(
         "campaigns",
         sa.Column(
@@ -149,9 +227,13 @@ def downgrade() -> None:
     # ------------------------------------------------------------------
     # 1. tags: domain_id -> vault_id
     # ------------------------------------------------------------------
-    op.drop_constraint("uq_tags_name_domain_campaign", "tags", type_="unique")
-    op.drop_index("idx_tags_domain", table_name="tags")
-    op.drop_column("tags", "domain_id")
+    conn.execute(sa.text(
+        "ALTER TABLE tags DROP CONSTRAINT IF EXISTS uq_tags_name_domain_campaign"
+    ))
+    conn.execute(sa.text("DROP INDEX IF EXISTS idx_tags_domain"))
+    conn.execute(sa.text(
+        "ALTER TABLE tags DROP COLUMN IF EXISTS domain_id"
+    ))
     op.add_column(
         "tags",
         sa.Column(
@@ -163,9 +245,13 @@ def downgrade() -> None:
         ),
     )
     op.alter_column("tags", "vault_id", server_default=None)
+    conn.execute(sa.text(
+        "ALTER TABLE tags DROP CONSTRAINT IF EXISTS uq_tags_name_vault_campaign"
+    ))
     op.create_unique_constraint(
         "uq_tags_name_vault_campaign",
         "tags",
         ["name", "vault_id", "campaign_id"],
     )
+    conn.execute(sa.text("DROP INDEX IF EXISTS idx_tags_vault"))
     op.create_index("idx_tags_vault", "tags", ["vault_id"])
