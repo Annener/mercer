@@ -27,11 +27,25 @@ const DocumentsTabMixin = {
         </div>`;
     },
 
+    // Гарантированно получить vault_id: сначала из кэша, затем запросить заново
+    async _resolveVaultId() {
+        if (this._activeVaultId) return this._activeVaultId;
+        try {
+            const vaults = await this.api.getSettingsVaults();
+            const arr = Array.isArray(vaults) ? vaults : [];
+            const active = arr.find(v => v.is_active) || arr[0];
+            this._activeVaultId = active?.vault_id || active?.id || null;
+        } catch (e) {
+            this._activeVaultId = null;
+        }
+        return this._activeVaultId;
+    },
+
     async loadDocumentsData() {
-        const vaultId = this._activeVaultId || null;
+        const vaultId = await this._resolveVaultId();
         if (!vaultId) {
             const tb = document.getElementById('docs-tbody');
-            if (tb) tb.innerHTML = '<tr><td colspan="4" class="empty-state">Выберите Vault в настройках</td></tr>';
+            if (tb) tb.innerHTML = '<tr><td colspan="4" class="empty-state">Vault не найден. Добавьте Vault в настройках.</td></tr>';
             return;
         }
         try {
@@ -90,7 +104,7 @@ const DocumentsTabMixin = {
 
     async _openDocsSidePanel(doc) {
         this._docsCurrentDoc = doc;
-        const vaultId = this._activeVaultId || null;
+        const vaultId = await this._resolveVaultId();
         const panel = document.getElementById('docs-side-panel');
         if (!panel) return;
         panel.style.display = 'block';
@@ -174,8 +188,8 @@ const DocumentsTabMixin = {
 
     async handleDocumentsAction(action, target) {
         if (action === 'run-indexer') {
-            const vaultId = this._activeVaultId || null;
-            if (!vaultId) { alert('Vault не выбран'); return; }
+            const vaultId = await this._resolveVaultId();
+            if (!vaultId) { alert('Vault не найден. Добавьте Vault в настройках.'); return; }
             const status = document.getElementById('docs-indexer-status');
             if (status) status.textContent = '⏳ Индексация запущена...';
             try {
