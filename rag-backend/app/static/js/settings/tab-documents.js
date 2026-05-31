@@ -32,7 +32,8 @@ const DocumentsTabMixin = {
         try {
             const vaults = await this.api.getSettingsVaults();
             const arr = Array.isArray(vaults) ? vaults : [];
-            const active = arr.find(v => v.is_active) || arr[0];
+            // Приоритет: enabled vault, затем любой первый
+            const active = arr.find(v => v.enabled) || arr[0];
             this._activeVaultId = active?.vault_id || active?.id || null;
         } catch (e) {
             this._activeVaultId = null;

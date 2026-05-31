@@ -1,236 +1,156 @@
+// Settings Manager
 class SettingsManager {
-  constructor(api) {
-    this.api = api;
-    this.currentTab = 'domains';
-    this._initialized = false;
-    this._activeVaultId = null;
-    this.init();
-  }
-
-  async init() {
-    try {
-      await this._loadActiveVault();
-      this.attachEventListeners();
-      await this.loadTab(this.currentTab);
-      await this.updateStatusBanner();
-      this._initialized = true;
-    } catch (error) {
-      console.error('SettingsManager init failed:', error);
+    constructor() {
+        this.api = chatAPI;
+        this.currentTab = 'status';
+        this._activeVaultId = null;
+        this._tabContent = document.getElementById('settings-tab-content');
+        this._tabNav = document.getElementById('settings-tab-nav');
+        this.initNav();
+        this.loadTab('status');
     }
-  }
 
-  async _loadActiveVault() {
-    try {
-      const vaults = await this.api.getSettingsVaults();
-      const arr = Array.isArray(vaults) ? vaults : [];
-      const active = arr.find(v => v.is_active) || arr[0];
-      this._activeVaultId = active?.vault_id || active?.id || null;
-    } catch (e) { /* ignore */ }
-  }
-
-  attachEventListeners() {
-    const settingsBtn = document.getElementById('settings-btn');
-    const backBtn = document.getElementById('back-to-chat-btn');
-    if (settingsBtn) settingsBtn.addEventListener('click', () => this.show());
-    else console.warn('settings-btn not found');
-    if (backBtn) backBtn.addEventListener('click', () => this.hide());
-
-    document.querySelectorAll('.settings-tabs button').forEach(button => {
-      button.addEventListener('click', () => this.loadTab(button.dataset.tab));
-    });
-  }
-
-  show() {
-    document.querySelector('.app-container')?.classList.add('hidden');
-    document.getElementById('settings-page')?.classList.remove('hidden');
-    this.loadTab(this.currentTab);
-  }
-
-  hide() {
-    document.getElementById('settings-page')?.classList.add('hidden');
-    document.querySelector('.app-container')?.classList.remove('hidden');
-    this.updateStatusBanner();
-  }
-
-  _tabMap() {
-    return {
-      'domains':    'renderDomainsTab',
-      'vaults':     'renderVaultsTab',
-      'gen-models': 'renderGenerationModelsTab',
-      'emb-models': 'renderEmbeddingModelsTab',
-      'params':     'renderParamsTab',
-      'pipelines':  'renderPipelinesTab',
-      'campaigns':  'renderCampaignsTab',
-      'documents':  'renderDocumentsTab',
-    };
-  }
-
-  async loadTab(tabId) {
-    if (!tabId) return;
-    this.currentTab = tabId;
-
-    document.querySelectorAll('.settings-tabs button').forEach(btn => {
-      btn.classList.toggle('active', btn.dataset.tab === tabId);
-    });
-
-    const container = document.getElementById('settings-content');
-    if (!container) return;
-    container.innerHTML = '<div class="loading">Загрузка...</div>';
-
-    try {
-      const methodName = this._tabMap()[tabId];
-      container.innerHTML = methodName
-        ? await this[methodName]()
-        : '<div class="placeholder"></div>';
-      this.attachTabEventHandlers(tabId);
-      if (tabId === 'documents') {
-        await this.loadDocumentsData();
-      }
-    } catch (error) {
-      container.innerHTML = `<div class="error">${this.escapeHtml(error.message)}</div>`;
+    initNav() {
+        if (!this._tabNav) return;
+        this._tabNav.addEventListener('click', (e) => {
+            const btn = e.target.closest('[data-tab]');
+            if (!btn) return;
+            this._tabNav.querySelectorAll('[data-tab]').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            this.loadTab(btn.dataset.tab);
+        });
     }
-  }
 
-  attachTabEventHandlers(tabId) {
-    const content = document.getElementById('settings-content');
+    async loadTab(tab) {
+        this.currentTab = tab;
+        if (!this._tabContent) return;
+        this._tabContent.innerHTML = '<div class="loading-state">Загрузка...</div>';
 
-    // --- Dropdown меню ---
-    content?.querySelectorAll('.card-menu-toggle').forEach((button) => {
-      button.addEventListener('click', (e) => {
-        e.stopPropagation();
-        e.preventDefault();
-        const menu = button.nextElementSibling;
-        const isOpen = menu.classList.contains('open');
-        content.querySelectorAll('.card-menu.open').forEach(m => m.classList.remove('open'));
-        if (!isOpen) menu.classList.add('open');
-      });
-    });
-
-    content?.querySelectorAll('.card-menu').forEach((menu) => {
-      menu.addEventListener('click', (e) => e.stopPropagation());
-    });
-
-    if (this._closeMenusHandler) {
-      document.removeEventListener('click', this._closeMenusHandler);
-    }
-    this._closeMenusHandler = () => {
-      content?.querySelectorAll('.card-menu.open').forEach(m => m.classList.remove('open'));
-    };
-    document.addEventListener('click', this._closeMenusHandler);
-
-    // --- Обычные action-обработчики (ИСКЛЮЧАЕМ card-menu-item) ---
-    content?.querySelectorAll('[data-action]:not(.card-menu-item)').forEach((button) => {
-      button.addEventListener('click', () => this.handleAction(button.dataset.action, button.dataset.id, button));
-    });
-
-    // --- card-menu-item обрабатываются отдельно ---
-    content?.querySelectorAll('.card-menu-item[data-action]').forEach((button) => {
-      button.addEventListener('click', (e) => {
-        e.stopPropagation();
-        content.querySelectorAll('.card-menu.open').forEach(m => m.classList.remove('open'));
-        this.handleAction(button.dataset.action, button.dataset.id, button);
-      });
-    });
-
-    content?.querySelectorAll('[data-param]').forEach((input) => {
-      const saveParam = async () => {
-        let value = input.type === 'checkbox' ? input.checked : input.value;
-        await this.api.updateSettingsParam(input.dataset.param, value);
-        if (input.dataset.param === 'pdf_sidecar.url') await this.updateStatusBanner();
-      };
-      if (input.type === 'checkbox') input.addEventListener('change', saveParam);
-      else input.addEventListener('blur', saveParam);
-    });
-  }
-
-  async handleAction(action, id, button) {
-    try {
-      // campaigns
-      if (['new-campaign', 'edit-campaign', 'delete-campaign'].includes(action)) {
-        await this.handleCampaignsAction(action, id);
-        return;
-      }
-      // documents — все действия вкладки Documents
-      if (['run-indexer', 'delete-doc', 'close-docs-panel', 'add-doc-tag', 'save-doc-tags'].includes(action)) {
-        await this.handleDocumentsAction(action, button);
-        return;
-      }
-
-      if (action === 'new-domain') await this.showDomainModal();
-      if (action === 'edit-domain') await this.showDomainModal(id);
-      if (action === 'edit-prompts') await this.showPromptsModal(id);
-      if (action === 'delete-domain' && confirm('Удалить домен?')) await this.api.deleteDomain(id);
-      if (action === 'new-vault') await this.showVaultModal();
-      if (action === 'edit-vault') await this.showVaultModal(id);
-      if (action === 'toggle-vault') await this.api.toggleVault(id);
-      if (action === 'delete-vault' && confirm('Удалить vault и его векторы?')) await this.api.deleteVault(id);
-      if (action === 'new-gen') await this.showGenerationModelModal();
-      if (action === 'edit-gen') await this.showGenerationModelModal(id);
-      if (action === 'check-gen') alert(JSON.stringify(await this.api.checkGenerationModel(id), null, 2));
-      if (action === 'activate-gen') await this.api.activateGenerationModel(id);
-      if (action === 'delete-gen' && confirm('Удалить модель?')) await this.api.deleteGenerationModel(id);
-      if (action === 'new-emb') await this.showEmbeddingModelModal();
-      if (action === 'edit-emb') await this.showEmbeddingModelModal(id);
-      if (action === 'check-emb') alert(JSON.stringify(await this.api.checkEmbeddingModel(id), null, 2));
-      if (action === 'delete-emb' && confirm('Удалить embedding-модель?')) await this.api.deleteEmbeddingModel(id);
-      if (action === 'reset-params' && confirm('Сбросить все параметры?')) {
-        await this.api.resetSettingsParams();
-        await this.loadTab(this.currentTab);
-        await this.updateStatusBanner();
-        return;
-      }
-      if (action === 'edit-pipeline') await this.showPipelineEditModal(id);
-      if (action === 'default-param') await this.api.updateSettingsParam(id, SETTINGS_DEFAULTS[id] ?? '');
-      if (action === 'new-pipeline') await this.showPipelineModal();
-      if (action === 'activate-pipeline') await this.api.activatePipeline(id);
-      if (action === 'deactivate-pipeline') await this.api.deactivatePipeline(id);
-      if (action === 'delete-pipeline' && confirm('Удалить pipeline? Это действие необратимо.')) {
-        await this.api.deletePipeline(id);
-      }
-      await this.loadTab(this.currentTab);
-      await this.updateStatusBanner();
-    } catch (error) {
-      alert(error.message);
-    }
-  }
-
-  async updateStatusBanner() {
-    try {
-      const status = await this.api.getSettingsStatus();
-      const banner = document.getElementById('status-banner');
-      if (!banner) return;
-
-      const messages = [];
-      if (!status.has_active_generation_model) messages.push('Не выбрана модель генерации. Чат недоступен.');
-      if (!status.has_active_embedding_model)  messages.push('Нет активной embedding-модели. RAG недоступен.');
-      if (!status.has_vaults)                  messages.push('Нет ни одного vault. RAG недоступен.');
-      if (!status.pdf_sidecar_available)        messages.push('PDF Sidecar недоступен. Загрузка PDF работает через pdfminer.');
-
-      banner.innerHTML = messages
-        .map(msg => `<div>${this.escapeHtml(msg)}</div>`)
-        .join('');
-      banner.classList.toggle('hidden', messages.length === 0);
-
-      const chatInput = document.getElementById('message-input');
-      if (chatInput) {
-        chatInput.disabled = !status.has_active_generation_model;
-        if (!status.has_active_generation_model) {
-          chatInput.placeholder = 'Сначала настройте модель генерации';
+        // Сбрасываем _activeVaultId при смене вкладки на documents/campaigns, чтобы перезагрузить
+        if (tab === 'documents' || tab === 'campaigns') {
+            this._activeVaultId = null;
         }
-      }
-    } catch (error) {
-      console.error('Failed to update status banner:', error);
-    }
-  }
 
-  escapeHtml(text) {
-    if (text === null || text === undefined) return '';
-    return String(text)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#039;');
-  }
+        try {
+            // Получаем активный vault заранее для вкладок, которые от него зависят
+            if (tab === 'documents' || tab === 'campaigns') {
+                await this._resolveVaultId();
+            }
+
+            let html = '';
+            switch (tab) {
+                case 'status':    html = await this.renderStatusTab(); break;
+                case 'params':    html = await this.renderParamsTab(); break;
+                case 'domains':   html = await this.renderDomainsTab(); break;
+                case 'vaults':    html = await this.renderVaultsTab(); break;
+                case 'gen-models':    html = await this.renderGenModelsTab(); break;
+                case 'emb-models':    html = await this.renderEmbModelsTab(); break;
+                case 'pipelines': html = await this.renderPipelinesTab(); break;
+                case 'campaigns': html = await this.renderCampaignsTab(); break;
+                case 'documents': html = await this.renderDocumentsTab(); break;
+                default: html = '<div class="empty-state">Неизвестная вкладка</div>';
+            }
+            this._tabContent.innerHTML = html;
+
+            // После рендера — загружаем данные для documents
+            if (tab === 'documents') {
+                await this.loadDocumentsData();
+            }
+
+            this.bindTabEvents(tab);
+        } catch (e) {
+            this._tabContent.innerHTML = `<div class="empty-state" style="color:var(--color-error)">Ошибка загрузки: ${this.escapeHtml(e.message)}</div>`;
+        }
+    }
+
+    bindTabEvents(tab) {
+        if (!this._tabContent) return;
+
+        // Универсальный делегат кликов
+        this._tabContent.addEventListener('click', async (e) => {
+            const btn = e.target.closest('[data-action]');
+            if (!btn) return;
+            const action = btn.dataset.action;
+            const id = btn.dataset.id || null;
+
+            // Меню-тоглы
+            if (action === undefined) return;
+
+            try {
+                switch (tab) {
+                    case 'status':    await this.handleStatusAction(action, id); break;
+                    case 'params':    await this.handleParamsAction(action, btn); break;
+                    case 'domains':   await this.handleDomainsAction(action, id); break;
+                    case 'vaults':    await this.handleVaultsAction(action, id); break;
+                    case 'gen-models':    await this.handleGenModelsAction(action, id); break;
+                    case 'emb-models':    await this.handleEmbModelsAction(action, id); break;
+                    case 'pipelines': await this.handlePipelinesAction(action, id); break;
+                    case 'campaigns': await this.handleCampaignsAction(action, id); break;
+                    case 'documents': await this.handleDocumentsAction(action, btn); break;
+                }
+            } catch (err) {
+                console.error('Tab action error:', err);
+                alert('Ошибка: ' + err.message);
+            }
+        });
+
+        // Меню-тоглы (⋮)
+        this._tabContent.addEventListener('click', (e) => {
+            const toggle = e.target.closest('.card-menu-toggle');
+            if (!toggle) return;
+            e.stopPropagation();
+            const container = toggle.closest('.card-menu-container');
+            if (!container) return;
+            const menu = container.querySelector('.card-menu');
+            if (!menu) return;
+            const isOpen = menu.classList.contains('open');
+            // Закрываем все
+            document.querySelectorAll('.card-menu.open').forEach(m => m.classList.remove('open'));
+            if (!isOpen) menu.classList.add('open');
+        });
+
+        document.addEventListener('click', (e) => {
+            if (!e.target.closest('.card-menu-container')) {
+                document.querySelectorAll('.card-menu.open').forEach(m => m.classList.remove('open'));
+            }
+        }, { once: true });
+    }
+
+    // Стаб — переопределяется в миксинах по необходимости
+    async handleStatusAction(action, id) {}
+    async handleParamsAction(action, btn) {}
+    async handleDomainsAction(action, id) {}
+    async handleVaultsAction(action, id) {}
+    async handleGenModelsAction(action, id) {}
+    async handleEmbModelsAction(action, id) {}
+    async handlePipelinesAction(action, id) {
+        if (action === 'new-pipeline') { await this.showPipelineModal(); return; }
+        if (action === 'edit-pipeline') { await this.showPipelineEditModal(id); return; }
+        if (action === 'activate-pipeline') {
+            try { await this.api.activatePipeline(id); this.loadTab('pipelines'); } catch(e) { alert(e.message); }
+            return;
+        }
+        if (action === 'deactivate-pipeline') {
+            try { await this.api.deactivatePipeline(id); this.loadTab('pipelines'); } catch(e) { alert(e.message); }
+            return;
+        }
+        if (action === 'delete-pipeline') {
+            if (!confirm('Удалить pipeline?')) return;
+            try { await this.api.deletePipeline(id); this.loadTab('pipelines'); } catch(e) { alert(e.message); }
+        }
+    }
+
+    escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text == null ? '' : String(text);
+        return div.innerHTML;
+    }
 }
-const settingsManager = new SettingsManager(chatAPI);
+
+document.addEventListener('DOMContentLoaded', () => {
+    if (!window.chatAPI) {
+        console.error('chatAPI not available — SettingsManager will not initialize');
+        return;
+    }
+    window.settingsManager = new SettingsManager();
+});

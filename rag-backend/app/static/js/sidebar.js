@@ -9,15 +9,16 @@ class SidebarManager {
         this.renameCancelBtn = document.getElementById('rename-cancel-btn');
 
         this.domainSelector = document.getElementById('domain-select');
-        this.worldSelectorBlock = document.getElementById('world-selector');
-        this.worldSelect = document.getElementById('world-select');
+        this.campaignSelectorBlock = document.getElementById('world-selector');
+        this.campaignSelect = document.getElementById('world-select');
         this.campaignsList = document.getElementById('campaigns-list');
 
         this.currentRenameChatId = null;
         this.domains = [];
         this.domainCache = {};
         this.currentDomain = localStorage.getItem('currentDomain') || null;
-        this.currentWorldId = localStorage.getItem('currentWorldId') || '';
+        this.currentVaultId = null;
+        this.currentCampaignId = localStorage.getItem('currentCampaignId') || '';
 
         this.initEventListeners();
         this.loadDomains();
@@ -33,16 +34,14 @@ class SidebarManager {
             this.switchDomain(e.target.value);
         });
 
-        this.worldSelect?.addEventListener('change', async (e) => {
-            this.currentWorldId = e.target.value;
-            localStorage.setItem('currentWorldId', this.currentWorldId);
-            await this.loadCampaigns();
+        // campaign select (replaces world-select)
+        this.campaignSelect?.addEventListener('change', (e) => {
+            this.currentCampaignId = e.target.value;
+            localStorage.setItem('currentCampaignId', this.currentCampaignId);
         });
 
         this.renameModal?.addEventListener('click', (e) => {
-            if (e.target === this.renameModal) {
-                this.hideRenameModal();
-            }
+            if (e.target === this.renameModal) this.hideRenameModal();
         });
 
         document.addEventListener('click', (e) => {
@@ -65,7 +64,6 @@ class SidebarManager {
             this.domains = Array.isArray(data) ? data : (data.domains || []);
             this.domainCache = {};
             for (const domain of this.domains) {
-                // config_api возвращает DomainInfo без display_name — используем domain_id
                 this.domainCache[domain.domain_id] = domain.display_name || domain.domain_id;
             }
             this.renderDomainOptions();
@@ -74,14 +72,14 @@ class SidebarManager {
                 this.domainSelector.value = this.currentDomain;
             } else if (this.domains.length > 0) {
                 this.currentDomain = this.domains[0].domain_id;
-                this.domainSelector.value = this.currentDomain;
+                if (this.domainSelector) this.domainSelector.value = this.currentDomain;
                 localStorage.setItem('currentDomain', this.currentDomain);
             } else {
                 this.currentDomain = null;
             }
 
             await this.loadChats();
-            await this.loadWorlds();
+            await this.loadCampaignsForDomain();
         } catch (error) {
             console.error('Failed to load domains:', error);
             if (this.chatList) {
@@ -117,7 +115,6 @@ class SidebarManager {
 
     formatDomainName(domainId) {
         if (domainId === 'default') return null;
-        // Пытаемся взять кэшированное имя; fallback на верхний регистр
         const specialNames = { 'dnd': 'D&D', 'work': 'Работа' };
         if (specialNames[domainId]) return specialNames[domainId];
         return this.domainCache[domainId] || domainId.toUpperCase();
@@ -125,17 +122,12 @@ class SidebarManager {
 
     async switchDomain(domainId) {
         if (domainId === this.currentDomain) return;
-
         this.currentDomain = domainId;
         localStorage.setItem('currentDomain', domainId);
-
-        if (window.chatManager) {
-            window.chatManager.reset();
-        }
-
+        if (window.chatManager) window.chatManager.reset();
         this.closeAllDropdowns();
         await this.loadChats();
-        await this.loadWorlds();
+        await this.loadCampaignsForDomain();
     }
 
     getCurrentDomainInfo() {
@@ -160,10 +152,7 @@ class SidebarManager {
         if (!chats || chats.length === 0) {
             const empty = document.createElement('div');
             empty.className = 'empty-state';
-            empty.style.color = '#95a5a6';
-            empty.style.padding = '20px 10px';
-            empty.style.textAlign = 'center';
-            empty.style.fontSize = '13px';
+            empty.style.cssText = 'color:#95a5a6;padding:20px 10px;text-align:center;font-size:13px;';
             empty.textContent = 'Нет бесед в этом домене';
             this.chatList.appendChild(empty);
             return;
@@ -225,18 +214,10 @@ class SidebarManager {
 
     async selectChat(chatId) {
         if (!this.chatList) return;
-        this.chatList.querySelectorAll('.chat-item').forEach(item => {
-            item.classList.remove('active');
-        });
-
+        this.chatList.querySelectorAll('.chat-item').forEach(item => item.classList.remove('active'));
         const chatItem = this.chatList.querySelector(`[data-chat-id="${chatId}"]`);
-        if (chatItem) {
-            chatItem.classList.add('active');
-        }
-
-        if (window.chatManager) {
-            await window.chatManager.loadChat(chatId);
-        }
+        if (chatItem) chatItem.classList.add('active');
+        if (window.chatManager) await window.chatManager.loadChat(chatId);
     }
 
     async createChatForCurrentDomain() {
@@ -244,9 +225,13 @@ class SidebarManager {
             alert('Выберите домен');
             return;
         }
-
         try {
-            const response = await chatAPI.createChat(null, this.currentDomain, this.currentWorldId || null);
+            // Передаём vault_id текущего активного vault и выбранную кампанию
+            const response = await chatAPI.createChat(
+                this.currentVaultId || null,
+                this.currentDomain,
+                this.currentCampaignId || null
+            );
             await this.loadChats();
             await this.selectChat(response.chat_id);
         } catch (error) {
@@ -255,75 +240,60 @@ class SidebarManager {
         }
     }
 
-    async loadWorlds() {
-        if (!this.worldSelectorBlock || !this.worldSelect) return;
+    // Загружает кампании для текущего домена через vault
+    async loadCampaignsForDomain() {
+        const block = this.campaignSelectorBlock;
+        const select = this.campaignSelect;
+        if (!block || !select) return;
+
         try {
+            // Находим активный vault для текущего домена
             const vaults = await chatAPI.getSettingsVaults();
-            // Ищем vault ТОЛЬКО для текущего домена, без fallback на любой enabled
-            const vault = Array.isArray(vaults)
-                ? vaults.find(v => v.domain_id === this.currentDomain && v.enabled)
-                : null;
+            const vaultArr = Array.isArray(vaults) ? vaults : [];
+            const vault = vaultArr.find(v => v.domain_id === this.currentDomain && v.enabled);
 
             if (!vault) {
-                this.worldSelectorBlock.style.display = 'none';
+                this.currentVaultId = null;
+                block.style.display = 'none';
                 return;
             }
 
-            let worlds = [];
-            try {
-                worlds = await chatAPI.getWorlds(vault.vault_id);
-            } catch (worldsError) {
-                // Эндпоинт /api/settings/worlds может быть недоступен или вернуть пустой результат
-                // Это не критично — просто скрываем world selector
-                console.warn('Worlds API unavailable:', worldsError.message);
-                this.worldSelectorBlock.style.display = 'none';
+            this.currentVaultId = vault.vault_id;
+
+            // Загружаем кампании для этого vault
+            const campaigns = await chatAPI.getCampaigns(vault.vault_id);
+            const campArr = Array.isArray(campaigns) ? campaigns : (campaigns.campaigns || []);
+
+            if (!campArr.length) {
+                block.style.display = 'none';
                 return;
             }
 
-            this.worldSelect.innerHTML = '<option value="">Без мира</option>';
-            for (const world of (worlds || [])) {
-                const option = document.createElement('option');
-                option.value = world.world_id;
-                option.textContent = world.name;
-                this.worldSelect.appendChild(option);
+            select.innerHTML = '<option value="">— без кампании —</option>';
+            for (const c of campArr) {
+                const opt = document.createElement('option');
+                opt.value = String(c.id);
+                opt.textContent = c.name;
+                select.appendChild(opt);
             }
-            this.worldSelect.value = worlds.some(w => w.world_id === this.currentWorldId) ? this.currentWorldId : '';
-            this.currentWorldId = this.worldSelect.value;
-            this.worldSelectorBlock.style.display = worlds.length ? 'block' : 'none';
-            await this.loadCampaigns();
-        } catch (error) {
-            console.warn('Failed to load worlds:', error.message);
-            this.worldSelectorBlock.style.display = 'none';
-        }
-    }
 
-    async loadCampaigns() {
-        if (!this.campaignsList) return;
-        this.campaignsList.innerHTML = '';
-        if (!this.currentWorldId) return;
-        try {
-            const campaigns = await chatAPI.getWorldCampaigns(this.currentWorldId);
-            if (!campaigns || campaigns.length === 0) return;
+            // Восстанавливаем ранее выбранную кампанию
+            if (this.currentCampaignId && campArr.some(c => String(c.id) === this.currentCampaignId)) {
+                select.value = this.currentCampaignId;
+            } else {
+                this.currentCampaignId = '';
+                select.value = '';
+            }
 
-            this.campaignsList.innerHTML = campaigns.map(campaign => `
-                <button class="campaign-item ${campaign.is_active ? 'active' : ''}" data-id="${this.escapeHtml(campaign.campaign_id)}">
-                    ${this.escapeHtml(campaign.name)}
-                </button>
-            `).join('');
-            this.campaignsList.querySelectorAll('.campaign-item').forEach(button => {
-                button.addEventListener('click', async () => {
-                    try {
-                        await chatAPI.toggleCampaign(this.currentWorldId, button.dataset.id);
-                        await this.loadCampaigns();
-                    } catch (err) {
-                        console.warn('Failed to toggle campaign:', err.message);
-                        alert(`Ошибка: ${err.message}`);
-                    }
-                });
-            });
+            block.style.display = 'block';
+
+            // Обновляем label блока
+            const label = block.querySelector('label');
+            if (label) label.textContent = 'Кампания';
+
         } catch (error) {
-            // Эндпоинт кампаний может быть недоступен — это не критично для сайдбара
-            console.warn('Failed to load campaigns:', error.message);
+            console.warn('Failed to load campaigns for sidebar:', error.message);
+            block.style.display = 'none';
         }
     }
 
@@ -345,12 +315,10 @@ class SidebarManager {
     async confirmRename() {
         const newTitle = this.renameInput.value.trim();
         if (!newTitle || !this.currentRenameChatId) return;
-
         try {
             await chatAPI.renameChat(this.currentRenameChatId, newTitle);
             this.hideRenameModal();
             await this.loadChats();
-
             if (window.chatManager && window.chatManager.currentChatId === this.currentRenameChatId) {
                 window.chatManager.chatTitle.textContent = newTitle;
             }
@@ -362,11 +330,9 @@ class SidebarManager {
 
     async deleteChat(chatId) {
         if (!confirm('Вы уверены, что хотите удалить эту беседу?')) return;
-
         try {
             await chatAPI.deleteChat(chatId);
             await this.loadChats();
-
             if (window.chatManager && window.chatManager.currentChatId === chatId) {
                 window.chatManager.reset();
             }
