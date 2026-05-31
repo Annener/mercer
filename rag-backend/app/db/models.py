@@ -162,6 +162,79 @@ class Vault(Base):
     embedding_model: Mapped[EmbeddingModel | None] = relationship(back_populates="vaults")
 
 
+class Tag(Base):
+    __tablename__ = "tags"
+    __table_args__ = (
+        UniqueConstraint("name", "vault_id", "campaign_id", name="uq_tags_name_vault_campaign"),
+        Index("idx_tags_vault", "vault_id"),
+        Index("idx_tags_campaign", "campaign_id"),
+    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    vault_id: Mapped[str] = mapped_column(String(64), ForeignKey("vaults.vault_id", ondelete="CASCADE"))
+    campaign_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("campaigns.id", ondelete="CASCADE"), nullable=True
+    )
+    color: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Document(Base):
+    __tablename__ = "documents"
+    __table_args__ = (
+        UniqueConstraint("vault_id", "source_path", name="uq_documents_vault_path"),
+        Index("idx_documents_vault", "vault_id"),
+        Index("idx_documents_status", "vault_id", "status"),
+    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    vault_id: Mapped[str] = mapped_column(String(64), ForeignKey("vaults.vault_id", ondelete="CASCADE"))
+    source_path: Mapped[str] = mapped_column(String(1024), nullable=False)
+    title: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    md5: Mapped[str] = mapped_column(String(32), nullable=False)
+    mtime: Mapped[int] = mapped_column(Integer, nullable=False)
+    indexed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="pending")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class DocumentLabel(Base):
+    __tablename__ = "document_labels"
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE"), primary_key=True
+    )
+    tag_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tags.id", ondelete="CASCADE"), primary_key=True
+    )
+
+
+class PipelineLabel(Base):
+    __tablename__ = "pipeline_labels"
+    pipeline_uuid: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("pipelines.id", ondelete="CASCADE"), primary_key=True
+    )
+    tag_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tags.id", ondelete="CASCADE"), primary_key=True
+    )
+
+
+class Campaign(Base):
+    __tablename__ = "campaigns"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    vault_id: Mapped[str] = mapped_column(String(64), ForeignKey("vaults.vault_id"), nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    system_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_session_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
 class Chat(Base):
     __tablename__ = "chats"
 
@@ -169,7 +242,6 @@ class Chat(Base):
     title: Mapped[str | None] = mapped_column(String(512), nullable=True)
     vault_id: Mapped[str | None] = mapped_column(String(64), ForeignKey("vaults.vault_id"), nullable=True)
     domain_id: Mapped[str | None] = mapped_column(String(32), ForeignKey("domains.domain_id"), nullable=True)
-    world_id: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
     locked_pipeline_id: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
     pipeline_versions: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
@@ -201,6 +273,9 @@ class Message(Base):
     chat_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("chats.id", ondelete="CASCADE"), nullable=False)
     role: Mapped[str] = mapped_column(String(16), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
+    pipeline_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("pipelines.id", ondelete="SET NULL"), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     chat: Mapped[Chat] = relationship(back_populates="messages")
@@ -234,27 +309,6 @@ class AuditLog(Base):
     entity_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     details: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-
-
-class Campaign(Base):
-    __tablename__ = "campaigns"
-    __table_args__ = (UniqueConstraint("campaign_id", "world_id", name="uq_campaigns_campaign_world"),)
-
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    campaign_id: Mapped[str] = mapped_column(String(64), nullable=False)
-    world_id: Mapped[str] = mapped_column(String(64), nullable=False)
-    vault_id: Mapped[str] = mapped_column(String(64), ForeignKey("vaults.vault_id"), nullable=False)
-    name: Mapped[str] = mapped_column(String(255), nullable=False)
-    description: Mapped[str | None] = mapped_column(Text, nullable=True)
-    path_prefix: Mapped[str] = mapped_column(String(512), nullable=False)
-    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        onupdate=func.now(),
-        nullable=False,
-    )
 
 
 class Pipeline(Base):

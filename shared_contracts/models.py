@@ -256,47 +256,84 @@ class VaultUpdate(BaseModel):
     chunk_count: int | None = None
 
 
+class TagRead(ORMModel):
+    id: str
+    name: str
+    vault_id: str
+    campaign_id: str | None = None
+    color: str | None = None
+    created_at: datetime | None = None
+
+
+class TagCreate(BaseModel):
+    name: str
+    vault_id: str
+    campaign_id: str | None = None
+    color: str | None = None
+
+
+class TagUpdate(BaseModel):
+    name: str | None = None
+    color: str | None = None
+
+
+class TagsGrouped(BaseModel):
+    """Ответ GET /tags — теги сгруппированы для UI"""
+    global_tags: list[TagRead] = []
+    by_campaign: dict[str, list[TagRead]] = {}  # campaign_id → теги
+
+
+class DocumentRead(ORMModel):
+    id: str
+    vault_id: str
+    source_path: str
+    title: str | None = None
+    md5: str
+    mtime: int
+    indexed_at: datetime | None = None
+    status: Literal["pending", "indexed", "error"]
+    tags: list[TagRead] = []
+    created_at: datetime | None = None
+
+
+class DocumentLabelWrite(BaseModel):
+    """Полная замена тегов документа"""
+    tag_ids: list[str]
+
+
 class CampaignRead(ORMModel):
     id: str
-    campaign_id: str
-    world_id: str
     vault_id: str
     name: str
     description: str | None = None
-    path_prefix: str
-    is_active: bool = True
+    system_prompt: str | None = None
+    last_session_at: datetime | None = None
     created_at: datetime | None = None
-    updated_at: datetime | None = None
+    tags: list[TagRead] = []
 
 
 class CampaignCreate(BaseModel):
-    campaign_id: str
-    world_id: str | None = None
-    vault_id: str | None = None
+    vault_id: str
     name: str
     description: str | None = None
-    path_prefix: str
-    is_active: bool = True
+    system_prompt: str | None = None
 
 
 class CampaignUpdate(BaseModel):
     name: str | None = None
     description: str | None = None
-    path_prefix: str | None = None
-    is_active: bool | None = None
+    system_prompt: str | None = None
 
 
 class PipelineStep(BaseModel):
     order: int
-    type: Literal["book", "world", "campaign"]
+    type: Literal["retrieval", "final"]
     name: str
-    role: Literal["methodology", "lore", "campaign_context", "character_sheet", "session_log", "rules"]
     system_prompt: str
     top_k: int | None = None
-    document_ids: list[str] | None = None
-    world_id: str | None = None
-    categories: list[str] | None = None
-    campaign_id: str | None = None
+    tag_ids: list[str] = []   # только для type="retrieval"; фильтруется бэкендом
+    is_final: bool = False    # ровно один True обязателен в пайплайне
+    role: str | None = None   # опциональная метка для UI
 
 
 class FinalComposition(BaseModel):
@@ -352,7 +389,6 @@ class ChatRecord(BaseModel):
     title: str = "New Chat"
     vault_id: str | None = None
     domain_id: str | None = None
-    world_id: str | None = None
     locked_pipeline_id: str | None = None
     created_at: datetime
     updated_at: datetime
@@ -410,7 +446,6 @@ class TaskStateResponse(BaseModel):
 class CreateChatRequest(BaseModel):
     vault_id: str | None = None
     domain_id: str | None = None
-    world_id: str | None = None
 
 
 class CreateChatResponse(BaseModel):
@@ -538,6 +573,8 @@ __all__ = [
     "ClarificationState",
     "CreateChatRequest",
     "CreateChatResponse",
+    "DocumentLabelWrite",
+    "DocumentRead",
     "DocumentRecord",
     "DomainClarificationFieldCreate",
     "DomainClarificationFieldRead",
@@ -573,6 +610,10 @@ __all__ = [
     "SendMessageRequest",
     "StartIndexTaskRequest",
     "StartIndexTaskResponse",
+    "TagCreate",
+    "TagRead",
+    "TagUpdate",
+    "TagsGrouped",
     "TaskStateResponse",
     "TaskStreamEvent",
     "UpsertChunk",
