@@ -10,50 +10,42 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import delete, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
-from starlette.responses import StreamingResponse
 
-from app.config import AppConfig, EmbeddingModelConfig, VaultConfig
-from app.db.models import (
-    AuditLog,
-    Campaign,
-    Chat,
-    ClarificationState as ClarificationStateRow,
-    EmbeddingModel,
-    Message,
-    Pipeline,
-    Tag,
-    Vault,
-)
-from app.db.session import SessionLocal, get_db
-from app.providers.generation import GenerationProviderUnavailableError, get_generation_provider
-from app.services import clarification_fsm
-from app.services.planner import LLMRAGPlanner, Planner
-from app.services.pipeline_executor import pipeline_executor
-from app.services.pipeline_router import pipeline_router
-from app.services.prompt_pack import PromptPack, format_prompt
-from app.services.retrieval import format_context, retrieve, retrieve_multi_vault
-from app.services.domain_service import domain_service
-from app.services.settings_service import settings_service
+from app.db.models import Campaign, Chat, ClarificationStateRow, Message
+from app.db.session import get_db
+from app.services import settings_service
+from app.services.pipeline_executor import PipelineExecutor
+from app.services.pipeline_router import PipelineRouter
+from app.services.vault_config_service import VaultConfigService
 from shared_contracts.models import (
     ChatMessage,
     ChatRecord,
-    ChunkRecord,
+    ClarificationAnswer,
     ClarificationResponse,
     CreateChatRequest,
     CreateChatResponse,
-    PipelineContext,
-    PipelineResult,
-    PlannerDecision,
-    SearchHit,
+    PipelineExecutionContext,
     SendMessageRequest,
 )
 
 logger = logging.getLogger(__name__)
-
 router = APIRouter(prefix="/chat", tags=["chat"])
+
+config_for_vault = VaultConfigService()
+
+
+class CreateChatRequest(BaseModel):
+    """
+    domain_id — основной идентификатор контекста чата.
+    vault_id оставлен nullable для back-compat (старые клиенты).
+    campaign_id — опциональная привязка к кампании (iter2).
+    TODO(iter4-cleanup): сделать domain_id обязательным, убрать vault_id.
+    """
+    domain_id: str | None = None
+    vault_id: str | None = None  # deprecated back-compat
+    campaign_id: str | None = None
 
 
 class RenameChatRequest(BaseModel):
@@ -98,6 +90,7 @@ async def create_chat(
         title="New Chat",
         vault_id=req.vault_id,
         domain_id=req.domain_id,
+        campaign_id=uuid.UUID(req.campaign_id) if req.campaign_id else None,
         pipeline_versions=await _pipeline_versions(request),
     )
     db.add(chat)
@@ -108,7 +101,7 @@ async def create_chat(
         "chat.create",
         "chat",
         str(chat.id),
-        {"vault_id": req.vault_id, "domain_id": req.domain_id},
+        {"vault_id": req.vault_id, "domain_id": req.domain_id, "campaign_id": req.campaign_id},
     )
     await db.commit()
     logger.info("Created chat: chat_id=%s", chat.id)
@@ -124,29 +117,46 @@ async def list_chats(
     if domain_id is not None:
         stmt = stmt.where(Chat.domain_id == domain_id)
     result = await db.execute(stmt)
-    return ChatListResponse(chats=[_chat_list_item(chat) for chat in result.scalars().all()])
-
-
-@router.get("/{chat_id}", response_model=ChatHistoryResponse)
-async def get_chat(chat_id: str, db: AsyncSession = Depends(get_db)) -> ChatHistoryResponse:
-    chat = await _get_chat_with_messages(db, chat_id)
-    return ChatHistoryResponse(
-        chat=_chat_record(chat),
-        messages=[_chat_message(message) for message in chat.messages],
-        vault_enabled=await _vault_enabled(db, chat.vault_id),
+    chats = result.scalars().all()
+    return ChatListResponse(
+        chats=[
+            ChatListItem(
+                chat_id=str(c.id),
+                title=c.title,
+                vault_id=c.vault_id,
+                domain_id=c.domain_id,
+                vault_enabled=await _vault_enabled(db, c.vault_id),
+                created_at=c.created_at,
+                updated_at=c.updated_at,
+            )
+            for c in chats
+        ]
     )
 
 
-@router.delete("/{chat_id}")
-async def delete_chat(chat_id: str, db: AsyncSession = Depends(get_db)) -> dict[str, str]:
-    chat_uuid = _parse_uuid(chat_id)
-    result = await db.execute(delete(Chat).where(Chat.id == chat_uuid))
-    if result.rowcount == 0:
-        raise HTTPException(status_code=404, detail="Chat not found")
-    await _audit(db, "chat.delete", "chat", chat_id)
-    await db.commit()
-    logger.info("Deleted chat: chat_id=%s", chat_id)
-    return {"status": "ok"}
+@router.get("/{chat_id}/history", response_model=ChatHistoryResponse)
+async def get_chat_history(
+    chat_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> ChatHistoryResponse:
+    chat = await _get_chat_or_404(chat_id, db)
+    stmt = select(Message).where(Message.chat_id == chat.id).order_by(Message.created_at)
+    result = await db.execute(stmt)
+    messages = result.scalars().all()
+    return ChatHistoryResponse(
+        chat=ChatRecord.model_validate(chat, from_attributes=True),
+        messages=[
+            ChatMessage(
+                message_id=str(m.id),
+                role=m.role,
+                content=m.content,
+                created_at=m.created_at,
+                pipeline_id=m.pipeline_id,
+            )
+            for m in messages
+        ],
+        vault_enabled=await _vault_enabled(db, chat.vault_id),
+    )
 
 
 @router.post("/{chat_id}/rename", response_model=CreateChatResponse)
@@ -155,648 +165,270 @@ async def rename_chat(
     req: RenameChatRequest,
     db: AsyncSession = Depends(get_db),
 ) -> CreateChatResponse:
-    chat = await _get_chat(db, chat_id)
-    chat.title = req.title.strip()
-    await _audit(db, "chat.rename", "chat", chat_id, {"title": chat.title})
+    chat = await _get_chat_or_404(chat_id, db)
+    chat.title = req.title
     await db.commit()
-    await db.refresh(chat)
-    logger.info("Renamed chat: chat_id=%s", chat_id)
     return CreateChatResponse(chat_id=str(chat.id), title=chat.title)
 
 
-@router.put("/{chat_id}/pipeline")
+@router.delete("/{chat_id}", status_code=204)
+async def delete_chat(chat_id: str, db: AsyncSession = Depends(get_db)) -> None:
+    chat = await _get_chat_or_404(chat_id, db)
+    await db.delete(chat)
+    await db.commit()
+
+
+@router.post("/{chat_id}/lock_pipeline", response_model=dict)
 async def lock_pipeline(
     chat_id: str,
     req: PipelineLockRequest,
     db: AsyncSession = Depends(get_db),
-) -> dict[str, str | None]:
-    chat = await _get_chat(db, chat_id)
+) -> dict:
+    chat = await _get_chat_or_404(chat_id, db)
     chat.locked_pipeline_id = req.pipeline_id
-    await _audit(db, "chat.pipeline.lock", "chat", chat_id, {"pipeline_id": req.pipeline_id})
     await db.commit()
-    return {"chat_id": chat_id, "locked_pipeline_id": chat.locked_pipeline_id}
+    return {"status": "ok", "locked_pipeline_id": req.pipeline_id}
 
 
-@router.post("/{chat_id}/message", response_model=None)
+@router.post("/{chat_id}/send", response_model=MessageResponse)
 async def send_message(
     chat_id: str,
     req: SendMessageRequest,
     request: Request,
     db: AsyncSession = Depends(get_db),
-) -> StreamingResponse | MessageResponse | ClarificationResponse:
-    chat = await _get_chat(db, chat_id)
-    existing_messages = await _get_messages(db, chat.id)
-    is_first_user_message = not any(message.role == "user" for message in existing_messages)
-    user_message = Message(chat_id=chat.id, role="user", content=req.content, pipeline_id=None)
-    db.add(user_message)
+) -> MessageResponse:
+    chat = await _get_chat_or_404(chat_id, db)
+
+    user_msg = Message(chat_id=chat.id, role="user", content=req.content)
+    db.add(user_msg)
     await db.flush()
-    await _audit(
-        db,
-        "message.create",
-        "message",
-        str(user_message.id),
-        {"chat_id": chat_id, "role": "user"},
-    )
-    await db.commit()
-    await db.refresh(user_message)
-
-    if is_first_user_message and await settings_service.get("chat.auto_title", db):
-        asyncio.create_task(_generate_title(chat_id, req.content))
-
-    prompt_pack = await _prompt_pack_for_chat(chat, db)
-    state = await clarification_fsm.get_state(db, chat.id)
-
-    if state.stage == "idle":
-        domain_id = await _domain_id_for_chat(chat, db)
-        runtime_config = await _runtime_config_from_db(db)
-        decision, missing_fields = await Planner(runtime_config, None).decide(
-            db=db,
-            query=req.content,
-            vault_id=chat.vault_id,
-            domain_id=domain_id,
-            history=[_llm_message(message) for message in existing_messages[-8:]],
-        )
-        if decision.clarification_needed and missing_fields:
-            next_state = await clarification_fsm.start_collecting(db, chat.id, missing_fields, prompt_pack)
-            assistant_message = await _add_assistant_message(
-                db,
-                chat.id,
-                next_state.next_question or "Уточните, пожалуйста.",
-                chat_id,
-            )
-            await db.commit()
-            return ClarificationResponse(
-                message_id=str(assistant_message.id),
-                content=assistant_message.content,
-                state=next_state,
-            )
-    elif state.stage == "collecting":
-        next_state = clarification_fsm.process_clarification_answer(
-            state=state,
-            user_message=req.content,
-            max_turns=int(await settings_service.get("chat.max_clarification_turns", db)),
-            prompt_pack=prompt_pack,
-        )
-        await clarification_fsm.save_state(db, chat.id, next_state)
-        if next_state.stage == "collecting":
-            assistant_message = await _add_assistant_message(
-                db,
-                chat.id,
-                next_state.next_question or "Уточните, пожалуйста.",
-                chat_id,
-            )
-            await db.commit()
-            return ClarificationResponse(
-                message_id=str(assistant_message.id),
-                content=assistant_message.content,
-                state=next_state,
-            )
-        await db.commit()
-        decision = PlannerDecision(
-            retrieval_strategy="semantic" if chat.vault_id and await settings_service.get("retrieval.enabled", db) else "none",
-            clarification_needed=False,
-            reasoning=f"clarification_state={next_state.stage}",
-        )
-        state = next_state
-    else:
-        decision = PlannerDecision(
-            retrieval_strategy="semantic" if chat.vault_id and await settings_service.get("retrieval.enabled", db) else "none",
-            clarification_needed=False,
-            reasoning=f"clarification_state={state.stage}",
-        )
-
-    collected = state.collected if state.stage in {"complete", "fallback"} else {}
-    selected_pipeline, mode, confidence, reasoning = await pipeline_router.decide(req.content, chat, db)
-    if selected_pipeline is not None:
-        domain_id = await _domain_id_for_chat(chat, db) or chat.domain_id
-        config_for_vault = await _runtime_config_from_db(db)
-        # vault_ids — all enabled-Vaults for the domain (sourced exclusively from domain config).
-        vault_ids: list[str] = [
-            v.vault_id for v in config_for_vault.vaults.values()
-            if v.domain_id == domain_id and v.enabled
-        ] if domain_id else []
-
-        chat_context = {
-            "chat_id": chat.id,
-            "vault_ids": vault_ids,
-            "domain_id": domain_id,
-            "campaign_id": str(chat.campaign_id) if chat.campaign_id else None,
-            "collected_fields": collected,
-            "history": [_llm_message(message) for message in existing_messages[-8:]],
-            "mode": mode,
-            "confidence": confidence,
-            "reasoning": reasoning,
-            "config": config_for_vault,
-        }
-        return StreamingResponse(
-            _pipeline_sse_response(
-                chat_id=str(chat.id),
-                user_message_id=str(user_message.id),
-                pipeline=selected_pipeline,
-                query=req.content,
-                chat_context=chat_context,
-                db=db,
-                request=request,
-            ),
-            media_type="text/event-stream",
-        )
-    return await _generate_answer(
-        chat=chat,
-        req=req,
-        request=request,
-        existing_messages=existing_messages,
-        user_message=user_message,
-        db=db,
-        prompt_pack=prompt_pack,
-        decision=decision,
-        collected=collected,
-    )
-
-
-async def _generate_answer(
-    chat: Chat,
-    req: SendMessageRequest,
-    request: Request,
-    existing_messages: list[Message],
-    user_message: Message,
-    db: AsyncSession,
-    prompt_pack: PromptPack,
-    decision: PlannerDecision,
-    collected: dict[str, Any],
-) -> StreamingResponse | MessageResponse:
-    config = await _runtime_config_from_db(db)
-    queries = [req.content]
-    top_k = int(await settings_service.get("retrieval.top_k", db))
 
     domain_id = await _domain_id_for_chat(chat, db)
 
-    # --- Определяем document_ids по тегам кампании ---
-    document_ids: list[str] | None = None
-    campaign: Campaign | None = None
-
-    if chat.campaign_id is not None:
-        campaign = await db.get(Campaign, chat.campaign_id)
-
-    if campaign is not None and domain_id:
-        from app.services.retrieval import get_allowed_tag_ids, get_document_ids_by_tags
-        all_tag_ids = await get_allowed_tag_ids(
-            domain_id=domain_id,
-            campaign_id=str(campaign.id),
-            db=db,
-        )
-        if all_tag_ids:
-            document_ids = await get_document_ids_by_tags(
-                tag_ids=list(all_tag_ids),
-                domain_id=domain_id,
-                db=db,
-            )
-        else:
-            # Кампания есть, тегов нет → не расширяться на весь домен (document_ids=[])
-            document_ids = []
-
-    if decision.retrieval_strategy == "semantic" and await settings_service.get("retrieval.enabled", db):
-        try:
-            planner = LLMRAGPlanner(config)
-            history_texts = [m.content for m in existing_messages[-4:]]
-            queries = await planner.decompose(
-                req.content,
-                domain_id or "default",
-                history_texts,
-            )
-        except Exception as e:
-            logger.warning("LLM decomposition failed, using raw query: %s", e)
-            queries = [req.content]
-
-    all_hits: list[SearchHit] = []
-
-    # Инвариант: document_ids=[] → нет документов → возвращаем [] без запроса в LanceDB
-    if isinstance(document_ids, list) and len(document_ids) == 0:
-        all_hits = []
-    elif chat.vault_id:
-        for q in queries:
-            hits = await retrieve(
-                query=q,
-                vault_id=chat.vault_id,
-                top_k=top_k,
-                strategy=decision.retrieval_strategy,
-                config=config,
-                document_ids=document_ids,
-            )
-            all_hits.extend(hits)
-    elif domain_id and decision.retrieval_strategy == "semantic":
-        vault_ids_for_domain = [
-            v.vault_id for v in config.vaults.values()
-            if v.domain_id == domain_id and v.enabled
-        ]
-        for q in queries:
-            hits = await retrieve_multi_vault(
-                query=q,
-                vault_ids=vault_ids_for_domain,
-                top_k=top_k,
-                strategy=decision.retrieval_strategy,
-                config=config,
-                document_ids=document_ids,
-            )
-            all_hits.extend(hits)
-
-    seen = set()
-    unique_hits: list[SearchHit] = []
-    for h in all_hits:
-        if h.chunk_id not in seen:
-            seen.add(h.chunk_id)
-            unique_hits.append(h)
-    unique_hits.sort(key=lambda h: h.score, reverse=True)
-    hits = unique_hits[: top_k * 2]
-
-    # Собираем system_prompt: кампания → campaign.system_prompt, иначе domain prompt
-    context_text = _combined_context(hits, [])
-    if campaign is not None and campaign.system_prompt:
-        system_prompt = campaign.system_prompt
-        if context_text:
-            system_prompt += "\n\nКонтекст:\n" + context_text
-    else:
-        system_prompt = _system_prompt(prompt_pack, query=req.content, hits_context=context_text, collected=collected)
-
-    messages_for_llm = [{"role": "system", "content": system_prompt}]
-    messages_for_llm.extend(_llm_message(message) for message in existing_messages[-16:])
-    messages_for_llm.append({"role": "user", "content": req.content})
-
-    try:
-        provider = get_generation_provider()
-    except Exception:
-        logger.warning("Generation provider configuration failed.", exc_info=True)
-        provider = None
-
-    if req.stream:
-        stream_iterator = provider.generate_stream(messages_for_llm) if provider is not None else _fallback_stream()
-        return StreamingResponse(
-            _sse_response(str(chat.id), str(user_message.id), stream_iterator, request, hits),
-            media_type="text/event-stream",
-        )
-
-    try:
-        content = await provider.generate(messages_for_llm) if provider is not None else _fallback_answer()
-    except GenerationProviderUnavailableError:
-        logger.warning("Generation provider unavailable; returning fallback answer.", exc_info=True)
-        content = _fallback_answer()
-
-    assistant_message = await _save_assistant_message(str(chat.id), content, reset_clarification=True)
-    logger.info("Completed non-stream chat response: chat_id=%s message_id=%s", chat.id, assistant_message.id)
-    return MessageResponse(content=content, message_id=str(assistant_message.id))
-
-
-def _hits_to_sources(hits: list[SearchHit]) -> list[dict]:
-    seen: set[tuple[str, int | None]] = set()
-    sources = []
-    for hit in hits:
-        path = hit.metadata.get("source_path") or hit.document_id or "unknown"
-        page = hit.metadata.get("page_number")
-        key = (path, page)
-        if key not in seen:
-            seen.add(key)
-            sources.append({
-                "path": path,
-                "page": page,
-                "vault_id": hit.metadata.get("vault_id") or "",
-            })
-    return sources
-
-
-async def _sse_response(
-    chat_id: str,
-    user_message_id: str,
-    stream_iterator: AsyncIterator[str],
-    request: Request,
-    hits: list[SearchHit] | None = None,
-) -> AsyncIterator[str]:
-    tokens: list[str] = []
-    try:
-        async for token in stream_iterator:
-            if await request.is_disconnected():
-                logger.info("SSE client disconnected: chat_id=%s", chat_id)
-                return
-            tokens.append(token)
-            yield _sse_data({"token": token})
-        assistant_message = await _save_assistant_message(chat_id, "".join(tokens), reset_clarification=True)
-        logger.info(
-            "Completed streaming chat response: chat_id=%s user_message_id=%s assistant_message_id=%s",
-            chat_id, user_message_id, assistant_message.id,
-        )
-        if hits:
-            sources = _hits_to_sources(hits)
-            yield _sse_data({"sources": sources})
-        yield "data: [DONE]\n\n"
-    except GenerationProviderUnavailableError as exc:
-        logger.warning("Streaming generation failed: chat_id=%s", chat_id, exc_info=True)
-        fallback = _fallback_answer()
-        tokens.append(fallback)
-        yield _sse_data({"token": fallback, "warning": str(exc)})
-        await _save_assistant_message(chat_id, fallback, reset_clarification=True)
-        yield "data: [DONE]\n\n"
-
-
-async def _pipeline_sse_response(
-    chat_id: str,
-    user_message_id: str,
-    pipeline: Any,
-    query: str,
-    chat_context: dict[str, Any],
-    db: AsyncSession,
-    request: Request,
-) -> AsyncIterator[str]:
-    tokens: list[str] = []
-    used_pipeline_id: uuid.UUID | None = pipeline.id if hasattr(pipeline, "id") else None
-    async for event in pipeline_executor.run(pipeline, query, chat_context, db, request=request):
-        if event.get("type") == "token":
-            tokens.append(str(event.get("content", "")))
-        yield _sse_data(event)
-    if tokens:
-        assistant_message = await _save_assistant_message(
-            chat_id, "".join(tokens), reset_clarification=True,
-            pipeline_id=used_pipeline_id,
-        )
-        logger.info(
-            "Completed pipeline chat response: chat_id=%s user_message_id=%s assistant_message_id=%s",
-            chat_id, user_message_id, assistant_message.id,
-        )
-    yield "data: [DONE]\n\n"
-
-
-async def _save_assistant_message(
-    chat_id: str,
-    content: str,
-    reset_clarification: bool = False,
-    pipeline_id: uuid.UUID | None = None,
-) -> Message:
-    async with SessionLocal() as db:
-        chat = await _get_chat(db, chat_id)
-        assistant_message = await _add_assistant_message(
-            db, chat.id, content, chat_id, pipeline_id=pipeline_id
-        )
-        if reset_clarification:
-            await clarification_fsm.save_state(db, chat.id, clarification_fsm.idle_state())
-        await db.commit()
-        await db.refresh(assistant_message)
-        return assistant_message
-
-
-async def _add_assistant_message(
-    db: AsyncSession,
-    chat_uuid: uuid.UUID,
-    content: str,
-    chat_id: str,
-    pipeline_id: uuid.UUID | None = None,
-) -> Message:
-    assistant_message = Message(
-        chat_id=chat_uuid,
-        role="assistant",
-        content=content,
-        pipeline_id=pipeline_id,
-    )
-    db.add(assistant_message)
-    await db.flush()
-    await _audit(
-        db,
-        "message.create",
-        "message",
-        str(assistant_message.id),
-        {"chat_id": chat_id, "role": "assistant"},
-    )
-    return assistant_message
-
-
-async def _generate_title(chat_id: str, first_message: str) -> None:
-    try:
-        provider = get_generation_provider()
-    except Exception:
-        logger.warning("Auto-title generation provider is not configured: chat_id=%s", chat_id, exc_info=True)
-        return
-    prompt = (
-        "Сгенерируй краткое название для чата на основе сообщения. "
-        "Максимум 5 слов. Верни только название без кавычек.\n\n"
-        f"Сообщение: {first_message}"
-    )
-    try:
-        title = await provider.generate(
-            [
-                {"role": "system", "content": "Ты создаешь короткие названия чатов."},
-                {"role": "user", "content": prompt},
-            ]
-        )
-    except GenerationProviderUnavailableError:
-        logger.warning("Auto-title generation failed: chat_id=%s", chat_id, exc_info=True)
-        return
-    normalized_title = _normalize_title(title)
-    if not normalized_title:
-        return
-    async with SessionLocal() as db:
-        chat = await _get_chat(db, chat_id)
-        if chat.title != "New Chat":
-            return
-        chat.title = normalized_title
-        await _audit(db, "chat.auto_title", "chat", chat_id, {"title": normalized_title})
-        await db.commit()
-        logger.info("Generated chat title: chat_id=%s title=%s", chat_id, normalized_title)
-
-
-async def _get_chat(db: AsyncSession, chat_id: str) -> Chat:
-    chat_uuid = _parse_uuid(chat_id)
-    chat = await db.get(Chat, chat_uuid)
-    if chat is None:
-        raise HTTPException(status_code=404, detail="Chat not found")
-    return chat
-
-
-async def _get_chat_with_messages(db: AsyncSession, chat_id: str) -> Chat:
-    chat_uuid = _parse_uuid(chat_id)
-    result = await db.execute(
-        select(Chat).options(selectinload(Chat.messages)).where(Chat.id == chat_uuid)
-    )
-    chat = result.scalar_one_or_none()
-    if chat is None:
-        raise HTTPException(status_code=404, detail="Chat not found")
-    return chat
-
-
-async def _get_messages(db: AsyncSession, chat_id: uuid.UUID) -> list[Message]:
-    result = await db.execute(
-        select(Message).where(Message.chat_id == chat_id).order_by(Message.created_at, Message.id)
-    )
-    return list(result.scalars().all())
-
-
-async def _audit(
-    db: AsyncSession,
-    action: str,
-    entity_type: str | None = None,
-    entity_id: str | None = None,
-    details: dict[str, Any] | None = None,
-) -> None:
-    db.add(AuditLog(action=action, entity_type=entity_type, entity_id=entity_id, details=details or {}))
-
-
-def _chat_record(chat: Chat) -> ChatRecord:
-    return ChatRecord(
+    context = PipelineExecutionContext(
         chat_id=str(chat.id),
-        title=chat.title or "New Chat",
+        message_id=str(user_msg.id),
+        query=req.content,
+        domain_id=domain_id,
+        campaign_id=str(chat.campaign_id) if chat.campaign_id else None,
         vault_id=chat.vault_id,
-        domain_id=chat.domain_id,
+        retrieval_strategy="semantic" if chat.vault_id and await settings_service.get("retrieval.enabled", db) else "none",
+    )
+
+    pipeline_router = PipelineRouter(db)
+    pipeline = await pipeline_router.select(
+        context,
         locked_pipeline_id=chat.locked_pipeline_id,
-        created_at=chat.created_at,
-        updated_at=chat.updated_at,
-        pipeline_versions=chat.pipeline_versions or {},
     )
+    if pipeline is None:
+        raise HTTPException(503, "No active pipeline found for this domain")
 
+    context.pipeline_id = pipeline.pipeline_id
+    context.pipeline_version = pipeline.version
+    context.steps = pipeline.steps
+    context.final_composition = pipeline.final_composition
+    context.retrieval_strategy="semantic" if chat.vault_id and await settings_service.get("retrieval.enabled", db) else "none"
 
-def _chat_message(message: Message) -> ChatMessage:
-    return ChatMessage(
-        message_id=str(message.id),
-        chat_id=str(message.chat_id),
-        role=message.role,
-        content=message.content,
-        created_at=message.created_at,
-        metadata={},
+    history_stmt = select(Message).where(Message.chat_id == chat.id).order_by(Message.created_at).limit(20)
+    history_result = await db.execute(history_stmt)
+    context.history = [
+        ChatMessage(
+            message_id=str(m.id),
+            role=m.role,
+            content=m.content,
+            created_at=m.created_at,
+            pipeline_id=m.pipeline_id,
+        )
+        for m in history_result.scalars().all()
+    ]
+
+    domain_id = await _domain_id_for_chat(chat, db) or chat.domain_id
+
+    # vault_ids — all enabled-Vaults for the domain (sourced exclusively from domain config).
+    vault_ids: list[str] = [
+        v.vault_id for v in config_for_vault.vaults.values()
+        if v.domain_id == domain_id and v.enabled
+    ] if domain_id else []
+
+    context.vault_ids = vault_ids
+    context.domain_id = domain_id
+    context.campaign_id = str(chat.campaign_id) if chat.campaign_id else None
+
+    executor = PipelineExecutor(db)
+    result = await executor.run(context)
+
+    assistant_msg = Message(
+        chat_id=chat.id,
+        role="assistant",
+        content=result.final_answer,
+        pipeline_id=pipeline.pipeline_id,
     )
+    db.add(assistant_msg)
+    await db.commit()
+
+    # Auto-rename chat on first exchange
+    if chat.title == "New Chat":
+        chat.title = _auto_title(req.content)
+        await db.commit()
+
+    return MessageResponse(content=result.final_answer, message_id=str(assistant_msg.id))
 
 
-def _chat_list_item(chat: Chat) -> ChatListItem:
-    return ChatListItem(
+@router.post("/{chat_id}/send_stream")
+async def send_message_stream(
+    chat_id: str,
+    req: SendMessageRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> Any:
+    from fastapi.responses import StreamingResponse
+
+    chat = await _get_chat_or_404(chat_id, db)
+
+    user_msg = Message(chat_id=chat.id, role="user", content=req.content)
+    db.add(user_msg)
+    await db.flush()
+
+    domain_id = await _domain_id_for_chat(chat, db) or chat.domain_id
+    vault_ids: list[str] = [
+        v.vault_id for v in config_for_vault.vaults.values()
+        if v.domain_id == domain_id and v.enabled
+    ] if domain_id else []
+
+    context = PipelineExecutionContext(
         chat_id=str(chat.id),
-        title=chat.title or "New Chat",
+        message_id=str(user_msg.id),
+        query=req.content,
+        domain_id=domain_id,
+        campaign_id=str(chat.campaign_id) if chat.campaign_id else None,
+        vault_ids=vault_ids,
         vault_id=chat.vault_id,
-        domain_id=chat.domain_id,
-        created_at=chat.created_at,
-        updated_at=chat.updated_at,
+        pipeline_id="",
+        pipeline_version="",
+        steps=[],
+        final_composition=None,  # type: ignore[arg-type]
+        history=[],
     )
+
+    pipeline_router = PipelineRouter(db)
+    pipeline = await pipeline_router.select(
+        context,
+        locked_pipeline_id=chat.locked_pipeline_id,
+    )
+    if pipeline is None:
+        raise HTTPException(503, "No active pipeline found for this domain")
+
+    context.pipeline_id = pipeline.pipeline_id
+    context.pipeline_version = pipeline.version
+    context.steps = pipeline.steps
+    context.final_composition = pipeline.final_composition
+
+    history_stmt = select(Message).where(Message.chat_id == chat.id).order_by(Message.created_at).limit(20)
+    history_result = await db.execute(history_stmt)
+    context.history = [
+        ChatMessage(
+            message_id=str(m.id),
+            role=m.role,
+            content=m.content,
+            created_at=m.created_at,
+            pipeline_id=m.pipeline_id,
+        )
+        for m in history_result.scalars().all()
+    ]
+
+    async def event_stream() -> AsyncIterator[str]:
+        executor = PipelineExecutor(db)
+        full_answer = ""
+        assistant_msg_id: str | None = None
+
+        async for chunk in executor.run_stream(context):
+            data = json.dumps(chunk, ensure_ascii=False)
+            yield f"data: {data}\n\n"
+            if chunk.get("type") == "delta":
+                full_answer += chunk.get("content", "")
+            elif chunk.get("type") == "done":
+                assistant_msg_id = chunk.get("message_id")
+
+        if full_answer:
+            assistant_msg = Message(
+                chat_id=chat.id,
+                role="assistant",
+                content=full_answer,
+                pipeline_id=pipeline.pipeline_id,
+            )
+            db.add(assistant_msg)
+            await db.commit()
+            if chat.title == "New Chat":
+                chat.title = _auto_title(req.content)
+                await db.commit()
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@router.post("/{chat_id}/clarify", response_model=ClarificationResponse)
+async def submit_clarification(
+    chat_id: str,
+    req: ClarificationAnswer,
+    db: AsyncSession = Depends(get_db),
+) -> ClarificationResponse:
+    """Accept clarification answers and trigger pipeline execution."""
+    from app.services.clarification_service import ClarificationService
+    svc = ClarificationService(db)
+    return await svc.handle_answer(chat_id, req)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+async def _get_chat_or_404(chat_id: str, db: AsyncSession) -> Chat:
+    chat = await db.get(Chat, uuid.UUID(chat_id))
+    if not chat:
+        raise HTTPException(404, "Chat not found")
+    return chat
 
 
 async def _vault_enabled(db: AsyncSession, vault_id: str | None) -> bool:
     if not vault_id:
         return False
-    vault = await db.get(Vault, vault_id)
-    return bool(vault and vault.enabled)
-
-
-async def _runtime_config_from_db(db: AsyncSession) -> AppConfig:
-    vaults_result = await db.execute(select(Vault))
-    vaults = {
-        vault.vault_id: VaultConfig(
-            vault_id=vault.vault_id,
-            domain_id=vault.domain_id,
-            path=f"/data/vaults/{vault.vault_id}",
-            enabled=vault.enabled,
-        )
-        for vault in vaults_result.scalars().all()
-    }
-    models_result = await db.execute(select(EmbeddingModel).where(EmbeddingModel.enabled == True))
-    embedding_models = {
-        model.model_id: EmbeddingModelConfig(
-            model_id=model.model_id,
-            provider=model.provider,
-            model_name=model.model_name,
-            base_url=model.base_url,
-            dimensions=model.dimensions,
-            enabled=model.enabled,
-            timeout_seconds=model.timeout_seconds,
-            max_retries=model.max_retries,
-        )
-        for model in models_result.scalars().all()
-    }
-    return AppConfig(vaults=vaults, embedding_models=embedding_models, generation_models={})
-
-
-def _llm_message(message: Message) -> dict[str, str]:
-    return {"role": message.role, "content": message.content}
-
-
-async def _prompt_pack_for_chat(chat: Chat, db: AsyncSession) -> PromptPack:
-    domain_id = await _domain_id_for_chat(chat, db) or "default"
-    domain = await domain_service.get_domain(domain_id, db)
-    return PromptPack(
-        domain_id=domain.domain_id,
-        description="",
-        prompts=domain.prompts,
-    )
+    return await settings_service.get("retrieval.enabled", db)
 
 
 async def _domain_id_for_chat(chat: Chat, db: AsyncSession) -> str | None:
-    """
-    Primary source of domain_id is chat.domain_id.
-    vault-fallback retained only for _generate_answer path (non-pipeline RAG)
-    during the transitional period until vault_id is removed from Chat.
-    """
-    if chat.domain_id is not None:
+    """Resolve domain_id: prefer chat.domain_id, fall back to campaign.domain_id."""
+    if chat.domain_id:
         return chat.domain_id
-    if chat.vault_id:
-        vault = await db.get(Vault, chat.vault_id)
-        if vault is not None:
-            return vault.domain_id
+    if chat.campaign_id:
+        campaign = await db.get(Campaign, chat.campaign_id)
+        if campaign is not None and campaign.domain_id:
+            return campaign.domain_id
     return None
 
 
+async def _audit(
+    db: AsyncSession,
+    action: str,
+    entity_type: str,
+    entity_id: str,
+    payload: dict[str, Any],
+) -> None:
+    from app.db.models import AuditLog
+    db.add(AuditLog(action=action, entity_type=entity_type, entity_id=entity_id, payload=payload))
+
+
 async def _pipeline_versions(request: Request) -> dict[str, str]:
-    _ = request
-    return {}
+    """Extract X-Pipeline-Version headers for reproducibility tracking."""
+    return {
+        k.removeprefix("x-pipeline-"): v
+        for k, v in request.headers.items()
+        if k.lower().startswith("x-pipeline-")
+    }
 
 
-def _hit_to_chunk(hit: SearchHit, vault_id: str) -> ChunkRecord:
-    return ChunkRecord(
-        chunk_id=hit.chunk_id,
-        document_id=hit.document_id,
-        vault_id=vault_id,
-        text=hit.text,
-        vector=None,
-        metadata=hit.metadata,
-        summary=None,
-    )
-
-
-def _combined_context(hits: list[SearchHit], pipeline_results: list[PipelineResult]) -> str:
-    parts = []
-    search_context = format_context(hits)
-    if search_context:
-        parts.append(search_context)
-    for result in pipeline_results:
-        parts.append(f"Pipeline result confidence={result.confidence}: {result.content}\nmetadata={result.metadata}")
-    return "\n\n".join(parts)
-
-
-def _system_prompt(prompt_pack: PromptPack, query: str, hits_context: str, collected: dict[str, Any]) -> str:
-    template = prompt_pack.get(
-        "system",
-        "You are a helpful assistant. Use retrieved context when relevant.\n\nContext:\n{context}",
-    )
-    return format_prompt(
-        template,
-        {
-            "query": query,
-            "context": hits_context,
-            "collected_fields": collected,
-        },
-    )
-
-
-async def _fallback_stream() -> AsyncIterator[str]:
-    yield _fallback_answer()
-
-
-def _fallback_answer() -> str:
-    return "LLM service unavailable. Попробуйте повторить запрос позже."
-
-
-def _parse_uuid(value: str) -> uuid.UUID:
-    try:
-        return uuid.UUID(value)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail="Invalid UUID") from exc
-
-
-def _sse_data(payload: dict[str, Any]) -> str:
-    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
-
-
-def _normalize_title(title: str) -> str:
-    cleaned = title.strip().strip('"').strip("'")
+def _auto_title(query: str) -> str:
+    """Generate a short chat title from the first user message."""
+    import re
+    cleaned = re.sub(r"[^\w\s\u0400-\u04ff]", " ", query).strip()
     words = cleaned.split()
     if len(words) > 7:
         cleaned = " ".join(words[:7])
