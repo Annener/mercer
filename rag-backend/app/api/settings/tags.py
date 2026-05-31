@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -10,28 +11,35 @@ from app.db.models import Tag
 from app.db.session import get_db
 from shared_contracts.models import TagCreate, TagRead, TagUpdate, TagsGrouped
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/tags", tags=["tags"])
 
 
 @router.get("", response_model=TagsGrouped)
 async def list_tags(
     domain_id: str | None = None,
-    vault_id: str | None = None,  # deprecated, kept for backward compat
+    vault_id: str | None = None,  # deprecated — kept for backward compat URL params only
     campaign_id: str | None = None,
     db: AsyncSession = Depends(get_db),
 ) -> TagsGrouped:
     """
-    Возвращает теги домена/vaultа сгруппированные.
-    Приоритет: domain_id > vault_id.
+    Возвращает теги домена, сгруппированные для UI.
+    Приоритет: domain_id > vault_id (устаревший, всегда возвращает пустой результат — Tag.vault_id удалён).
     Если campaign_id задан — возвращает только глобальные + теги этой кампании.
-    Иначе — все теги домена/vaultа сгруппированные по кампаниям.
     """
     if domain_id:
         base_filter = Tag.domain_id == domain_id
     elif vault_id:
-        base_filter = Tag.vault_id == vault_id
+        # vault_id больше не поддерживается на уровне ORM (поле удалено из Tag).
+        # Возвращаем пустой результат, чтобы не падать с AttributeError.
+        logger.warning(
+            "list_tags called with vault_id=%s — vault_id is deprecated and ignored. "
+            "Pass domain_id instead.",
+            vault_id,
+        )
+        return TagsGrouped(global_tags=[], by_campaign={})
     else:
-        # ни domain_id ни vault_id не заданы — вернём пустой результат
         return TagsGrouped(global_tags=[], by_campaign={})
 
     if campaign_id:
@@ -57,15 +65,26 @@ async def list_tags(
 
 @router.post("", response_model=TagRead, status_code=201)
 async def create_tag(req: TagCreate, db: AsyncSession = Depends(get_db)) -> TagRead:
+    """
+    Создаёт тег, привязанный к домену.
+    TagCreate требует domain_id (обязательное поле).
+    Tag ORM не имеет поля vault_id — оно было удалено в процессе рефакторинга.
+    """
+    if not req.domain_id:
+        raise HTTPException(400, "domain_id is required to create a tag")
+
     tag = Tag(
         name=req.name,
-        vault_id=req.vault_id,
-        domain_id=req.domain_id if hasattr(req, "domain_id") else None,
+        domain_id=req.domain_id,
         campaign_id=uuid.UUID(req.campaign_id) if req.campaign_id else None,
         color=req.color,
     )
     db.add(tag)
-    await db.commit()
+    try:
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise HTTPException(409, f"Tag with name '{req.name}' already exists in this domain")
     await db.refresh(tag)
     return TagRead.model_validate(tag, from_attributes=True)
 
@@ -83,7 +102,11 @@ async def update_tag(
         tag.name = req.name
     if req.color is not None:
         tag.color = req.color
-    await db.commit()
+    try:
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise HTTPException(409, f"Tag with name '{req.name}' already exists in this domain")
     await db.refresh(tag)
     return TagRead.model_validate(tag, from_attributes=True)
 
