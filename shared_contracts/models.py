@@ -275,7 +275,7 @@ class VaultUpdate(BaseModel):
 
 
 class TagRead(ORMModel):
-    """Тег принадлежит домену (не Vault)."""
+    """\u0422\u0435\u0433 \u043f\u0440\u0438\u043d\u0430\u0434\u043b\u0435\u0436\u0438\u0442 \u0434\u043e\u043c\u0435\u043d\u0443 (\u043d\u0435 Vault)."""
     id: str
     name: str
     domain_id: str
@@ -285,7 +285,7 @@ class TagRead(ORMModel):
 
 
 class TagCreate(BaseModel):
-    """Создание тега: привязка к домену, не к Vault."""
+    """\u0421\u043e\u0437\u0434\u0430\u043d\u0438\u0435 \u0442\u0435\u0433\u0430: \u043f\u0440\u0438\u0432\u044f\u0437\u043a\u0430 \u043a \u0434\u043e\u043c\u0435\u043d\u0443, \u043d\u0435 \u043a Vault."""
     name: str
     domain_id: str
     campaign_id: str | None = None
@@ -298,9 +298,9 @@ class TagUpdate(BaseModel):
 
 
 class TagsGrouped(BaseModel):
-    """Ответ GET /tags — теги сгруппированы для UI"""
+    """\u041e\u0442\u0432\u0435\u0442 GET /tags \u2014 \u0442\u0435\u0433\u0438 \u0441\u0433\u0440\u0443\u043f\u043f\u0438\u0440\u043e\u0432\u0430\u043d\u044b \u0434\u043b\u044f UI"""
     global_tags: list[TagRead] = []
-    by_campaign: dict[str, list[TagRead]] = {}  # campaign_id → теги
+    by_campaign: dict[str, list[TagRead]] = {}  # campaign_id \u2192 \u0442\u0435\u0433\u0438
 
 
 class DocumentRead(ORMModel):
@@ -317,12 +317,12 @@ class DocumentRead(ORMModel):
 
 
 class DocumentLabelWrite(BaseModel):
-    """Полная замена тегов документа"""
+    """\u041f\u043e\u043b\u043d\u0430\u044f \u0437\u0430\u043c\u0435\u043d\u0430 \u0442\u0435\u0433\u043e\u0432 \u0434\u043e\u043a\u0443\u043c\u0435\u043d\u0442\u0430"""
     tag_ids: list[str]
 
 
 class CampaignRead(ORMModel):
-    """Кампания принадлежит домену (не Vault)."""
+    """\u041a\u0430\u043c\u043f\u0430\u043d\u0438\u044f \u043f\u0440\u0438\u043d\u0430\u0434\u043b\u0435\u0436\u0438\u0442 \u0434\u043e\u043c\u0435\u043d\u0443 (\u043d\u0435 Vault)."""
     id: str
     domain_id: str
     name: str
@@ -334,7 +334,7 @@ class CampaignRead(ORMModel):
 
 
 class CampaignCreate(BaseModel):
-    """Создание кампании: привязка к домену, не к Vault."""
+    """\u0421\u043e\u0437\u0434\u0430\u043d\u0438\u0435 \u043a\u0430\u043c\u043f\u0430\u043d\u0438\u0438: \u043f\u0440\u0438\u0432\u044f\u0437\u043a\u0430 \u043a \u0434\u043e\u043c\u0435\u043d\u0443, \u043d\u0435 \u043a Vault."""
     domain_id: str
     name: str
     description: str | None = None
@@ -353,9 +353,9 @@ class PipelineStep(BaseModel):
     name: str
     system_prompt: str
     top_k: int | None = None
-    tag_ids: list[str] = []   # только для type="retrieval"; фильтруется бэкендом по domain_id
-    is_final: bool = False    # ровно один True обязателен в пайплайне
-    role: str | None = None   # опциональная метка для UI
+    tag_ids: list[str] = []   # \u0442\u043e\u043b\u044c\u043a\u043e \u0434\u043b\u044f type="retrieval"; \u0444\u0438\u043b\u044c\u0442\u0440\u0443\u0435\u0442\u0441\u044f \u0431\u044d\u043a\u0435\u043d\u0434\u043e\u043c \u043f\u043e domain_id
+    is_final: bool = False    # \u0440\u043e\u0432\u043d\u043e \u043e\u0434\u0438\u043d True \u043e\u0431\u044f\u0437\u0430\u0442\u0435\u043b\u0435\u043d \u0432 \u043f\u0430\u0439\u043f\u043b\u0430\u0439\u043d\u0435
+    role: str | None = None   # \u043e\u043f\u0446\u0438\u043e\u043d\u0430\u043b\u044c\u043d\u0430\u044f \u043c\u0435\u0442\u043a\u0430 \u0434\u043b\u044f UI
 
 
 class FinalComposition(BaseModel):
@@ -366,7 +366,7 @@ class PipelineRead(ORMModel):
     id: str
     pipeline_id: str
     domain_id: str
-    campaign_id: str | None = None  # None = общий пайплайн домена
+    campaign_id: str | None = None  # None = \u043e\u0431\u0449\u0438\u0439 \u043f\u0430\u0439\u043f\u043b\u0430\u0439\u043d \u0434\u043e\u043c\u0435\u043d\u0430
     version: str
     name: str
     description: str | None = None
@@ -379,7 +379,7 @@ class PipelineRead(ORMModel):
 class PipelineCreate(BaseModel):
     pipeline_id: str
     domain_id: str
-    campaign_id: str | None = None  # None = общий пайплайн домена
+    campaign_id: str | None = None  # None = \u043e\u0431\u0449\u0438\u0439 \u043f\u0430\u0439\u043f\u043b\u0430\u0439\u043d \u0434\u043e\u043c\u0435\u043d\u0430
     name: str
     description: str | None = None
     steps: list[PipelineStep]
@@ -395,10 +395,10 @@ class PipelineUpdate(BaseModel):
 
 
 class RetrievalContext(BaseModel):
-    """Контекст выполнения пайплайна. vault_id оставлен для back-compat (TODO: удалить в iter4-cleanup)."""
+    """\u041a\u043e\u043d\u0442\u0435\u043a\u0441\u0442 \u0432\u044b\u043f\u043e\u043b\u043d\u0435\u043d\u0438\u044f \u043f\u0430\u0439\u043f\u043b\u0430\u0439\u043d\u0430. vault_id \u043e\u0441\u0442\u0430\u0432\u043b\u0435\u043d \u0434\u043b\u044f back-compat (TODO: \u0443\u0434\u0430\u043b\u0438\u0442\u044c \u0432 iter4-cleanup)."""
     query: str
-    vault_ids: list[str] = Field(default_factory=list)  # все enabled-Vault домена
-    vault_id: str | None = None  # deprecated back-compat; используй vault_ids
+    vault_ids: list[str] = Field(default_factory=list)  # \u0432\u0441\u0435 enabled-Vault \u0434\u043e\u043c\u0435\u043d\u0430
+    vault_id: str | None = None  # deprecated back-compat; \u0438\u0441\u043f\u043e\u043b\u044c\u0437\u0443\u0439 vault_ids
     domain_id: str | None = None
     campaign_id: str | None = None
     tag_ids: list[str] = Field(default_factory=list)
@@ -426,7 +426,7 @@ class ChatMessage(BaseModel):
 class ChatRecord(ORMModel):
     id: str
     title: str
-    vault_id: str | None = None   # TODO(iter4-cleanup): удалить после полного перехода фронта на domain_id
+    vault_id: str | None = None   # TODO(iter4-cleanup): \u0443\u0434\u0430\u043b\u0438\u0442\u044c \u043f\u043e\u0441\u043b\u0435 \u043f\u043e\u043b\u043d\u043e\u0433\u043e \u043f\u0435\u0440\u0435\u0445\u043e\u0434\u0430 \u0444\u0440\u043e\u043d\u0442\u0430 \u043d\u0430 domain_id
     domain_id: str | None = None
     campaign_id: str | None = None
     created_at: datetime
@@ -496,10 +496,10 @@ class IndexStatusResponse(BaseModel):
 
 class CreateChatRequest(BaseModel):
     """
-    domain_id — основной идентификатор контекста чата.
-    vault_id оставлен nullable для back-compat (старые клиенты).
-    campaign_id — опциональная привязка к кампании (iter2).
-    TODO(iter4-cleanup): сделать domain_id обязательным, убрать vault_id.
+    domain_id \u2014 \u043e\u0441\u043d\u043e\u0432\u043d\u043e\u0439 \u0438\u0434\u0435\u043d\u0442\u0438\u0444\u0438\u043a\u0430\u0442\u043e\u0440 \u043a\u043e\u043d\u0442\u0435\u043a\u0441\u0442\u0430 \u0447\u0430\u0442\u0430.
+    vault_id \u043e\u0441\u0442\u0430\u0432\u043b\u0435\u043d nullable \u0434\u043b\u044f back-compat (\u0441\u0442\u0430\u0440\u044b\u0435 \u043a\u043b\u0438\u0435\u043d\u0442\u044b).
+    campaign_id \u2014 \u043e\u043f\u0446\u0438\u043e\u043d\u0430\u043b\u044c\u043d\u0430\u044f \u043f\u0440\u0438\u0432\u044f\u0437\u043a\u0430 \u043a \u043a\u0430\u043c\u043f\u0430\u043d\u0438\u0438 (iter2).
+    TODO(iter4-cleanup): \u0441\u0434\u0435\u043b\u0430\u0442\u044c domain_id \u043e\u0431\u044f\u0437\u0430\u0442\u0435\u043b\u044c\u043d\u044b\u043c, \u0443\u0431\u0440\u0430\u0442\u044c vault_id.
     """
     domain_id: str | None = None
     vault_id: str | None = None  # deprecated back-compat
@@ -530,14 +530,14 @@ class ClarificationAnswer(BaseModel):
 
 
 class PipelineExecutionContext(BaseModel):
-    """Полный контекст для запуска пайплайна."""
+    """\u041f\u043e\u043b\u043d\u044b\u0439 \u043a\u043e\u043d\u0442\u0435\u043a\u0441\u0442 \u0434\u043b\u044f \u0437\u0430\u043f\u0443\u0441\u043a\u0430 \u043f\u0430\u0439\u043f\u043b\u0430\u0439\u043d\u0430."""
     chat_id: str
     message_id: str
     query: str
     domain_id: str | None = None
     campaign_id: str | None = None
     vault_ids: list[str] = Field(default_factory=list)
-    vault_id: str | None = None  # deprecated back-compat; используй vault_ids
+    vault_id: str | None = None  # deprecated back-compat; \u0438\u0441\u043f\u043e\u043b\u044c\u0437\u0443\u0439 vault_ids
     pipeline_id: str
     pipeline_version: str
     steps: list[PipelineStep]
@@ -604,3 +604,25 @@ class SearchRequest(BaseModel):
 
 class SearchResponse(BaseModel):
     results: list[SearchHit] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Indexer task API contracts (rag-indexer/app/main.py)
+# ---------------------------------------------------------------------------
+
+class StartIndexTaskRequest(BaseModel):
+    vault_id: str
+    force_reindex: bool = False
+
+
+class StartIndexTaskResponse(BaseModel):
+    task_id: str
+    vault_id: str
+    status: str
+
+
+class TaskStateResponse(BaseModel):
+    task_id: str
+    vault_id: str
+    status: str
+    state: IndexState | None = None
