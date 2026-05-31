@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Campaign, Tag
 from app.db.session import get_db
-from shared_contracts.models import CampaignCreate, CampaignRead, TagRead
+from shared_contracts.models import CampaignCreate, CampaignRead, CampaignUpdate, TagRead
 
 router = APIRouter(prefix="/campaigns", tags=["campaigns"])
 
@@ -54,13 +54,14 @@ async def create_campaign(
 @router.put("/{campaign_id}", response_model=CampaignRead)
 async def update_campaign(
     campaign_id: str,
-    req: CampaignCreate,
+    req: CampaignUpdate,
     db: AsyncSession = Depends(get_db),
 ) -> CampaignRead:
     campaign = await db.get(Campaign, uuid.UUID(campaign_id))
     if not campaign:
         raise HTTPException(404, "Campaign not found")
-    campaign.name = req.name
+    if req.name is not None:
+        campaign.name = req.name
     if req.description is not None:
         campaign.description = req.description
     if req.system_prompt is not None:

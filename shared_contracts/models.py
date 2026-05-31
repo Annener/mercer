@@ -1,13 +1,31 @@
 from __future__ import annotations
 
+import uuid as _uuid
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class ORMModel(BaseModel):
     model_config = ConfigDict(from_attributes=True)
+
+    @model_validator(mode='before')
+    @classmethod
+    def _coerce_uuid_fields(cls, data: Any) -> Any:
+        """Auto-coerce uuid.UUID ORM attributes to str for all str-typed fields."""
+        if not hasattr(data, '__dict__') and not hasattr(data, '__mapper__'):
+            return data
+        result: dict[str, Any] = {}
+        for field_name, field_info in cls.model_fields.items():
+            val = getattr(data, field_name, None)
+            if isinstance(val, _uuid.UUID):
+                result[field_name] = str(val)
+            elif val is not None:
+                result[field_name] = val
+            else:
+                result[field_name] = val
+        return result
 
 
 class FileIndexState(BaseModel):

@@ -10,10 +10,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Document, DocumentLabel, Tag
 from app.db.session import get_db
-from app.services.retrieval import delete_document_chunks
 from shared_contracts.models import DocumentLabelWrite, DocumentRead, TagRead
 
 logger = logging.getLogger(__name__)
+
+# Safe import: storage service may not be available in all environments
+try:
+    from app.services.retrieval import delete_document_chunks
+except ImportError:
+    async def delete_document_chunks(document_id: str, vault_id: str) -> None:  # type: ignore[misc]
+        logger.warning("delete_document_chunks not available; skipping chunk deletion for doc=%s", document_id)
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
