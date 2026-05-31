@@ -12,7 +12,7 @@ from sqlalchemy import or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import AppConfig, EmbeddingModelConfig
 from app.services.settings_service import settings_service
-from app.db.models import Tag, Document, DocumentLabel
+from app.db.models import Tag, Document, DocumentLabel, Vault
 from shared_contracts.models import SearchHit, SearchRequest, SearchResponse
 
 logger = logging.getLogger(__name__)
@@ -41,18 +41,23 @@ async def delete_document_chunks(document_id: str, vault_id: str) -> None:
 
 
 async def get_allowed_tag_ids(
-    vault_id: str,
+    domain_id: str,
     campaign_id: str | None,
     db: AsyncSession,
 ) -> set[str]:
     """
     Возвращает множество tag_id доступных в данном контексте.
-    - campaign_id задан → теги этой кампании + глобальные теги vault'а
-    - campaign_id = None → только глобальные теги vault'а
+
+    Теги принадлежат домену (не Vault):
+    - campaign_id задан → теги этой кампании + глобальные теги домена (campaign_id IS NULL)
+    - campaign_id = None → только глобальные теги домена
+
+    Инвариант: пустое множество = кампания существует, но тегов нет →
+    вызывающий код должен вернуть document_ids=[] (не None), т.е. не расширяться на весь домен.
     """
     if campaign_id:
         stmt = select(Tag.id).where(
-            Tag.vault_id == vault_id,
+            Tag.domain_id == domain_id,
             or_(
                 Tag.campaign_id.is_(None),
                 Tag.campaign_id == uuid.UUID(campaign_id),
@@ -60,7 +65,7 @@ async def get_allowed_tag_ids(
         )
     else:
         stmt = select(Tag.id).where(
-            Tag.vault_id == vault_id,
+            Tag.domain_id == domain_id,
             Tag.campaign_id.is_(None),
         )
     result = await db.execute(stmt)
@@ -69,12 +74,13 @@ async def get_allowed_tag_ids(
 
 async def get_document_ids_by_tags(
     tag_ids: list[str],
-    vault_id: str,
+    domain_id: str,
     db: AsyncSession,
 ) -> list[str]:
     """
     OR-логика: документ попадает если имеет хотя бы один из тегов.
     Только документы со status='indexed'.
+    Документы ищутся через Vault.domain_id — т.е. по всем Vault'ам домена.
     Если tag_ids пустой → вернуть [] без запроса к БД.
     """
     if not tag_ids:
@@ -82,8 +88,10 @@ async def get_document_ids_by_tags(
     stmt = (
         select(Document.id)
         .join(DocumentLabel, DocumentLabel.document_id == Document.id)
+        .join(Vault, Vault.vault_id == Document.vault_id)
         .where(
-            Document.vault_id == vault_id,
+            Vault.domain_id == domain_id,
+            Vault.enabled == True,
             Document.status == "indexed",
             DocumentLabel.tag_id.in_([uuid.UUID(t) for t in tag_ids]),
         )
@@ -107,7 +115,6 @@ async def retrieve(
     document_ids = []    → вернуть [] сразу, без запроса к LanceDB
     document_ids = [...] → поиск с фильтром {"document_id": {"$in": document_ids}}
     """
-    # Критично: пустой список = нет результатов, None = нет фильтра
     if document_ids is not None and len(document_ids) == 0:
         return []
 
@@ -151,7 +158,6 @@ async def retrieve(
             response.raise_for_status()
         search_response = SearchResponse.model_validate(response.json())
 
-        # Если фильтр передан в LanceDB — пост-фильтрация по document_id на всякий случай
         results = search_response.results
         if document_ids is not None:
             doc_set = set(document_ids)
@@ -190,6 +196,9 @@ async def retrieve_multi_vault(
     """Ищет во всех указанных vault'ах, объединяет результаты, сортирует по score, возвращает top_k."""
     if not vault_ids:
         return []
+    # Инвариант: пустой document_ids = нет документов → не запускать retrieve
+    if isinstance(document_ids, list) and len(document_ids) == 0:
+        return []
     logger.info(
         "RETRIEVE_MULTI query='%s' vaults=%s top_k=%s",
         query, vault_ids, top_k
@@ -219,8 +228,7 @@ def format_context(hits: list[SearchHit]) -> str:
     """
     Формирует блок контекста для LLM.
     Нумерация блоков [1], [2], ... строго соответствует нумерации карточек источников
-    на фронтенде (файл 1, файл 2, ...) — группировка по уникальным (path, page) в том же порядке.
-    Не используем XML/HTML-теги (типа <retrieved_context>), чтобы LLM не протаскивал их в ответ.
+    на фронтенде.
     """
     if not hits:
         return "Контекст не найден в базе знаний. Отвечай на основе общих знаний, но явно укажи что локальные данные не найдены."
