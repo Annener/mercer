@@ -8,23 +8,15 @@ const PipelinesTabMixin = {
             <article class="settings-card">
                 <div>
                     <h3>${this.escapeHtml(pipeline.name)}</h3>
-                    <p>${this.escapeHtml(pipeline.pipeline_id)} · ${this.escapeHtml(pipeline.version)} · ${pipeline.steps?.length || 0} шаг.</p>
+                    <p>${this.escapeHtml(pipeline.pipeline_id || pipeline.id)} · ${pipeline.steps?.length || 0} шаг.</p>
                 </div>
                 <div class="card-menu-container">
                     <button class="card-menu-toggle" data-id="${this.escapeHtml(pipeline.id)}" aria-label="Меню">⋮</button>
                     <div class="card-menu">
-                        <button class="card-menu-item" data-action="edit-pipeline" data-id="${this.escapeHtml(pipeline.id)}">
-                            ✏️ Редактировать
-                        </button>
-                        <button class="card-menu-item" data-action="activate-pipeline" data-id="${this.escapeHtml(pipeline.id)}">
-                            ▶️ Активировать
-                        </button>
-                        <button class="card-menu-item" data-action="deactivate-pipeline" data-id="${this.escapeHtml(pipeline.id)}">
-                            ⏸️ Деактивировать
-                        </button>
-                        <button class="card-menu-item card-menu-danger" data-action="delete-pipeline" data-id="${this.escapeHtml(pipeline.id)}">
-                            🗑️ Удалить
-                        </button>
+                        <button class="card-menu-item" data-action="edit-pipeline" data-id="${this.escapeHtml(pipeline.id)}">✏️ Редактировать</button>
+                        <button class="card-menu-item" data-action="activate-pipeline" data-id="${this.escapeHtml(pipeline.id)}">▶️ Активировать</button>
+                        <button class="card-menu-item" data-action="deactivate-pipeline" data-id="${this.escapeHtml(pipeline.id)}">⏸️ Деактивировать</button>
+                        <button class="card-menu-item card-menu-danger" data-action="delete-pipeline" data-id="${this.escapeHtml(pipeline.id)}">🗑️ Удалить</button>
                     </div>
                 </div>
                 <div><span class="badge ${pipeline.is_active ? 'ok' : 'muted'}">${pipeline.is_active ? 'active' : 'inactive'}</span></div>

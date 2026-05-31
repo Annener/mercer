@@ -3,11 +3,13 @@ class SettingsManager {
     this.api = api;
     this.currentTab = 'domains';
     this._initialized = false;
+    this._activeVaultId = null;
     this.init();
   }
 
   async init() {
     try {
+      await this._loadActiveVault();
       this.attachEventListeners();
       await this.loadTab(this.currentTab);
       await this.updateStatusBanner();
@@ -15,6 +17,15 @@ class SettingsManager {
     } catch (error) {
       console.error('SettingsManager init failed:', error);
     }
+  }
+
+  async _loadActiveVault() {
+    try {
+      const vaults = await this.api.getSettingsVaults();
+      const arr = Array.isArray(vaults) ? vaults : [];
+      const active = arr.find(v => v.is_active) || arr[0];
+      this._activeVaultId = active?.vault_id || active?.id || null;
+    } catch (e) { /* ignore */ }
   }
 
   attachEventListeners() {
@@ -49,7 +60,8 @@ class SettingsManager {
       'emb-models': 'renderEmbeddingModelsTab',
       'params':     'renderParamsTab',
       'pipelines':  'renderPipelinesTab',
-      'worlds':     'renderWorldsTab',
+      'campaigns':  'renderCampaignsTab',
+      'documents':  'renderDocumentsTab',
     };
   }
 
@@ -71,6 +83,9 @@ class SettingsManager {
         ? await this[methodName]()
         : '<div class="placeholder"></div>';
       this.attachTabEventHandlers(tabId);
+      if (tabId === 'documents') {
+        await this.loadDocumentsData();
+      }
     } catch (error) {
       container.innerHTML = `<div class="error">${this.escapeHtml(error.message)}</div>`;
     }
@@ -130,6 +145,17 @@ class SettingsManager {
 
   async handleAction(action, id, button) {
     try {
+      // campaigns
+      if (['new-campaign', 'edit-campaign', 'delete-campaign'].includes(action)) {
+        await this.handleCampaignsAction(action, id);
+        return;
+      }
+      // documents
+      if (['run-indexer', 'delete-doc'].includes(action)) {
+        await this.handleDocumentsAction(action, button);
+        return;
+      }
+
       if (action === 'new-domain') await this.showDomainModal();
       if (action === 'edit-domain') await this.showDomainModal(id);
       if (action === 'edit-prompts') await this.showPromptsModal(id);
@@ -161,10 +187,6 @@ class SettingsManager {
       if (action === 'delete-pipeline' && confirm('Удалить pipeline? Это действие необратимо.')) {
         await this.api.deletePipeline(id);
       }
-      if (action === 'new-world') await this.showWorldModal();
-      if (action === 'toggle-world') await this.api.updateWorld(id, { is_active: button.dataset.active !== '1' });
-      if (action === 'edit-world') await this.showWorldModal(id);
-      if (action === 'delete-world' && confirm(`Удалить мир «${button.dataset.name}»? Это также удалит все связанные кампании.`)) await this.api.deleteWorld(id);
       await this.loadTab(this.currentTab);
       await this.updateStatusBanner();
     } catch (error) {
