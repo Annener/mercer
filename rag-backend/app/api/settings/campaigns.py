@@ -15,11 +15,15 @@ router = APIRouter(prefix="/campaigns", tags=["campaigns"])
 
 @router.get("", response_model=list[CampaignRead])
 async def list_campaigns(
-    vault_id: str | None = None,
+    domain_id: str | None = None,
+    vault_id: str | None = None,  # deprecated, kept for backward compat
     db: AsyncSession = Depends(get_db),
 ) -> list[CampaignRead]:
     stmt = select(Campaign).order_by(Campaign.created_at.desc())
-    if vault_id:
+    if domain_id:
+        stmt = stmt.where(Campaign.domain_id == domain_id)
+    elif vault_id:
+        # backward compat: old clients that still pass vault_id
         stmt = stmt.where(Campaign.vault_id == vault_id)
     result = await db.execute(stmt)
     campaigns = result.scalars().all()
@@ -41,6 +45,7 @@ async def create_campaign(
 ) -> CampaignRead:
     campaign = Campaign(
         vault_id=req.vault_id,
+        domain_id=req.domain_id if hasattr(req, "domain_id") else None,
         name=req.name,
         description=req.description,
         system_prompt=req.system_prompt,
@@ -105,6 +110,7 @@ async def create_campaign_tag(
     tag = Tag(
         name=payload["name"],
         vault_id=campaign.vault_id,
+        domain_id=campaign.domain_id,
         campaign_id=campaign.id,
         color=payload.get("color"),
     )
