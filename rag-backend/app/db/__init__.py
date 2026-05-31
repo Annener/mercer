@@ -16,7 +16,6 @@ from app.db.models import (
     PipelineDecision,
     PlatformSetting,
     Vault,
-    World,
 )
 
 
@@ -36,5 +35,4 @@ __all__ = [
     "PipelineDecision",
     "PlatformSetting",
     "Vault",
-    "World",
 ]
