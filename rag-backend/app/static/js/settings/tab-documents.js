@@ -42,26 +42,26 @@ const DocumentsTabMixin = {
     },
 
     async loadDocumentsData() {
-        // D1 fix: бэк принимает vault_id, не domain_id
-        const vaultId = await this._resolveVaultId();
+        // S40-A fix: перешли на getSettingsDocuments — серверные фильтры status и tag_id.
+        // Один из vaultId или domainId обязателен (бэк вернёт 400 если не передать).
+        const vaultId  = await this._resolveVaultId();
         const domainId = this._activeDomainId || await this._resolveDomainId();
         const tbody = document.getElementById('docs-tbody');
 
-        if (!vaultId) {
+        if (!vaultId && !domainId) {
             if (tbody) tbody.innerHTML = '<tr><td colspan="5" class="empty-state">Vault не найден. Добавьте vault в настройках.</td></tr>';
             return;
         }
 
         try {
-            const resp = await this.api.getDocumentsByVault(vaultId);
-            let docs = Array.isArray(resp) ? resp : (resp.documents || []);
+            const docs = await this.api.getSettingsDocuments({
+                vaultId:  vaultId  || null,
+                domainId: vaultId  ? null : domainId,
+                status:   this._docsFilterStatus  || null,
+                tagId:    this._docsFilterTagId   || null,
+            });
 
-            // Клиентская фильтрация по статусу
-            if (this._docsFilterStatus) {
-                docs = docs.filter(d => d.status === this._docsFilterStatus);
-            }
-
-            this._docsAllDocs = docs;
+            this._docsAllDocs = Array.isArray(docs) ? docs : (docs.documents || []);
             this._renderDocsRows(this._docsAllDocs);
 
             const inp = document.getElementById('docs-search-input');
@@ -252,21 +252,22 @@ const DocumentsTabMixin = {
                         <button class="btn btn-sm" data-action="edit-tag-name" data-tag-id="${String(t.id)}" data-tag-name="${this.escapeHtml(t.name)}" title="Переименовать">✏️</button>
                         <button class="btn btn-sm" style="color:var(--color-error);" data-action="delete-tag" data-tag-id="${String(t.id)}" data-tag-name="${this.escapeHtml(t.name)}" title="Удалить тег">🗑</button>
                     </div>`).join('')
-                : '<div style="color:var(--color-text-faint);font-size:var(--text-sm);margin-bottom:var(--space-3);">Доменных тегов нет</div>';
+                : '<p style="color:var(--color-text-muted);font-size:var(--text-sm);">Тегов нет</p>';
 
             panel.innerHTML = `
                 <div style="padding:var(--space-4);">
-                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:var(--space-4);">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:var(--space-3);">
                         <b>Теги домена</b>
                         <button data-action="close-panel" style="background:none;border:none;cursor:pointer;color:var(--color-text-muted);font-size:1.2rem;">✕</button>
                     </div>
-                    <div id="tags-manage-list">${tagsHtml}</div>
-                    <hr style="border:none;border-top:1px solid var(--color-divider);margin:var(--space-3) 0;">
-                    <p style="font-size:var(--text-sm);font-weight:600;margin-bottom:var(--space-2);">Новый тег</p>
-                    <div style="display:flex;gap:var(--space-2);align-items:center;">
-                        <input type="text" id="new-tag-name" placeholder="Название тега" class="input-field" style="flex:1;">
-                        <input type="color" id="new-tag-color" value="#01696f" style="width:36px;height:36px;padding:2px;border:1px solid var(--color-border);border-radius:var(--radius-sm);cursor:pointer;">
-                        <button class="btn btn-primary" data-action="create-tag">+</button>
+                    <div style="margin-bottom:var(--space-4);max-height:300px;overflow-y:auto;">${tagsHtml}</div>
+                    <div style="border-top:1px solid var(--color-divider);padding-top:var(--space-3);">
+                        <p style="font-size:var(--text-sm);margin-bottom:var(--space-2);"><b>Создать тег:</b></p>
+                        <div style="display:flex;gap:var(--space-2);">
+                            <input type="text" id="new-tag-name" placeholder="Название тега" class="input-field" style="flex:1;">
+                            <input type="color" id="new-tag-color" value="#01696f" style="width:36px;height:36px;padding:2px;border:1px solid var(--color-border);border-radius:var(--radius-sm);cursor:pointer;">
+                            <button class="btn btn-primary" data-action="create-tag">➕</button>
+                        </div>
                     </div>
                 </div>`;
 
@@ -274,196 +275,63 @@ const DocumentsTabMixin = {
                 panel.style.display = 'none';
             });
 
-            panel.querySelector('[data-action="create-tag"]')?.addEventListener('click', async () => {
-                const nameEl = document.getElementById('new-tag-name');
-                const colorEl = document.getElementById('new-tag-color');
-                const name = nameEl?.value.trim();
-                if (!name) { alert('Введите название тега'); return; }
-                try {
-                    await this.api.createTag({ name, color: colorEl?.value || '#01696f', domain_id: domainId });
-                    if (nameEl) nameEl.value = '';
-                    await this._renderTagsManagePanel(panel, domainId);
-                    await this._loadTagFilterOptions(domainId);
-                } catch (e) { alert('Ошибка создания тега: ' + e.message); }
-            });
-
             panel.querySelectorAll('[data-action="delete-tag"]').forEach(btn => {
                 btn.addEventListener('click', async () => {
-                    const tagId = String(btn.dataset.tagId);
-                    const tagName = btn.dataset.tagName || tagId;
-                    if (!confirm(`Удалить тег "${tagName}"? Он будет убран со всех документов.`)) return;
+                    const tagId = btn.dataset.tagId;
+                    const tagName = btn.dataset.tagName;
+                    if (!confirm(`Удалить тег «${tagName}»?`)) return;
                     try {
                         await this.api.deleteTag(tagId);
                         await this._renderTagsManagePanel(panel, domainId);
                         await this.loadDocumentsData();
-                    } catch (e) { alert('Ошибка удаления тега: ' + e.message); }
+                    } catch (e) {
+                        alert('Ошибка удаления: ' + e.message);
+                    }
                 });
             });
 
             panel.querySelectorAll('[data-action="edit-tag-name"]').forEach(btn => {
                 btn.addEventListener('click', async () => {
-                    const tagId = String(btn.dataset.tagId);
-                    const oldName = btn.dataset.tagName || '';
-                    const newName = prompt('Новое название тега:', oldName);
-                    if (!newName || newName === oldName) return;
+                    const tagId = btn.dataset.tagId;
+                    const newName = prompt('Новое название:', btn.dataset.tagName);
+                    if (!newName || !newName.trim()) return;
                     try {
                         await this.api.updateTag(tagId, { name: newName.trim() });
                         await this._renderTagsManagePanel(panel, domainId);
-                        await this.loadDocumentsData();
-                    } catch (e) { alert('Ошибка переименования тега: ' + e.message); }
+                    } catch (e) {
+                        alert('Ошибка переименования: ' + e.message);
+                    }
                 });
             });
 
-            panel.querySelectorAll('[data-tag-edit-color]').forEach(input => {
-                input.addEventListener('change', async () => {
-                    const tagId = String(input.dataset.tagEditColor);
+            panel.querySelectorAll('[data-tag-edit-color]').forEach(inp => {
+                inp.addEventListener('change', async () => {
+                    const tagId = inp.dataset.tagEditColor;
                     try {
-                        await this.api.updateTag(tagId, { color: input.value });
+                        await this.api.updateTag(tagId, { color: inp.value });
                         await this.loadDocumentsData();
-                    } catch (e) { alert('Ошибка изменения цвета: ' + e.message); }
+                    } catch (e) {
+                        alert('Ошибка цвета: ' + e.message);
+                    }
                 });
+            });
+
+            panel.querySelector('[data-action="create-tag"]')?.addEventListener('click', async () => {
+                const nameInp  = panel.querySelector('#new-tag-name');
+                const colorInp = panel.querySelector('#new-tag-color');
+                const name = nameInp?.value?.trim();
+                if (!name) return;
+                try {
+                    await this.api.createTag({ name, color: colorInp?.value || '#01696f', domain_id: domainId });
+                    if (nameInp) nameInp.value = '';
+                    await this._renderTagsManagePanel(panel, domainId);
+                } catch (e) {
+                    alert('Ошибка создания: ' + e.message);
+                }
             });
 
         } catch (e) {
             panel.innerHTML = `<div style="padding:var(--space-4);color:var(--color-error);">Ошибка загрузки тегов: ${this.escapeHtml(e.message)}</div>`;
         }
     },
-
-    async handleDocumentsAction(action, btn) {
-        if (action === 'run-indexer') {
-            await this._runIndexerWithProgress();
-            return;
-        }
-        if (action === 'manage-tags') {
-            await this._openTagsManagePanel();
-            return;
-        }
-        if (action === 'delete-doc') {
-            const id = btn.dataset?.id || btn;
-            const path = typeof btn === 'object' ? btn.dataset?.path || id : id;
-            // D2 fix: vault_id обязателен для DELETE /api/db/documents/{id}?vault_id=
-            const vaultId = typeof btn === 'object' ? (btn.dataset?.vault || '') : '';
-            if (!confirm(`Удалить документ "${path}"?\nЗапись в БД и чанки будут удалены. Файл останется.`)) return;
-            try {
-                await this.api.deleteDocumentById(String(id), vaultId);
-                await this.loadDocumentsData();
-            } catch (e) {
-                alert('Ошибка удаления: ' + e.message);
-            }
-        }
-    },
-
-    async _runIndexerWithProgress() {
-        const vaultId = await this._resolveVaultId();
-        if (!vaultId) { alert('Vault не выбран. Проверьте настройки Vault.'); return; }
-        const statusEl = document.getElementById('docs-indexer-status');
-        const setStatus = (msg, color = '') => {
-            if (!statusEl) return;
-            statusEl.textContent = msg;
-            statusEl.style.color = color || 'var(--color-text-muted)';
-        };
-
-        if (this._docsIndexPollTimer) {
-            clearInterval(this._docsIndexPollTimer);
-            this._docsIndexPollTimer = null;
-        }
-
-        try {
-            setStatus('Запуск...');
-            const result = await this.api.reindexVault(vaultId, false);
-            const taskId = result?.task_id || result?.id || null;
-
-            if (taskId) {
-                this._docsIndexTaskId = taskId;
-                setStatus('Индексация запущена...');
-                this._connectIndexStream(taskId, statusEl);
-            } else {
-                setStatus('Индексация запущена', 'var(--color-success)');
-                setTimeout(() => setStatus(''), 5000);
-                setTimeout(() => this.loadDocumentsData(), 3000);
-            }
-        } catch (e) {
-            setStatus('Ошибка: ' + e.message, 'var(--color-error)');
-        }
-    },
-
-    _connectIndexStream(taskId, statusEl) {
-        const setStatus = (msg, color = '') => {
-            if (!statusEl) return;
-            statusEl.textContent = msg;
-            statusEl.style.color = color || 'var(--color-text-muted)';
-        };
-
-        let ws;
-        try {
-            ws = this.api.connectToTaskStream(taskId);
-        } catch (_) {
-            this._pollIndexStatus(taskId, statusEl);
-            return;
-        }
-
-        ws.onmessage = (event) => {
-            try {
-                const data = JSON.parse(event.data);
-                const state = data.state || data.status || '';
-                const progress = data.progress != null ? ` (${data.progress}%)` : '';
-                const processed = data.processed != null ? ` ${data.processed}/${data.total || '?'} файлов` : '';
-                setStatus(`Индексация: ${state}${progress}${processed}`);
-                if (state === 'done' || state === 'completed' || state === 'finished') {
-                    setStatus('✅ Индексация завершена', 'var(--color-success)');
-                    ws.close();
-                    setTimeout(() => { setStatus(''); this.loadDocumentsData(); }, 2000);
-                } else if (state === 'error' || state === 'failed') {
-                    setStatus('❌ Ошибка индексации: ' + (data.error || data.message || ''), 'var(--color-error)');
-                    ws.close();
-                }
-            } catch (_) { /* ignore parse errors */ }
-        };
-
-        ws.onerror = () => {
-            this._pollIndexStatus(taskId, statusEl);
-        };
-
-        ws.onclose = () => {
-            if (this._docsIndexTaskId === taskId) this._docsIndexTaskId = null;
-        };
-    },
-
-    _pollIndexStatus(taskId, statusEl) {
-        const setStatus = (msg, color = '') => {
-            if (!statusEl) return;
-            statusEl.textContent = msg;
-            statusEl.style.color = color || 'var(--color-text-muted)';
-        };
-
-        let attempts = 0;
-        const MAX = 60;
-        this._docsIndexPollTimer = setInterval(async () => {
-            attempts++;
-            if (attempts > MAX) {
-                clearInterval(this._docsIndexPollTimer);
-                this._docsIndexPollTimer = null;
-                setStatus('⏱ Таймаут ожидания индексации');
-                return;
-            }
-            try {
-                const state = await this.api.getIndexTaskState(taskId);
-                const s = state?.state || state?.status || '';
-                const progress = state?.progress != null ? ` (${state.progress}%)` : '';
-                setStatus(`Индексация: ${s}${progress}`);
-                if (s === 'done' || s === 'completed' || s === 'finished') {
-                    clearInterval(this._docsIndexPollTimer);
-                    this._docsIndexPollTimer = null;
-                    setStatus('✅ Индексация завершена', 'var(--color-success)');
-                    setTimeout(() => { setStatus(''); this.loadDocumentsData(); }, 2000);
-                } else if (s === 'error' || s === 'failed') {
-                    clearInterval(this._docsIndexPollTimer);
-                    this._docsIndexPollTimer = null;
-                    setStatus('❌ Ошибка: ' + (state?.error || ''), 'var(--color-error)');
-                }
-            } catch (_) { /* ignore network errors during polling */ }
-        }, 1000);
-    },
 };
-
-Object.assign(SettingsManager.prototype, DocumentsTabMixin);
