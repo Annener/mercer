@@ -27,7 +27,7 @@ class Domain(Base):
     __tablename__ = "domains"
 
     # domain_id — реальный PK таблицы (строка, не UUID).
-    # Колонки id в БД нет — она никогда не создавалась миграциями.
+    # Колонки id в БД нет — см. 0001_initial.py.
     domain_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     display_name: Mapped[str] = mapped_column(String(256), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -210,6 +210,8 @@ class DocumentLabel(Base):
 class Campaign(Base):
     __tablename__ = "campaigns"
 
+    # Реальная схема после 0009_campaigns_schema_sync:
+    # id, domain_id, name, description, system_prompt, last_session_at, created_at
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     domain_id: Mapped[str] = mapped_column(String(64), ForeignKey("domains.domain_id", ondelete="CASCADE"), nullable=False)
     name: Mapped[str] = mapped_column(String(256), nullable=False)
