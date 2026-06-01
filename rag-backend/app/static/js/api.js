@@ -557,6 +557,19 @@ class ChatAPI {
         if (!response.ok) throw new Error(`Failed to get task state: ${response.statusText}`);
         return response.json();
     }
+
+    // D7 fix: метод отсутствовал — db_management.js вызывал chatAPI.textSearchByDomain(), которого не было.
+    // Бэк: POST /api/db/search/domain, body: {domain_id, query_text, limit}
+    // Ответ: TextSearchResponse {results: [{chunk_id, document_id, text, score, metadata}]}
+    async textSearchByDomain(domainId, queryText, limit = 20) {
+        const response = await fetch(`${this.baseUrl}/api/db/search/domain`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ domain_id: domainId, query_text: queryText, limit }),
+        });
+        if (!response.ok) throw new Error(`Failed to search by domain: ${response.statusText}`);
+        return response.json();
+    }
 }
 
 // Глобальный синглтон API-клиента
