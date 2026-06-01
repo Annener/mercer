@@ -433,15 +433,17 @@ class ChatManager {
     /**
      * Обработка JSON-ответа для /send и /clarify.
      *
-     * B07 fix: проверение на clarification-ответ изменено:
-     *   БЫЛО: response.role === 'assistant' && response.state
-     *   СТАЛО: response.state && response.question  (по контракту ClarificationResponse)
-     * ClarificationResponse: { question, state, missing_fields } — поля role нет.
+     * C02 fix (регрессия B07):
+     *   ClarificationResponse: { message_id, role, content, clarification_id, stage }
+     *   Полей `state` и `question` в схеме нет — проверка response.state && response.question
+     *   никогда не срабатывала, clarification показывался как обычный ответ.
+     *   Исправлено на: проверяем response.clarification_id (не null/undefined).
+     *   clarificationId передаётся в addMessage чтобы UI мог потом отправить через submitClarification.
      */
     handleJSONResponse(response) {
-        if (response.state && response.question) {
-            // Clarification response
-            this.addMessage('clarification', response.question);
+        if (response.clarification_id) {
+            // Clarification response — передаём clarification_id в addMessage
+            this.addMessage('clarification', response.content, response.clarification_id);
         } else if (response.content) {
             const msgEl = this.addMessage('assistant', response.content);
             if (this._isLlmUnavailable(response.content)) {
@@ -477,8 +479,9 @@ class ChatManager {
      * - user: plain text (безопасно, без markdown)
      * - assistant/clarification: рендерится как markdown
      * - system: plain text
+     * clarificationId: если передан — сохраняется в data-атрибут для submitClarification
      */
-    addMessage(role, content) {
+    addMessage(role, content, clarificationId = null) {
         const messageDiv = document.createElement('div');
         messageDiv.className = `message message-${role}`;
         
@@ -486,6 +489,10 @@ class ChatManager {
             messageDiv.innerHTML = renderMarkdown(content);
         } else {
             messageDiv.textContent = content;
+        }
+
+        if (clarificationId) {
+            messageDiv.dataset.clarificationId = clarificationId;
         }
         
         this.messagesContainer.appendChild(messageDiv);
