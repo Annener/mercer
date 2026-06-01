@@ -29,17 +29,17 @@
 
 | ID | Эндпоинт | Фронт-файл | Статус | Комментарий |
 |---|---|---|---|---|
-| S1 | GET `/api/settings/status` | `settings.js` | 🔴 | |
-| S2-S4 | params CRUD | `tab-params.js` | 🔴 | |
-| S5-S9 | domains CRUD | `tab-domains.js` | 🔴 | |
-| S10-S11 | domain prompts | `tab-domains.js` | 🔴 | |
-| S12-S13 | domain fields (clarification) | `tab-domains.js` | 🔴 | |
-| S14-S19 | generation models CRUD | `tab-gen-models.js` | 🔴 | |
-| S20-S24 | embedding models CRUD | `tab-emb-models.js` | 🔴 | |
-| S25-S29 | vaults CRUD | `tab-vaults.js` | 🔴 | |
-| S30-S35 | pipelines CRUD | `tab-pipelines.js` | 🔴 | |
+| S1 | GET `/api/settings/status` | `settings.js` | ✅ | S1-A добавлен getSettingsStatus(); renderStatusTab реализован |
+| S2-S4 | params CRUD | `tab-params.js` | ✅ | S2-A..S4-A api.js; S2-B handleParamsAction; S2-C bool checkbox; S2-D — оба ключа реальны, комментарий добавлен |
+| S5-S9 | domains CRUD | `tab-domains.js` | ✅ | S5-A (getDomains→getSettingsDomains), S5-B (4 метода api.js), S5-C (handleDomainsAction) |
+| S10-S11 | domain prompts | `tab-domains.js` | ✅ | S10-A (getDomainPrompts/updateDomainPrompt), S11-A (showPromptsModal) |
+| S12-S13 | domain fields (clarification) | `tab-domains.js` | ✅ | S12-A (getDomainFields/updateDomainFields), S13-A (showFieldsModal) |
+| S14-S19 | generation models CRUD | `tab-gen-models.js` | 🟡 | C16: S14-B 🔴 (showGenModelModal→showGenerationModelModal), S16-B 🔴 (checkGenerationModel отсутствует в api.js). S15-A ✅ handleGenModelsAction реализован. Фикс в следующем коммите |
+| S20-S24 | embedding models CRUD | `tab-emb-models.js` | 🟡 | C16: S15-B 🔴 (showEmbModelModal→showEmbeddingModelModal), S17-C 🔴 (checkEmbeddingModel отсутствует в api.js). S16-A ✅ handleEmbModelsAction реализован. Фикс в следующем коммите |
+| S25-S29 | vaults CRUD | `tab-vaults.js` | 🟡 | S36-new ✅, S14-A ✅ handleVaultsAction. S27-A 🔴 — проверить deleteVault в api.js на 204 без .json() |
+| S30-S35 | pipelines CRUD | `tab-pipelines.js` | 🟡 | S30-A 🔴 pipeline.pipeline_id\|\|pipeline.id — двойное поле, нужно сверить PipelineRead. S31-A..S33-A 🔴 — проверить api.js методы activatePipeline/deactivatePipeline/deletePipeline |
 | S36-S39 | tags CRUD | `api.js`, `tab-campaigns.js` | ✅ | D09 (getTags/deleteTag в api.js); tags.py корректен (domain_id required); tab-campaigns.js — getTags возвращает TagsGrouped (объект), парсинг OK; D13-W (мёртвая Array.isArray ветка) |
-| S40-S44 | documents CRUD | `tab-documents.js` | 🔴 | |
+| S40-S44 | documents CRUD | `tab-documents.js` | 🔴 | Не аудировано |
 | S45-S51 | campaigns CRUD | `api.js`, `tab-campaigns.js`, `sidebar.js` | ✅ | D03 (N+1→batch), D04 (typed payload), D08 (null-safe), D09 (8 методов), D10 (204 no-json), D14 (c.campaign_id→c.id в sidebar) |
 
 ## Группа: db-management
@@ -83,19 +83,20 @@
 | 2026-06-01 | D04 | `app/api/settings/schemas.py` | Добавлен `CampaignTagCreateRequest(name, color)` | [afb77dd](https://github.com/Annener/mercer/commit/afb77ddc566dce8b8640cf41b0ca6fb0177dd6e8) |
 | 2026-06-01 | D03+D04 | `app/api/settings/campaigns.py` | N+1 → batch IN(); `payload: dict` → `CampaignTagCreateRequest` | [596f4af](https://github.com/Annener/mercer/commit/596f4af71d7a69bd1f0caa7c62e1dcb5d6288737) |
 | 2026-06-01 | D08+D09+D10 | `app/static/js/api.js` | null-safe getCampaigns; 8 campaign/tag методов; 204 no-json fixes | [210917f](https://github.com/Annener/mercer/commit/210917ff13b8c0701c7da7576929d51141345e1b) |
-| 2026-06-01 | D14 | `app/static/js/sidebar.js` | `c.campaign_id` → `c.id` — CampaignRead возвращает `id`, не `campaign_id`; кампания теперь реально применяется к новому чату | [текущий] |
+| 2026-06-01 | D14 | `app/static/js/sidebar.js` | `c.campaign_id` → `c.id` — CampaignRead возвращает `id`, не `campaign_id`; кампания теперь реально применяется к новому чату | — |
 
 ---
 
 ## Следующая задача
 
-**S1 + S2-S4 · settings status + params CRUD**
-Стартовать с: `app/api/settings/__init__.py` / `settings_router.py` → `tab-params.js` → `settings.js`
+**C16 · Фикс имён методов и недостающих методов api.js** (коммит после обновления AUDIT+PROGRESS)
 
-Затем: **S5-S13 · domains CRUD + prompts + clarification fields** → `tab-domains.js`
+1. `tab-gen-models.js`: `showGenerationModelModal` → `showGenModelModal`
+2. `tab-emb-models.js`: `showEmbeddingModelModal` → `showEmbModelModal`
+3. `api.js`: добавить `checkGenerationModel(id)` → `GET /api/settings/models/generation/{id}/check`
+4. `api.js`: добавить `checkEmbeddingModel(id)` → `GET /api/settings/models/embedding/{id}/check`
+5. `api.js`: проверить `deleteVault` — убедиться нет `.json()` на 204
+6. `api.js`: проверить `activatePipeline`, `deactivatePipeline`, `deletePipeline` — пути и 204-safe
+7. `tab-pipelines.js`: сверить `pipeline.pipeline_id || pipeline.id` с `PipelineRead` из `shared_contracts/models.py`
 
-**Инварианты для следующей сессии:**
-- `Domain.domain_id` — строковый PK (не UUID)
-- `DomainPrompt.prompt_type` — Literal["system", "clarification", "planner", "pipeline_router"]
-- `DomainClarificationField` — отдельная таблица, не JSON-поле
-- `PlatformSetting.value_type` — Literal["int","float","bool","str"]; значение хранится как строка, приводится при чтении
+После фиксов — **аудит S40–S44 (tab-documents.js)** и **D1–D9 (db-management)**.

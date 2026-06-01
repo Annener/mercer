@@ -147,7 +147,7 @@
 | S4-A | frontend | `app/static/js/api.js`             | `resetSettingsParams()` отсутствовал → `TypeError` при сбросе                                                        | ✅     |
 | S2-B | frontend | `app/static/js/settings.js`        | `handleParamsAction` — пустая заглушка, клики save-param / default-param / reset-params не работали                  | ✅     |
 | S2-C | frontend | `app/static/js/settings.js`        | Нет события сохранения bool-параметра (checkbox). Решено кнопкой `save-param` в `tab-params.js`                      | ✅     |
-| S2-D | frontend | `app/static/js/settings/tab-params.js` | Дубль в `boolKeys`: `reranker.enabled` и `retrieval.reranker_enabled` — оба присутствуют. Не критично, но стоит унифицировать ключ в `SETTINGS_DEFAULTS` | 🔴     |
+| S2-D | frontend | `app/static/js/settings/tab-params.js` | Оба ключа `reranker.enabled` и `retrieval.reranker_enabled` реальны и уникальны — разные настройки. Дубля нет. Комментарий в коде добавлен. | ✅     |
 
 > **Инварианты S1–S4**: `PlatformSetting.value_type` ∈ `{"int","float","bool","str"}`, значение хранится строкой, приводится при чтении бэком. Фронт передаёт `bool`/`number`/`string` в `updateSettingsParam` — приведение корректное (`save-param` читает тип инпута).
 
@@ -212,6 +212,47 @@
 > **Контекст S17-B**: `PUT /vaults/{id}` с `{enabled: bool}` через `updateVault` — технически работает (поле `enabled` есть в `VaultUpdateRequest`). Однако семантически toggle-операция должна идти через `POST /toggle`. Добавлен метод `toggleVault(id)` в `api.js` и исправлен вызов в `settings.js`.
 >
 > **Контекст S19-A**: У embedding-моделей нет концепции "активной" — в отличие от generation-моделей, несколько embedding-моделей могут использоваться параллельно разными vaults. Поэтому `activate` для emb-моделей **не нужен**. Метод `setActiveEmbeddingModel` и кнопка `set-active-emb-model` удалены из `api.js` и `settings.js`.
+
+---
+
+## C16 · S14–S19 · Аудит tab-gen-models.js, tab-emb-models.js, tab-vaults.js, tab-pipelines.js
+
+Аудит: 2026-06-01 · Проверено: gen_models.py, emb_models.py, vaults.py, pipelines.py, api.js, settings.js, tab-gen-models.js, tab-emb-models.js, tab-vaults.js, tab-pipelines.js
+
+### S14–S19 · Generation models
+
+| ID    | Слой     | Файл                                          | Проблема                                                                                                                                         | Статус |
+|-------|----------|-----------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------|--------|
+| S14-B | frontend | `app/static/js/settings.js`                   | `handleGenModelsAction` вызывает `this.showGenModelModal(id)` — метода с таким именем нет. В `tab-gen-models.js` метод называется `showGenerationModelModal(id)` → `TypeError` при new-gen / edit-gen | 🔴     |
+| S15-B | frontend | `app/static/js/settings.js`                   | `handleEmbModelsAction` вызывает `this.showEmbModelModal(id)` — метода с таким именем нет. В `tab-emb-models.js` метод называется `showEmbeddingModelModal(id)` → `TypeError` при new-emb / edit-emb | 🔴     |
+| S16-B | frontend | `app/static/js/settings.js`                   | `handleGenModelsAction('check-gen')` вызывает `this.api.checkGenerationModel(id)` — метода нет в `api.js`, вернёт `TypeError` | 🔴     |
+| S17-C | frontend | `app/static/js/settings.js`                   | `handleEmbModelsAction('check-emb')` вызывает `this.api.checkEmbeddingModel(id)` — метода нет в `api.js`, вернёт `TypeError` | 🔴     |
+
+> **Примечание S14-B / S15-B**: расхождение в именах — settings.js использует короткие aliases (`showGenModelModal`, `showEmbModelModal`), а табы регистрируют полные имена (`showGenerationModelModal`, `showEmbeddingModelModal`). Нужно переименовать методы в табах **или** исправить вызовы в settings.js. Предпочтительно: переименовать методы в табах на короткие (aliases уже в settings.js).
+
+### S20–S24 · Embedding models
+
+| ID    | Слой     | Файл                                          | Проблема                                                                                                                                         | Статус |
+|-------|----------|-----------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------|--------|
+| S20-A | frontend | `app/static/js/settings/tab-emb-models.js`   | `renderEmbeddingModelsTab` — ОК; `renderModelList('emb', ...)` рендерит кнопку `activate-emb` для kind='emb'? Нет — `activateItem` выводится только при `kind === 'gen'`. ОК | ⬜     |
+| S21-A | frontend | `app/static/js/settings/tab-emb-models.js`   | `showEmbeddingModelModal`: save-кнопка формирует корректный payload (`model_id`, `provider`, `display_name`, `model_name`, `dimensions`, `base_url`, `api_key`, `timeout_seconds`). Соответствует схеме `EmbeddingModelCreate` | ⬜     |
+
+### S25–S29 · Vaults
+
+| ID    | Слой     | Файл                                         | Проблема                                                                                                                                         | Статус |
+|-------|----------|----------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------|--------|
+| S25-A | frontend | `app/static/js/settings/tab-vaults.js`       | `renderVaultsTab` — вызывает `getSettingsVaults()`. ОК | ⬜     |
+| S26-A | frontend | `app/static/js/settings/tab-vaults.js`       | `showVaultModal` — `getSettingsDomains()` исправлен (S36-new), `getEmbeddingModels()` — корректно. ОК | ⬜     |
+| S27-A | frontend | `app/static/js/settings.js`                  | `deleteVault` → `api.deleteVault(id)` — бэк возвращает 204 No Content. Нужно убедиться что `deleteVault` в `api.js` не вызывает `.json()` | 🔴     |
+
+### S30–S35 · Pipelines
+
+| ID    | Слой     | Файл                                          | Проблема                                                                                                                                         | Статус |
+|-------|----------|-----------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------|--------|
+| S30-A | frontend | `app/static/js/settings/tab-pipelines.js`    | `renderPipelinesTab` читает `pipeline.pipeline_id \|\| pipeline.id` — двойное поле. Нужно проверить `PipelineRead` в `shared_contracts/models.py`: какое поле является PK | 🔴     |
+| S31-A | frontend | `app/static/js/settings.js`                   | `handlePipelinesAction('activate-pipeline', id)` → `api.activatePipeline(id)`. Нужно убедиться что метод существует в `api.js` и путь правильный | 🔴     |
+| S32-A | frontend | `app/static/js/settings.js`                   | `handlePipelinesAction('deactivate-pipeline', id)` → `api.deactivatePipeline(id)`. Аналогично S31-A | 🔴     |
+| S33-A | frontend | `app/static/js/settings.js`                   | `handlePipelinesAction('delete-pipeline', id)` → `api.deletePipeline(id)`. Бэк возвращает 204 — проверить нет ли `.json()` | 🔴     |
 
 ---
 
