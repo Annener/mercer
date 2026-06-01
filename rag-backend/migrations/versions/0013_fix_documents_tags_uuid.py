@@ -17,15 +17,21 @@ Problem:
   on any ORM query touching these tables.
 
   Migration 0012 fixed tags.campaign_id but did NOT touch tags.id.
-  The AUDIT.md table incorrectly marked tags.id as fixed in 0012 — it was not.
+
+Note on campaign_tags:
+  The campaign_tags association table is NOT created by any migration —
+  it exists only in the ORM (created via create_all or a separate mechanism).
+  Therefore all campaign_tags FK operations are guarded by _table_exists().
 
 Fix strategy:
   1. Nullify any non-UUID values (defensive).
   2. Drop document_labels (has FK to both documents.id and tags.id).
-  3. Cast tags.id VARCHAR -> UUID.
-  4. Cast documents.id VARCHAR -> UUID.
-  5. Re-create document_labels with proper UUID column types.
-  6. Re-add tags UniqueConstraint (uq_tag_name_domain) if absent.
+  3. Drop all FK constraints referencing tags.id (from any table that exists).
+  4. Cast tags.id VARCHAR -> UUID.
+  5. Re-add FK from campaign_tags.tag_id -> tags.id (only if campaign_tags exists).
+  6. Cast documents.id VARCHAR -> UUID.
+  7. Re-create document_labels with proper UUID column types.
+  8. Re-add tags UniqueConstraint (uq_tag_name_domain) if absent.
 
 All steps are idempotent — safe to re-run.
 """
@@ -69,7 +75,8 @@ def _constraint_exists(conn, table: str, constraint: str) -> bool:
         sa.text(
             "SELECT 1 FROM pg_constraint c "
             "JOIN pg_class r ON r.oid = c.conrelid "
-            "WHERE r.relname = :t AND c.conname = :n AND r.relnamespace = 'public'::regnamespace"
+            "WHERE r.relname = :t AND c.conname = :n "
+            "AND r.relnamespace = 'public'::regnamespace"
         ),
         {"t": table, "n": constraint},
     ).fetchone())
@@ -93,18 +100,26 @@ def upgrade() -> None:
             f"UPDATE tags SET id = NULL WHERE id IS NOT NULL AND id !~ '{_UUID_RE}'"
         ))
 
-        # Drop all FKs on tags.id from other tables (campaign_tags.tag_id)
+        # Drop all FK constraints on tags.id from referencing tables.
+        # We use a PL/pgSQL loop to handle auto-generated constraint names.
+        # Each EXECUTE is guarded internally by checking if the table exists
+        # before attempting the DROP — this avoids errors when campaign_tags
+        # or other referencing tables haven't been created yet.
         conn.execute(sa.text("""
             DO $$
             DECLARE
                 r RECORD;
             BEGIN
                 FOR r IN
-                    SELECT conname, conrelid::regclass::text AS tbl
-                    FROM pg_constraint
-                    WHERE confrelid = 'tags'::regclass AND contype = 'f'
+                    SELECT c.conname, c.conrelid::regclass::text AS tbl
+                    FROM pg_constraint c
+                    JOIN pg_class rc ON rc.oid = c.confrelid
+                    JOIN pg_namespace n ON n.oid = rc.relnamespace
+                    WHERE rc.relname = 'tags'
+                      AND n.nspname = 'public'
+                      AND c.contype = 'f'
                 LOOP
-                    EXECUTE format('ALTER TABLE %s DROP CONSTRAINT %I', r.tbl, r.conname);
+                    EXECUTE format('ALTER TABLE %s DROP CONSTRAINT IF EXISTS %I', r.tbl, r.conname);
                 END LOOP;
             END;
             $$;
@@ -115,11 +130,14 @@ def upgrade() -> None:
         ))
 
         # Re-add FK from campaign_tags.tag_id -> tags.id
-        conn.execute(sa.text(
-            "ALTER TABLE campaign_tags "
-            "ADD CONSTRAINT fk_campaign_tags_tag_id "
-            "FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE"
-        ))
+        # ONLY if campaign_tags table exists (it is not created by any migration;
+        # it may be absent on a fresh DB that hasn't run create_all yet).
+        if _table_exists(conn, "campaign_tags"):
+            conn.execute(sa.text(
+                "ALTER TABLE campaign_tags "
+                "ADD CONSTRAINT fk_campaign_tags_tag_id "
+                "FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE"
+            ))
 
     # ------------------------------------------------------------------
     # Step 3: fix documents.id  VARCHAR(36) -> UUID
@@ -130,18 +148,22 @@ def upgrade() -> None:
             f"UPDATE documents SET id = NULL WHERE id IS NOT NULL AND id !~ '{_UUID_RE}'"
         ))
 
-        # Drop any remaining FKs pointing to documents.id
+        # Drop any remaining FK constraints pointing to documents.id
         conn.execute(sa.text("""
             DO $$
             DECLARE
                 r RECORD;
             BEGIN
                 FOR r IN
-                    SELECT conname, conrelid::regclass::text AS tbl
-                    FROM pg_constraint
-                    WHERE confrelid = 'documents'::regclass AND contype = 'f'
+                    SELECT c.conname, c.conrelid::regclass::text AS tbl
+                    FROM pg_constraint c
+                    JOIN pg_class rc ON rc.oid = c.confrelid
+                    JOIN pg_namespace n ON n.oid = rc.relnamespace
+                    WHERE rc.relname = 'documents'
+                      AND n.nspname = 'public'
+                      AND c.contype = 'f'
                 LOOP
-                    EXECUTE format('ALTER TABLE %s DROP CONSTRAINT %I', r.tbl, r.conname);
+                    EXECUTE format('ALTER TABLE %s DROP CONSTRAINT IF EXISTS %I', r.tbl, r.conname);
                 END LOOP;
             END;
             $$;
@@ -154,21 +176,22 @@ def upgrade() -> None:
     # ------------------------------------------------------------------
     # Step 4: re-create document_labels with proper UUID FK types
     # ------------------------------------------------------------------
-    op.create_table(
-        "document_labels",
-        sa.Column(
-            "document_id",
-            UUID(as_uuid=True),
-            sa.ForeignKey("documents.id", ondelete="CASCADE"),
-            primary_key=True,
-        ),
-        sa.Column(
-            "tag_id",
-            UUID(as_uuid=True),
-            sa.ForeignKey("tags.id", ondelete="CASCADE"),
-            primary_key=True,
-        ),
-    )
+    if not _table_exists(conn, "document_labels"):
+        op.create_table(
+            "document_labels",
+            sa.Column(
+                "document_id",
+                UUID(as_uuid=True),
+                sa.ForeignKey("documents.id", ondelete="CASCADE"),
+                primary_key=True,
+            ),
+            sa.Column(
+                "tag_id",
+                UUID(as_uuid=True),
+                sa.ForeignKey("tags.id", ondelete="CASCADE"),
+                primary_key=True,
+            ),
+        )
 
     # ------------------------------------------------------------------
     # Step 5: ensure uq_tag_name_domain exists (may have been lost)
@@ -195,18 +218,22 @@ def downgrade() -> None:
 
     # Revert tags.id UUID -> VARCHAR(36)
     if _col_type(conn, "tags", "id") == "uuid":
-        # Drop FKs pointing at tags.id
+        # Drop FKs pointing at tags.id (including campaign_tags if it exists)
         conn.execute(sa.text("""
             DO $$
             DECLARE
                 r RECORD;
             BEGIN
                 FOR r IN
-                    SELECT conname, conrelid::regclass::text AS tbl
-                    FROM pg_constraint
-                    WHERE confrelid = 'tags'::regclass AND contype = 'f'
+                    SELECT c.conname, c.conrelid::regclass::text AS tbl
+                    FROM pg_constraint c
+                    JOIN pg_class rc ON rc.oid = c.confrelid
+                    JOIN pg_namespace n ON n.oid = rc.relnamespace
+                    WHERE rc.relname = 'tags'
+                      AND n.nspname = 'public'
+                      AND c.contype = 'f'
                 LOOP
-                    EXECUTE format('ALTER TABLE %s DROP CONSTRAINT %I', r.tbl, r.conname);
+                    EXECUTE format('ALTER TABLE %s DROP CONSTRAINT IF EXISTS %I', r.tbl, r.conname);
                 END LOOP;
             END;
             $$;
@@ -216,26 +243,28 @@ def downgrade() -> None:
             "ALTER TABLE tags ALTER COLUMN id TYPE VARCHAR(36) USING id::text"
         ))
 
-        # Restore FK from campaign_tags.tag_id -> tags.id (VARCHAR)
-        conn.execute(sa.text(
-            "ALTER TABLE campaign_tags "
-            "ADD CONSTRAINT fk_campaign_tags_tag_id "
-            "FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE"
-        ))
+        # Restore FK from campaign_tags.tag_id -> tags.id only if it exists
+        if _table_exists(conn, "campaign_tags"):
+            conn.execute(sa.text(
+                "ALTER TABLE campaign_tags "
+                "ADD CONSTRAINT fk_campaign_tags_tag_id "
+                "FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE"
+            ))
 
     # Re-create document_labels with VARCHAR types (0011 state)
-    op.create_table(
-        "document_labels",
-        sa.Column(
-            "document_id",
-            sa.String(36),
-            sa.ForeignKey("documents.id", ondelete="CASCADE"),
-            primary_key=True,
-        ),
-        sa.Column(
-            "tag_id",
-            sa.String(36),
-            sa.ForeignKey("tags.id", ondelete="CASCADE"),
-            primary_key=True,
-        ),
-    )
+    if not _table_exists(conn, "document_labels"):
+        op.create_table(
+            "document_labels",
+            sa.Column(
+                "document_id",
+                sa.String(36),
+                sa.ForeignKey("documents.id", ondelete="CASCADE"),
+                primary_key=True,
+            ),
+            sa.Column(
+                "tag_id",
+                sa.String(36),
+                sa.ForeignKey("tags.id", ondelete="CASCADE"),
+                primary_key=True,
+            ),
+        )
