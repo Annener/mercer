@@ -5,7 +5,7 @@ if (window.marked) {
         breaks: true,          // \n превращается в <br>
         gfm: true,             // GitHub Flavored Markdown
         headerIds: false,      // не генерировать id у заголовков
-        mangle: false,         // не обфусцировать email
+        mangle: false,         // не обфускировать email
     });
     // Используем highlight.js для блоков кода
     const renderer = new marked.Renderer();
@@ -272,19 +272,15 @@ class ChatManager {
                             if (parsed.type === 'sources' && parsed.grouped_by_step) pendingGroupedSources = parsed.step_groups;
                             if (parsed.type === 'sources' && !parsed.grouped_by_step) pendingSources = parsed.sources;
                             if (parsed.type === 'clarification') {
-                                fullContent += `\n❓ ${parsed.question || parsed.content || ''}`;
+                                fullContent += `\n\u2753 ${parsed.question || parsed.content || ''}`;
                                 pendingContent = fullContent;
                                 this.scheduleMarkdownRender(assistantMessage, () => pendingContent);
                             }
                             if (parsed.type === 'error') this.addMessage('system', parsed.message || 'Pipeline error');
-                        } else if (parsed.token) {
-                            if (!assistantMessage) {
-                                assistantMessage = this.addMessage('assistant', '');
-                            }
-                            fullContent += parsed.token;
-                            pendingContent = fullContent;
-                            this.scheduleMarkdownRender(assistantMessage, () => pendingContent);
-                        } else if (parsed.sources) {
+                        }
+                        // B05 fix: удалена мёртвая ветка `else if (parsed.token)` —
+                        // бэкенд шлёт только {type:"token",content}, формат {token} не используется
+                        else if (parsed.sources) {
                             pendingSources = parsed.sources;
                         }
                     } catch (e) {
@@ -332,10 +328,11 @@ class ChatManager {
 
     async setupContextBar(chat) {
         if (!this.contextBar) return;
-        const hasContext = Boolean(chat.world_id || chat.domain_id);
+        // B02 fix: chat.world_id → chat.domain_id (поля world_id нет в модели Chat и контракте)
+        const hasContext = Boolean(chat.domain_id);
         this.contextBar.classList.toggle('hidden', !hasContext);
         if (this.worldName) {
-            this.worldName.textContent = chat.world_id ? `Мир: ${chat.world_id}` : '';
+            this.worldName.textContent = chat.domain_id ? `Домен: ${chat.domain_id}` : '';
         }
         if (!this.pipelineSelect) return;
         // Передаём campaign_id чтобы бэкенд фильтровал пайплайны по кампании [iter2]
@@ -433,10 +430,18 @@ class ChatManager {
         element.innerHTML = prefix + renderMarkdown(text);
     }
 
+    /**
+     * Обработка JSON-ответа для /send и /clarify.
+     *
+     * B07 fix: проверение на clarification-ответ изменено:
+     *   БЫЛО: response.role === 'assistant' && response.state
+     *   СТАЛО: response.state && response.question  (по контракту ClarificationResponse)
+     * ClarificationResponse: { question, state, missing_fields } — поля role нет.
+     */
     handleJSONResponse(response) {
-        if (response.role === 'assistant' && response.state) {
+        if (response.state && response.question) {
             // Clarification response
-            this.addMessage('clarification', response.content);
+            this.addMessage('clarification', response.question);
         } else if (response.content) {
             const msgEl = this.addMessage('assistant', response.content);
             if (this._isLlmUnavailable(response.content)) {
