@@ -38,12 +38,13 @@ class ChatAPI {
         return response.json();
     }
 
+    // D10 fix: было return response.json() — DELETE возвращает 204 No Content, json() бросал SyntaxError
     async deleteChat(chatId) {
         const response = await fetch(`${this.baseUrl}/chat/${chatId}`, {
             method: 'DELETE',
         });
         if (!response.ok) throw new Error(`Failed to delete chat: ${response.statusText}`);
-        return response.json();
+        // 204 No Content — нет тела
     }
 
     async lockPipeline(chatId, pipelineId) {
@@ -116,13 +117,6 @@ class ChatAPI {
         return response.json();
     }
 
-    // S45-2 fix: /campaigns → /api/settings/campaigns (S45)
-    async getCampaigns(domainId) {
-        const response = await fetch(`${this.baseUrl}/api/settings/campaigns?domain_id=${encodeURIComponent(domainId)}`);
-        if (!response.ok) throw new Error(`Failed to get campaigns: ${response.statusText}`);
-        return response.json();
-    }
-
     // S45-2 fix: /pipelines → /api/settings/pipelines (S30)
     async getPipelines(domainId = null, campaignId = null) {
         const params = new URLSearchParams();
@@ -132,6 +126,90 @@ class ChatAPI {
         const response = await fetch(`${this.baseUrl}/api/settings/pipelines${qs}`);
         if (!response.ok) throw new Error(`Failed to get pipelines: ${response.statusText}`);
         return response.json();
+    }
+
+    // === Settings: Campaigns API (S45–S51) ===
+
+    // D08 fix: было ?domain_id=${domainId} — при null отправлялась строка "null" в URL
+    async getCampaigns(domainId = null) {
+        const qs = domainId ? `?domain_id=${encodeURIComponent(domainId)}` : '';
+        const r = await fetch(`${this.baseUrl}/api/settings/campaigns${qs}`);
+        if (!r.ok) throw new Error(await r.text());
+        return r.json();
+    }
+
+    // D09 fix: метод отсутствовал — TypeError при любом действии с кампанией
+    async getCampaign(campaignId) {
+        const r = await fetch(`${this.baseUrl}/api/settings/campaigns/${campaignId}`);
+        if (!r.ok) throw new Error(await r.text());
+        return r.json();
+    }
+
+    async createCampaign(data) {
+        const r = await fetch(`${this.baseUrl}/api/settings/campaigns`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data),
+        });
+        if (!r.ok) throw new Error(await r.text());
+        return r.json();
+    }
+
+    async updateCampaign(campaignId, data) {
+        const r = await fetch(`${this.baseUrl}/api/settings/campaigns/${campaignId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data),
+        });
+        if (!r.ok) throw new Error(await r.text());
+        return r.json();
+    }
+
+    // D09: deleteCampaign — 204 No Content, не вызываем .json()
+    async deleteCampaign(campaignId) {
+        const r = await fetch(`${this.baseUrl}/api/settings/campaigns/${campaignId}`, {
+            method: 'DELETE',
+        });
+        if (!r.ok) throw new Error(await r.text());
+        // 204 No Content — нет тела
+    }
+
+    async getCampaignTags(campaignId) {
+        const r = await fetch(`${this.baseUrl}/api/settings/campaigns/${campaignId}/tags`);
+        if (!r.ok) throw new Error(await r.text());
+        return r.json();
+    }
+
+    async createCampaignTag(campaignId, payload) {
+        const r = await fetch(`${this.baseUrl}/api/settings/campaigns/${campaignId}/tags`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+        if (!r.ok) throw new Error(await r.text());
+        return r.json();
+    }
+
+    // === Settings: Tags API (S36–S39) ===
+
+    async getTags(domainId = null, vaultId = null, campaignId = null) {
+        const params = new URLSearchParams();
+        if (domainId) params.set('domain_id', domainId);
+        if (vaultId) params.set('vault_id', vaultId);
+        if (campaignId) params.set('campaign_id', campaignId);
+        const qs = params.toString() ? `?${params}` : '';
+        const r = await fetch(`${this.baseUrl}/api/settings/tags${qs}`);
+        if (!r.ok) throw new Error(await r.text());
+        return r.json();
+    }
+
+    // D09: deleteTag — 204 No Content, не вызываем .json()
+    async deleteTag(tagId) {
+        const r = await fetch(`${this.baseUrl}/api/settings/tags/${tagId}`, {
+            method: 'DELETE',
+        });
+        if (!r.ok) throw new Error(await r.text());
+        // 204 No Content — нет тела
     }
 }
 
