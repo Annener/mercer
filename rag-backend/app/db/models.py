@@ -26,8 +26,9 @@ class Base(DeclarativeBase):
 class Domain(Base):
     __tablename__ = "domains"
 
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    domain_id: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    # domain_id — реальный PK таблицы (строка, не UUID).
+    # Колонки id в БД нет — она никогда не создавалась миграциями.
+    domain_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     display_name: Mapped[str] = mapped_column(String(256), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_system: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
@@ -242,12 +243,12 @@ class Chat(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     title: Mapped[str] = mapped_column(String(512), nullable=False, default="New Chat")
     vault_id: Mapped[str | None] = mapped_column(String(128), nullable=True)  # deprecated back-compat
-    # A01 fix: domain_id NOT NULL + CASCADE (инвариант arch.md §2.6, §8: Chat всегда принадлежит домену)
+    # A01 fix: domain_id NOT NULL + CASCADE (инвариант arch.md §2.6, §8)
     domain_id: Mapped[str] = mapped_column(String(64), ForeignKey("domains.domain_id", ondelete="CASCADE"), nullable=False)
     campaign_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("campaigns.id", ondelete="SET NULL"), nullable=True)
-    # A02: pipeline_versions — JSONB dict для отслеживания версий пайплайна при создании чата
+    # A02: pipeline_versions — JSONB dict
     pipeline_versions: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True, default=None)
-    # A03: locked_pipeline_id — закреплённый пайплайн для этого чата (None = авто-выбор)
+    # A03: locked_pipeline_id
     locked_pipeline_id: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
