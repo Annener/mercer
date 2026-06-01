@@ -315,6 +315,10 @@ async def send_message_stream(
         else "none"
     )
 
+    # C-STREAM01 fix: final_composition=None вызывал ValidationError немедленно
+    # при создании объекта, т.к. FinalComposition не Optional в схеме.
+    # Паттерн как в send_message: контекст создаётся без final_composition,
+    # поле дописывается после pipeline_router.select().
     context = PipelineExecutionContext(
         chat_id=str(chat.id),
         message_id=str(user_msg.id),
@@ -323,11 +327,6 @@ async def send_message_stream(
         campaign_id=str(chat.campaign_id) if chat.campaign_id else None,
         vault_ids=vault_ids,
         vault_id=chat.vault_id,
-        pipeline_id="",
-        pipeline_version="",
-        steps=[],
-        final_composition=None,  # type: ignore[arg-type]
-        history=[],
         retrieval_strategy=retrieval_strategy,
     )
 
@@ -456,5 +455,5 @@ def _auto_title(query: str) -> str:
     cleaned = re.sub(r"[^\w\s\u0400-\u04ff]", " ", query).strip()
     words = cleaned.split()
     if len(words) > 7:
-        cleaned = " ",join(words[:7])
+        cleaned = " ".join(words[:7])
     return cleaned[:255]
