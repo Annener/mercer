@@ -433,6 +433,56 @@ Check model availability, dimension settings, and provider logs.
 
 ---
 
+## C28 · M19 — messages.pipeline_id: UUID в БД vs String(64) в ORM
+
+### Аудит (цепочка проверки)
+
+**Трейс ошибки:**
+```
+asyncpg.exceptions.DatatypeMismatchError: column "pipeline_id" is of type uuid
+but expression is of type character varying
+[SQL: INSERT INTO messages (..., pipeline_id) VALUES (..., $5::VARCHAR)]
+```
+
+**Источник расхождения — два слоя:**
+
+| Слой | Объявление | Тип |
+|---|---|---|
+| Миграция 0004 (`0004_add_pipeline_id_to_messages.py`) | `postgresql.UUID(as_uuid=True)` | **UUID** в БД |
+| ORM `Message.pipeline_id` (`models.py`) | `String(64)` | **VARCHAR(64)** → SQLAlchemy биндит `$5::VARCHAR` |
+
+**Цепочка:** миграция 0004 добавила колонку как `UUID`, но `models.py` объявляет `pipeline_id: Mapped[str | None] = mapped_column(String(64), nullable=True)`. При `INSERT INTO messages` SQLAlchemy генерирует `$5::VARCHAR` — PostgreSQL отвергает c `DatatypeMismatchError`.
+
+**Семантика `pipeline_id`:**  
+По arch.md `Message.pipeline_id` хранит строковый slug пайплайна (например `"default"`, `"dnd"`), **не UUID**. Миграция 0004 создала колонку с неверным типом — нужно привести тип БД к `VARCHAR(64)`, а не наоборот менять ORM.
+
+> Важно: `pipeline_id` в таблице `messages` — это **pipeline_id (String slug)**, не `Pipeline.id (UUID)`. Это поле без FK. ORM-объявление `String(64)` — правильное. Исправлять нужно **БД**, не ORM.
+
+### Таблица багов
+
+| ID | Таблица | Колонка | Тип в БД (0004) | Тип ORM | Нужно | Статус |
+|---|---|---|---|---|---|---|
+| M19 | `messages` | `pipeline_id` | `UUID` | `String(64)` | `VARCHAR(64)` (миграция 0015) | 🔴 |
+
+### Стратегия фикса (0015)
+
+Идемпотентный ALTER: если `pipeline_id` имеет тип `uuid` — преобразовать в `VARCHAR(64)` (существующие значения `NULL`, потерь нет).
+
+```python
+def upgrade() -> None:
+    conn = op.get_bind()
+    row = conn.execute(sa.text(
+        "SELECT data_type FROM information_schema.columns "
+        "WHERE table_name = 'messages' AND column_name = 'pipeline_id'"
+    )).fetchone()
+    if row and row[0].lower() == 'uuid':
+        conn.execute(sa.text(
+            "ALTER TABLE messages ALTER COLUMN pipeline_id TYPE VARCHAR(64) USING pipeline_id::text"
+        ))
+```
+
+---
+
 ## Changelog
 
 | Дата | Баги | Файлы | Описание | Коммит |
@@ -453,3 +503,4 @@ Check model availability, dimension settings, and provider logs.
 | 2026-06-01 | C25-A, C25-B, C25-C | `app/static/js/api.js`, `app/static/js/chat.js` | C25-A: stream:true добавлен в sendMessage; C25-B: locked_pipeline_id null-safe; C25-C: clarification_id сохраняется в SSE | C25 |
 | 2026-06-01 | M01, M02, M03, M04 | `rag-backend/migrations/versions/0013_fix_documents_tags_uuid.py` | documents.id + tags.id + document_labels.*_id: VARCHAR(36) → UUID; idempotent; campaign_tags FK пересоздан | [24fc654](https://github.com/Annener/mercer/commit/24fc65449b314efe3cb3d16337040c39a6e52efb) |
 | 2026-06-01 | F01, F02-A, F02-B, F02-C, F03-A, F03-B, B01-A, B01-B | `tab-documents.js`, `api.js`, `pipeline_builder.js`, `openai_compatible.py`, `indexer_worker.py` | Аудит C27: deleteDocument typo; createPipeline/updatePipeline отсутствуют; is_final UX нарушение; backend generation/embedding ошибки | — |
+| 2026-06-02 | M19 | `rag-backend/migrations/versions/0015_fix_messages_pipeline_id_type.py` | messages.pipeline_id: UUID → VARCHAR(64); ORM объявляет String(64), миграция 0004 создала UUID ошибочно | — |
