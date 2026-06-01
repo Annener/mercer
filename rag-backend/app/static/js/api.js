@@ -491,7 +491,31 @@ class ChatAPI {
         return response.json();
     }
 
-    // === DB Management: Documents ===
+    // === Settings: Documents ===
+
+    // S40-B fix: метод отсутствовал. Бэк: GET /api/settings/documents?vault_id=|domain_id=&status=&tag_id=
+    // Один из vault_id / domain_id обязателен (иначе бэк вернёт 400).
+    // Фильтры status и tag_id — серверные, переносим фильтрацию на бэк.
+    async getSettingsDocuments({ vaultId = null, domainId = null, status = null, tagId = null } = {}) {
+        const params = new URLSearchParams();
+        if (vaultId)  params.set('vault_id',  vaultId);
+        if (domainId) params.set('domain_id', domainId);
+        if (status)   params.set('status',    status);
+        if (tagId)    params.set('tag_id',     tagId);
+        const qs = params.toString() ? `?${params}` : '';
+        const response = await fetch(`${this.baseUrl}/api/settings/documents${qs}`);
+        if (!response.ok) throw new Error(`Failed to get settings documents: ${response.statusText}`);
+        return response.json();
+    }
+
+    // S41-A fix: метод отсутствовал. Бэк: GET /api/settings/documents/{document_id} → DocumentRead
+    async getSettingsDocument(documentId) {
+        const response = await fetch(`${this.baseUrl}/api/settings/documents/${encodeURIComponent(documentId)}`);
+        if (!response.ok) throw new Error(`Failed to get settings document: ${response.statusText}`);
+        return response.json();
+    }
+
+    // DB Management: Documents
 
     // D1 fix: /api/db/documents?vault_id= (не /api/settings/documents?domain_id=)
     // Параметр vault_id обязателен — бэк принимает только vault_id, не domain_id.
