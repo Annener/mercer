@@ -48,7 +48,7 @@ class SettingsManager {
         }
     }
 
-    // ─── Tab listeners ────────────────────────────────────────────────────────
+    // ─── Tab listeners ──────────────────────────────────────────────────────────────────
 
     _attachTabListeners(tab) {
         if (!this._tabContent) return;
@@ -94,7 +94,7 @@ class SettingsManager {
         }
     }
 
-    // ─── Domains ──────────────────────────────────────────────────────────────
+    // ─── Domains ───────────────────────────────────────────────────────────────────────────
 
     async handleDomainsAction(action, id, btn) {
         if (action === 'new-domain') {
@@ -114,7 +114,7 @@ class SettingsManager {
         }
     }
 
-    // ─── Params ───────────────────────────────────────────────────────────────
+    // ─── Params ────────────────────────────────────────────────────────────────────────────
 
     async handleParamsAction(action, id, btn) {
         if (action === 'save-params') {
@@ -132,7 +132,7 @@ class SettingsManager {
         }
     }
 
-    // ─── Generation Models ────────────────────────────────────────────────────
+    // ─── Generation Models ──────────────────────────────────────────────────────────────
 
     async handleGenModelsAction(action, id, btn) {
         if (action === 'new-gen') {
@@ -168,7 +168,7 @@ class SettingsManager {
         }
     }
 
-    // ─── Embedding Models ─────────────────────────────────────────────────────
+    // ─── Embedding Models ─────────────────────────────────────────────────────────────────
 
     async handleEmbModelsAction(action, id, btn) {
         if (action === 'new-emb') {
@@ -194,7 +194,7 @@ class SettingsManager {
         }
     }
 
-    // ─── Vaults ───────────────────────────────────────────────────────────────
+    // ─── Vaults ────────────────────────────────────────────────────────────────────────────
 
     async handleVaultsAction(action, id, btn) {
         if (action === 'new-vault') {
@@ -215,13 +215,14 @@ class SettingsManager {
         }
     }
 
-    // ─── Pipelines ────────────────────────────────────────────────────────────
+    // ─── Pipelines ──────────────────────────────────────────────────────────────────────────
 
     async handlePipelinesAction(action, id, btn) {
         if (action === 'new-pipeline') {
             await this.showPipelineModal();
         } else if (action === 'edit-pipeline') {
-            await this.showPipelineModal(id);
+            // C21-A fix: раньше вызывалось showPipelineModal(id), который игнорирует аргумент и открывал форму создания
+            await this.showPipelineEditModal(id);
         } else if (action === 'delete-pipeline') {
             if (!confirm('Удалить pipeline?')) return;
             try {
@@ -241,7 +242,7 @@ class SettingsManager {
         }
     }
 
-    // ─── Utils ────────────────────────────────────────────────────────────────
+    // ─── Utils ─────────────────────────────────────────────────────────────────────────────
 
     escapeHtml(str) {
         if (str == null) return '';
