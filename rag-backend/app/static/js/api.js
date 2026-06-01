@@ -87,8 +87,6 @@ class ChatAPI {
     /**
      * C01 fix: POST /chat/{chatId}/clarify (C9)
      * ClarificationAnswer: { clarification_id: str, answers: Record<string, string> }
-     * clarification_id обязателен — Pydantic возвращал 422 когда B08 отправлял только { answers }.
-     * Возвращает ClarificationResponse: { message_id, role, content, clarification_id, stage }
      */
     async submitClarification(chatId, clarificationId, answers) {
         const response = await fetch(`${this.baseUrl}/chat/${chatId}/clarify`, {
@@ -116,8 +114,6 @@ class ChatAPI {
         return response.json();
     }
 
-    // S45-2 fix: /campaigns → /api/settings/campaigns (S45)
-    // D08 fix: domainId=null больше не отправляет ?domain_id=null (строку)
     async getCampaigns(domainId = null) {
         const qs = domainId ? `?domain_id=${encodeURIComponent(domainId)}` : '';
         const response = await fetch(`${this.baseUrl}/api/settings/campaigns${qs}`);
@@ -125,14 +121,12 @@ class ChatAPI {
         return response.json();
     }
 
-    // D09 fix: getCampaign — отсутствовал, вызывался из tab-campaigns.js → TypeError
     async getCampaign(campaignId) {
         const response = await fetch(`${this.baseUrl}/api/settings/campaigns/${campaignId}`);
         if (!response.ok) throw new Error(`Failed to get campaign: ${response.statusText}`);
         return response.json();
     }
 
-    // D09 fix: createCampaign — отсутствовал
     async createCampaign(data) {
         const response = await fetch(`${this.baseUrl}/api/settings/campaigns`, {
             method: 'POST',
@@ -143,7 +137,6 @@ class ChatAPI {
         return response.json();
     }
 
-    // D09 fix: updateCampaign — отсутствовал
     async updateCampaign(campaignId, data) {
         const response = await fetch(`${this.baseUrl}/api/settings/campaigns/${campaignId}`, {
             method: 'PUT',
@@ -154,23 +147,20 @@ class ChatAPI {
         return response.json();
     }
 
-    // D09 fix: deleteCampaign — отсутствовал; D10 fix: нет .json() на 204
     async deleteCampaign(campaignId) {
         const response = await fetch(`${this.baseUrl}/api/settings/campaigns/${campaignId}`, {
             method: 'DELETE',
         });
         if (!response.ok) throw new Error(`Failed to delete campaign: ${response.statusText}`);
-        // 204 No Content — нет тела
+        // 204 No Content
     }
 
-    // D09 fix: getCampaignTags — отсутствовал
     async getCampaignTags(campaignId) {
         const response = await fetch(`${this.baseUrl}/api/settings/campaigns/${campaignId}/tags`);
         if (!response.ok) throw new Error(`Failed to get campaign tags: ${response.statusText}`);
         return response.json();
     }
 
-    // D09 fix: createCampaignTag — отсутствовал
     async createCampaignTag(campaignId, payload) {
         const response = await fetch(`${this.baseUrl}/api/settings/campaigns/${campaignId}/tags`, {
             method: 'POST',
@@ -181,7 +171,6 @@ class ChatAPI {
         return response.json();
     }
 
-    // D09 fix: getTags — отсутствовал (вызывался из showCampaignModal)
     async getTags(domainId = null, vaultId = null, campaignId = null) {
         const params = new URLSearchParams();
         if (domainId) params.set('domain_id', domainId);
@@ -193,16 +182,16 @@ class ChatAPI {
         return response.json();
     }
 
-    // D09 fix: deleteTag — отсутствовал; D10 fix: нет .json() на 204
     async deleteTag(tagId) {
         const response = await fetch(`${this.baseUrl}/api/settings/tags/${tagId}`, {
             method: 'DELETE',
         });
         if (!response.ok) throw new Error(`Failed to delete tag: ${response.statusText}`);
-        // 204 No Content — нет тела
+        // 204 No Content
     }
 
-    // S45-2 fix: /pipelines → /api/settings/pipelines (S30)
+    // === Pipelines ===
+
     async getPipelines(domainId = null, campaignId = null) {
         const params = new URLSearchParams();
         if (domainId) params.set('domain_id', domainId);
@@ -213,24 +202,46 @@ class ChatAPI {
         return response.json();
     }
 
-    // === Settings API ===
+    // S22 fix: отсутствовали — вызывались из handlePipelinesAction
+    async activatePipeline(pipelineId) {
+        const response = await fetch(`${this.baseUrl}/api/settings/pipelines/${encodeURIComponent(pipelineId)}/activate`, {
+            method: 'POST',
+        });
+        if (!response.ok) throw new Error(`Failed to activate pipeline: ${response.statusText}`);
+        return response.json();
+    }
 
-    // S1-A fix: getSettingsStatus — отсутствовал → TypeError на вкладке Status
+    async deactivatePipeline(pipelineId) {
+        const response = await fetch(`${this.baseUrl}/api/settings/pipelines/${encodeURIComponent(pipelineId)}/deactivate`, {
+            method: 'POST',
+        });
+        if (!response.ok) throw new Error(`Failed to deactivate pipeline: ${response.statusText}`);
+        return response.json();
+    }
+
+    async deletePipeline(pipelineId) {
+        const response = await fetch(`${this.baseUrl}/api/settings/pipelines/${encodeURIComponent(pipelineId)}`, {
+            method: 'DELETE',
+        });
+        if (!response.ok) throw new Error(`Failed to delete pipeline: ${response.statusText}`);
+        // 204 No Content
+    }
+
+    // === Settings: status + params ===
+
     async getSettingsStatus() {
         const response = await fetch(`${this.baseUrl}/api/settings/status`);
         if (!response.ok) throw new Error(`Failed to get status: ${response.statusText}`);
         return response.json();
     }
 
-    // S2-A fix: getSettingsParams — отсутствовал → TypeError на вкладке Params
     async getSettingsParams() {
         const response = await fetch(`${this.baseUrl}/api/settings/params`);
         if (!response.ok) throw new Error(`Failed to get params: ${response.statusText}`);
         return response.json();
     }
 
-    // S3-A fix: updateSettingsParam — отсутствовал
-    // Ключ передаётся as-is (без encodeURIComponent) — FastAPI {key:path} принимает точки напрямую.
+    // Ключ передаётся as-is — FastAPI {key:path} принимает точки напрямую
     async updateSettingsParam(key, value) {
         const response = await fetch(`${this.baseUrl}/api/settings/params/${key}`, {
             method: 'PUT',
@@ -241,7 +252,6 @@ class ChatAPI {
         return response.json();
     }
 
-    // S4-A fix: resetSettingsParams — отсутствовал
     async resetSettingsParams() {
         const response = await fetch(`${this.baseUrl}/api/settings/reset`, {
             method: 'POST',
@@ -250,15 +260,16 @@ class ChatAPI {
         return response.json();
     }
 
-    // S5-B fix: getSettingsDomains — отдельный метод для CRUD в настройках
-    // getDomains() остаётся для sidebar (/config/domains, read-only).
+    // === Settings: Domains CRUD ===
+
+    // getDomains() сохраняется для sidebar (/config/domains, read-only).
+    // getSettingsDomains() — полный список для настроек.
     async getSettingsDomains() {
         const response = await fetch(`${this.baseUrl}/api/settings/domains`);
         if (!response.ok) throw new Error(`Failed to get domains: ${response.statusText}`);
         return response.json();
     }
 
-    // S5-B fix: createDomain — отсутствовал → TypeError в showDomainModal
     async createDomain(data) {
         const response = await fetch(`${this.baseUrl}/api/settings/domains`, {
             method: 'POST',
@@ -269,7 +280,6 @@ class ChatAPI {
         return response.json();
     }
 
-    // S5-B fix: updateDomain — отсутствовал → TypeError в showDomainModal
     async updateDomain(domainId, data) {
         const response = await fetch(`${this.baseUrl}/api/settings/domains/${encodeURIComponent(domainId)}`, {
             method: 'PUT',
@@ -280,24 +290,20 @@ class ChatAPI {
         return response.json();
     }
 
-    // S5-B fix: deleteDomain — отсутствовал; 204 No Content
     async deleteDomain(domainId) {
         const response = await fetch(`${this.baseUrl}/api/settings/domains/${encodeURIComponent(domainId)}`, {
             method: 'DELETE',
         });
         if (!response.ok) throw new Error(`Failed to delete domain: ${response.statusText}`);
-        // 204 No Content — нет тела
+        // 204 No Content
     }
 
-    // S10-A fix: getDomainPrompts — отсутствовал → TypeError в showPromptsModal
     async getDomainPrompts(domainId) {
         const response = await fetch(`${this.baseUrl}/api/settings/domains/${encodeURIComponent(domainId)}/prompts`);
         if (!response.ok) throw new Error(`Failed to get prompts: ${response.statusText}`);
         return response.json();
     }
 
-    // S10-A fix: updateDomainPrompt — отсутствовал → TypeError в showPromptsModal
-    // PUT /api/settings/domains/{domain_id}/prompts/{prompt_type}  body: { content: str }
     async updateDomainPrompt(domainId, promptType, content) {
         const response = await fetch(
             `${this.baseUrl}/api/settings/domains/${encodeURIComponent(domainId)}/prompts/${promptType}`,
@@ -311,16 +317,12 @@ class ChatAPI {
         return response.json();
     }
 
-    // S12-A fix: getDomainFields — отсутствовал
-    // GET /api/settings/domains/{domain_id}/fields → list[ClarificationField]
     async getDomainFields(domainId) {
         const response = await fetch(`${this.baseUrl}/api/settings/domains/${encodeURIComponent(domainId)}/fields`);
         if (!response.ok) throw new Error(`Failed to get fields: ${response.statusText}`);
         return response.json();
     }
 
-    // S12-A fix: updateDomainFields — отсутствовал
-    // PUT /api/settings/domains/{domain_id}/fields  body: ClarificationFieldRequest[]
     async updateDomainFields(domainId, fields) {
         const response = await fetch(
             `${this.baseUrl}/api/settings/domains/${encodeURIComponent(domainId)}/fields`,
@@ -331,6 +333,133 @@ class ChatAPI {
             }
         );
         if (!response.ok) throw new Error(`Failed to update fields: ${response.statusText}`);
+        return response.json();
+    }
+
+    // === Settings: Vaults CRUD ===
+    // S17-A fix: вся группа отсутствовала → TypeError в handleVaultsAction / showVaultModal
+
+    async getSettingsVaults() {
+        const response = await fetch(`${this.baseUrl}/api/settings/vaults`);
+        if (!response.ok) throw new Error(`Failed to get vaults: ${response.statusText}`);
+        return response.json();
+    }
+
+    async createVault(data) {
+        const response = await fetch(`${this.baseUrl}/api/settings/vaults`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data),
+        });
+        if (!response.ok) throw new Error(`Failed to create vault: ${response.statusText}`);
+        return response.json();
+    }
+
+    async updateVault(vaultId, data) {
+        const response = await fetch(`${this.baseUrl}/api/settings/vaults/${encodeURIComponent(vaultId)}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data),
+        });
+        if (!response.ok) throw new Error(`Failed to update vault: ${response.statusText}`);
+        return response.json();
+    }
+
+    async deleteVault(vaultId) {
+        const response = await fetch(`${this.baseUrl}/api/settings/vaults/${encodeURIComponent(vaultId)}`, {
+            method: 'DELETE',
+        });
+        if (!response.ok) throw new Error(`Failed to delete vault: ${response.statusText}`);
+        // 204 No Content
+    }
+
+    // === Settings: Generation Models CRUD ===
+    // S18-A fix: вся группа отсутствовала → TypeError в handleGenModelsAction
+
+    async getGenerationModels() {
+        const response = await fetch(`${this.baseUrl}/api/settings/models/generation`);
+        if (!response.ok) throw new Error(`Failed to get generation models: ${response.statusText}`);
+        return response.json();
+    }
+
+    async createGenerationModel(data) {
+        const response = await fetch(`${this.baseUrl}/api/settings/models/generation`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data),
+        });
+        if (!response.ok) throw new Error(`Failed to create generation model: ${response.statusText}`);
+        return response.json();
+    }
+
+    async updateGenerationModel(modelId, data) {
+        const response = await fetch(`${this.baseUrl}/api/settings/models/generation/${encodeURIComponent(modelId)}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data),
+        });
+        if (!response.ok) throw new Error(`Failed to update generation model: ${response.statusText}`);
+        return response.json();
+    }
+
+    async deleteGenerationModel(modelId) {
+        const response = await fetch(`${this.baseUrl}/api/settings/models/generation/${encodeURIComponent(modelId)}`, {
+            method: 'DELETE',
+        });
+        if (!response.ok) throw new Error(`Failed to delete generation model: ${response.statusText}`);
+        // 204 No Content
+    }
+
+    async setActiveGenerationModel(modelId) {
+        const response = await fetch(`${this.baseUrl}/api/settings/models/generation/${encodeURIComponent(modelId)}/set_active`, {
+            method: 'POST',
+        });
+        if (!response.ok) throw new Error(`Failed to set active generation model: ${response.statusText}`);
+        return response.json();
+    }
+
+    // === Settings: Embedding Models CRUD ===
+    // S19-A fix: вся группа отсутствовала → TypeError в handleEmbModelsAction
+
+    async getEmbeddingModels() {
+        const response = await fetch(`${this.baseUrl}/api/settings/models/embedding`);
+        if (!response.ok) throw new Error(`Failed to get embedding models: ${response.statusText}`);
+        return response.json();
+    }
+
+    async createEmbeddingModel(data) {
+        const response = await fetch(`${this.baseUrl}/api/settings/models/embedding`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data),
+        });
+        if (!response.ok) throw new Error(`Failed to create embedding model: ${response.statusText}`);
+        return response.json();
+    }
+
+    async updateEmbeddingModel(modelId, data) {
+        const response = await fetch(`${this.baseUrl}/api/settings/models/embedding/${encodeURIComponent(modelId)}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data),
+        });
+        if (!response.ok) throw new Error(`Failed to update embedding model: ${response.statusText}`);
+        return response.json();
+    }
+
+    async deleteEmbeddingModel(modelId) {
+        const response = await fetch(`${this.baseUrl}/api/settings/models/embedding/${encodeURIComponent(modelId)}`, {
+            method: 'DELETE',
+        });
+        if (!response.ok) throw new Error(`Failed to delete embedding model: ${response.statusText}`);
+        // 204 No Content
+    }
+
+    async setActiveEmbeddingModel(modelId) {
+        const response = await fetch(`${this.baseUrl}/api/settings/models/embedding/${encodeURIComponent(modelId)}/set_active`, {
+            method: 'POST',
+        });
+        if (!response.ok) throw new Error(`Failed to set active embedding model: ${response.statusText}`);
         return response.json();
     }
 }
