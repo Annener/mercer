@@ -85,16 +85,16 @@ class ChatAPI {
     }
 
     /**
-     * B08 fix: POST /chat/{chatId}/clarify (C9)
-     * Отправляет заполненные пользователем answers для уточняющего запроса.
-     * answers: Record<string, string>  (ключ — название поля, значение — ответ пользователя)
-     * Возвращает MessageResponse: { role, content, chat_id, message_id }
+     * C01 fix: POST /chat/{chatId}/clarify (C9)
+     * ClarificationAnswer: { clarification_id: str, answers: Record<string, string> }
+     * clarification_id обязателен — Pydantic возвращал 422 когда B08 отправлял только { answers }.
+     * Возвращает ClarificationResponse: { message_id, role, content, clarification_id, stage }
      */
-    async submitClarification(chatId, answers) {
+    async submitClarification(chatId, clarificationId, answers) {
         const response = await fetch(`${this.baseUrl}/chat/${chatId}/clarify`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ answers }),
+            body: JSON.stringify({ clarification_id: clarificationId, answers }),
         });
         if (!response.ok) {
             let errMsg = response.statusText;
