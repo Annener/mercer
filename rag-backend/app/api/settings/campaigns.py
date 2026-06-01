@@ -6,9 +6,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.settings.schemas import CampaignTagCreateRequest
 from app.db.models import Campaign, Tag
 from app.db.session import get_db
-from app.api.settings.schemas import CampaignTagCreateRequest
 from shared_contracts.models import CampaignCreate, CampaignRead, CampaignUpdate, TagRead
 
 router = APIRouter(prefix="/campaigns", tags=["campaigns"])
@@ -28,19 +28,17 @@ async def list_campaigns(
     campaigns = result.scalars().all()
     if not campaigns:
         return []
-    # D03 fix: замена N+1 (отдельный SELECT тегов на каждую кампанию) —
-    # один batch-запрос с IN(), группировка в памяти
+
+    # D03 fix: single batch query instead of N+1 _campaign_with_tags calls
     ids = [c.id for c in campaigns]
-    tags_result = await db.execute(
-        select(Tag).where(Tag.campaign_id.in_(ids))
-    )
+    tags_result = await db.execute(select(Tag).where(Tag.campaign_id.in_(ids)))
     tags_by_campaign: dict[uuid.UUID, list[TagRead]] = {}
     for t in tags_result.scalars().all():
         tags_by_campaign.setdefault(t.campaign_id, []).append(
             TagRead.model_validate(t, from_attributes=True)
         )
     return [
-        _build_campaign_read(c, tags_by_campaign.get(c.id, []))
+        _campaign_read(c, tags_by_campaign.get(c.id, []))
         for c in campaigns
     ]
 
@@ -113,10 +111,10 @@ async def get_campaign_tags(
 @router.post("/{campaign_id}/tags", response_model=TagRead, status_code=201)
 async def create_campaign_tag(
     campaign_id: str,
-    payload: CampaignTagCreateRequest,  # D04 fix: было payload: dict — KeyError → 500
+    payload: CampaignTagCreateRequest,  # D04 fix: was payload: dict — KeyError → 500
     db: AsyncSession = Depends(get_db),
 ) -> TagRead:
-    """S51: шорткат — создать тег кампании. domain_id берётся из кампании."""
+    """Шорткат: создать тег кампании. domain_id берётся из кампании."""
     campaign = await db.get(Campaign, uuid.UUID(campaign_id))
     if not campaign:
         raise HTTPException(404, "Campaign not found")
@@ -135,18 +133,15 @@ async def create_campaign_tag(
 
 # --- Вспомогательные ---
 
-def _build_campaign_read(campaign: Campaign, tags: list[TagRead]) -> CampaignRead:
-    """D03: используется в list_campaigns (теги уже загружены batch-запросом)."""
-    data = CampaignRead.model_validate(campaign, from_attributes=True)
-    data.tags = tags
-    return data
-
-
 async def _campaign_with_tags(campaign: Campaign, db: AsyncSession) -> CampaignRead:
-    """S47/S48/S49: single-object helper — один SELECT допустим."""
+    """Используется для одиночных объектов (get/create/update). Для списка — batch в list_campaigns."""
     stmt = select(Tag).where(Tag.campaign_id == campaign.id)
     result = await db.execute(stmt)
     tags = [TagRead.model_validate(t, from_attributes=True) for t in result.scalars().all()]
+    return _campaign_read(campaign, tags)
+
+
+def _campaign_read(campaign: Campaign, tags: list[TagRead]) -> CampaignRead:
     data = CampaignRead.model_validate(campaign, from_attributes=True)
     data.tags = tags
     return data
