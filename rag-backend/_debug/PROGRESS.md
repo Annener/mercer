@@ -22,25 +22,25 @@
 
 | ID | Эндпоинт | Фронт-файл | Статус | Комментарий |
 |---|---|---|---|---|
-| CF1 | GET `/config/domains` | ? | 🔴 | Не аудировался |
-| CF2 | GET `/config/vaults` | ? | 🔴 | Не аудировался |
+| CF1 | GET `/config/domains` | `api.js`, `sidebar.js` | 🔴 | Не аудировался — **следующий приоритет** |
+| CF2 | GET `/config/vaults` | `api.js`, `sidebar.js` | 🔴 | Не аудировался |
 
 ## Группа: settings
 
 | ID | Эндпоинт | Фронт-файл | Статус | Комментарий |
 |---|---|---|---|---|
-| S1 | GET `/api/settings/status` | ? | 🔴 | |
-| S2-S4 | params CRUD | ? | 🔴 | |
-| S5-S9 | domains CRUD | ? | 🔴 | |
-| S10-S11 | domain prompts | ? | 🔴 | |
-| S12-S13 | domain fields (clarification) | ? | 🔴 | |
-| S14-S19 | generation models CRUD | ? | 🔴 | |
-| S20-S24 | embedding models CRUD | ? | 🔴 | |
-| S25-S29 | vaults CRUD | ? | 🔴 | |
-| S30-S35 | pipelines CRUD | ? | 🔴 | |
-| S36-S39 | tags CRUD | ? | 🔴 | TagCreate требует `domain_id` (vault_id удалён в 0005) |
-| S40-S44 | documents CRUD | ? | 🔴 | |
-| S45-S51 | campaigns CRUD | ? | 🔴 | **Приоритет**: schema drift исправлен миграцией 0009 + models.py — начинать отсюда |
+| S1 | GET `/api/settings/status` | `settings.js` | 🔴 | |
+| S2-S4 | params CRUD | `tab-params.js` | 🔴 | |
+| S5-S9 | domains CRUD | `tab-domains.js` | 🔴 | |
+| S10-S11 | domain prompts | `tab-domains.js` | 🔴 | |
+| S12-S13 | domain fields (clarification) | `tab-domains.js` | 🔴 | |
+| S14-S19 | generation models CRUD | `tab-gen-models.js` | 🔴 | |
+| S20-S24 | embedding models CRUD | `tab-emb-models.js` | 🔴 | |
+| S25-S29 | vaults CRUD | `tab-vaults.js` | 🔴 | |
+| S30-S35 | pipelines CRUD | `tab-pipelines.js` | 🔴 | |
+| S36-S39 | tags CRUD | `api.js`, `tab-campaigns.js` | 🔴 | TagCreate требует `domain_id`; deleteTag уже добавлен в api.js (D09) — **второй приоритет** |
+| S40-S44 | documents CRUD | `tab-documents.js` | 🔴 | |
+| S45-S51 | campaigns CRUD | `api.js`, `tab-campaigns.js` | ✅ | D03 (N+1 batch), D04 (typed payload), D08 (null-safe), D09 (8 методов), D10 (204 no-json) |
 
 ## Группа: db-management
 
@@ -80,12 +80,15 @@
 | 2026-06-01 | C01 | `app/static/js/api.js` | `submitClarification`: добавлен `clarification_id` | [d10977b](https://github.com/Annener/mercer/commit/d10977b45bc31cf55d0eaff1c82ebd4a92eb5066) |
 | 2026-06-01 | C02 | `app/static/js/chat.js` | `handleJSONResponse`: чек по `clarification_id` | [6931bd7](https://github.com/Annener/mercer/commit/6931bd722c12dec50752ae27aad9a549c9a5a574) |
 | 2026-06-01 | — | `migrations/0009` + `models.py` | `campaigns` schema drift: ADD system_prompt, last_session_at; DROP устаревшие колонки | [b6a8f88](https://github.com/Annener/mercer/commit/b6a8f88d304a27f5415b3994579954462acc964e) / [72098f4](https://github.com/Annener/mercer/commit/72098f42315ccc55d89992cc8d665275a1fc74cb) |
+| 2026-06-01 | D04 | `app/api/settings/schemas.py` | Добавлен `CampaignTagCreateRequest(name, color)` | [afb77dd](https://github.com/Annener/mercer/commit/afb77ddc566dce8b8640cf41b0ca6fb0177dd6e8) |
+| 2026-06-01 | D03+D04 | `app/api/settings/campaigns.py` | N+1 → batch IN(); `payload: dict` → `CampaignTagCreateRequest` | [596f4af](https://github.com/Annener/mercer/commit/596f4af71d7a69bd1f0caa7c62e1dcb5d6288737) |
+| 2026-06-01 | D08+D09+D10 | `app/static/js/api.js` | null-safe getCampaigns; 8 campaign/tag методов; 204 no-json fixes | [210917f](https://github.com/Annener/mercer/commit/210917ff13b8c0701c7da7576929d51141345e1b) |
 
 ---
 
 ## Для следующей сессии
 
-**Стартовать с:** `S45–S51 · campaigns CRUD (both)` — схема только что исправлена, нужно проверить роут + Pydantic-схемы + фронт.
+**Стартовать с:** `CF1–CF2 · GET /config/domains + /config/vaults` — быстрый блок, затем `S36–S39 · tags CRUD`
 
 **Контекст для нового чата:**
 ```
@@ -94,11 +97,12 @@
 
 Архитектура: concept_plan/arch.md
 API контракты: rag-backend/_debug/CONTRACTS.md
-Лог багов: rag-backend/_debug/AUDIT.md  (все C1–C9 закрыты)
+Лог багов: rag-backend/_debug/AUDIT.md  (C1–C9, S45–S51 закрыты)
 Прогресс: rag-backend/_debug/PROGRESS.md
 
-Следующая задача: S45–S51, эндпоинты /settings/campaigns/* (both)
-Схема campaigns исправлена миграцией 0009: колонки system_prompt + last_session_at добавлены,
-устаревшие (campaign_id str, world_id, path_prefix, is_active, updated_at) — удалены.
-Alembic нужно прогнать: alembic upgrade head
+Следующая задача: CF1–CF2 (GET /config/domains, /config/vaults) + S36–S39 (tags CRUD)
+Контекст:
+- TagCreate требует domain_id (vault_id удалён в 0005)
+- deleteTag уже в api.js (D09), getTags — тоже; нужно проверить tags.py роут и tab-campaigns.js
+- Начать с: app/api/settings/tags.py → shared_contracts/models.py (TagCreate/TagRead) → api.js → фронт
 ```
