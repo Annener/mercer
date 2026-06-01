@@ -44,7 +44,7 @@
 
 | ID  | Слой     | Файл                        | Проблема                                                                                              | Статус |
 |-----|----------|-----------------------------|-------------------------------------------------------------------------------------------------------|--------|
-| B02 | frontend | `app/static/js/chat.js`     | `setupContextBar()` читает `chat.world_id` — поля нет в модели/контракте; должно быть `chat.domain_id` | 🔴     |
+| B02 | frontend | `app/static/js/chat.js`     | `setupContextBar()` читал `chat.world_id` — поля нет в модели/контракте; исправлено на `chat.domain_id` | ✅     |
 | —   | frontend | `app/static/js/api.js`      | `getChat()` → `/chat/${chatId}/history`, разбор `{chat, messages}` — верно                           | ⬜     |
 
 ---
@@ -96,8 +96,8 @@
 
 | ID  | Слой     | Файл                        | Проблема                                                                                         | Статус |
 |-----|----------|-----------------------------|--------------------------------------------------------------------------------------------------|--------|
-| B05 | frontend | `app/static/js/chat.js`     | Мёртвая ветка `else if (parsed.token)` — бэкенд шлёт только `{type:"token",content}`, не `{token}` | ⚠️     |
-| B06 | frontend | `app/static/js/chat.js`     | Мёртвая переменная `assistant_msg_id` объявлена но нигде не используется                         | ⚠️     |
+| B05 | frontend | `app/static/js/chat.js`     | Мёртвая ветка `else if (parsed.token)` — удалена                                               | ✅     |
+| B06 | frontend | `app/static/js/chat.js`     | Мёртвая переменная `assistant_msg_id` — удалена                                                           | ✅     |
 
 ---
 
@@ -107,16 +107,21 @@
 
 | ID  | Слой     | Файл                        | Проблема                                                                                                             | Статус |
 |-----|----------|-----------------------------|----------------------------------------------------------------------------------------------------------------------|--------|
-| B07 | frontend | `app/static/js/chat.js`     | `handleJSONResponse`: проверяет `response.role === 'assistant' && response.state` — `ClarificationResponse` не имеет поля `role`, условие никогда не выполняется | 🔴     |
-| B08 | frontend | `app/static/js/api.js`      | Отсутствует метод `submitClarification(chatId, answers)` — эндпоинт C9 недоступен с фронта                          | 🔴     |
+| B07 | frontend | `app/static/js/chat.js`     | `handleJSONResponse`: `response.role === 'assistant' && response.state` → исправлено на `response.state && response.question` | ✅     |
+| B08 | frontend | `app/static/js/api.js`      | Добавлен `submitClarification(chatId, answers)` — эндпоинт C9 доступен с фронта                      | ✅     |
 
 ---
 
 ## Лог исправлений
 
-| Дата       | ID  | Файл                        | Что исправлено                                                    |
-|------------|-----|-----------------------------|-------------------------------------------------------------------|
-| 2026-06-01 | —   | `app/api/chat.py`           | IndentationError в `send_message_stream` (context.steps)          |
-| 2026-06-01 | A02 | `app/db/models.py`          | Добавлено поле `pipeline_versions: JSONB` в модель `Chat`         |
-| 2026-06-01 | A03 | `app/db/models.py`          | Добавлено поле `locked_pipeline_id: String` в модель `Chat`       |
-| 2026-06-01 | A04 | `app/api/chat.py`           | `_audit()`: `payload=` → `details=` (соответствие AuditLog)       |
+| Дата       | ID       | Файл                        | Что исправлено                                                                  | Коммит |
+|------------|----------|-----------------------------|---------------------------------------------------------------------------|--------|
+| 2026-06-01 | —        | `app/api/chat.py`           | IndentationError в `send_message_stream` (context.steps)                 | [1bddf09](https://github.com/Annener/mercer/commit/1bddf09e2e6062337f35e508fb1a488ccf5c0505) |
+| 2026-06-01 | A02      | `app/db/models.py`          | Добавлено поле `pipeline_versions: JSONB`                                        | — |
+| 2026-06-01 | A03      | `app/db/models.py`          | Добавлено поле `locked_pipeline_id: String`                                      | — |
+| 2026-06-01 | A04      | `app/api/chat.py`           | `_audit()`: `payload=` → `details=`                                        | — |
+| 2026-06-01 | B02      | `app/static/js/chat.js`     | `setupContextBar`: `chat.world_id` → `chat.domain_id`                       | [0fbe5f0](https://github.com/Annener/mercer/commit/0fbe5f010267055009f7dcca1c7de0b5d3a32646) |
+| 2026-06-01 | B05      | `app/static/js/chat.js`     | Удалена мёртвая ветка `else if (parsed.token)`                         | [0fbe5f0](https://github.com/Annener/mercer/commit/0fbe5f010267055009f7dcca1c7de0b5d3a32646) |
+| 2026-06-01 | B06      | `app/static/js/chat.js`     | Удалена мёртвая переменная `assistant_msg_id`                          | [0fbe5f0](https://github.com/Annener/mercer/commit/0fbe5f010267055009f7dcca1c7de0b5d3a32646) |
+| 2026-06-01 | B07      | `app/static/js/chat.js`     | `handleJSONResponse`: clarification check → `state && question`             | [0fbe5f0](https://github.com/Annener/mercer/commit/0fbe5f010267055009f7dcca1c7de0b5d3a32646) |
+| 2026-06-01 | B08      | `app/static/js/api.js`      | Добавлен `submitClarification(chatId, answers)`                            | [10a9401](https://github.com/Annener/mercer/commit/10a9401f09e8f7682885d9c01f99cdb987fcb0ac) |
