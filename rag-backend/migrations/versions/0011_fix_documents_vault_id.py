@@ -14,7 +14,12 @@ Create Date: 2026-06-01
   created_at TIMESTAMPTZ
 
 Решение: если таблица имеет старую схему (нет vault_id) — дропаем и пересоздаём.
-Если vault_id уже существует — пропускаем (idempotent).
+Если vault_id уже есть — пропускаем (idempotent).
+
+Fix S53: _create_document_labels теперь использует String(36) для
+  document_id и tag_id — чтобы FK совпадал с documents.id (VARCHAR)
+  и tags.id (VARCHAR) созданными в 0010-0011.
+  Приведение типов к UUID вынесено в 0012.
 """
 from __future__ import annotations
 
@@ -54,8 +59,8 @@ def upgrade() -> None:
     conn = op.get_bind()
 
     if not _table_exists(conn, "documents"):
-        # Таблицы нет вообще — создаём сразу правильную
         _create_documents()
+        _create_document_labels()
         return
 
     if _col_exists(conn, "documents", "vault_id"):
@@ -63,11 +68,8 @@ def upgrade() -> None:
         return
 
     # Старая схема (domain_id вместо vault_id) — дропаем и пересоздаём.
-    # Данных в старой схеме быть не должно (таблица создана в 0010 и никем не заполнялась).
-    # document_labels ссылается на documents.id — дропаем её тоже и пересоздаём.
     if _table_exists(conn, "document_labels"):
         op.drop_table("document_labels")
-
     op.drop_table("documents")
     _create_documents()
     _create_document_labels()
@@ -78,9 +80,9 @@ def _create_documents() -> None:
         "documents",
         sa.Column(
             "id",
-            postgresql.UUID(as_uuid=False),
+            sa.String(36),
             primary_key=True,
-            server_default=sa.text("gen_random_uuid()"),
+            server_default=sa.text("gen_random_uuid()::text"),
         ),
         sa.Column(
             "vault_id",
@@ -104,17 +106,19 @@ def _create_documents() -> None:
 
 
 def _create_document_labels() -> None:
+    # S53 fix: используем String(36) — совпадает с типами documents.id и tags.id
+    # из миграций 0010-0011 (VARCHAR). UUID-типизация — в миграции 0012.
     op.create_table(
         "document_labels",
         sa.Column(
             "document_id",
-            postgresql.UUID(as_uuid=False),
+            sa.String(36),
             sa.ForeignKey("documents.id", ondelete="CASCADE"),
             primary_key=True,
         ),
         sa.Column(
             "tag_id",
-            postgresql.UUID(as_uuid=False),
+            sa.String(36),
             sa.ForeignKey("tags.id", ondelete="CASCADE"),
             primary_key=True,
         ),
@@ -123,7 +127,6 @@ def _create_document_labels() -> None:
 
 def downgrade() -> None:
     conn = op.get_bind()
-    # Откат: возвращаем старую схему из 0010
     if _table_exists(conn, "document_labels"):
         op.drop_table("document_labels")
     if _table_exists(conn, "documents"):
