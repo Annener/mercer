@@ -6,10 +6,10 @@ from typing import Any
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
-from sqlalchemy import delete, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Campaign, Domain, EmbeddingModel, Vault
+from app.db.models import Domain, EmbeddingModel, Vault
 from app.db.session import get_db
 from .helpers import _delete_vault_vectors, vault_dict
 from .schemas import VaultCreateRequest, VaultUpdateRequest
@@ -81,14 +81,12 @@ async def create_vault(req: VaultCreateRequest, db: AsyncSession = Depends(get_d
 
 @router.put("/vaults/{vault_id}")
 async def update_vault(vault_id: str, req: VaultUpdateRequest, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
-    # E-CHK04: was db.get(Vault, vault_id)
     vault = await _get_vault(db, vault_id)
     if vault is None:
         raise HTTPException(status_code=404, detail="Vault not found")
 
     payload = req.model_dump(exclude_unset=True)
     new_embedding_model_id = payload.get("embedding_model_id")
-    # E-CHK04: was db.get(EmbeddingModel, new_embedding_model_id)
     if new_embedding_model_id and await _get_embedding_model(db, new_embedding_model_id) is None:
         raise HTTPException(status_code=404, detail="Embedding model not found")
 
@@ -122,14 +120,15 @@ async def update_vault(vault_id: str, req: VaultUpdateRequest, db: AsyncSession 
 
 @router.delete("/vaults/{vault_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_vault(vault_id: str, db: AsyncSession = Depends(get_db)) -> Response:
-    # E-CHK04: was db.get(Vault, vault_id) — падал с asyncpg.DataError на slug
     vault = await _get_vault(db, vault_id)
     if vault is None:
         raise HTTPException(status_code=404, detail="Vault not found")
+    # E-CHK04b: Campaign не имеет vault_id — каскад не нужен.
+    # Document связан с Vault через vault_id FK + cascade="all, delete-orphan"
+    # в ORM-relationship, так что документы удаляются автоматически.
     try:
         await _delete_vault_vectors(vault_id, strict=False)
     finally:
-        await db.execute(delete(Campaign).where(Campaign.vault_id == vault_id))
         await db.delete(vault)
         await db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -137,7 +136,6 @@ async def delete_vault(vault_id: str, db: AsyncSession = Depends(get_db)) -> Res
 
 @router.post("/vaults/{vault_id}/toggle")
 async def toggle_vault(vault_id: str, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
-    # E-CHK04: was db.get(Vault, vault_id)
     vault = await _get_vault(db, vault_id)
     if vault is None:
         raise HTTPException(status_code=404, detail="Vault not found")
