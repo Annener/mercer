@@ -13,11 +13,22 @@ class ORMModel(BaseModel):
     @model_validator(mode='before')
     @classmethod
     def _coerce_uuid_fields(cls, data: Any) -> Any:
-        """Auto-coerce uuid.UUID ORM attributes to str for all str-typed fields."""
+        """Auto-coerce uuid.UUID ORM attributes to str for all str-typed fields.
+
+        ВАЖНО: намеренно пропускаем list-поля (relationships типа tags, chats и т.п.).
+        getattr на lazy SQLAlchemy relationship в async-контексте вызывает MissingGreenlet.
+        List-поля заполняются явно снаружи (в роуте или хелпере) — не через from_attributes.
+        """
         if not hasattr(data, '__dict__') and not hasattr(data, '__mapper__'):
             return data
         result: dict[str, Any] = {}
         for field_name, field_info in cls.model_fields.items():
+            # Пропускаем list-поля — они являются ORM relationships
+            # и не могут быть загружены синхронно в async-сессии
+            annotation = field_info.annotation
+            origin = getattr(annotation, '__origin__', None)
+            if origin is list:
+                continue
             val = getattr(data, field_name, None)
             if isinstance(val, _uuid.UUID):
                 result[field_name] = str(val)
