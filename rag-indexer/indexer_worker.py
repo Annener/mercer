@@ -585,10 +585,26 @@ async def _embed_chunks(
         for offset, embedding_text in enumerate(missing_texts):
             if is_cancelled is not None and task_id is not None and is_cancelled(task_id):
                 raise asyncio.CancelledError
+
+            # W01 fix: provider.embed() может вернуть пустой список или список с пустым вектором
+            # (dimension mismatch, network error после retry, etc.).
+            # В обоих случаях молча возвращался [] -> vectors[chunk_index] оставался None ->
+            # финальный list-comprehension отфильтровывал None -> len(vectors) != len(chunks) ->
+            # ValueError с невнятным сообщением "Embedding failed for chunk index N".
+            # Теперь пробрасываем явную ошибку сразу, пока offset известен.
             result = await provider.embed([embedding_text])
-            if not result or not result[0]:
-                raise ValueError(f"Embedding failed for chunk index {missing_indices[offset]}")
-            vector = result[0]
+            vector = result[0] if result else []
+            if not vector:
+                chunk_index = missing_indices[offset]
+                logger.error(
+                    "Embedding provider returned empty vector: file=%s chunk_index=%d model=%s",
+                    file_path or "?", chunk_index, embedding_model.model_id,
+                )
+                raise ValueError(
+                    f"Embedding provider returned empty vector for chunk {chunk_index} "
+                    f"(file={file_path!r}, model={embedding_model.model_id!r}). "
+                    "Check model availability, dimension settings, and provider logs."
+                )
 
             chunk_index = missing_indices[offset]
             vectors[chunk_index] = vector
@@ -634,7 +650,16 @@ async def _embed_chunks(
             asyncio.get_event_loop().time() - embed_start_time,
         )
 
-    return [vector for vector in vectors if vector is not None]
+    # Все векторы должны быть заполнены — None остаться не должно
+    result_vectors: list[list[float]] = []
+    for i, v in enumerate(vectors):
+        if v is None:
+            raise ValueError(
+                f"Vector for chunk {i} is None after embedding "
+                f"(file={file_path!r}). This is a bug — please report."
+            )
+        result_vectors.append(v)
+    return result_vectors
 
 
 def _embedding_model_config(model: dict[str, Any]) -> EmbeddingModelConfig:
