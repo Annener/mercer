@@ -443,8 +443,9 @@ async def _audit(
     entity_id: str,
     payload: dict[str, Any],
 ) -> None:
+    # A04 fix: AuditLog использует поле details=, не payload=
     from app.db.models import AuditLog
-    db.add(AuditLog(action=action, entity_type=entity_type, entity_id=entity_id, payload=payload))
+    db.add(AuditLog(action=action, entity_type=entity_type, entity_id=entity_id, details=payload))
 
 
 async def _pipeline_versions(request: Request) -> dict[str, str]:
