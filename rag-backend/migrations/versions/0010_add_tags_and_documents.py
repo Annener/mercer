@@ -7,7 +7,8 @@ Create Date: 2026-06-01
 Changes:
   - CREATE TABLE tags
   - CREATE TABLE documents
-  - ALTER TABLE platform_settings: value TEXT -> JSONB (USING value::jsonb)
+  - ALTER TABLE platform_settings: value TEXT -> JSONB
+    (с предварительной санацией невалидных значений -> NULL)
 """
 from __future__ import annotations
 
@@ -40,6 +41,17 @@ def _col_type(conn, table: str, column: str) -> str | None:
         {"t": table, "c": column},
     ).fetchone()
     return row[0] if row else None
+
+
+def _col_nullable(conn, table: str, column: str) -> bool:
+    row = conn.execute(
+        sa.text(
+            "SELECT is_nullable FROM information_schema.columns "
+            "WHERE table_name = :t AND column_name = :c AND table_schema = 'public'"
+        ),
+        {"t": table, "c": column},
+    ).fetchone()
+    return row[0].upper() == "YES" if row else True
 
 
 def upgrade() -> None:
@@ -91,13 +103,62 @@ def upgrade() -> None:
         )
 
     # 3. Конвертация platform_settings.value: TEXT -> JSONB
-    # Используем явный USING, т.к. PostgreSQL не кастует TEXT->JSONB автоматически
     col_type = _col_type(conn, "platform_settings", "value")
     if col_type and col_type.lower() == "text":
+
+        # Если колонка NOT NULL — временно делаем nullable, чтобы можно было
+        # обнулить невалидные строки, а потом вернуть ограничение.
+        is_nullable = _col_nullable(conn, "platform_settings", "value")
+        if not is_nullable:
+            conn.execute(sa.text(
+                "ALTER TABLE platform_settings "
+                "ALTER COLUMN value DROP NOT NULL"
+            ))
+
+        # Обнуляем строки, которые не являются валидным JSON:
+        # пустые строки и строки, не парсящиеся через jsonb_typeof.
+        conn.execute(sa.text("""
+            UPDATE platform_settings
+            SET value = NULL
+            WHERE value IS NULL
+               OR trim(value) = ''
+               OR (
+                   SELECT TRUE
+                   FROM (
+                       SELECT (jsonb_typeof(value::jsonb)) AS _
+                   ) t
+               ) IS NULL
+        """))
+
+        # Для надёжности — явный второй проход через pg try/catch на уровне SQL:
+        # обнуляем всё, что не кастуется к jsonb.
+        conn.execute(sa.text("""
+            UPDATE platform_settings
+            SET value = NULL
+            WHERE value IS NOT NULL
+              AND NOT (
+                  (value ~ '^\\s*[\\[\\{"]') OR
+                  (value ~ '^\\s*(true|false|null)\\s*$') OR
+                  (value ~ '^\\s*-?[0-9]')
+              )
+        """))
+
+        # Теперь кастуем: все оставшиеся значения — валидный JSON
         conn.execute(sa.text(
             "ALTER TABLE platform_settings "
             "ALTER COLUMN value TYPE JSONB USING value::jsonb"
         ))
+
+        # Возвращаем NOT NULL если была такой
+        if not is_nullable:
+            # Ставим дефолт для NULL-строк, возникших после санации
+            conn.execute(sa.text(
+                "UPDATE platform_settings SET value = 'null'::jsonb WHERE value IS NULL"
+            ))
+            conn.execute(sa.text(
+                "ALTER TABLE platform_settings "
+                "ALTER COLUMN value SET NOT NULL"
+            ))
 
 
 def downgrade() -> None:
