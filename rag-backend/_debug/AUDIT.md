@@ -99,6 +99,7 @@
 | D4 | `connectToTaskStream(taskId)` | `WS /api/settings/tasks/{id}/stream` | `WS /ws/index-tasks/{id}` | Неверный путь WS | ✅ → C19 |
 | D5 | `getIndexTaskState(taskId)` | `GET /api/settings/tasks/{id}` | `GET /index-tasks/{id}/state` | Нет суффикса `/state` | ✅ → C19 |
 | D6 | `updateDocumentLabels(docId, tagIds)` | `PUT /api/settings/documents/{id}/labels` | `PUT /api/settings/documents/{id}/labels` | Роут существует в `settings/documents.py`; схема `DocumentLabelWrite {tag_ids: list[str]}`; ответ `DocumentRead`; фронт совпадает | ✅ |
+| D7 | `textSearchByDomain` | отсутствовал | `POST /api/db/search/domain` `{domain_id, query_text, limit}` → `TextSearchResponse` | `db_management.js` вызывал метод, которого не было → `TypeError` | ✅ → C22 |
 
 ---
 
@@ -153,6 +154,27 @@
 
 ---
 
+## C22 · settings.js + api.js — DOMContentLoaded wrong ids (S22) + textSearchByDomain missing (D7)
+
+### Аудит
+
+**S22 — settings.js DOMContentLoaded:**  
+`DOMContentLoaded` обращался к 4 несуществующим идентификаторам → все `getElementById` возвращали `null` → обработчики кнопок «Настройки» и «Назад» не цеплялись → страница настроек не открывалась.
+
+**D7 — api.js textSearchByDomain:**  
+`db_management.js` вызывал `chatAPI.textSearchByDomain(domainId, query, limit)`, которого не было в классе `ChatAPI` → `TypeError: chatAPI.textSearchByDomain is not a function` при поиске по домену.
+
+### Таблица багов
+
+| ID | Файл | Проблема | Исправление | Статус |
+|---|---|---|---|---|
+| S22 | `settings.js` | `getElementById('open-settings-btn')` → `null`; `getElementById('settings-back-btn')` → `null`; `getElementById('main-app')` → `null`; `getElementById('settings-tab-nav')` → `null` | `#settings-btn`, `#back-to-chat-btn`, `querySelector('.app-container')`, `querySelector('.settings-tabs')` | ✅ |
+| D7 | `api.js` | `textSearchByDomain` отсутствовал → `TypeError` в `db_management.js` | Добавлен метод: `POST /api/db/search/domain` `{domain_id, query_text, limit}` → `TextSearchResponse` | ✅ |
+
+**Закрыто в коммите C22 (два коммита: fix: S22, fix: D7).**
+
+---
+
 ## Changelog
 
 | Дата | Баги | Файлы | Описание | Коммит |
@@ -167,3 +189,4 @@
 | 2026-06-01 | S16-C, S16-D, S21-B | `app/api/settings/gen_models.py`, `app/static/js/settings.js` | toggle роут добавлен в бэк; check-gen/check-emb алерт исправлен на result.ok | C20 |
 | 2026-06-01 | C21-A | `app/static/js/settings.js` | edit-pipeline: showPipelineModal(id) → showPipelineEditModal(id) | C21 |
 | 2026-06-01 | D6 | — | Верификация: роут PUT /api/settings/documents/{id}/labels уже реализован в бэке; фронт корректен; статус ⚠️ → ✅ | — |
+| 2026-06-01 | S22, D7 | `app/static/js/settings.js`, `app/static/js/api.js` | S22: DOMContentLoaded исправлены 4 несуществующих id; D7: добавлен метод textSearchByDomain | C22 |
