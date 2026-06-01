@@ -272,9 +272,20 @@ class ChatManager {
                             if (parsed.type === 'sources' && parsed.grouped_by_step) pendingGroupedSources = parsed.step_groups;
                             if (parsed.type === 'sources' && !parsed.grouped_by_step) pendingSources = parsed.sources;
                             if (parsed.type === 'clarification') {
-                                fullContent += `\n\u2753 ${parsed.question || parsed.content || ''}`;
-                                pendingContent = fullContent;
-                                this.scheduleMarkdownRender(assistantMessage, () => pendingContent);
+                                // C25-C fix: при clarification через SSE создаём
+                                // отдельный DOM-элемент с clarification_id, как в non-stream пути.
+                                // Буфер fullContent не используем: вопрос требует явного ответа пользователя,
+                                // а не смешиваться с обычным ответом assistant.
+                                // Если уже есть пустой assistantMessage — убираем его.
+                                if (assistantMessage && !fullContent) {
+                                    assistantMessage.remove();
+                                    assistantMessage = null;
+                                }
+                                this.addMessage(
+                                    'clarification',
+                                    parsed.question || parsed.content || '',
+                                    parsed.clarification_id
+                                );
                             }
                             if (parsed.type === 'error') this.addMessage('system', parsed.message || 'Pipeline error');
                         }
