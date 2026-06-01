@@ -160,9 +160,85 @@ class SettingsManager {
         }, { once: true });
     }
 
-    // Заглушки для вкладок без отдельных файлов
-    async handleParamsAction(action, btn) {}
-    async handleDomainsAction(action, id) {}
+    /**
+     * S2-B/S2-C fix: реализация вместо пустой заглушки.
+     * Обрабатывает действия: save-param, default-param, reset-params.
+     */
+    async handleParamsAction(action, btn) {
+        if (action === 'reset-params') {
+            if (!confirm('Сбросить все параметры до значений по умолчанию?')) return;
+            await this.api.resetSettingsParams();
+            await this.loadTab('params');
+            return;
+        }
+
+        const key = btn.dataset.id;
+        if (!key) return;
+
+        if (action === 'default-param') {
+            const defaultVal = SETTINGS_DEFAULTS[key] ?? null;
+            await this.api.updateSettingsParam(key, defaultVal);
+            await this.loadTab('params');
+            return;
+        }
+
+        if (action === 'save-param') {
+            const row = btn.closest('.settings-param-row');
+            if (!row) return;
+            const input = row.querySelector('[data-param]');
+            if (!input) return;
+            const isBool = input.type === 'checkbox';
+            // Приводим тип: bool остаётся bool, числовые строки приводимся к number если удаётся
+            let value;
+            if (isBool) {
+                value = input.checked;
+            } else {
+                const raw = input.value;
+                const num = Number(raw);
+                value = raw !== '' && !Number.isNaN(num) ? num : raw;
+            }
+            btn.disabled = true;
+            btn.textContent = 'Сохранение...';
+            try {
+                await this.api.updateSettingsParam(key, value);
+                btn.textContent = '✓';
+                setTimeout(() => { btn.disabled = false; btn.textContent = 'Сохранить'; }, 1200);
+            } catch (e) {
+                btn.disabled = false;
+                btn.textContent = 'Сохранить';
+                throw e;
+            }
+        }
+    }
+
+    /**
+     * S5-C fix: реализация вместо пустой заглушки.
+     * Обрабатывает: new-domain, edit-domain, edit-prompts, edit-fields, delete-domain.
+     */
+    async handleDomainsAction(action, id) {
+        if (action === 'new-domain') {
+            await this.showDomainModal();
+            return;
+        }
+        if (action === 'edit-domain') {
+            await this.showDomainModal(id);
+            return;
+        }
+        if (action === 'edit-prompts') {
+            await this.showPromptsModal(id);
+            return;
+        }
+        if (action === 'edit-fields') {
+            await this.showFieldsModal(id);
+            return;
+        }
+        if (action === 'delete-domain') {
+            if (!confirm(`Удалить домен «${id}»? Действие необратимо.`)) return;
+            await this.api.deleteDomain(id);
+            await this.loadTab('domains');
+        }
+    }
+
     async handleVaultsAction(action, id) {}
     async handleGenModelsAction(action, id) {}
     async handleEmbModelsAction(action, id) {}
