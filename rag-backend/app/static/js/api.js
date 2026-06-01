@@ -60,10 +60,12 @@ class ChatAPI {
         const url = stream
             ? `${this.baseUrl}/chat/${chatId}/send_stream`
             : `${this.baseUrl}/chat/${chatId}/send`;
+        // C25-A fix: при stream=true добавляем stream:true в body (SendMessageRequest требует это поле)
+        const body = stream ? { content, stream: true } : { content };
         const response = await fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ content }),
+            body: JSON.stringify(body),
         });
         if (!response.ok) {
             let errMsg = response.statusText;
