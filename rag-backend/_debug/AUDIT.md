@@ -309,6 +309,130 @@
 
 ---
 
+## C27 · F01–F03 + B01 — deleteDocument, createPipeline, is_final UX, backend errors
+
+### Аудит (цепочка проверки)
+
+`arch.md §documents §pipeline` → `models.py` → pydantic-схемы → роуты → `CONTRACTS.md` → `api.js` → `tab-documents.js` / `pipeline_builder.js`
+
+---
+
+### F01 · tab-documents.js — `deleteDocument is not a function`
+
+**Файл:** `tab-documents.js`, метод `handleDocumentsAction`, ветка `delete-doc`  
+**Симптом:** `Ошибка удаления: this.api.deleteDocument is not a function`  
+**Причина:** `handleDocumentsAction` вызывает `this.api.deleteDocument(docId, vaultId)`, которого **никогда не существовало** в `api.js`. Корректный метод — `deleteDocumentById(documentId, vaultId)` (добавлен в D2, коммит C19).
+
+```js
+// tab-documents.js:254 — было:
+await this.api.deleteDocument(docId, vaultId || null);
+
+// должно быть:
+await this.api.deleteDocumentById(docId, vaultId || null);
+```
+
+| ID | Файл | Строка | Проблема | Исправление | Статус |
+|---|---|---|---|---|---|
+| F01 | `tab-documents.js` | `handleDocumentsAction` / `delete-doc` | `this.api.deleteDocument` → `TypeError: not a function` | Переименовать в `this.api.deleteDocumentById` | 🔴 |
+
+---
+
+### F02 · api.js — `createPipeline` и `updatePipeline` отсутствуют
+
+**Файл:** `api.js`, `pipeline_builder.js` → `_save()`  
+**Симптом:** `Ошибка сохранения: _api.createPipeline is not a function`  
+**Причина:** `pipeline_builder.js._save()` вызывает `_api.createPipeline(payload)` и `_api.updatePipeline(_pipeline.id, payload)`. В `api.js` существуют только `getPipelines`, `activatePipeline`, `deactivatePipeline`, `deletePipeline` — методы **создания и обновления отсутствуют**.
+
+**Контракт (CONTRACTS.md):**
+- `P-CREATE | POST | /api/settings/pipelines | PipelineCreate | PipelineRead`
+- `P-UPDATE | PUT  | /api/settings/pipelines/{pipeline_id} | PipelineUpdate | PipelineRead`
+
+**Дополнительный риск:** в `_save()` при обновлении используется `_pipeline.id` как идентификатор в URL. По arch.md pipeline идентифицируется строковым `pipeline_id` (не UUID). Необходимо проверить, что бэк возвращает поле `id` (UUID) или `pipeline_id` (string) и что `_pipeline.id` → `_pipeline.pipeline_id` при необходимости.
+
+```js
+// Добавить в api.js (секция Pipelines):
+
+async createPipeline(data) {
+    const response = await fetch(`${this.baseUrl}/api/settings/pipelines`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+    });
+    if (!response.ok) throw new Error(`Failed to create pipeline: ${response.statusText}`);
+    return response.json();
+}
+
+async updatePipeline(pipelineId, data) {
+    const response = await fetch(`${this.baseUrl}/api/settings/pipelines/${encodeURIComponent(pipelineId)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+    });
+    if (!response.ok) throw new Error(`Failed to update pipeline: ${response.statusText}`);
+    return response.json();
+}
+```
+
+| ID | Файл | Проблема | Исправление | Статус |
+|---|---|---|---|---|
+| F02-A | `api.js` | `createPipeline` отсутствует | Добавить: `POST /api/settings/pipelines` | 🔴 |
+| F02-B | `api.js` | `updatePipeline` отсутствует | Добавить: `PUT /api/settings/pipelines/{id}` | 🔴 |
+| F02-C | `pipeline_builder.js` | `_save()` использует `_pipeline.id` — нужно уточнить `id` vs `pipeline_id` | Проверить контракт бэка; при необходимости заменить на `_pipeline.pipeline_id` | ⚠️ |
+
+---
+
+### F03 · pipeline_builder.js — чекбокс `is_final` в UI нарушает архитектурный инвариант
+
+**Файл:** `pipeline_builder.js`, `_stepHTML()`, `_bindStepEvents()`  
+**Проблема:** По архитектуре `is_final` — **служебный атрибут шага**, который должен автоматически ставиться у шага типа `final`. Текущий UI показывает явный чекбокс `is_final` для каждого шага и требует от пользователя вручную его проставить — иначе `_save()` возвращает ошибку «Отметьте ровно один шаг как is_final». Это одновременно UX-антипаттерн и потенциальный источник состояния «0 is_final» или «2+ is_final», которые бэк отвергнет с 422.
+
+**Правильное поведение:**
+- Убрать чекбокс `is_final` из `_stepHTML()` полностью
+- При смене `type` шага на `'final'` — автоматически ставить `is_final: true` этому шагу и снимать у всех остальных
+- При смене с `'final'` на другой тип — снимать `is_final`
+- Валидацию «ровно один is_final» в `_save()` оставить как guard (на случай программных ошибок), но убрать из пользовательских сообщений
+- Финальный шаг (`type='final'`) при добавлении должен автоматически скрывать секцию `tag_ids`
+
+| ID | Файл | Проблема | Исправление | Статус |
+|---|---|---|---|---|
+| F03-A | `pipeline_builder.js` | Чекбокс `is_final` в UI — пользователь должен проставлять вручную | Убрать чекбокс; автоставить `is_final` при `type=final` | ⚠️ |
+| F03-B | `pipeline_builder.js` | `_bindStepEvents`: смена `type` на `final` не снимает `is_final` у других шагов | При `type=final` → `_steps.forEach(s => s.is_final = false)` до установки текущего | ⚠️ |
+
+---
+
+### B01 · Backend errors — generation 500 + embedding empty vector
+
+**Область:** бэкенд, фронт не причём.
+
+#### B01-A · Generation HTTP 500 — `'str' object has no attribute 'get'`
+
+**Лог:**
+```
+WARNING app.providers.generation.openai_compatible — Generation request failed on attempt 1:
+HTTP 500 — body: {"error":{"message":"APIConnectionError: OpenrouterException -
+'str' object has no attribute 'get'. Received Model Group=openrouter/deepseek/deepseek-chat-v3.1"}}
+```
+**Причина:** В `app/providers/generation/openai_compatible.py` при обработке ответа от OpenRouter ожидается `dict` (вызывается `.get()`), но приходит `str`. Вероятно, ответ от OpenRouter не десериализуется перед обращением по ключу — либо в маппинге `model_group`, либо в `_parse_response`. Требует аудита бэкенда провайдера.
+
+#### B01-B · Embedding empty vector — `dengcao/Qwen3-Embedding-4B:Q4_K_M`
+
+**Лог:**
+```
+ValueError: Embedding provider returned empty vector for chunk 3
+(file='dm-guides/Впечатляющие столицы.pdf', model='dengcao/Qwen3-Embedding-4B:Q4_K_M').
+Check model availability, dimension settings, and provider logs.
+```
+**Причина:** Две возможные причины:
+1. Модель недоступна или не загружена в провайдере (ollama/lm-studio) — проверить `GET /api/settings/models/embedding/{id}/check`
+2. Chunk 3 пустой или whitespace-only после парсинга PDF — guard на пустые чанки до обращения к эмбеддеру
+
+| ID | Файл | Проблема | Приоритет | Статус |
+|---|---|---|---|---|
+| B01-A | `app/providers/generation/openai_compatible.py` | `'str' object has no attribute 'get'` при маппинге ответа OpenRouter | 🔴 бэк | 🔴 не исправлен |
+| B01-B | `indexer_worker.py` | Пустой вектор от embedding-модели; возможна недоступность модели или whitespace-чанки | ⚠️ бэк | ⚠️ требует диагностики |
+
+---
+
 ## Changelog
 
 | Дата | Баги | Файлы | Описание | Коммит |
@@ -328,3 +452,4 @@
 | 2026-06-01 | S40-A, S40-B, S41-A, S42-A | `app/static/js/api.js`, `app/static/js/settings/tab-documents.js` | Аудит C24: фильтр по тегу сломан; getSettingsDocuments/getSettingsDocument отсутствуют | C24 |
 | 2026-06-01 | C25-A, C25-B, C25-C | `app/static/js/api.js`, `app/static/js/chat.js` | C25-A: stream:true добавлен в sendMessage; C25-B: locked_pipeline_id null-safe; C25-C: clarification_id сохраняется в SSE | C25 |
 | 2026-06-01 | M01, M02, M03, M04 | `rag-backend/migrations/versions/0013_fix_documents_tags_uuid.py` | documents.id + tags.id + document_labels.*_id: VARCHAR(36) → UUID; idempotent; campaign_tags FK пересоздан | [24fc654](https://github.com/Annener/mercer/commit/24fc65449b314efe3cb3d16337040c39a6e52efb) |
+| 2026-06-01 | F01, F02-A, F02-B, F02-C, F03-A, F03-B, B01-A, B01-B | `tab-documents.js`, `api.js`, `pipeline_builder.js`, `openai_compatible.py`, `indexer_worker.py` | Аудит C27: deleteDocument typo; createPipeline/updatePipeline отсутствуют; is_final UX нарушение; backend generation/embedding ошибки | — |
