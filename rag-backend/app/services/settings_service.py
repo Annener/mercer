@@ -45,6 +45,30 @@ class SettingsService:
         self._provider_lock = asyncio.Lock()
         self._fernet: Fernet | None = None
 
+    # ------------------------------------------------------------------
+    # Private helpers: lookup by model_id (string slug), not PK (UUID)
+    # db.get(Model, model_id) падает с asyncpg.DataError, т.к. PK — UUID,
+    # а model_id — строковой слаг (напр. '24234'). E-CHK03.
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    async def _get_generation_model(model_id: str, db: AsyncSession) -> GenerationModel | None:
+        result = await db.execute(
+            select(GenerationModel).where(GenerationModel.model_id == model_id)
+        )
+        return result.scalar_one_or_none()
+
+    @staticmethod
+    async def _get_embedding_model(model_id: str, db: AsyncSession) -> EmbeddingModel | None:
+        result = await db.execute(
+            select(EmbeddingModel).where(EmbeddingModel.model_id == model_id)
+        )
+        return result.scalar_one_or_none()
+
+    # ------------------------------------------------------------------
+    # Platform settings
+    # ------------------------------------------------------------------
+
     async def load_settings(self, db: AsyncSession) -> None:
         result = await db.execute(select(PlatformSetting))
         self._settings_cache.clear()
@@ -96,7 +120,11 @@ class SettingsService:
         return self._active_provider
 
     async def load_active_provider(self, db: AsyncSession) -> None:
-        result = await db.execute(select(GenerationModel).where(GenerationModel.is_active == True, GenerationModel.enabled == True))
+        result = await db.execute(
+            select(GenerationModel).where(
+                GenerationModel.is_active == True, GenerationModel.enabled == True
+            )
+        )
         model = result.scalar_one_or_none()
         if model is None:
             self._active_provider = None
@@ -106,10 +134,11 @@ class SettingsService:
             self._active_provider = provider
 
     async def swap_provider(self, model_id: str, db: AsyncSession) -> None:
+        # E-CHK03: was db.get(GenerationModel, model_id) — PK is UUID, model_id is string
+        model = await self._get_generation_model(model_id, db)
+        if model is None or not model.enabled:
+            raise KeyError(model_id)
         async with self._transaction(db):
-            model = await db.get(GenerationModel, model_id)
-            if model is None or not model.enabled:
-                raise KeyError(model_id)
             await db.execute(update(GenerationModel).values(is_active=False))
             model.is_active = True
         provider = self._build_generation_provider(model)
@@ -122,12 +151,19 @@ class SettingsService:
     def decrypt_api_key(self, encrypted: str) -> str:
         return self._get_fernet().decrypt(encrypted.encode("utf-8")).decode("utf-8")
 
+    # ------------------------------------------------------------------
+    # GenerationModel CRUD
+    # ------------------------------------------------------------------
+
     async def get_generation_model(self, model_id: str, db: AsyncSession) -> dict[str, Any] | None:
-        model = await db.get(GenerationModel, model_id)
+        # E-CHK03: was db.get(GenerationModel, model_id)
+        model = await self._get_generation_model(model_id, db)
         return self._generation_model_dict(model) if model is not None else None
 
     async def list_generation_models(self, db: AsyncSession) -> list[dict[str, Any]]:
-        result = await db.execute(select(GenerationModel).order_by(GenerationModel.created_at.desc()))
+        result = await db.execute(
+            select(GenerationModel).order_by(GenerationModel.created_at.desc())
+        )
         return [self._generation_model_dict(model) for model in result.scalars().all()]
 
     async def create_generation_model(self, data: dict[str, Any], db: AsyncSession) -> dict[str, Any]:
@@ -141,8 +177,11 @@ class SettingsService:
         await db.refresh(model)
         return self._generation_model_dict(model)
 
-    async def update_generation_model(self, model_id: str, data: dict[str, Any], db: AsyncSession) -> dict[str, Any]:
-        model = await db.get(GenerationModel, model_id)
+    async def update_generation_model(
+        self, model_id: str, data: dict[str, Any], db: AsyncSession
+    ) -> dict[str, Any]:
+        # E-CHK03: was db.get(GenerationModel, model_id)
+        model = await self._get_generation_model(model_id, db)
         if model is None:
             raise KeyError(model_id)
         payload = dict(data)
@@ -153,14 +192,17 @@ class SettingsService:
                 if value is not None and hasattr(model, key):
                     setattr(model, key, value)
             if api_key is not api_key_marker:
-                model.encrypted_api_key = self.encrypt_api_key(str(api_key)) if api_key else None
+                model.encrypted_api_key = (
+                    self.encrypt_api_key(str(api_key)) if api_key else None
+                )
         await db.refresh(model)
         if model.is_active:
             await self.load_active_provider(db)
         return self._generation_model_dict(model)
 
     async def delete_generation_model(self, model_id: str, db: AsyncSession) -> None:
-        model = await db.get(GenerationModel, model_id)
+        # E-CHK03: was db.get(GenerationModel, model_id) — падал с asyncpg.DataError
+        model = await self._get_generation_model(model_id, db)
         if model is None:
             raise KeyError(model_id)
         if model.is_active:
@@ -171,12 +213,19 @@ class SettingsService:
     async def activate_generation_model(self, model_id: str, db: AsyncSession) -> None:
         await self.swap_provider(model_id, db)
 
+    # ------------------------------------------------------------------
+    # EmbeddingModel CRUD
+    # ------------------------------------------------------------------
+
     async def get_embedding_model(self, model_id: str, db: AsyncSession) -> dict[str, Any] | None:
-        model = await db.get(EmbeddingModel, model_id)
+        # E-CHK03: was db.get(EmbeddingModel, model_id)
+        model = await self._get_embedding_model(model_id, db)
         return self._embedding_model_dict(model) if model is not None else None
 
     async def list_embedding_models(self, db: AsyncSession) -> list[dict[str, Any]]:
-        result = await db.execute(select(EmbeddingModel).order_by(EmbeddingModel.created_at.desc()))
+        result = await db.execute(
+            select(EmbeddingModel).order_by(EmbeddingModel.created_at.desc())
+        )
         return [self._embedding_model_dict(model) for model in result.scalars().all()]
 
     async def create_embedding_model(self, data: dict[str, Any], db: AsyncSession) -> dict[str, Any]:
@@ -190,8 +239,11 @@ class SettingsService:
         await db.refresh(model)
         return self._embedding_model_dict(model)
 
-    async def update_embedding_model(self, model_id: str, data: dict[str, Any], db: AsyncSession) -> dict[str, Any]:
-        model = await db.get(EmbeddingModel, model_id)
+    async def update_embedding_model(
+        self, model_id: str, data: dict[str, Any], db: AsyncSession
+    ) -> dict[str, Any]:
+        # E-CHK03: was db.get(EmbeddingModel, model_id)
+        model = await self._get_embedding_model(model_id, db)
         if model is None:
             raise KeyError(model_id)
         payload = dict(data)
@@ -202,16 +254,23 @@ class SettingsService:
                 if value is not None and hasattr(model, key):
                     setattr(model, key, value)
             if api_key is not api_key_marker:
-                model.encrypted_api_key = self.encrypt_api_key(str(api_key)) if api_key else None
+                model.encrypted_api_key = (
+                    self.encrypt_api_key(str(api_key)) if api_key else None
+                )
         await db.refresh(model)
         return self._embedding_model_dict(model)
 
     async def delete_embedding_model(self, model_id: str, db: AsyncSession) -> None:
-        model = await db.get(EmbeddingModel, model_id)
+        # E-CHK03: was db.get(EmbeddingModel, model_id)
+        model = await self._get_embedding_model(model_id, db)
         if model is None:
             raise KeyError(model_id)
         async with self._transaction(db):
             await db.delete(model)
+
+    # ------------------------------------------------------------------
+    # Internal
+    # ------------------------------------------------------------------
 
     def _build_generation_provider(self, model: GenerationModel) -> GenerationProvider:
         api_key = self.decrypt_api_key(model.encrypted_api_key) if model.encrypted_api_key else ""
@@ -236,41 +295,28 @@ class SettingsService:
         return self._fernet
 
     def _cast_value(self, key: str, value: Any, value_type: str) -> Any:
-        """Convert a value read from DB (may be str from TEXT or native type from JSONB)
-        to the expected Python type declared by value_type.
-        """
-        # JSONB уже десериализует JSON в native Python типы.
-        # Если значение уже правильного типа — возвращаем сразу.
         if value is None:
             return DEFAULTS.get(key)
-
         if value_type == "bool":
             if isinstance(value, bool):
                 return value
-            # Приходит строкой (TEXT-эпоха) или числом из JSON (0/1)
             if isinstance(value, int):
                 return bool(value)
             return str(value).lower() in {"true", "1", "yes", "on"}
-
         if value_type == "int":
             if isinstance(value, int) and not isinstance(value, bool):
                 return value
             return int(value)
-
         if value_type == "float":
             if isinstance(value, float):
                 return value
             if isinstance(value, int) and not isinstance(value, bool):
                 return float(value)
             return float(value)
-
         if value_type == "str":
             if isinstance(value, str):
                 return None if value == "" and DEFAULTS.get(key) is None else value
-            # JSONB может вернуть null -> None
             return str(value) if value is not None else DEFAULTS.get(key)
-
-        # Для неизвестных типов — возвращаем как есть
         return value
 
     def _coerce_value(self, value: Any, value_type: str) -> Any:
@@ -297,11 +343,6 @@ class SettingsService:
         raise ValueError(f"Unsupported setting type: {value_type}")
 
     def _serialize_value(self, value: Any) -> Any:
-        """Prepare value for writing to DB.
-        Since platform_settings.value is now JSONB, we store native Python types directly.
-        SQLAlchemy + asyncpg will serialize them automatically.
-        """
-        # None храним как JSON null
         return value
 
     def _generation_model_dict(self, model: GenerationModel) -> dict[str, Any]:
