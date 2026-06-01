@@ -108,24 +108,28 @@ class ChatAPI {
     }
 
     // === Domain / Campaign / Pipeline API ===
+
+    // S45-2 fix: /domains → /config/domains (CF1)
     async getDomains() {
-        const response = await fetch(`${this.baseUrl}/domains`);
+        const response = await fetch(`${this.baseUrl}/config/domains`);
         if (!response.ok) throw new Error(`Failed to get domains: ${response.statusText}`);
         return response.json();
     }
 
+    // S45-2 fix: /campaigns → /api/settings/campaigns (S45)
     async getCampaigns(domainId) {
-        const response = await fetch(`${this.baseUrl}/campaigns?domain_id=${encodeURIComponent(domainId)}`);
+        const response = await fetch(`${this.baseUrl}/api/settings/campaigns?domain_id=${encodeURIComponent(domainId)}`);
         if (!response.ok) throw new Error(`Failed to get campaigns: ${response.statusText}`);
         return response.json();
     }
 
+    // S45-2 fix: /pipelines → /api/settings/pipelines (S30)
     async getPipelines(domainId = null, campaignId = null) {
         const params = new URLSearchParams();
         if (domainId) params.set('domain_id', domainId);
         if (campaignId) params.set('campaign_id', campaignId);
         const qs = params.toString() ? `?${params.toString()}` : '';
-        const response = await fetch(`${this.baseUrl}/pipelines${qs}`);
+        const response = await fetch(`${this.baseUrl}/api/settings/pipelines${qs}`);
         if (!response.ok) throw new Error(`Failed to get pipelines: ${response.statusText}`);
         return response.json();
     }
