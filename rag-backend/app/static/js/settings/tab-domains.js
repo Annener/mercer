@@ -1,6 +1,8 @@
 const DomainsTabMixin = {
+    // S5-A fix: вместо getDomains() (путь /config/domains, read-only sidebar)
+    // используем getSettingsDomains() (путь /api/settings/domains, CRUD)
     async renderDomainsTab() {
-        const resp = await this.api.getDomains();
+        const resp = await this.api.getSettingsDomains();
         const domains = Array.isArray(resp) ? resp : (resp.domains || []);
         const toolbar = `<div class="settings-toolbar"><button class="btn btn-primary" data-action="new-domain">+ Новый домен</button></div>`;
         if (!domains.length) return toolbar + `<div class="empty-state">Нет доменов</div>`;
@@ -13,6 +15,7 @@ const DomainsTabMixin = {
                 <div class="settings-actions">
                     <button class="btn btn-sm btn-secondary" data-action="edit-domain" data-id="${this.escapeHtml(domain.domain_id)}">Изменить</button>
                     <button class="btn btn-sm btn-secondary" data-action="edit-prompts" data-id="${this.escapeHtml(domain.domain_id)}">Промпты</button>
+                    <button class="btn btn-sm btn-secondary" data-action="edit-fields" data-id="${this.escapeHtml(domain.domain_id)}">Поля</button>
                     <button class="btn btn-sm btn-danger" data-action="delete-domain" data-id="${this.escapeHtml(domain.domain_id)}"${domain.is_system ? ' disabled' : ''}>Удалить</button>
                 </div>
                 <div>
@@ -21,10 +24,11 @@ const DomainsTabMixin = {
             </article>`).join('')}</div>`;
     },
 
+    // S5-A fix: в showDomainModal также заменяем getDomains на getSettingsDomains
     async showDomainModal(domainId = null) {
         let domain = null;
         if (domainId) {
-            const resp = await this.api.getDomains();
+            const resp = await this.api.getSettingsDomains();
             const domains = Array.isArray(resp) ? resp : (resp.domains || []);
             domain = domains.find(d => d.domain_id === domainId) || null;
         }
@@ -143,6 +147,113 @@ const DomainsTabMixin = {
         } catch (err) {
             alert('Ошибка загрузки промптов: ' + err.message);
         }
+    },
+
+    // S12-A: новый модал для управления DomainClarificationField
+    async showFieldsModal(domainId) {
+        let fields = [];
+        try {
+            fields = await this.api.getDomainFields(domainId);
+        } catch (err) {
+            alert('Ошибка загрузки полей: ' + err.message);
+            return;
+        }
+        let workingFields = fields.map(f => ({ ...f }));
+
+        const renderRows = () => workingFields.map((f, i) => `
+            <tr data-idx="${i}">
+                <td><input class="field-name" value="${this.escapeHtml(f.field_name || '')}" placeholder="field_name"></td>
+                <td><input class="field-label" value="${this.escapeHtml(f.label || '')}" placeholder="Название"></td>
+                <td><input class="field-hint" value="${this.escapeHtml(f.hint || '')}" placeholder="Подсказка"></td>
+                <td style="text-align:center;">
+                    <input type="checkbox" class="field-required" ${f.required ? 'checked' : ''}>
+                </td>
+                <td>
+                    <button class="btn btn-sm btn-danger field-delete-btn" data-idx="${i}">×</button>
+                </td>
+            </tr>`).join('');
+
+        const modal = document.createElement('div');
+        modal.className = 'modal';
+        modal.innerHTML = `
+            <div class="modal-content" style="max-width:min(95vw,860px); max-height:90vh; overflow-y:auto;">
+                <h3>Поля уточнения: ${this.escapeHtml(domainId)}</h3>
+                <p style="font-size:0.9em;color:#666;margin-bottom:12px;">
+                    Добавьте поля, которые ИИ будет запрашивать для уточнения запроса. Каждое поле — отдельная запись в таблице DomainClarificationField.
+                </p>
+                <table class="data-table" id="fields-table" style="table-layout:fixed; width:100%;">
+                    <thead>
+                        <tr>
+                            <th>field_name</th>
+                            <th>Название</th>
+                            <th>Подсказка</th>
+                            <th style="width:70px;text-align:center;">Обяз.</th>
+                            <th style="width:50px;"></th>
+                        </tr>
+                    </thead>
+                    <tbody id="fields-tbody">${renderRows()}</tbody>
+                </table>
+                <button class="btn btn-secondary" id="fields-add-btn" style="margin-top:12px;">+ Добавить поле</button>
+                <div class="modal-actions" style="margin-top:16px;">
+                    <button id="fields-save-btn" class="btn btn-primary">Сохранить</button>
+                    <button id="fields-cancel-btn" class="btn btn-secondary">Отмена</button>
+                </div>
+            </div>`;
+        document.body.appendChild(modal);
+
+        const tbody = modal.querySelector('#fields-tbody');
+
+        const syncFromDOM = () => {
+            workingFields = Array.from(tbody.querySelectorAll('tr[data-idx]')).map((row, i) => ({
+                field_name: row.querySelector('.field-name').value.trim(),
+                label:      row.querySelector('.field-label').value.trim(),
+                hint:       row.querySelector('.field-hint').value.trim(),
+                required:   row.querySelector('.field-required').checked,
+                order:      i,
+            }));
+        };
+
+        tbody.addEventListener('click', (e) => {
+            const delBtn = e.target.closest('.field-delete-btn');
+            if (!delBtn) return;
+            syncFromDOM();
+            const idx = parseInt(delBtn.dataset.idx, 10);
+            workingFields.splice(idx, 1);
+            tbody.innerHTML = renderRows();
+        });
+
+        modal.querySelector('#fields-add-btn').addEventListener('click', () => {
+            syncFromDOM();
+            workingFields.push({ field_name: '', label: '', hint: '', required: false, order: workingFields.length });
+            tbody.innerHTML = renderRows();
+        });
+
+        modal.querySelector('#fields-cancel-btn').addEventListener('click', () => modal.remove());
+
+        modal.querySelector('#fields-save-btn').addEventListener('click', async () => {
+            syncFromDOM();
+            const names = workingFields.map(f => f.field_name);
+            const invalid = names.some(n => !n || !/^[a-z0-9_]{1,64}$/.test(n));
+            if (invalid) {
+                alert('field_name: обязательное поле, только a-z, 0-9, _ (1-64 символа)');
+                return;
+            }
+            if (names.length !== new Set(names).size) {
+                alert('Имена полей (field_name) должны быть уникальными');
+                return;
+            }
+            const saveBtn = modal.querySelector('#fields-save-btn');
+            saveBtn.disabled = true;
+            saveBtn.textContent = 'Сохранение...';
+            try {
+                await this.api.updateDomainFields(domainId, workingFields);
+                modal.remove();
+            } catch (err) {
+                saveBtn.disabled = false;
+                saveBtn.textContent = 'Сохранить';
+                alert('Ошибка сохранения: ' + err.message);
+            }
+        });
     },
 };
 
