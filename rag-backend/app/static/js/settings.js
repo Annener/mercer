@@ -87,6 +87,14 @@ class SettingsManager {
                 }
             });
         });
+
+        // Tab-specific listeners for domain-selectors and other controls
+        if (tab === 'campaigns' && typeof this._attachCampaignsTabListeners === 'function') {
+            this._attachCampaignsTabListeners(this._tabContent);
+        }
+        if (tab === 'pipelines' && typeof this._attachPipelinesTabListeners === 'function') {
+            this._attachPipelinesTabListeners(this._tabContent);
+        }
     }
 
     _attachDocumentsListeners() {
