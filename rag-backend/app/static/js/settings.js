@@ -32,13 +32,13 @@ class SettingsManager {
         try {
             let html = '';
             switch (tab) {
-                case 'domains':   html = await this.renderDomainsTab(); break;
-                case 'params':    html = await this.renderParamsTab(); break;
+                case 'domains':    html = await this.renderDomainsTab(); break;
+                case 'params':     html = await this.renderParamsTab(); break;
                 case 'gen-models': html = await this.renderGenerationModelsTab(); break;
                 case 'emb-models': html = await this.renderEmbeddingModelsTab(); break;
-                case 'vaults':    html = await this.renderVaultsTab(); break;
-                case 'pipelines': html = await this.renderPipelinesTab(); break;
-                case 'documents': html = await this.renderDocumentsTab(); break;
+                case 'vaults':     html = await this.renderVaultsTab(); break;
+                case 'pipelines':  html = await this.renderPipelinesTab(); break;
+                case 'documents':  html = await this.renderDocumentsTab(); break;
                 default: html = '<div>Вкладка не найдена</div>';
             }
             this._tabContent.innerHTML = html;
@@ -48,36 +48,49 @@ class SettingsManager {
         }
     }
 
+    // ─── Tab listeners ────────────────────────────────────────────────────────
+
     _attachTabListeners(tab) {
-        this._tabContent.querySelectorAll('[data-action]').forEach(el => {
-            el.addEventListener('click', async (e) => {
-                e.stopPropagation();
-                const action = el.dataset.action;
-                const id = el.dataset.id || null;
-                await this.handleTabAction(tab, action, id, el);
-            });
-        });
+        if (!this._tabContent) return;
+
+        // card-menu toggle
         this._tabContent.querySelectorAll('.card-menu-toggle').forEach(btn => {
             btn.addEventListener('click', (e) => {
                 e.stopPropagation();
-                const menu = btn.nextElementSibling;
-                if (menu) menu.classList.toggle('open');
+                document.querySelectorAll('.card-menu').forEach(m => {
+                    if (m !== btn.nextElementSibling) m.classList.remove('open');
+                });
+                btn.nextElementSibling?.classList.toggle('open');
             });
         });
         document.addEventListener('click', () => {
-            this._tabContent.querySelectorAll('.card-menu.open').forEach(m => m.classList.remove('open'));
-        }, { once: true });
+            document.querySelectorAll('.card-menu').forEach(m => m.classList.remove('open'));
+        }, { capture: true, once: false });
+
+        // action buttons
+        this._tabContent.querySelectorAll('[data-action]').forEach(btn => {
+            btn.addEventListener('click', async (e) => {
+                e.stopPropagation();
+                const action = btn.dataset.action;
+                const id = btn.dataset.id || null;
+                try {
+                    await this._dispatch(tab, action, id, btn);
+                } catch (err) {
+                    console.error('Action error:', action, err);
+                }
+            });
+        });
     }
 
-    async handleTabAction(tab, action, id, btn) {
+    async _dispatch(tab, action, id, btn) {
         switch (tab) {
-            case 'domains':   await this.handleDomainsAction(action, id, btn); break;
-            case 'params':    await this.handleParamsAction(action, id, btn); break;
+            case 'domains':    await this.handleDomainsAction(action, id, btn); break;
+            case 'params':     await this.handleParamsAction(action, id, btn); break;
             case 'gen-models': await this.handleGenModelsAction(action, id, btn); break;
             case 'emb-models': await this.handleEmbModelsAction(action, id, btn); break;
-            case 'vaults':    await this.handleVaultsAction(action, id, btn); break;
-            case 'pipelines': await this.handlePipelinesAction(action, id, btn); break;
-            case 'documents': await this.handleDocumentsAction(action, btn); break;
+            case 'vaults':     await this.handleVaultsAction(action, id, btn); break;
+            case 'pipelines':  await this.handlePipelinesAction(action, id, btn); break;
+            case 'documents':  await this.handleDocumentsAction(action, btn); break;
         }
     }
 
@@ -109,9 +122,7 @@ class SettingsManager {
             if (!form) return;
             const inputs = form.querySelectorAll('[data-key]');
             const updates = [];
-            inputs.forEach(input => {
-                updates.push({ key: input.dataset.key, value: input.value });
-            });
+            inputs.forEach(input => updates.push({ key: input.dataset.key, value: input.value }));
             try {
                 for (const u of updates) {
                     await this.api.updatePlatformSetting(u.key, { value: u.value });
@@ -220,27 +231,26 @@ class SettingsManager {
         }
     }
 
-    // ─── Documents ────────────────────────────────────────────────────────────
-
-    async handleDocumentsAction(action, btn) {
-        await this.handleDocumentsAction(action, btn);
-    }
-
     // ─── Utils ────────────────────────────────────────────────────────────────
 
     escapeHtml(str) {
-        if (!str) return '';
-        return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;');
+        if (str == null) return '';
+        return String(str)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
     }
 }
 
 window.settingsManager = new SettingsManager();
 
 document.addEventListener('DOMContentLoaded', async () => {
-    const openBtn = document.getElementById('open-settings-btn');
-    const backBtn = document.getElementById('settings-back-btn');
+    const openBtn     = document.getElementById('open-settings-btn');
+    const backBtn     = document.getElementById('settings-back-btn');
     const settingsPage = document.getElementById('settings-page');
-    const mainApp = document.getElementById('main-app');
+    const mainApp     = document.getElementById('main-app');
 
     if (openBtn && settingsPage) {
         openBtn.addEventListener('click', async () => {
