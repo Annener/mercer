@@ -559,8 +559,7 @@ class ChatAPI {
         return response.json();
     }
 
-    // S44-A fix: метод отсутствовал — бэк имеет эндпоинт, фронт не мог его вызвать.
-    // Семантика: additive (добавляет теги, не заменяет). Ответ: 204 No Content.
+    // S44-A fix: метод отсутствовал — db_management.js вызывал chatAPI.textSearchByDomain(), которого не было.
     async batchLabelDocuments(documentIds, tagIds) {
         const response = await fetch(`${this.baseUrl}/api/settings/documents/labels/batch`, {
             method: 'POST',
@@ -580,6 +579,19 @@ class ChatAPI {
         });
         if (!response.ok) throw new Error(`Failed to reindex vault: ${response.statusText}`);
         return response.json();
+    }
+
+    // runIndexer — алиас для reindexVault, используется в tab-integrations.js.
+    // Если vaultId не передан — берёт первый доступный vault.
+    async runIndexer(vaultId = null, force = false) {
+        if (!vaultId) {
+            const vaults = await this.getSettingsVaults();
+            const list = Array.isArray(vaults) ? vaults : (vaults.vaults || []);
+            const active = list.find(v => v.enabled !== false) || list[0];
+            vaultId = active ? (active.vault_id || active.id) : null;
+        }
+        if (!vaultId) throw new Error('Vault не найден — создайте vault перед запуском индексации');
+        return this.reindexVault(vaultId, force);
     }
 
     // D4 fix: WS /ws/index-tasks/{id} (не /api/settings/tasks/{id}/stream)

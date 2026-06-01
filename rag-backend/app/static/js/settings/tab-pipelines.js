@@ -3,12 +3,28 @@ const PipelinesTabMixin = {
         const domainId = this._activeDomainId || null;
         let pipelines = await this.api.getPipelines(domainId);
         if (!Array.isArray(pipelines)) pipelines = [];
-        const domainLabel = domainId
-            ? `<span style="color:var(--color-text-faint);font-size:var(--text-xs);margin-left:var(--space-2);">домен: ${this.escapeHtml(domainId)}</span>`
-            : '<span style="color:var(--color-warning);font-size:var(--text-xs);margin-left:var(--space-2);">домен не выбран — показаны все</span>';
+
+        // Загружаем домены для domain-selector
+        let domains = [];
+        try {
+            const dr = await this.api.getSettingsDomains();
+            domains = Array.isArray(dr) ? dr : (dr.domains || []);
+        } catch (_) {}
+
+        const domainSelector = `
+            <select id="pipelines-domain-select" class="input-field" style="max-width:200px;height:36px;">
+                <option value="">Все домены</option>
+                ${domains.map(d => {
+                    const did = this.escapeHtml(d.domain_id || d.id || '');
+                    const dname = this.escapeHtml(d.display_name || d.domain_id || d.id || '');
+                    const sel = (d.domain_id || d.id) === domainId ? ' selected' : '';
+                    return `<option value="${did}"${sel}>${dname}</option>`;
+                }).join('')}
+            </select>`;
+
         const toolbar = `<div class="settings-toolbar">
             <button class="btn btn-primary" data-action="new-pipeline">+ Новый pipeline</button>
-            ${domainLabel}
+            ${domainSelector}
         </div>`;
         if (pipelines.length === 0) return toolbar + `<div class="empty-state">Pipeline'ов нет</div>`;
         return toolbar + `<div class="settings-grid">${pipelines.map(pipeline => `
@@ -30,6 +46,16 @@ const PipelinesTabMixin = {
             </article>`).join('')}</div>`;
     },
 
+    _attachPipelinesTabListeners(container) {
+        const sel = container.querySelector('#pipelines-domain-select');
+        if (sel) {
+            sel.addEventListener('change', () => {
+                this._activeDomainId = sel.value || null;
+                this.loadTab('pipelines');
+            });
+        }
+    },
+
     async showPipelineModal() {
         if (!window.PipelineBuilder || typeof window.PipelineBuilder.openCreate !== 'function') {
             alert('Редактор pipeline не загружен');
@@ -39,7 +65,6 @@ const PipelinesTabMixin = {
     },
 
     async showPipelineEditModal(pipelineId) {
-        // Передаём domain_id чтобы получить только пайплайны текущего домена
         const domainId = this._activeDomainId || null;
         const all = await this.api.getPipelines(domainId);
         const list = Array.isArray(all) ? all : (all.pipelines || []);

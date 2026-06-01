@@ -1,6 +1,5 @@
 const CampaignsTabMixin = {
     async renderCampaignsTab() {
-        // Используем domain_id (итер 2+): кампании принадлежат домену, не Vaultу
         const domainId = this._activeDomainId || null;
         let campaigns = [];
         try {
@@ -8,10 +7,27 @@ const CampaignsTabMixin = {
             campaigns = Array.isArray(resp) ? resp : (resp.campaigns || []);
         } catch (e) { /* ignore */ }
 
-        const domainLabel = domainId ? `<span style="color:var(--color-text-faint);font-size:var(--text-xs);margin-left:var(--space-2);">домен: ${this.escapeHtml(domainId)}</span>` : '';
+        // Загружаем домены для domain-selector в toolbar
+        let domains = [];
+        try {
+            const dr = await this.api.getSettingsDomains();
+            domains = Array.isArray(dr) ? dr : (dr.domains || []);
+        } catch (_) {}
+
+        const domainSelector = `
+            <select id="campaigns-domain-select" class="input-field" style="max-width:200px;height:36px;">
+                <option value="">Все домены</option>
+                ${domains.map(d => {
+                    const did = this.escapeHtml(d.domain_id || d.id || '');
+                    const dname = this.escapeHtml(d.display_name || d.domain_id || d.id || '');
+                    const sel = (d.domain_id || d.id) === domainId ? ' selected' : '';
+                    return `<option value="${did}"${sel}>${dname}</option>`;
+                }).join('')}
+            </select>`;
+
         const toolbar = `<div class="settings-toolbar">
             <button class="btn btn-primary" data-action="new-campaign">+ Новая кампания</button>
-            ${domainLabel}
+            ${domainSelector}
         </div>`;
         if (!campaigns.length) return toolbar + '<div class="empty-state">Кампаний нет. Создайте первую.</div>';
 
@@ -31,6 +47,16 @@ const CampaignsTabMixin = {
             </article>`).join('')}</div>`;
     },
 
+    _attachCampaignsTabListeners(container) {
+        const sel = container.querySelector('#campaigns-domain-select');
+        if (sel) {
+            sel.addEventListener('change', () => {
+                this._activeDomainId = sel.value || null;
+                this.loadTab('campaigns');
+            });
+        }
+    },
+
     async showCampaignModal(campaignId = null) {
         const isEdit = !!campaignId;
         let campaign = { name: '', description: '', system_prompt: '' };
@@ -44,7 +70,8 @@ const CampaignsTabMixin = {
                 campaignTags = campaign.tags || [];
             } catch (e) { alert('Ошибка загрузки кампании: ' + e.message); return; }
         }
-        // Загружаем глобальные теги домена (через domain_id)
+
+        // Загружаем глобальные теги домена
         if (domainId) {
             try {
                 const tagsResp = await this.api.getTags(domainId);
@@ -52,6 +79,29 @@ const CampaignsTabMixin = {
                 globalTags = Array.isArray(grouped.global_tags) ? grouped.global_tags : [];
             } catch (e) { /* ignore */ }
         }
+
+        // При создании — грузим домены для select
+        let domains = [];
+        if (!isEdit) {
+            try {
+                const dr = await this.api.getSettingsDomains();
+                domains = Array.isArray(dr) ? dr : (dr.domains || []);
+            } catch (_) {}
+        }
+
+        const domainSelectHtml = !isEdit ? `
+            <div class="form-group" style="padding:0 1.5rem;">
+                <label>Домен <span style="color:var(--color-error);">*</span></label>
+                <select id="camp-domain-id" class="input-field">
+                    <option value="">— выберите домен —</option>
+                    ${domains.map(d => {
+                        const did = this.escapeHtml(d.domain_id || d.id || '');
+                        const dname = this.escapeHtml(d.display_name || d.domain_id || d.id || '');
+                        const sel = (d.domain_id || d.id) === domainId ? ' selected' : '';
+                        return `<option value="${did}"${sel}>${dname}</option>`;
+                    }).join('')}
+                </select>
+            </div>` : '';
 
         const overlay = document.createElement('div');
         overlay.className = 'modal';
@@ -61,6 +111,7 @@ const CampaignsTabMixin = {
                 <h3>${isEdit ? 'Редактировать' : 'Создать'} кампанию</h3>
                 <button class="btn-close" id="camp-modal-close">✕</button>
             </div>
+            ${domainSelectHtml}
             <div class="form-group" style="padding:0 1.5rem;margin-top:1rem;">
                 <label>Название</label>
                 <input type="text" id="camp-name" class="input-field" value="${this.escapeHtml(campaign.name)}">
@@ -151,12 +202,12 @@ const CampaignsTabMixin = {
                 if (isEdit) {
                     await this.api.updateCampaign(campaignId, data);
                 } else {
-                    // Используем domain_id (итер 2+): кампания принадлежит домену
-                    if (!domainId) {
-                        alert('Домен не определён. Создайте домен во вкладке «Домены».');
+                    const selectedDomain = overlay.querySelector('#camp-domain-id')?.value || domainId;
+                    if (!selectedDomain) {
+                        alert('Выберите домен для кампании');
                         return;
                     }
-                    data.domain_id = domainId;
+                    data.domain_id = selectedDomain;
                     await this.api.createCampaign(data);
                 }
                 overlay.remove();
