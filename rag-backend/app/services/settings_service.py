@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -234,15 +235,42 @@ class SettingsService:
             self._fernet = Fernet(key.encode("utf-8"))
         return self._fernet
 
-    def _cast_value(self, key: str, value: str, value_type: str) -> Any:
+    def _cast_value(self, key: str, value: Any, value_type: str) -> Any:
+        """Convert a value read from DB (may be str from TEXT or native type from JSONB)
+        to the expected Python type declared by value_type.
+        """
+        # JSONB уже десериализует JSON в native Python типы.
+        # Если значение уже правильного типа — возвращаем сразу.
+        if value is None:
+            return DEFAULTS.get(key)
+
         if value_type == "bool":
-            return value.lower() in {"true", "1", "yes", "on"}
+            if isinstance(value, bool):
+                return value
+            # Приходит строкой (TEXT-эпоха) или числом из JSON (0/1)
+            if isinstance(value, int):
+                return bool(value)
+            return str(value).lower() in {"true", "1", "yes", "on"}
+
         if value_type == "int":
+            if isinstance(value, int) and not isinstance(value, bool):
+                return value
             return int(value)
+
         if value_type == "float":
+            if isinstance(value, float):
+                return value
+            if isinstance(value, int) and not isinstance(value, bool):
+                return float(value)
             return float(value)
+
         if value_type == "str":
-            return None if value == "" and DEFAULTS.get(key) is None else value
+            if isinstance(value, str):
+                return None if value == "" and DEFAULTS.get(key) is None else value
+            # JSONB может вернуть null -> None
+            return str(value) if value is not None else DEFAULTS.get(key)
+
+        # Для неизвестных типов — возвращаем как есть
         return value
 
     def _coerce_value(self, value: Any, value_type: str) -> Any:
@@ -268,12 +296,13 @@ class SettingsService:
             return "" if value is None else str(value)
         raise ValueError(f"Unsupported setting type: {value_type}")
 
-    def _serialize_value(self, value: Any) -> str:
-        if isinstance(value, bool):
-            return "true" if value else "false"
-        if value is None:
-            return ""
-        return str(value)
+    def _serialize_value(self, value: Any) -> Any:
+        """Prepare value for writing to DB.
+        Since platform_settings.value is now JSONB, we store native Python types directly.
+        SQLAlchemy + asyncpg will serialize them automatically.
+        """
+        # None храним как JSON null
+        return value
 
     def _generation_model_dict(self, model: GenerationModel) -> dict[str, Any]:
         return {
