@@ -31,7 +31,9 @@ const VaultsTabMixin = {
                 const vaultsList = await this.api.getSettingsVaults();
                 vault = (Array.isArray(vaultsList) ? vaultsList : []).find(v => v.vault_id === vaultId);
             }
-            const resp = await this.api.getDomains();
+            // S36-new fix: используем getSettingsDomains() (полный список, включая disabled-домены)
+            // вместо getDomains() (только enabled=true, sidebar read-only контракт)
+            const resp = await this.api.getSettingsDomains();
             const allDomains = Array.isArray(resp) ? resp : (resp.domains || []);
             const domains = allDomains.filter(d => d.enabled !== false);
             const embModels = await this.api.getEmbeddingModels();
