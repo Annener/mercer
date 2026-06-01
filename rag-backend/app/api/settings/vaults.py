@@ -18,6 +18,25 @@ router = APIRouter()
 SLUG_RE = re.compile(r"^[a-z0-9-]{3,64}$")
 
 
+# ---------------------------------------------------------------------------
+# Helpers: lookup by string slug/model_id, not by UUID PK.
+# db.get(Model, slug) падает asyncpg.DataError потому что PK — UUID. E-CHK04.
+# ---------------------------------------------------------------------------
+
+async def _get_vault(db: AsyncSession, vault_id: str) -> Vault | None:
+    result = await db.execute(select(Vault).where(Vault.vault_id == vault_id))
+    return result.scalar_one_or_none()
+
+
+async def _get_embedding_model(db: AsyncSession, model_id: str) -> EmbeddingModel | None:
+    result = await db.execute(select(EmbeddingModel).where(EmbeddingModel.model_id == model_id))
+    return result.scalar_one_or_none()
+
+
+# ---------------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------------
+
 @router.get("/vaults")
 async def list_vaults(
     domain_id: str | None = Query(default=None, description="Фильтр по домену"),
@@ -34,11 +53,14 @@ async def list_vaults(
 async def create_vault(req: VaultCreateRequest, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
     if SLUG_RE.fullmatch(req.vault_id) is None:
         raise HTTPException(status_code=422, detail="vault_id must be a slug with 3-64 characters")
+    # E-CHK04: Domain.domain_id — String PK, db.get() здесь корректен
     if await db.get(Domain, req.domain_id) is None:
         raise HTTPException(status_code=404, detail="Domain not found")
-    if req.embedding_model_id and await db.get(EmbeddingModel, req.embedding_model_id) is None:
+    # E-CHK04: EmbeddingModel.model_id — string slug, не PK
+    if req.embedding_model_id and await _get_embedding_model(db, req.embedding_model_id) is None:
         raise HTTPException(status_code=404, detail="Embedding model not found")
-    if await db.get(Vault, req.vault_id) is not None:
+    # E-CHK04: Vault.vault_id — string slug, не PK
+    if await _get_vault(db, req.vault_id) is not None:
         raise HTTPException(status_code=409, detail="Vault already exists")
 
     vault_path = f"/data/vaults/{req.vault_id}"
@@ -59,16 +81,21 @@ async def create_vault(req: VaultCreateRequest, db: AsyncSession = Depends(get_d
 
 @router.put("/vaults/{vault_id}")
 async def update_vault(vault_id: str, req: VaultUpdateRequest, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
-    vault = await db.get(Vault, vault_id)
+    # E-CHK04: was db.get(Vault, vault_id)
+    vault = await _get_vault(db, vault_id)
     if vault is None:
         raise HTTPException(status_code=404, detail="Vault not found")
 
     payload = req.model_dump(exclude_unset=True)
     new_embedding_model_id = payload.get("embedding_model_id")
-    if new_embedding_model_id and await db.get(EmbeddingModel, new_embedding_model_id) is None:
+    # E-CHK04: was db.get(EmbeddingModel, new_embedding_model_id)
+    if new_embedding_model_id and await _get_embedding_model(db, new_embedding_model_id) is None:
         raise HTTPException(status_code=404, detail="Embedding model not found")
 
-    embedding_changed = "embedding_model_id" in payload and payload["embedding_model_id"] != vault.embedding_model_id
+    embedding_changed = (
+        "embedding_model_id" in payload
+        and payload["embedding_model_id"] != vault.embedding_model_id
+    )
     chunking_changed = any(
         key in payload and payload[key] != getattr(vault, key)
         for key in ["chunk_size", "overlap", "entity_aware_mode"]
@@ -95,7 +122,8 @@ async def update_vault(vault_id: str, req: VaultUpdateRequest, db: AsyncSession 
 
 @router.delete("/vaults/{vault_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_vault(vault_id: str, db: AsyncSession = Depends(get_db)) -> Response:
-    vault = await db.get(Vault, vault_id)
+    # E-CHK04: was db.get(Vault, vault_id) — падал с asyncpg.DataError на slug
+    vault = await _get_vault(db, vault_id)
     if vault is None:
         raise HTTPException(status_code=404, detail="Vault not found")
     try:
@@ -109,7 +137,8 @@ async def delete_vault(vault_id: str, db: AsyncSession = Depends(get_db)) -> Res
 
 @router.post("/vaults/{vault_id}/toggle")
 async def toggle_vault(vault_id: str, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
-    vault = await db.get(Vault, vault_id)
+    # E-CHK04: was db.get(Vault, vault_id)
+    vault = await _get_vault(db, vault_id)
     if vault is None:
         raise HTTPException(status_code=404, detail="Vault not found")
     vault.enabled = not vault.enabled
