@@ -100,6 +100,12 @@ class VaultUpdateRequest(BaseModel):
 # CampaignCreate / CampaignUpdate since migration 0009 (domain-based, not vault-based).
 # WorldCreateRequest / WorldUpdateRequest also left as-is (no active route references found).
 
+# D04 fix: добавлена строгая Pydantic-схема для POST /{campaign_id}/tags.
+# Было: payload: dict — KeyError → 500 при отсутствии поля name.
+class CampaignTagCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=128)
+    color: str | None = None
+
 
 class PipelineCreateRequest(BaseModel):
     pipeline_id: str
