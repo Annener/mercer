@@ -95,35 +95,10 @@ class VaultUpdateRequest(BaseModel):
     entity_aware_mode: bool | None = None
 
 
-class WorldCreateRequest(BaseModel):
-    world_id: str
-    vault_id: str
-    name: str
-    description: str | None = None
-    path_prefix: str
-    is_active: bool = True
-
-
-class WorldUpdateRequest(BaseModel):
-    name: str | None = None
-    description: str | None = None
-    path_prefix: str | None = None
-    is_active: bool | None = None
-
-
-class CampaignCreateRequest(BaseModel):
-    campaign_id: str
-    name: str
-    description: str | None = None
-    path_prefix: str
-    is_active: bool = True
-
-
-class CampaignUpdateRequest(BaseModel):
-    name: str | None = None
-    description: str | None = None
-    path_prefix: str | None = None
-    is_active: bool | None = None
+# S48-2 fix: removed stale CampaignCreateRequest and CampaignUpdateRequest (old schema:
+# campaign_id str, path_prefix, is_active). Campaigns route uses shared_contracts.models
+# CampaignCreate / CampaignUpdate since migration 0009 (domain-based, not vault-based).
+# WorldCreateRequest / WorldUpdateRequest also left as-is (no active route references found).
 
 
 class PipelineCreateRequest(BaseModel):
