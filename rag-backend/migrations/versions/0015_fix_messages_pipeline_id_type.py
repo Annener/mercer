@@ -8,12 +8,18 @@ Fix: ALTER COLUMN TYPE to VARCHAR(64) (idempotent).
 Existing values are NULL — no data loss.
 
 Revision ID: 0015_fix_messages_pipeline_id_type
-Revises: 0014
+Revises: 0014_sync_orm_schema
+Create Date: 2026-06-02
 """
 from __future__ import annotations
 
 import sqlalchemy as sa
 from alembic import op
+
+revision = "0015_fix_messages_pipeline_id_type"
+down_revision = "0014_sync_orm_schema"
+branch_labels = None
+depends_on = None
 
 
 def upgrade() -> None:
