@@ -533,6 +533,18 @@ class ChatAPI {
         return response.json();
     }
 
+    // S44-A fix: метод отсутствовал — бэк имеет эндпоинт, фронт не мог его вызвать.
+    // Семантика: additive (добавляет теги, не заменяет). Ответ: 204 No Content.
+    async batchLabelDocuments(documentIds, tagIds) {
+        const response = await fetch(`${this.baseUrl}/api/settings/documents/labels/batch`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ document_ids: documentIds, tag_ids: tagIds }),
+        });
+        if (!response.ok) throw new Error(`Failed to batch label documents: ${response.statusText}`);
+        // 204 No Content
+    }
+
     // D3 fix: /vaults/{id}/reindex (не /api/settings/vaults/{id}/reindex)
     async reindexVault(vaultId, force = false) {
         const response = await fetch(`${this.baseUrl}/vaults/${encodeURIComponent(vaultId)}/reindex`, {
