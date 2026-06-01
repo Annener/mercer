@@ -58,8 +58,6 @@ class ChatHistoryResponse(BaseModel):
     vault_enabled: bool = False
 
 
-# BUG FIX #5: добавлено поле vault_enabled, которое ранее вычислялось
-# в list_chats но отсутствовало в модели → Pydantic молча его отбрасывал.
 class ChatListItem(BaseModel):
     chat_id: str
     title: str
@@ -89,8 +87,6 @@ async def create_chat(
     request: Request,
     db: AsyncSession = Depends(get_db),
 ) -> CreateChatResponse:
-    # BUG FIX #1: явная валидация формата campaign_id перед вызовом uuid.UUID,
-    # чтобы получить 422 вместо 500 при невалидном значении.
     campaign_uuid: uuid.UUID | None = None
     if req.campaign_id:
         try:
@@ -130,6 +126,17 @@ async def list_chats(
         stmt = stmt.where(Chat.domain_id == domain_id)
     result = await db.execute(stmt)
     chats = result.scalars().all()
+
+    # B01 fix: был N+1 — _vault_enabled вызывался в list comprehension с await
+    # для каждого чата отдельно. Теперь: один запрос к settings один раз,
+    # результат кешируется; _vault_enabled вызывается синхронно через кеш.
+    unique_vault_ids: set[str] = {c.vault_id for c in chats if c.vault_id}
+    vault_enabled_cache: dict[str | None, bool] = {None: False}
+    if unique_vault_ids:
+        retrieval_enabled: bool = await settings_service.get("retrieval.enabled", db)
+        for vid in unique_vault_ids:
+            vault_enabled_cache[vid] = retrieval_enabled
+
     return ChatListResponse(
         chats=[
             ChatListItem(
@@ -137,7 +144,7 @@ async def list_chats(
                 title=c.title,
                 vault_id=c.vault_id,
                 domain_id=c.domain_id,
-                vault_enabled=await _vault_enabled(db, c.vault_id),
+                vault_enabled=vault_enabled_cache.get(c.vault_id, False),
                 created_at=c.created_at,
                 updated_at=c.updated_at,
             )
@@ -215,9 +222,6 @@ async def send_message(
     db.add(user_msg)
     await db.flush()
 
-    # BUG FIX #8: domain_id и retrieval_strategy вычисляются один раз,
-    # ранее domain_id вызывался дважды (_domain_id_for_chat), а retrieval_strategy
-    # дублировался — одно присваивание при создании context и ещё одно после pipeline.
     domain_id = await _domain_id_for_chat(chat, db) or chat.domain_id
     vault_ids: list[str] = [
         v.vault_id for v in config_for_vault.vaults.values()
@@ -252,7 +256,6 @@ async def send_message(
     context.pipeline_version = pipeline.version
     context.steps = pipeline.steps
     context.final_composition = pipeline.final_composition
-    # retrieval_strategy больше не переприсваивается здесь повторно
 
     history_stmt = select(Message).where(Message.chat_id == chat.id).order_by(Message.created_at).limit(20)
     history_result = await db.execute(history_stmt)
@@ -279,7 +282,6 @@ async def send_message(
     db.add(assistant_msg)
     await db.commit()
 
-    # Auto-rename chat on first exchange
     if chat.title == "New Chat":
         chat.title = _auto_title(req.content)
         await db.commit()
@@ -302,8 +304,6 @@ async def send_message_stream(
     db.add(user_msg)
     await db.flush()
 
-    # BUG FIX #8 (stream): приведено в соответствие с send_message —
-    # retrieval_strategy вычисляется один раз и явно передаётся в context.
     domain_id = await _domain_id_for_chat(chat, db) or chat.domain_id
     vault_ids: list[str] = [
         v.vault_id for v in config_for_vault.vaults.values()
@@ -363,9 +363,6 @@ async def send_message_stream(
         assistant_msg_id: str | None = None
 
         async for chunk in executor.run_stream(context):
-            # BUG FIX C: переименован тип чанка delta→token.
-            # chat.js обрабатывает только type==="token" для рендера текста во время стриминга.
-            # С type==="delta" текст накапливался внутри but not рендерился до конца стрима.
             if chunk.get("type") == "delta":
                 chunk = {**chunk, "type": "token"}
             data = json.dumps(chunk, ensure_ascii=False)
@@ -388,8 +385,6 @@ async def send_message_stream(
                 chat.title = _auto_title(req.content)
                 await db.commit()
 
-        # BUG FIX B: эмитим [DONE] в конце стрима.
-        # chat.js ждёт 'data: [DONE]' чтобы выставить флаг streamDone.
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
@@ -442,7 +437,6 @@ async def _audit(
     entity_id: str,
     payload: dict[str, Any],
 ) -> None:
-    # A04 fix: AuditLog использует поле details=, не payload=
     from app.db.models import AuditLog
     db.add(AuditLog(action=action, entity_type=entity_type, entity_id=entity_id, details=payload))
 
@@ -462,5 +456,5 @@ def _auto_title(query: str) -> str:
     cleaned = re.sub(r"[^\w\s\u0400-\u04ff]", " ", query).strip()
     words = cleaned.split()
     if len(words) > 7:
-        cleaned = " ".join(words[:7])
+        cleaned = " ",join(words[:7])
     return cleaned[:255]
