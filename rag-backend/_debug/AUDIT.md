@@ -141,13 +141,15 @@
 
 **settings.js → `handlePipelinesAction`:**
 - `new-pipeline` → `this.showPipelineModal()` ✅ корректно
-- `edit-pipeline` → `this.showPipelineModal(id)` 🔴 **НЕВЕРНО** — `showPipelineModal` игнорирует аргумент и всегда открывает форму создания; нужно `this.showPipelineEditModal(id)`
+- `edit-pipeline` → раньше `this.showPipelineModal(id)` 🔴 — открывало форму создания вместо редактирования
 
 ### Таблица багов
 
 | ID | Файл | Проблема | Исправление | Статус |
 |---|---|---|---|---|
-| C21-A | `settings.js` | `edit-pipeline` → `this.showPipelineModal(id)` → открывает форму создания вместо редактирования | `this.showPipelineEditModal(id)` | 🔴 |
+| C21-A | `settings.js` | `edit-pipeline` → `this.showPipelineModal(id)` → открывает форму создания вместо редактирования | `this.showPipelineEditModal(id)` | ✅ |
+
+**Закрыто в коммите C21.**
 
 ---
 
@@ -163,4 +165,4 @@
 | 2026-06-01 | S14-B, S15-B, S16-B | `app/static/js/settings.js`, `app/static/js/settings/tab-gen-models.js` | showGenerationModelModal / showEmbeddingModelModal; toggle-gen кнопка | C17 |
 | 2026-06-01 | D1–D5 | `app/static/js/api.js`, `app/static/js/settings/tab-documents.js` | 6 неверных путей db-management; vault_id-aware delete | C19 |
 | 2026-06-01 | S16-C, S16-D, S21-B | `app/api/settings/gen_models.py`, `app/static/js/settings.js` | toggle роут добавлен в бэк; check-gen/check-emb алерт исправлен на result.ok | C20 |
-| 2026-06-01 | C21-A | `app/static/js/settings.js` | audit: edit-pipeline вызывает showPipelineModal вместо showPipelineEditModal | — |
+| 2026-06-01 | C21-A | `app/static/js/settings.js` | edit-pipeline: showPipelineModal(id) → showPipelineEditModal(id) | C21 |
