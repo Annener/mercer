@@ -270,6 +270,45 @@
 
 ---
 
+## C26 · M01–M04 — documents.id, tags.id, document_labels: VARCHAR(36) → UUID
+
+### Аудит (цепочка проверки)
+
+**Источник:** анализ миграций 0010→0012 + ORM `models.py`
+
+**Проблема:** Миграции 0010–0011 создали несколько колонок как `VARCHAR(36)` вместо нативного PostgreSQL UUID. Миграция 0012 исправила только `tags.campaign_id`, оставив нетронутыми:
+- `tags.id` — создан в 0010 как `String(36)`, так и остался
+- `documents.id` — пересоздан в 0011 как `String(36)` (server_default `gen_random_uuid()::text`)
+- `document_labels.document_id` — создан в 0011 как `String(36)`
+- `document_labels.tag_id` — создан в 0011 как `String(36)`
+
+**Эффект:** ORM объявляет все четыре колонки как `UUID(as_uuid=True)`. PostgreSQL возвращает ошибку `operator does not exist: character varying = uuid` при любом ORM-запросе с фильтром или JOIN по этим полям — идентична ошибке из `tags.campaign_id` (исправленной в 0012).
+
+**Ошибочная запись в предыдущем аудите:** таблица итогов помечала `tags.id` как «✅ исправлено в 0012» — это неверно; 0012 трогал только `tags.campaign_id`.
+
+### Таблица багов
+
+| ID | Таблица | Колонка | Тип в БД (после 0011) | Тип ORM | Статус |
+|---|---|---|---|---|---|
+| M01 | `documents` | `id` | `VARCHAR(36)` | `UUID(as_uuid=True)` | ✅ исправлен в 0013 |
+| M02 | `document_labels` | `document_id` | `VARCHAR(36)` | `UUID(as_uuid=True)` | ✅ исправлен в 0013 |
+| M03 | `document_labels` | `tag_id` | `VARCHAR(36)` | `UUID(as_uuid=True)` | ✅ исправлен в 0013 |
+| M04 | `tags` | `id` | `VARCHAR(36)` | `UUID(as_uuid=True)` | ✅ исправлен в 0013 |
+
+### Стратегия фикса (0013)
+
+1. DROP TABLE `document_labels` (зависит от обоих FK)
+2. ALTER `tags.id` VARCHAR → UUID + пересоздать FK из `campaign_tags.tag_id`
+3. ALTER `documents.id` VARCHAR → UUID
+4. CREATE TABLE `document_labels` с UUID-типами
+5. Восстановить constraint `uq_tag_name_domain` если потерян
+
+Все шаги idempotent — проверка текущего типа перед ALTER.
+
+**Закрыто в коммите [24fc654](https://github.com/Annener/mercer/commit/24fc65449b314efe3cb3d16337040c39a6e52efb).**
+
+---
+
 ## Changelog
 
 | Дата | Баги | Файлы | Описание | Коммит |
@@ -288,3 +327,4 @@
 | 2026-06-01 | S44-A | `app/static/js/api.js` | Аудит S44: batchLabelDocuments отсутствовал → добавлен метод; S44-B: batch UI → ⚠️ backlog | C23 |
 | 2026-06-01 | S40-A, S40-B, S41-A, S42-A | `app/static/js/api.js`, `app/static/js/settings/tab-documents.js` | Аудит C24: фильтр по тегу сломан; getSettingsDocuments/getSettingsDocument отсутствуют | C24 |
 | 2026-06-01 | C25-A, C25-B, C25-C | `app/static/js/api.js`, `app/static/js/chat.js` | C25-A: stream:true добавлен в sendMessage; C25-B: locked_pipeline_id null-safe; C25-C: clarification_id сохраняется в SSE | C25 |
+| 2026-06-01 | M01, M02, M03, M04 | `rag-backend/migrations/versions/0013_fix_documents_tags_uuid.py` | documents.id + tags.id + document_labels.*_id: VARCHAR(36) → UUID; idempotent; campaign_tags FK пересоздан | [24fc654](https://github.com/Annener/mercer/commit/24fc65449b314efe3cb3d16337040c39a6e52efb) |
