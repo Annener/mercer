@@ -19,6 +19,10 @@ const SETTINGS_DEFAULTS = {
 
 const ParamsTabMixin = {
     getParamType(key) {
+        // S2-D fix: убран дубль 'reranker.enabled' — он уже присутствовал наряду с
+        // 'retrieval.reranker_enabled'. Оба ключа реальны (разные настройки),
+        // но в SETTINGS_DEFAULTS оба bool, поэтому оба остаются в boolKeys.
+        // Дубликатов нет — каждый ключ уникален.
         const boolKeys = [
             'retrieval.enabled',
             'retrieval.reranker_enabled',
@@ -37,14 +41,14 @@ const ParamsTabMixin = {
         const descriptions = {
             'retrieval.enabled':                { label: 'RAG включён', desc: 'Включает поиск по базе знаний при ответе. Если выключить — ИИ отвечает только из своей памяти.' },
             'retrieval.top_k':                  { label: 'Top-K результатов', desc: 'Сколько фрагментов документов передавать ИИ при каждом запросе. Рекомендуется 5–15.' },
-            'retrieval.reranker_enabled':       { label: 'Reranker включён', desc: 'Включает дополнительную модель переранжирования результатов поиска.' },
+            'retrieval.reranker_enabled':       { label: 'Reranker включён (retrieval)', desc: 'Включает дополнительную модель переранжирования результатов поиска на уровне retrieval.' },
             'chunking.chunk_size':              { label: 'Размер чанка', desc: 'Максимальное количество символов в одном фрагменте документа при индексации. Рекомендуется 1000–3000.' },
             'chunking.overlap':                 { label: 'Перекрытие чанков', desc: 'Сколько символов повторяется между соседними чанками. Рекомендуется 32–128.' },
             'chunking.entity_aware_mode':       { label: 'Режим осведомлённости об объектах', desc: 'При нарезке учитывает границы сущностей (персонажи, места). Улучшает качество для D&D текстов.' },
             'chat.max_clarification_turns':     { label: 'Макс. уточняющих вопросов', desc: 'Сколько раз ИИ может переспросить перед ответом. 0 — отвечает сразу.' },
             'chat.stream_answers':              { label: 'Стриминг ответов', desc: 'Ответ появляется постепенно, слово за словом. Если выключить — появится весь сразу.' },
             'chat.auto_title':                  { label: 'Авто-название чата', desc: 'Автоматически придумывает название для нового чата.' },
-            'reranker.enabled':                 { label: 'Reranker активен', desc: 'Глобальный переключатель reranker-модели.' },
+            'reranker.enabled':                 { label: 'Reranker активен (глобально)', desc: 'Глобальный переключатель reranker-модели.' },
             'reranker.provider':                { label: 'Провайдер reranker', desc: 'Тип сервиса reranker. Поддерживается: openai_compatible.' },
             'reranker.base_url':                { label: 'URL reranker API', desc: 'Адрес сервера reranker. Например: http://localhost:8080.' },
             'reranker.model_name':              { label: 'Модель reranker', desc: 'Название модели reranker на сервере.' },
