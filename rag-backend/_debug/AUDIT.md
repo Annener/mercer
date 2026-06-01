@@ -135,6 +135,83 @@
 
 ---
 
+## C11 · S1–S4 · /api/settings/status + /params
+
+Аудит: 2026-06-01 · Проверено: status.py, params.py, api.js, settings.js, tab-params.js
+
+| ID   | Слой     | Файл                               | Проблема                                                                                                             | Статус |
+|------|----------|------------------------------------|----------------------------------------------------------------------------------------------------------------------|--------|
+| S1-A | frontend | `app/static/js/api.js`             | `getSettingsStatus()` отсутствовал → `TypeError` при открытии вкладки Status                                         | ✅     |
+| S2-A | frontend | `app/static/js/api.js`             | `getSettingsParams()` отсутствовал → `TypeError` при открытии вкладки Params                                         | ✅     |
+| S3-A | frontend | `app/static/js/api.js`             | `updateSettingsParam(key, value)` отсутствовал → `TypeError` при сохранении параметра                                | ✅     |
+| S4-A | frontend | `app/static/js/api.js`             | `resetSettingsParams()` отсутствовал → `TypeError` при сбросе                                                        | ✅     |
+| S2-B | frontend | `app/static/js/settings.js`        | `handleParamsAction` — пустая заглушка, клики save-param / default-param / reset-params не работали                  | ✅     |
+| S2-C | frontend | `app/static/js/settings.js`        | Нет события сохранения bool-параметра (checkbox). Решено кнопкой `save-param` в `tab-params.js`                      | ✅     |
+| S2-D | frontend | `app/static/js/settings/tab-params.js` | Дубль в `boolKeys`: `reranker.enabled` и `retrieval.reranker_enabled` — оба присутствуют. Не критично, но стоит унифицировать ключ в `SETTINGS_DEFAULTS` | 🔴     |
+
+> **Инварианты S1–S4**: `PlatformSetting.value_type` ∈ `{"int","float","bool","str"}`, значение хранится строкой, приводится при чтении бэком. Фронт передаёт `bool`/`number`/`string` в `updateSettingsParam` — приведение корректное (`save-param` читает тип инпута).
+
+---
+
+## C12 · S5–S13 · /api/settings/domains/* (CRUD + prompts + clarification fields)
+
+Аудит: 2026-06-01 · Проверено: domains.py, schemas.py, api.js, settings.js, tab-domains.js
+
+| ID    | Слой     | Файл                                         | Проблема                                                                                                                                          | Статус |
+|-------|----------|----------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------|--------|
+| S5-A  | frontend | `app/static/js/settings/tab-domains.js`      | `renderDomainsTab` вызывал `getDomains()` (`/config/domains`, read-only sidebar) вместо `getSettingsDomains()` (`/api/settings/domains`, CRUD)    | ✅     |
+| S5-B  | frontend | `app/static/js/api.js`                       | `getSettingsDomains`, `createDomain`, `updateDomain`, `deleteDomain` отсутствовали → `TypeError` на любом действии с доменами                     | ✅     |
+| S5-C  | frontend | `app/static/js/settings.js`                  | `handleDomainsAction` — пустая заглушка; new-domain / edit-domain / edit-prompts / edit-fields / delete-domain не работали                        | ✅     |
+| S10-A | frontend | `app/static/js/api.js`                       | `getDomainPrompts`, `updateDomainPrompt` отсутствовали → `TypeError` в `showPromptsModal`                                                         | ✅     |
+| S11-A | frontend | `app/static/js/settings/tab-domains.js`      | `showPromptsModal` — не был реализован                                                                                                            | ✅     |
+| S12-A | frontend | `app/static/js/api.js`                       | `getDomainFields`, `updateDomainFields` отсутствовали → `TypeError` в `showFieldsModal`                                                           | ✅     |
+| S13-A | frontend | `app/static/js/settings/tab-domains.js`      | `showFieldsModal` — не был реализован (UI + логика управления `DomainClarificationField`)                                                         | ✅     |
+
+> **Инварианты S5–S13**:
+> - `Domain.domain_id` — строковый PK (не UUID), передаётся без `encodeURIComponent` в path
+> - `DomainPrompt.prompt_type` ∈ `{"system","clarification","planner","pipeline_router"}`
+> - `DomainClarificationField` — отдельная таблица; `updateDomainFields` принимает полный список (PUT replace-all)
+> - `deleteDomain` заблокирован для `is_system=true` доменов на уровне UI (кнопка `disabled`)
+
+---
+
+## C13 · S36 · /api/settings/vaults/* (showVaultModal — выбор домена)
+
+Аудит: 2026-06-01 · Проверено: tab-vaults.js, api.js
+
+| ID      | Слой     | Файл                                    | Проблема                                                                                                                                        | Статус |
+|---------|----------|-----------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------|--------|
+| S36-new | frontend | `app/static/js/settings/tab-vaults.js` | `showVaultModal` вызывает `this.api.getDomains()` (`/config/domains`) для заполнения `<select>` с доменами. Нужно `getSettingsDomains()` — иначе `is_system` домены могут не попасть в список при включённых фильтрах | 🔴     |
+
+> **Примечание**: `/config/domains` возвращает только `enabled=true` домены (sidebar-контракт). При добавлении vault к выключенному домену он не появится в списке. Для настроек нужен полный список через `/api/settings/domains`.
+
+---
+
+## C14 · handleVaultsAction / handleGenModelsAction / handleEmbModelsAction — заглушки
+
+Аудит: 2026-06-01 · Проверено: settings.js
+
+| ID      | Слой     | Файл                            | Проблема                                                                                                                              | Статус |
+|---------|----------|---------------------------------|---------------------------------------------------------------------------------------------------------------------------------------|--------|
+| S14-A   | frontend | `app/static/js/settings.js`     | `handleVaultsAction(action, id)` — пустая заглушка `{}`. Кнопки edit-vault / toggle-vault / delete-vault / new-vault не работают     | 🔴     |
+| S15-A   | frontend | `app/static/js/settings.js`     | `handleGenModelsAction(action, id)` — пустая заглушка `{}`. Кнопки CRUD для generation-моделей не работают                           | 🔴     |
+| S16-A   | frontend | `app/static/js/settings.js`     | `handleEmbModelsAction(action, id)` — пустая заглушка `{}`. Кнопки CRUD для embedding-моделей не работают                            | 🔴     |
+
+> **Примечание**: модалы `showVaultModal`, `showEmbeddingModelModal` реализованы в tab-файлах — нужно только подключить вызовы из хэндлеров.
+
+---
+
+## CF1–CF2 · /config/* (read-only конфиг для фронта)
+
+Аудит: 2026-06-01 · Проверено: config.py, api.js, sidebar.js
+
+| ID  | Слой     | Файл                        | Проблема                                                                                       | Статус |
+|-----|----------|-----------------------------|------------------------------------------------------------------------------------------------|--------|
+| CF1 | frontend | `app/static/js/api.js`      | `getDomains()` ходил на `/domains` (не существует); исправлено на `/config/domains`            | ✅     |
+| CF2 | frontend | `app/static/js/sidebar.js`  | Аналогично — путь `/domains` → `/config/domains`                                              | ✅     |
+
+---
+
 ## Лог исправлений
 
 | Дата       | ID       | Файл                        | Что исправлено                                                                  | Коммит |
@@ -156,3 +233,4 @@
 | 2026-06-01 | D04      | `app/api/settings/schemas.py` | Добавлен `CampaignTagCreateRequest(name, color)` | [afb77dd](https://github.com/Annener/mercer/commit/afb77ddc566dce8b8640cf41b0ca6fb0177dd6e8) |
 | 2026-06-01 | D03+D04  | `app/api/settings/campaigns.py` | N+1 → batch IN(); `payload: dict` → `CampaignTagCreateRequest` | [596f4af](https://github.com/Annener/mercer/commit/596f4af71d7a69bd1f0caa7c62e1dcb5d6288737) |
 | 2026-06-01 | D08+D09+D10 | `app/static/js/api.js` | null-safe getCampaigns; 8 campaign/tag методов; deleteChat/deleteCampaign/deleteTag — 204 no-json | [581e5c1](https://github.com/Annener/mercer/commit/581e5c171f1fa6d28e6fe05deeeee0893d6816fa) |
+| 2026-06-01 | S1-A..S13-A | `app/static/js/api.js`, `settings.js`, `tab-domains.js`, `tab-params.js` | Settings group S1–S13: все методы api.js добавлены; handleParamsAction / handleDomainsAction реализованы; showPromptsModal / showFieldsModal добавлены | — |
