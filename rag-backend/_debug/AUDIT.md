@@ -109,8 +109,8 @@
 |-----|----------|-----------------------------|----------------------------------------------------------------------------------------------------------------------|--------|
 | B07 | frontend | `app/static/js/chat.js`     | `handleJSONResponse`: `response.role === 'assistant' && response.state` → исправлено на `response.state && response.question` | ✅     |
 | B08 | frontend | `app/static/js/api.js`      | Добавлен `submitClarification(chatId, answers)` — эндпоинт C9 доступен с фронта                      | ✅     |
-| C01 | frontend | `app/static/js/api.js`      | 🔴 **Регрессия B08**: `submitClarification` шлёт `{ answers }` без `clarification_id` — бэк возвращает 422 (поле обязательно по `ClarificationAnswer`) | 🔴     |
-| C02 | frontend | `app/static/js/chat.js`     | 🔴 **Регрессия B07**: `handleJSONResponse` проверяет `response.state && response.question` — таких полей нет в `ClarificationResponse`; нужно `response.clarification_id` | 🔴     |
+| C01 | frontend | `app/static/js/api.js`      | `submitClarification` шлёт `{ answers }` без `clarification_id` — бэк возвращал 422 (поле обязательно по `ClarificationAnswer`) | ✅     |
+| C02 | frontend | `app/static/js/chat.js`     | `handleJSONResponse` проверял `response.state && response.question` — таких полей нет в `ClarificationResponse`; исправлено на `response.clarification_id` | ✅     |
 
 > **Примечание к CONTRACTS.md**: поле `stream` в `SendMessageRequest` — документационная неточность. Бэкенд принимает `stream: bool = True` в Pydantic-схеме, но роутинг на `/send` vs `/send_stream` делается по URL. Фронт корректно использует URL, не поле. CONTRACTS.md требует уточнения, но это не баг кода.
 
@@ -129,3 +129,5 @@
 | 2026-06-01 | B06      | `app/static/js/chat.js`     | Удалена мёртвая переменная `assistant_msg_id`                          | [0fbe5f0](https://github.com/Annener/mercer/commit/0fbe5f010267055009f7dcca1c7de0b5d3a32646) |
 | 2026-06-01 | B07      | `app/static/js/chat.js`     | `handleJSONResponse`: clarification check → `state && question`             | [0fbe5f0](https://github.com/Annener/mercer/commit/0fbe5f010267055009f7dcca1c7de0b5d3a32646) |
 | 2026-06-01 | B08      | `app/static/js/api.js`      | Добавлен `submitClarification(chatId, answers)`                            | [10a9401](https://github.com/Annener/mercer/commit/10a9401f09e8f7682885d9c01f99cdb987fcb0ac) |
+| 2026-06-01 | **C01**  | `app/static/js/api.js`      | `submitClarification`: добавлен `clarification_id` в сигнатуру и body       | [d10977b](https://github.com/Annener/mercer/commit/d10977b45bc31cf55d0eaff1c82ebd4a92eb5066) |
+| 2026-06-01 | **C02**  | `app/static/js/chat.js`     | `handleJSONResponse`: чек по `clarification_id`; `addMessage` принимает clarificationId | [6931bd7](https://github.com/Annener/mercer/commit/6931bd722c12dec50752ae27aad9a549c9a5a574) |
