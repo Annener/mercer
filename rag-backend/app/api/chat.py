@@ -38,12 +38,12 @@ config_for_vault = VaultConfigService()
 
 class CreateChatRequest(BaseModel):
     """
-    domain_id — основной идентификатор контекста чата.
+    domain_id — обязательный идентификатор контекста чата (инвариант arch.md §2.6, §8).
     vault_id оставлен nullable для back-compat (старые клиенты).
-    campaign_id — опциональная привязка к кампании (iter2).
-    TODO(iter4-cleanup): сделать domain_id обязательным, убрать vault_id.
+    campaign_id — опциональная привязка к кампании.
     """
-    domain_id: str | None = None
+    # A05 fix: domain_id стал обязательным — чат не может существовать вне домена
+    domain_id: str
     vault_id: str | None = None  # deprecated back-compat
     campaign_id: str | None = None
 
@@ -217,7 +217,7 @@ async def send_message(
 
     # BUG FIX #8: domain_id и retrieval_strategy вычисляются один раз,
     # ранее domain_id вызывался дважды (_domain_id_for_chat), а retrieval_strategy
-    # дублировался — одно присвоение при создании context и ещё одно после pipeline.
+    # дублировался — одно присваивание при создании context и ещё одно после pipeline.
     domain_id = await _domain_id_for_chat(chat, db) or chat.domain_id
     vault_ids: list[str] = [
         v.vault_id for v in config_for_vault.vaults.values()
@@ -390,7 +390,6 @@ async def send_message_stream(
 
         # BUG FIX B: эмитим [DONE] в конце стрима.
         # chat.js ждёт 'data: [DONE]' чтобы выставить флаг streamDone.
-        # Без этого флаг не выставлялся, хотя цикл всё равно завершался через reader.read() done.
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
