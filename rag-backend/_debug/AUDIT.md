@@ -112,7 +112,26 @@
 | C01 | frontend | `app/static/js/api.js`      | `submitClarification` шлёт `{ answers }` без `clarification_id` — бэк возвращал 422 (поле обязательно по `ClarificationAnswer`) | ✅     |
 | C02 | frontend | `app/static/js/chat.js`     | `handleJSONResponse` проверял `response.state && response.question` — таких полей нет в `ClarificationResponse`; исправлено на `response.clarification_id` | ✅     |
 
-> **Примечание к CONTRACTS.md**: поле `stream` в `SendMessageRequest` — документационная неточность. Бэкенд принимает `stream: bool = True` в Pydantic-схеме, но роутинг на `/send` vs `/send_stream` делается по URL. Фронт корректно использует URL, не поле. CONTRACTS.md требует уточнения, но это не баг кода.
+> **Примечание к CONTRACTS.md**: поле `stream` в `SendMessageRequest` — документационная неточность. Фронт корректно использует URL, не поле. CONTRACTS.md требует уточнения, но это не баг кода.
+
+---
+
+## C10 · S45–S51 · /api/settings/campaigns/*
+
+Аудит: 2026-06-01 · Проверено: campaigns.py, schemas.py, models.py, api.js, tab-campaigns.js
+
+| ID  | Слой     | Файл                                       | Проблема                                                                                     | Статус |
+|-----|----------|--------------------------------------------|----------------------------------------------------------------------------------------------|--------|
+| D01 | model    | `app/db/models.py`                         | `Campaign.updated_at` удалён миграцией 0009; `CampaignRead` не объявляет `updated_at` — OK | ⬜     |
+| D02 | model    | `app/db/models.py`                         | `campaign_tags` secondary + viewonly — архитектурный выбор, не баг                               | ⬜     |
+| D03 | route    | `app/api/settings/campaigns.py`            | N+1: `_campaign_with_tags` вызывался в цикле в `list_campaigns` — заменён batch-запросом IN() | ✅     |
+| D04 | route    | `app/api/settings/campaigns.py`            | S51: `payload: dict` — нет валидации, KeyError → 500; заменён `CampaignTagCreateRequest` | ✅     |
+| D05 | schema   | `shared_contracts/models.py`               | `CampaignRead.tags: list = []` — заполняется бэком, OK                               | ⬜     |
+| D06 | schema   | `shared_contracts/models.py`               | `CampaignCreate.domain_id: str` — обязательное, соответствует контракту        | ⬜     |
+| D07 | route    | `app/api/settings/campaigns.py`            | `update_campaign` использует `exclude_unset=True` — правильно                       | ⬜     |
+| D08 | frontend | `app/static/js/api.js`                     | `getCampaigns(null)` → `?domain_id=null` (строка); исправлено null-сафети | ✅     |
+| D09 | frontend | `app/static/js/api.js`                     | Отсутствовали 8 методов campaigns/tags API — TypeError на любом действии; добавлены | ✅     |
+| D10 | frontend | `app/static/js/api.js`                     | `deleteChat` вызывал `.json()` на 204 No Content → SyntaxError; исправлено    | ✅     |
 
 ---
 
@@ -134,3 +153,6 @@
 | 2026-06-01 | A01      | `app/db/models.py`          | `Chat.domain_id`: `nullable=True` → `nullable=False`; `ondelete="SET NULL"` → `CASCADE` | [4966c39](https://github.com/Annener/mercer/commit/4966c394791e51a4a7a734fd8432f934e4b6dbb0) |
 | 2026-06-01 | A05      | `app/api/chat.py`           | `CreateChatRequest.domain_id`: `str \| None = None` → `str` (required)     | [c06876d](https://github.com/Annener/mercer/commit/c06876dc9ea6b58c06445e0bfebdfcb09912b419) |
 | 2026-06-01 | **B01**  | `app/api/chat.py`           | N+1 в `list_chats`: заменён один запрос `settings_service.get` + кэш `vault_enabled_cache` | [699f446](https://github.com/Annener/mercer/commit/699f446248c3cb6dcaf8b9e6512cad7f1e077219) |
+| 2026-06-01 | D04      | `app/api/settings/schemas.py` | Добавлен `CampaignTagCreateRequest(name, color)` | [afb77dd](https://github.com/Annener/mercer/commit/afb77ddc566dce8b8640cf41b0ca6fb0177dd6e8) |
+| 2026-06-01 | D03+D04  | `app/api/settings/campaigns.py` | N+1 → batch IN(); `payload: dict` → `CampaignTagCreateRequest` | [596f4af](https://github.com/Annener/mercer/commit/596f4af71d7a69bd1f0caa7c62e1dcb5d6288737) |
+| 2026-06-01 | D08+D09+D10 | `app/static/js/api.js` | null-safe getCampaigns; 8 campaign/tag методов; deleteChat/deleteCampaign/deleteTag — 204 no-json | [581e5c1](https://github.com/Annener/mercer/commit/581e5c171f1fa6d28e6fe05deeeee0893d6816fa) |
