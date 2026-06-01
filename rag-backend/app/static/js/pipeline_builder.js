@@ -43,10 +43,6 @@ const PipelineBuilder = (() => {
 
   // ─── data loading ───────────────────────────────────────────────────────────────────────────
 
-  // BUG 3 FIX: принимаем domainId явно и используем его для getTags(),
-  //            vault_id больше не передаётся в getTags.
-  // BUG 4 FIX: бэкенд возвращает TagsGrouped { global_tags, by_campaign },
-  //            а не массив и не { tags: [] } — распаковываем корректно.
   async function _loadReferences(domainId = null, campaignId = null) {
     try {
       const resp = await _api.getDomains();
@@ -58,18 +54,14 @@ const PipelineBuilder = (() => {
       _vaults = Array.isArray(v) ? v : [];
     } catch (e) { _vaults = []; }
 
-    // Загрузить теги по domainId (приоритет), либо взять у первого vault
     _tags = [];
-    // Определяем domainId: явный параметр → домен из первого vault → null
     const effectiveDomainId = domainId
       || (_vaults.find(v => v.is_active) || _vaults[0])?.domain_id
       || null;
 
     if (effectiveDomainId) {
       try {
-        // BUG 3: передаём domain_id, а не vault_id
         const tagsResp = await _api.getTags(effectiveDomainId, campaignId || null);
-        // BUG 4: бэкенд возвращает TagsGrouped { global_tags: [], by_campaign: {} }
         if (Array.isArray(tagsResp)) {
           _tags = tagsResp;
         } else if (tagsResp && (tagsResp.global_tags || tagsResp.by_campaign)) {
@@ -170,7 +162,6 @@ const PipelineBuilder = (() => {
     q('#pb-save-btn')?.addEventListener('click', _save);
     q('#pb-add-step-btn')?.addEventListener('click', _addStep);
 
-    // BUG 7 FIX: при смене домена перезагружаем теги и перерисовываем шаги
     q('#pb-domain')?.addEventListener('change', async (e) => {
       const newDomainId = e.target.value || null;
       if (newDomainId) {
@@ -201,10 +192,15 @@ const PipelineBuilder = (() => {
     const roleOptions = STEP_ROLES.map(r =>
       `<option value="${r}" ${step.role === r ? 'selected' : ''}>${ROLE_LABELS[r] || r}</option>`
     ).join('');
+
+    // F03-A fix: is_final — служебный атрибут, управляется автоматически через type.
+    // Чекбокс убран из UI. Тип «final» визуально помечен бейджем.
+    const isFinal = step.type === 'final';
+
     return `
-      <div class="pb-step" data-idx="${idx}">
+      <div class="pb-step ${isFinal ? 'pb-step--final' : ''}" data-idx="${idx}">
         <div class="pb-step-header">
-          <span class="pb-step-num">Шаг ${idx + 1}</span>
+          <span class="pb-step-num">Шаг ${idx + 1}${isFinal ? ' <span class="pb-badge-final">final</span>' : ''}</span>
           <div class="pb-step-actions">
             <button class="btn btn-xs" data-action="step-up"   data-idx="${idx}" ${idx === 0 ? 'disabled' : ''}>↑</button>
             <button class="btn btn-xs" data-action="step-down" data-idx="${idx}" ${idx === _steps.length - 1 ? 'disabled' : ''}>↓</button>
@@ -229,12 +225,6 @@ const PipelineBuilder = (() => {
               <label>Top-K</label>
               <input type="number" class="input pb-step-topk" data-idx="${idx}" value="${step.top_k || ''}" placeholder="10" min="1" max="100">
             </div>
-            <div class="form-group" style="width:120px;justify-content:flex-end;padding-top:20px;">
-              <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
-                <input type="checkbox" class="pb-step-is-final" data-idx="${idx}" ${step.is_final ? 'checked' : ''}>
-                <span style="font-size:var(--text-xs);">is_final</span>
-              </label>
-            </div>
           </div>
           ${_stepTypeFieldsHTML(step, idx)}
           <div class="form-group">
@@ -249,9 +239,9 @@ const PipelineBuilder = (() => {
   }
 
   function _stepTypeFieldsHTML(step, idx) {
-    // Только retrieval-шаги без is_final имеют мультиселект тегов.
-    // BUG 5 FIX: финальный шаг (is_final=true) не должен иметь tag_ids — бэкенд вернёт 422.
-    if (step.type === 'retrieval' && !step.is_final) {
+    // Retrieval-шаги (type !== 'final') имеют мультиселект тегов.
+    // Финальные шаги (type === 'final') tag_ids не имеют — бэкенд вернёт 422.
+    if (step.type !== 'final') {
       const tagOptions = _tags.map(t =>
         `<option value="${_esc(String(t.id))}" ${(step.tag_ids || []).map(String).includes(String(t.id)) ? 'selected' : ''}>${_esc(t.name)}</option>`
       ).join('');
@@ -275,22 +265,19 @@ const PipelineBuilder = (() => {
       sel.addEventListener('change', e => {
         const idx = parseInt(e.target.dataset.idx);
         _syncStepFromDOM(idx);
-        _steps[idx].type = e.target.value;
+        const newType = e.target.value;
+        _steps[idx].type = newType;
         _steps[idx].tag_ids = undefined;
-        _renderStepsList();
-      });
-    });
 
-    // BUG 5 FIX: при переключении is_final сбрасываем tag_ids и перерисовываем шаг,
-    //            чтобы мультиселект тегов скрылся/появился.
-    container.querySelectorAll('.pb-step-is-final').forEach(chk => {
-      chk.addEventListener('change', e => {
-        const idx = parseInt(e.target.dataset.idx);
-        _syncStepFromDOM(idx);
-        if (_steps[idx].is_final) {
-          // финальный шаг не может иметь tag_ids
-          _steps[idx].tag_ids = undefined;
+        // F03-A/B fix: is_final управляется автоматически через type.
+        // При type=final → is_final=true у этого шага, false у всех остальных.
+        // При type=retrieval → is_final=false.
+        if (newType === 'final') {
+          _steps.forEach((s, i) => { s.is_final = (i === idx); });
+        } else {
+          _steps[idx].is_final = false;
         }
+
         _renderStepsList();
       });
     });
@@ -315,11 +302,12 @@ const PipelineBuilder = (() => {
     step.type          = get('.pb-step-type')?.value           || 'retrieval';
     step.role          = get('.pb-step-role')?.value           || 'rules';
     step.system_prompt = get('.pb-step-prompt')?.value?.trim() || '';
-    step.is_final      = get('.pb-step-is-final')?.checked     || false;
     const topk = parseInt(get('.pb-step-topk')?.value);
     step.top_k = isNaN(topk) ? undefined : topk;
-    // BUG 5 FIX: tag_ids только для retrieval-шагов без is_final
-    if (step.type === 'retrieval' && !step.is_final) {
+    // F03-A fix: is_final выводится из type, не читается из DOM (чекбокса больше нет)
+    step.is_final = (step.type === 'final');
+    // tag_ids только для не-final шагов
+    if (step.type !== 'final') {
       const tagSel = get('.pb-step-tag-ids');
       step.tag_ids = tagSel ? Array.from(tagSel.selectedOptions).map(o => o.value) : [];
     } else {
@@ -355,10 +343,10 @@ const PipelineBuilder = (() => {
     if (!finalPrompt)   return _showError('Заполните system prompt финальной композиции');
     if (!_steps.length) return _showError('Добавьте хотя бы один шаг');
 
-    // BUG 2 FIX: бэкенд требует exactly one is_final=true. Проверяем оба случая на фронте.
+    // Guard: is_final управляется через type, но проверяем программную корректность
     const finalSteps = _steps.filter(s => s.is_final);
-    if (finalSteps.length === 0) return _showError('Отметьте ровно один шаг как is_final');
-    if (finalSteps.length > 1)   return _showError('Только один шаг может быть отмечен как is_final');
+    if (finalSteps.length === 0) return _showError('Добавьте шаг с типом «final»');
+    if (finalSteps.length > 1)   return _showError('Только один шаг может иметь тип «final»');
 
     for (let i = 0; i < _steps.length; i++) {
       const s = _steps[i];
@@ -374,7 +362,9 @@ const PipelineBuilder = (() => {
 
     try {
       if (_pipeline) {
-        await _api.updatePipeline(_pipeline.id, payload);
+        // F02-C fix: pipeline идентифицируется строковым pipeline_id, не UUID-полем id.
+        // PipelineRead возвращает pipeline_id (slug), id (UUID) — URL роута принимает pipeline_id.
+        await _api.updatePipeline(_pipeline.pipeline_id, payload);
       } else {
         payload.pipeline_id = _modal.querySelector('#pb-id')?.value?.trim() || `pipeline_${Date.now()}`;
         await _api.createPipeline(payload);
@@ -447,8 +437,15 @@ const PipelineBuilder = (() => {
       .pb-steps-list { display: flex; flex-direction: column; gap: 0.75rem; }
       .pb-empty { text-align:center; color:var(--color-text-faint,#bbb); padding:2rem; border:1px dashed var(--color-border,#ddd); border-radius:8px; }
       .pb-step { border: 1px solid var(--color-border,#ddd); border-radius: 8px; background: var(--color-surface,#fff); overflow: hidden; }
+      .pb-step--final { border-color: var(--color-primary, #01696f); }
       .pb-step-header { display:flex; align-items:center; justify-content:space-between; padding:0.5rem 0.75rem; background:var(--color-surface-offset,#f5f5f5); border-bottom:1px solid var(--color-border,#ddd); }
-      .pb-step-num { font-weight:600; font-size:0.85rem; }
+      .pb-step--final .pb-step-header { background: var(--color-primary-highlight, #cedcd8); }
+      .pb-step-num { font-weight:600; font-size:0.85rem; display:flex; align-items:center; gap:0.4rem; }
+      .pb-badge-final {
+        display:inline-block; font-size:0.7rem; font-weight:700; text-transform:uppercase;
+        letter-spacing:0.06em; padding:1px 6px; border-radius:4px;
+        background: var(--color-primary,#01696f); color: #fff;
+      }
       .pb-step-actions { display:flex; gap:0.25rem; }
       .pb-step-body { padding:0.75rem; display:flex; flex-direction:column; gap:0.5rem; }
       .form-row { display:flex; gap:0.75rem; flex-wrap:wrap; align-items:flex-start; }
