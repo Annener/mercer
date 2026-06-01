@@ -38,6 +38,9 @@ async def create_embedding_model(req: EmbeddingModelCreateRequest, db: AsyncSess
 
 @router.post("/models/embedding/{model_id:path}/check")
 async def check_embedding_model(model_id: str, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+    # E-CHK01 fix: был db.get(EmbeddingModel, model_id) — ищет по PK (UUID), падает
+    # с asyncpg.DataError когда model_id — строка вида "vendor/model:tag".
+    # Правильный lookup — по полю model_id (String), не по id (UUID).
     model = await _get_embedding_model_by_model_id(model_id, db)
     if model is None:
         raise HTTPException(status_code=404, detail="Embedding model not found")
