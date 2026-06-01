@@ -377,10 +377,11 @@ const DocumentsTabMixin = {
         this._docsIndexPollTimer = setInterval(async () => {
             attempts++;
             try {
-                const status = await this.api.getIndexerTaskStatus(taskId);
+                // F04 fix: getIndexerTaskStatus → getIndexTaskState (добавлен в D5, коммит C19)
+                const status = await this.api.getIndexTaskState(taskId);
                 const state = status?.state || status?.status || 'unknown';
                 if (statusEl) statusEl.textContent = `Задача ${taskId}: ${state}`;
-                if (['SUCCESS', 'FAILURE', 'REVOKED', 'completed', 'failed'].includes(state) || attempts > 60) {
+                if (['SUCCESS', 'FAILURE', 'REVOKED', 'completed', 'failed', 'done', 'error'].includes(state) || attempts > 60) {
                     clearInterval(this._docsIndexPollTimer);
                     this._docsIndexPollTimer = null;
                     await this.loadDocumentsData();
