@@ -22,8 +22,8 @@
 
 | ID | Эндпоинт | Фронт-файл | Статус | Комментарий |
 |---|---|---|---|---|
-| CF1 | GET `/config/domains` | `api.js`, `sidebar.js` | 🔴 | Не аудировался — **следующий приоритет** |
-| CF2 | GET `/config/vaults` | `api.js`, `sidebar.js` | 🔴 | Не аудировался |
+| CF1 | GET `/config/domains` | `api.js`, `sidebar.js` | ✅ | `getDomains()` → `/config/domains` ✓; `DomainsResponse.domains` ✓; парсинг обоих форматов (массив/объект) ✓ |
+| CF2 | GET `/config/vaults` | `api.js`, `sidebar.js` | ⬜ | `getVaults()` не вызывается из UI — gap, не баг. CF2-W: нет empty-state в loadDomains при ошибке |
 
 ## Группа: settings
 
@@ -38,9 +38,9 @@
 | S20-S24 | embedding models CRUD | `tab-emb-models.js` | 🔴 | |
 | S25-S29 | vaults CRUD | `tab-vaults.js` | 🔴 | |
 | S30-S35 | pipelines CRUD | `tab-pipelines.js` | 🔴 | |
-| S36-S39 | tags CRUD | `api.js`, `tab-campaigns.js` | 🔴 | TagCreate требует `domain_id`; deleteTag уже добавлен в api.js (D09) — **второй приоритет** |
+| S36-S39 | tags CRUD | `api.js`, `tab-campaigns.js` | ✅ | D09 (getTags/deleteTag в api.js); tags.py корректен (domain_id required); tab-campaigns.js — getTags возвращает TagsGrouped (объект), парсинг OK; D13-W (мёртвая Array.isArray ветка) |
 | S40-S44 | documents CRUD | `tab-documents.js` | 🔴 | |
-| S45-S51 | campaigns CRUD | `api.js`, `tab-campaigns.js` | ✅ | D03 (N+1 batch), D04 (typed payload), D08 (null-safe), D09 (8 методов), D10 (204 no-json) |
+| S45-S51 | campaigns CRUD | `api.js`, `tab-campaigns.js`, `sidebar.js` | ✅ | D03 (N+1→batch), D04 (typed payload), D08 (null-safe), D09 (8 методов), D10 (204 no-json), D14 (c.campaign_id→c.id в sidebar) |
 
 ## Группа: db-management
 
@@ -83,26 +83,19 @@
 | 2026-06-01 | D04 | `app/api/settings/schemas.py` | Добавлен `CampaignTagCreateRequest(name, color)` | [afb77dd](https://github.com/Annener/mercer/commit/afb77ddc566dce8b8640cf41b0ca6fb0177dd6e8) |
 | 2026-06-01 | D03+D04 | `app/api/settings/campaigns.py` | N+1 → batch IN(); `payload: dict` → `CampaignTagCreateRequest` | [596f4af](https://github.com/Annener/mercer/commit/596f4af71d7a69bd1f0caa7c62e1dcb5d6288737) |
 | 2026-06-01 | D08+D09+D10 | `app/static/js/api.js` | null-safe getCampaigns; 8 campaign/tag методов; 204 no-json fixes | [210917f](https://github.com/Annener/mercer/commit/210917ff13b8c0701c7da7576929d51141345e1b) |
+| 2026-06-01 | D14 | `app/static/js/sidebar.js` | `c.campaign_id` → `c.id` — CampaignRead возвращает `id`, не `campaign_id`; кампания теперь реально применяется к новому чату | [текущий] |
 
 ---
 
-## Для следующей сессии
+## Следующая задача
 
-**Стартовать с:** `CF1–CF2 · GET /config/domains + /config/vaults` — быстрый блок, затем `S36–S39 · tags CRUD`
+**S1 + S2-S4 · settings status + params CRUD**
+Стартовать с: `app/api/settings/__init__.py` / `settings_router.py` → `tab-params.js` → `settings.js`
 
-**Контекст для нового чата:**
-```
-Репозиторий: https://github.com/Annener/mercer
-Проект: Mercer — RAG-чат, FastAPI бэк + JS фронт
+Затем: **S5-S13 · domains CRUD + prompts + clarification fields** → `tab-domains.js`
 
-Архитектура: concept_plan/arch.md
-API контракты: rag-backend/_debug/CONTRACTS.md
-Лог багов: rag-backend/_debug/AUDIT.md  (C1–C9, S45–S51 закрыты)
-Прогресс: rag-backend/_debug/PROGRESS.md
-
-Следующая задача: CF1–CF2 (GET /config/domains, /config/vaults) + S36–S39 (tags CRUD)
-Контекст:
-- TagCreate требует domain_id (vault_id удалён в 0005)
-- deleteTag уже в api.js (D09), getTags — тоже; нужно проверить tags.py роут и tab-campaigns.js
-- Начать с: app/api/settings/tags.py → shared_contracts/models.py (TagCreate/TagRead) → api.js → фронт
-```
+**Инварианты для следующей сессии:**
+- `Domain.domain_id` — строковый PK (не UUID)
+- `DomainPrompt.prompt_type` — Literal["system", "clarification", "planner", "pipeline_router"]
+- `DomainClarificationField` — отдельная таблица, не JSON-поле
+- `PlatformSetting.value_type` — Literal["int","float","bool","str"]; значение хранится как строка, приводится при чтении
