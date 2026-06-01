@@ -361,7 +361,8 @@ const DocumentsTabMixin = {
             if (!docId) return;
             if (!confirm(`Удалить документ «${path || docId}»?`)) return;
             try {
-                await this.api.deleteDocument(docId, vaultId || null);
+                // F01 fix: метод переименован в deleteDocumentById (добавлен в api.js в коммите C19)
+                await this.api.deleteDocumentById(docId, vaultId || null);
                 await this.loadDocumentsData();
             } catch (e) {
                 alert('Ошибка удаления: ' + e.message);
