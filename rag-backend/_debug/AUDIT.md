@@ -175,6 +175,34 @@
 
 ---
 
+## C23 · S44 — POST /api/settings/documents/labels/batch
+
+### Аудит (цепочка проверки)
+
+**Бэк (`app/api/settings/documents.py`):**
+- Роут существует: `POST /documents/labels/batch`, `status_code=204`
+- Принимает `payload: dict` → `document_ids: list[str]`, `tag_ids: list[str]`
+- Семантика: **additive** (добавляет теги, не заменяет существующие), пропускает дубликаты через IntegrityError
+- Возвращает **204 No Content**
+
+**CONTRACTS.md:**
+- `S44 | POST | /api/settings/documents/labels/batch | {document_ids, tag_ids} | 204` ✅
+
+**api.js:**
+- Метод `batchLabelDocuments` отсутствует → 🔴 S44-A
+
+**tab-documents.js:**
+- Batch-операция не реализована в UI — нет multi-select и вызова бэкенда → ⚠️ S44-B (отсутствующая фича, не сломанная)
+
+### Таблица багов
+
+| ID | Файл | Проблема | Исправление | Статус |
+|---|---|---|---|---|
+| S44-A | `api.js` | Метод `batchLabelDocuments(documentIds, tagIds)` отсутствует | Добавить: `POST /api/settings/documents/labels/batch`, body `{document_ids, tag_ids}`, 204-safe | 🔴 |
+| S44-B | `tab-documents.js` | Нет UI для multi-select и batch-назначения тегов | Отдельная задача (фича) | ⚠️ |
+
+---
+
 ## Changelog
 
 | Дата | Баги | Файлы | Описание | Коммит |
@@ -190,3 +218,4 @@
 | 2026-06-01 | C21-A | `app/static/js/settings.js` | edit-pipeline: showPipelineModal(id) → showPipelineEditModal(id) | C21 |
 | 2026-06-01 | D6 | — | Верификация: роут PUT /api/settings/documents/{id}/labels уже реализован в бэке; фронт корректен; статус ⚠️ → ✅ | — |
 | 2026-06-01 | S22, D7 | `app/static/js/settings.js`, `app/static/js/api.js` | S22: DOMContentLoaded исправлены 4 несуществующих id; D7: добавлен метод textSearchByDomain | C22 |
+| 2026-06-01 | S44-A | `app/static/js/api.js` | Аудит S44: batchLabelDocuments отсутствовал → добавлен метод | C23 |
