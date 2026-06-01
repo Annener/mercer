@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Campaign, Tag
 from app.db.session import get_db
+from app.api.settings.schemas import CampaignTagCreateRequest
 from shared_contracts.models import CampaignCreate, CampaignRead, CampaignUpdate, TagRead
 
 router = APIRouter(prefix="/campaigns", tags=["campaigns"])
@@ -25,7 +26,23 @@ async def list_campaigns(
         stmt = stmt.where(Campaign.domain_id == domain_id)
     result = await db.execute(stmt)
     campaigns = result.scalars().all()
-    return [await _campaign_with_tags(c, db) for c in campaigns]
+    if not campaigns:
+        return []
+    # D03 fix: замена N+1 (отдельный SELECT тегов на каждую кампанию) —
+    # один batch-запрос с IN(), группировка в памяти
+    ids = [c.id for c in campaigns]
+    tags_result = await db.execute(
+        select(Tag).where(Tag.campaign_id.in_(ids))
+    )
+    tags_by_campaign: dict[uuid.UUID, list[TagRead]] = {}
+    for t in tags_result.scalars().all():
+        tags_by_campaign.setdefault(t.campaign_id, []).append(
+            TagRead.model_validate(t, from_attributes=True)
+        )
+    return [
+        _build_campaign_read(c, tags_by_campaign.get(c.id, []))
+        for c in campaigns
+    ]
 
 
 @router.get("/{campaign_id}", response_model=CampaignRead)
@@ -96,19 +113,19 @@ async def get_campaign_tags(
 @router.post("/{campaign_id}/tags", response_model=TagRead, status_code=201)
 async def create_campaign_tag(
     campaign_id: str,
-    payload: dict,
+    payload: CampaignTagCreateRequest,  # D04 fix: было payload: dict — KeyError → 500
     db: AsyncSession = Depends(get_db),
 ) -> TagRead:
-    """Шорткат: создать тег кампании. domain_id берётся из кампании."""
+    """S51: шорткат — создать тег кампании. domain_id берётся из кампании."""
     campaign = await db.get(Campaign, uuid.UUID(campaign_id))
     if not campaign:
         raise HTTPException(404, "Campaign not found")
     # S51-1 fix: removed vault_id=campaign.vault_id — Campaign and Tag have no vault_id after 0009
     tag = Tag(
-        name=payload["name"],
+        name=payload.name,
         domain_id=campaign.domain_id,
         campaign_id=campaign.id,
-        color=payload.get("color"),
+        color=payload.color,
     )
     db.add(tag)
     await db.commit()
@@ -118,7 +135,15 @@ async def create_campaign_tag(
 
 # --- Вспомогательные ---
 
+def _build_campaign_read(campaign: Campaign, tags: list[TagRead]) -> CampaignRead:
+    """D03: используется в list_campaigns (теги уже загружены batch-запросом)."""
+    data = CampaignRead.model_validate(campaign, from_attributes=True)
+    data.tags = tags
+    return data
+
+
 async def _campaign_with_tags(campaign: Campaign, db: AsyncSession) -> CampaignRead:
+    """S47/S48/S49: single-object helper — один SELECT допустим."""
     stmt = select(Tag).where(Tag.campaign_id == campaign.id)
     result = await db.execute(stmt)
     tags = [TagRead.model_validate(t, from_attributes=True) for t in result.scalars().all()]
