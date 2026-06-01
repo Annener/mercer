@@ -334,4 +334,83 @@ const DocumentsTabMixin = {
             panel.innerHTML = `<div style="padding:var(--space-4);color:var(--color-error);">Ошибка загрузки тегов: ${this.escapeHtml(e.message)}</div>`;
         }
     },
+
+    async handleDocumentsAction(action, btn) {
+        if (action === 'run-indexer') {
+            const statusEl = document.getElementById('docs-indexer-status');
+            try {
+                if (statusEl) statusEl.textContent = '⏳ Запуск...';
+                const result = await this.api.runIndexer();
+                const taskId = result?.task_id || result?.id || null;
+                this._docsIndexTaskId = taskId;
+                if (statusEl) statusEl.textContent = taskId ? `Задача: ${taskId}` : '✅ Запущено';
+                if (taskId) this._pollIndexerStatus(taskId, statusEl);
+            } catch (e) {
+                if (statusEl) statusEl.textContent = '❌ ' + e.message;
+            }
+            return;
+        }
+        if (action === 'manage-tags') {
+            await this._openTagsManagePanel();
+            return;
+        }
+        if (action === 'delete-doc') {
+            const docId   = btn?.dataset?.id;
+            const vaultId = btn?.dataset?.vault;
+            const path    = btn?.dataset?.path;
+            if (!docId) return;
+            if (!confirm(`Удалить документ «${path || docId}»?`)) return;
+            try {
+                await this.api.deleteDocument(docId, vaultId || null);
+                await this.loadDocumentsData();
+            } catch (e) {
+                alert('Ошибка удаления: ' + e.message);
+            }
+            return;
+        }
+    },
+
+    _pollIndexerStatus(taskId, statusEl) {
+        if (this._docsIndexPollTimer) clearInterval(this._docsIndexPollTimer);
+        let attempts = 0;
+        this._docsIndexPollTimer = setInterval(async () => {
+            attempts++;
+            try {
+                const status = await this.api.getIndexerTaskStatus(taskId);
+                const state = status?.state || status?.status || 'unknown';
+                if (statusEl) statusEl.textContent = `Задача ${taskId}: ${state}`;
+                if (['SUCCESS', 'FAILURE', 'REVOKED', 'completed', 'failed'].includes(state) || attempts > 60) {
+                    clearInterval(this._docsIndexPollTimer);
+                    this._docsIndexPollTimer = null;
+                    await this.loadDocumentsData();
+                }
+            } catch (_) {
+                if (attempts > 10) { clearInterval(this._docsIndexPollTimer); this._docsIndexPollTimer = null; }
+            }
+        }, 3000);
+    },
+
+    async _resolveVaultId() {
+        if (this._activeVaultId) return this._activeVaultId;
+        try {
+            const vaults = await this.api.getSettingsVaults();
+            const list = Array.isArray(vaults) ? vaults : [];
+            const active = list.find(v => v.is_active) || list[0];
+            return active ? (active.vault_id || active.id || null) : null;
+        } catch (_) { return null; }
+    },
+
+    async _resolveDomainId() {
+        if (this._activeDomainId) return this._activeDomainId;
+        try {
+            const resp = await this.api.getDomains();
+            const list = Array.isArray(resp) ? resp : (resp.domains || []);
+            const first = list.find(d => d.enabled !== false) || list[0];
+            return first ? (first.domain_id || first.id || null) : null;
+        } catch (_) { return null; }
+    },
 };
+
+// S26-C fix: Object.assign was missing — DocumentsTabMixin methods were never mixed
+// into SettingsManager.prototype, causing 'renderDocumentsTab is not a function'.
+Object.assign(SettingsManager.prototype, DocumentsTabMixin);

@@ -38,11 +38,18 @@ class SettingsManager {
                 case 'emb-models': html = await this.renderEmbeddingModelsTab(); break;
                 case 'vaults':     html = await this.renderVaultsTab(); break;
                 case 'pipelines':  html = await this.renderPipelinesTab(); break;
+                // S26-B fix: case 'campaigns' was missing — always fell to default → 'Вкладка не найдена'
+                case 'campaigns':  html = await this.renderCampaignsTab(); break;
                 case 'documents':  html = await this.renderDocumentsTab(); break;
                 default: html = '<div>Вкладка не найдена</div>';
             }
             this._tabContent.innerHTML = html;
             this._attachTabListeners(tab);
+            // After rendering Documents tab, load data and wire up listeners
+            if (tab === 'documents') {
+                await this.loadDocumentsData();
+                this._attachDocumentsListeners();
+            }
         } catch (e) {
             this._tabContent.innerHTML = `<div class="error">Ошибка загрузки: ${this.escapeHtml(e.message)}</div>`;
         }
@@ -82,6 +89,24 @@ class SettingsManager {
         });
     }
 
+    _attachDocumentsListeners() {
+        // run-indexer button wired here because it renders outside _attachTabListeners flow
+        const runBtn = this._tabContent?.querySelector('[data-action="run-indexer"]');
+        if (runBtn) {
+            runBtn.addEventListener('click', async (e) => {
+                e.stopPropagation();
+                await this.handleDocumentsAction('run-indexer', runBtn);
+            });
+        }
+        const manageTagsBtn = this._tabContent?.querySelector('[data-action="manage-tags"]');
+        if (manageTagsBtn) {
+            manageTagsBtn.addEventListener('click', async (e) => {
+                e.stopPropagation();
+                await this.handleDocumentsAction('manage-tags', manageTagsBtn);
+            });
+        }
+    }
+
     async _dispatch(tab, action, id, btn) {
         switch (tab) {
             case 'domains':    await this.handleDomainsAction(action, id, btn); break;
@@ -90,6 +115,7 @@ class SettingsManager {
             case 'emb-models': await this.handleEmbModelsAction(action, id, btn); break;
             case 'vaults':     await this.handleVaultsAction(action, id, btn); break;
             case 'pipelines':  await this.handlePipelinesAction(action, id, btn); break;
+            case 'campaigns':  await this.handleCampaignsAction(action, id, btn); break;
             case 'documents':  await this.handleDocumentsAction(action, btn); break;
         }
     }

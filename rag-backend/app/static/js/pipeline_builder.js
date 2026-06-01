@@ -465,3 +465,6 @@ const PipelineBuilder = (() => {
   _injectStyles();
   return { openCreate, openEdit };
 })();
+
+// S26-A fix: IIFE result was never assigned to window — PipelineBuilder was always undefined.
+window.PipelineBuilder = PipelineBuilder;
