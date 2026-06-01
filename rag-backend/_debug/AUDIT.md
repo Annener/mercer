@@ -323,14 +323,6 @@
 **Симптом:** `Ошибка удаления: this.api.deleteDocument is not a function`  
 **Причина:** `handleDocumentsAction` вызывает `this.api.deleteDocument(docId, vaultId)`, которого **никогда не существовало** в `api.js`. Корректный метод — `deleteDocumentById(documentId, vaultId)` (добавлен в D2, коммит C19).
 
-```js
-// tab-documents.js:254 — было:
-await this.api.deleteDocument(docId, vaultId || null);
-
-// должно быть:
-await this.api.deleteDocumentById(docId, vaultId || null);
-```
-
 | ID | Файл | Строка | Проблема | Исправление | Статус |
 |---|---|---|---|---|---|
 | F01 | `tab-documents.js` | `handleDocumentsAction` / `delete-doc` | `this.api.deleteDocument` → `TypeError: not a function` | Переименовать в `this.api.deleteDocumentById` | ✅ |
@@ -347,32 +339,6 @@ await this.api.deleteDocumentById(docId, vaultId || null);
 - `P-CREATE | POST | /api/settings/pipelines | PipelineCreate | PipelineRead`
 - `P-UPDATE | PUT  | /api/settings/pipelines/{pipeline_id} | PipelineUpdate | PipelineRead`
 
-**Дополнительный риск:** в `_save()` при обновлении используется `_pipeline.id` как идентификатор в URL. По arch.md pipeline идентифицируется строковым `pipeline_id` (не UUID). Необходимо проверить, что бэк возвращает поле `id` (UUID) или `pipeline_id` (string) и что `_pipeline.id` → `_pipeline.pipeline_id` при необходимости.
-
-```js
-// Добавить в api.js (секция Pipelines):
-
-async createPipeline(data) {
-    const response = await fetch(`${this.baseUrl}/api/settings/pipelines`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data),
-    });
-    if (!response.ok) throw new Error(`Failed to create pipeline: ${response.statusText}`);
-    return response.json();
-}
-
-async updatePipeline(pipelineId, data) {
-    const response = await fetch(`${this.baseUrl}/api/settings/pipelines/${encodeURIComponent(pipelineId)}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data),
-    });
-    if (!response.ok) throw new Error(`Failed to update pipeline: ${response.statusText}`);
-    return response.json();
-}
-```
-
 | ID | Файл | Проблема | Исправление | Статус |
 |---|---|---|---|---|
 | F02-A | `api.js` | `createPipeline` отсутствует | Добавить: `POST /api/settings/pipelines` | ✅ |
@@ -384,14 +350,7 @@ async updatePipeline(pipelineId, data) {
 ### F03 · pipeline_builder.js — чекбокс `is_final` в UI нарушает архитектурный инвариант
 
 **Файл:** `pipeline_builder.js`, `_stepHTML()`, `_bindStepEvents()`  
-**Проблема:** По архитектуре `is_final` — **служебный атрибут шага**, который должен автоматически ставиться у шага типа `final`. Текущий UI показывает явный чекбокс `is_final` для каждого шага и требует от пользователя вручную его проставить — иначе `_save()` возвращает ошибку «Отметьте ровно один шаг как is_final». Это одновременно UX-антипаттерн и потенциальный источник состояния «0 is_final» или «2+ is_final», которые бэк отвергнет с 422.
-
-**Правильное поведение:**
-- Убрать чекбокс `is_final` из `_stepHTML()` полностью
-- При смене `type` шага на `'final'` — автоматически ставить `is_final: true` этому шагу и снимать у всех остальных
-- При смене с `'final'` на другой тип — снимать `is_final`
-- Валидацию «ровно один is_final» в `_save()` оставить как guard (на случай программных ошибок), но убрать из пользовательских сообщений
-- Финальный шаг (`type='final'`) при добавлении должен автоматически скрывать секцию `tag_ids`
+**Проблема:** По архитектуре `is_final` — **служебный атрибут шага**, который должен автоматически ставиться у шага типа `final`. Текущий UI показывает явный чекбокс `is_final` для каждого шага и требует от пользователя вручную его проставить — иначе `_save()` возвращает ошибку «Отметьте ровно один шаг как is_final».
 
 | ID | Файл | Проблема | Исправление | Статус |
 |---|---|---|---|---|
@@ -401,30 +360,6 @@ async updatePipeline(pipelineId, data) {
 ---
 
 ### B01 · Backend errors — generation 500 + embedding empty vector
-
-**Область:** бэкенд, фронт не причём.
-
-#### B01-A · Generation HTTP 500 — `'str' object has no attribute 'get'`
-
-**Лог:**
-```
-WARNING app.providers.generation.openai_compatible — Generation request failed on attempt 1:
-HTTP 500 — body: {"error":{"message":"APIConnectionError: OpenrouterException -
-'str' object has no attribute 'get'. Received Model Group=openrouter/deepseek/deepseek-chat-v3.1"}}
-```
-**Причина:** В `app/providers/generation/openai_compatible.py` при обработке ответа от OpenRouter ожидается `dict` (вызывается `.get()`), но приходит `str`. Вероятно, ответ от OpenRouter не десериализуется перед обращением по ключу — либо в маппинге `model_group`, либо в `_parse_response`. Требует аудита бэкенда провайдера.
-
-#### B01-B · Embedding empty vector — `dengcao/Qwen3-Embedding-4B:Q4_K_M`
-
-**Лог:**
-```
-ValueError: Embedding provider returned empty vector for chunk 3
-(file='dm-guides/Впечатляющие столицы.pdf', model='dengcao/Qwen3-Embedding-4B:Q4_K_M').
-Check model availability, dimension settings, and provider logs.
-```
-**Причина:** Две возможные причины:
-1. Модель недоступна или не загружена в провайдере (ollama/lm-studio) — проверить `GET /api/settings/models/embedding/{id}/check`
-2. Chunk 3 пустой или whitespace-only после парсинга PDF — guard на пустые чанки до обращения к эмбеддеру
 
 | ID | Файл | Проблема | Приоритет | Статус |
 |---|---|---|---|---|
@@ -444,77 +379,59 @@ but expression is of type character varying
 [SQL: INSERT INTO messages (..., pipeline_id) VALUES (..., $5::VARCHAR)]
 ```
 
-**Источник расхождения — два слоя:**
-
-| Слой | Объявление | Тип |
-|---|---|---|
-| Миграция 0004 (`0004_add_pipeline_id_to_messages.py`) | `postgresql.UUID(as_uuid=True)` | **UUID** в БД |
-| ORM `Message.pipeline_id` (`models.py`) | `String(64)` | **VARCHAR(64)** → SQLAlchemy биндит `$5::VARCHAR` |
-
-**Цепочка:** миграция 0004 добавила колонку как `UUID`, но `models.py` объявляет `pipeline_id: Mapped[str | None] = mapped_column(String(64), nullable=True)`. При `INSERT INTO messages` SQLAlchemy генерирует `$5::VARCHAR` — PostgreSQL отвергает c `DatatypeMismatchError`.
-
-**Семантика `pipeline_id`:**  
-По arch.md `Message.pipeline_id` хранит строковый slug пайплайна (например `"default"`, `"dnd"`), **не UUID**. Миграция 0004 создала колонку с неверным типом — нужно привести тип БД к `VARCHAR(64)`, а не наоборот менять ORM.
-
-> Важно: `pipeline_id` в таблице `messages` — это **pipeline_id (String slug)**, не `Pipeline.id (UUID)`. Это поле без FK. ORM-объявление `String(64)` — правильное. Исправлять нужно **БД**, не ORM.
-
-### Таблица багов
-
 | ID | Таблица | Колонка | Тип в БД (0004) | Тип ORM | Нужно | Статус |
 |---|---|---|---|---|---|---|
 | M19 | `messages` | `pipeline_id` | `UUID` | `String(64)` | `VARCHAR(64)` (миграция 0015) | 🔴 |
-
-### Стратегия фикса (0015)
-
-Идемпотентный ALTER: если `pipeline_id` имеет тип `uuid` — преобразовать в `VARCHAR(64)` (существующие значения `NULL`, потерь нет).
-
-```python
-def upgrade() -> None:
-    conn = op.get_bind()
-    row = conn.execute(sa.text(
-        "SELECT data_type FROM information_schema.columns "
-        "WHERE table_name = 'messages' AND column_name = 'pipeline_id'"
-    )).fetchone()
-    if row and row[0].lower() == 'uuid':
-        conn.execute(sa.text(
-            "ALTER TABLE messages ALTER COLUMN pipeline_id TYPE VARCHAR(64) USING pipeline_id::text"
-        ))
-```
 
 ---
 
 ## C29 · F04 — `_pollIndexerStatus` вызывает несуществующий `getIndexerTaskStatus`
 
-### Аудит (цепочка проверки)
-
-`tab-documents.js` → `api.js` → `CONTRACTS.md`
-
-**Файл:** `tab-documents.js`, метод `_pollIndexerStatus`  
-**Симптом:** После запуска индексации кнопкой «▶ Запустить индексацию» — статус таска получить невозможно; в консоли:
-```
-TypeError: this.api.getIndexerTaskStatus is not a function
-```
-
-**Причина:** `_pollIndexerStatus(taskId, statusEl)` вызывает `this.api.getIndexerTaskStatus(taskId)`.  
-В `api.js` такого метода **не существует**. Правильный метод — `getIndexTaskState(taskId)` (добавлен в D5, коммит C19, путь `GET /index-tasks/{id}/state`).
-
-**Верификация:**
-
-| Что | Значение |
-|---|---|
-| Вызов в `tab-documents.js` | `this.api.getIndexerTaskStatus(taskId)` |
-| Метод в `api.js` | ❌ не существует |
-| Корректный метод | `this.api.getIndexTaskState(taskId)` |
-| Путь бэка | `GET /index-tasks/{task_id}/state` |
-| Ответ | `{task_id, status, progress?, error?}` |
-
-**Дополнительно:** после получения ответа `_pollIndexerStatus` должен проверять `state.status` (или аналогичное поле) для определения завершения задачи. Нужно убедиться, что поле `status` из ответа `getIndexTaskState` совпадает с тем, что ожидает poll-цикл (терминальные значения: `'done'`, `'error'`, `'failed'`, `'completed'` — уточнить по схеме бэка).
-
-### Таблица багов
-
 | ID | Файл | Строка/метод | Проблема | Исправление | Статус |
 |---|---|---|---|---|---|
 | F04 | `tab-documents.js` | `_pollIndexerStatus` | `this.api.getIndexerTaskStatus(taskId)` → `TypeError: not a function` | Переименовать в `this.api.getIndexTaskState(taskId)` | 🔴 |
+
+---
+
+## C30 · P01–P06 — страница «Параметры»: кнопки мертвы, дефолты не прокидываются
+
+### Цепочка проверки
+
+`arch.md` → `settings_service.py` (DEFAULTS) → `ParamUpdateRequest` (schemas.py) → `params.py` роут → `settings_service.set/reset_all` → `CONTRACTS.md` → `tab-params.js` (рендер) → `settings.js` (handleParamsAction)
+
+### Верифицировано (OK)
+
+| Слой | Статус |
+|---|---|
+| `settings_service.py` → `DEFAULTS` | ✅ `pdf_sidecar.url` присутствует, `rag-indexer/indexer_worker.py` читает корректно |
+| `params.py` роут | ✅ `PUT /params/{key:path}` и `POST /reset` реализованы |
+| `schemas.py` `ParamUpdateRequest` | ✅ `value: Any` — принимает любое значение |
+| `api.js` | ✅ `updateSettingsParam(key, value)` и `resetSettingsParams()` присутствуют, пути верные |
+| `tab-params.js` рендер | ✅ HTML генерируется корректно |
+
+### Таблица багов
+
+| ID | Файл | Проблема | Приоритет | Статус |
+|---|---|---|---|---|
+| P01 | `settings.js` `handleParamsAction` | Обрабатывает только устаревший `save-params` (через `#params-form [data-key]`, такой формы нет). Действия `save-param` и `default-param` **не обработаны** — все кнопки «Сохранить»/«По умолчанию» мертвы | 🔴 | ✅ → C30 |
+| P02 | `settings.js` `handleParamsAction` | Действие `reset-params` **не обработано** — кнопка «Сбросить все параметры» мертва; `api.resetSettingsParams()` готов | 🔴 | ✅ → C30 |
+| P03 | `settings.js` `handleParamsAction` | Старый код вызывает `this.api.updatePlatformSetting(key, {value})` — такого метода нет; корректный — `updateSettingsParam(key, value)` с другой сигнатурой | 🔴 | ✅ → C30 |
+| P04 | `settings.js` обработчик `save-param` | При сохранении checkbox передаётся `.value` (`"on"`/`""`) вместо `.checked` (bool); бэк `_coerce_value` принимает только `"true"/"false"/"1"/"0"` → HTTP 422 | 🔴 | ✅ → C30 |
+| P05 | `tab-params.js` `SETTINGS_DEFAULTS` | `reranker.provider/base_url/model_name = null`; бэк `_coerce_value` для `str` получает `null` → `str(None) = "None"` (неверное значение) | ⚠️ | ✅ → C30 (null → `""`) |
+| P06 | `tab-params.js` рендер (UX) | Архитектурное решение: **одна кнопка «Сохранить все»** внизу страницы вместо кнопки на каждый параметр. Параметры редактируются inline, сохраняются одним действием | 🔴 UX | ✅ → C30 |
+
+### Описание фикса C30
+
+**`tab-params.js`:**
+- Убрать кнопки `save-param` и `default-param` с каждой строки
+- Добавить кнопку `save-all-params` внизу страницы (рядом с уже существующим `reset-params`)
+- `SETTINGS_DEFAULTS`: заменить `null` → `""` для строковых reranker-ключей
+- При рендере помечать изменённые поля классом `--dirty` для визуального feedback
+
+**`settings.js` `handleParamsAction`:**
+- `save-all-params` → собрать все `[data-param]` инпуты, для checkbox читать `.checked`, для остальных `.value`; пакетно вызвать `updateSettingsParam` для каждого ключа
+- `reset-params` → `confirm` → `api.resetSettingsParams()` → перерендер вкладки
+- Удалить мёртвый код (`save-params` через `#params-form`)
 
 ---
 
@@ -540,3 +457,4 @@ TypeError: this.api.getIndexerTaskStatus is not a function
 | 2026-06-01 | F01, F02-A, F02-B, F02-C, F03-A, F03-B, B01-A, B01-B | `tab-documents.js`, `api.js`, `pipeline_builder.js`, `openai_compatible.py`, `indexer_worker.py` | Аудит C27: F01/F02/F03 верифицированы как уже исправленные; B01-A/B01-B зафиксированы как открытые | — |
 | 2026-06-02 | M19 | `rag-backend/migrations/versions/0015_fix_messages_pipeline_id_type.py` | messages.pipeline_id: UUID → VARCHAR(64); ORM объявляет String(64), миграция 0004 создала UUID ошибочно | — |
 | 2026-06-02 | F04 | `app/static/js/settings/tab-documents.js` | `_pollIndexerStatus`: `getIndexerTaskStatus` → `getIndexTaskState`; метод не существовал → TypeError при поллинге статуса индексации | — |
+| 2026-06-02 | P01–P06 | `app/static/js/settings/tab-params.js`, `app/static/js/settings.js` | C30 аудит: все кнопки на странице Параметры мертвы (P01–P03); bool/null-значения → 422 (P04–P05); UX: одна кнопка «Сохранить все» (P06) | audit: C30 |
