@@ -98,7 +98,7 @@
 | D3 | `reindexVault(vaultId)` | `POST /api/settings/vaults/{id}/reindex` | `POST /vaults/{id}/reindex` | Лишний prefix `/api/settings` | ✅ → C19 |
 | D4 | `connectToTaskStream(taskId)` | `WS /api/settings/tasks/{id}/stream` | `WS /ws/index-tasks/{id}` | Неверный путь WS | ✅ → C19 |
 | D5 | `getIndexTaskState(taskId)` | `GET /api/settings/tasks/{id}` | `GET /index-tasks/{id}/state` | Нет суффикса `/state` | ✅ → C19 |
-| D6 | `updateDocumentLabels(docId, tagIds)` | `PUT /api/settings/documents/{id}/labels` | **Роута нет в бэке** | TODO: добавить роут в settings/documents.py или db_management.py | ⚠️ |
+| D6 | `updateDocumentLabels(docId, tagIds)` | `PUT /api/settings/documents/{id}/labels` | `PUT /api/settings/documents/{id}/labels` | Роут существует в `settings/documents.py`; схема `DocumentLabelWrite {tag_ids: list[str]}`; ответ `DocumentRead`; фронт совпадает | ✅ |
 
 ---
 
@@ -113,7 +113,7 @@
 | D5 | `api.js` | `getIndexTaskState` → `GET /index-tasks/{id}/state` | ✅ |
 | D1-tab | `tab-documents.js` | `loadDocumentsData` → `_resolveVaultId()` + `getDocumentsByVault(vaultId)`; `delete-doc` передаёт `data-vault` | ✅ |
 
-**D6 (updateDocumentLabels) — роут отсутствует в бэке, помечен ⚠️, требует отдельного решения.**
+**D6 — верифицирован: роут уже реализован в бэке, фронт корректен. Статус обновлён до ✅.**
 
 ---
 
@@ -166,3 +166,4 @@
 | 2026-06-01 | D1–D5 | `app/static/js/api.js`, `app/static/js/settings/tab-documents.js` | 6 неверных путей db-management; vault_id-aware delete | C19 |
 | 2026-06-01 | S16-C, S16-D, S21-B | `app/api/settings/gen_models.py`, `app/static/js/settings.js` | toggle роут добавлен в бэк; check-gen/check-emb алерт исправлен на result.ok | C20 |
 | 2026-06-01 | C21-A | `app/static/js/settings.js` | edit-pipeline: showPipelineModal(id) → showPipelineEditModal(id) | C21 |
+| 2026-06-01 | D6 | — | Верификация: роут PUT /api/settings/documents/{id}/labels уже реализован в бэке; фронт корректен; статус ⚠️ → ✅ | — |
