@@ -109,7 +109,7 @@ class ChatAPI {
 
     // === Domain / Campaign / Pipeline API ===
 
-    // S45-2 fix: /domains → /config/domains (CF1)
+    // S45-2 fix: /domains → /config/domains (CF1) — read-only для sidebar
     async getDomains() {
         const response = await fetch(`${this.baseUrl}/config/domains`);
         if (!response.ok) throw new Error(`Failed to get domains: ${response.statusText}`);
@@ -210,6 +210,127 @@ class ChatAPI {
         const qs = params.toString() ? `?${params.toString()}` : '';
         const response = await fetch(`${this.baseUrl}/api/settings/pipelines${qs}`);
         if (!response.ok) throw new Error(`Failed to get pipelines: ${response.statusText}`);
+        return response.json();
+    }
+
+    // === Settings API ===
+
+    // S1-A fix: getSettingsStatus — отсутствовал → TypeError на вкладке Status
+    async getSettingsStatus() {
+        const response = await fetch(`${this.baseUrl}/api/settings/status`);
+        if (!response.ok) throw new Error(`Failed to get status: ${response.statusText}`);
+        return response.json();
+    }
+
+    // S2-A fix: getSettingsParams — отсутствовал → TypeError на вкладке Params
+    async getSettingsParams() {
+        const response = await fetch(`${this.baseUrl}/api/settings/params`);
+        if (!response.ok) throw new Error(`Failed to get params: ${response.statusText}`);
+        return response.json();
+    }
+
+    // S3-A fix: updateSettingsParam — отсутствовал
+    // Ключ передаётся as-is (без encodeURIComponent) — FastAPI {key:path} принимает точки напрямую.
+    async updateSettingsParam(key, value) {
+        const response = await fetch(`${this.baseUrl}/api/settings/params/${key}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ value }),
+        });
+        if (!response.ok) throw new Error(`Failed to update param: ${response.statusText}`);
+        return response.json();
+    }
+
+    // S4-A fix: resetSettingsParams — отсутствовал
+    async resetSettingsParams() {
+        const response = await fetch(`${this.baseUrl}/api/settings/reset`, {
+            method: 'POST',
+        });
+        if (!response.ok) throw new Error(`Failed to reset params: ${response.statusText}`);
+        return response.json();
+    }
+
+    // S5-B fix: getSettingsDomains — отдельный метод для CRUD в настройках
+    // getDomains() остаётся для sidebar (/config/domains, read-only).
+    async getSettingsDomains() {
+        const response = await fetch(`${this.baseUrl}/api/settings/domains`);
+        if (!response.ok) throw new Error(`Failed to get domains: ${response.statusText}`);
+        return response.json();
+    }
+
+    // S5-B fix: createDomain — отсутствовал → TypeError в showDomainModal
+    async createDomain(data) {
+        const response = await fetch(`${this.baseUrl}/api/settings/domains`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data),
+        });
+        if (!response.ok) throw new Error(`Failed to create domain: ${response.statusText}`);
+        return response.json();
+    }
+
+    // S5-B fix: updateDomain — отсутствовал → TypeError в showDomainModal
+    async updateDomain(domainId, data) {
+        const response = await fetch(`${this.baseUrl}/api/settings/domains/${encodeURIComponent(domainId)}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data),
+        });
+        if (!response.ok) throw new Error(`Failed to update domain: ${response.statusText}`);
+        return response.json();
+    }
+
+    // S5-B fix: deleteDomain — отсутствовал; 204 No Content
+    async deleteDomain(domainId) {
+        const response = await fetch(`${this.baseUrl}/api/settings/domains/${encodeURIComponent(domainId)}`, {
+            method: 'DELETE',
+        });
+        if (!response.ok) throw new Error(`Failed to delete domain: ${response.statusText}`);
+        // 204 No Content — нет тела
+    }
+
+    // S10-A fix: getDomainPrompts — отсутствовал → TypeError в showPromptsModal
+    async getDomainPrompts(domainId) {
+        const response = await fetch(`${this.baseUrl}/api/settings/domains/${encodeURIComponent(domainId)}/prompts`);
+        if (!response.ok) throw new Error(`Failed to get prompts: ${response.statusText}`);
+        return response.json();
+    }
+
+    // S10-A fix: updateDomainPrompt — отсутствовал → TypeError в showPromptsModal
+    // PUT /api/settings/domains/{domain_id}/prompts/{prompt_type}  body: { content: str }
+    async updateDomainPrompt(domainId, promptType, content) {
+        const response = await fetch(
+            `${this.baseUrl}/api/settings/domains/${encodeURIComponent(domainId)}/prompts/${promptType}`,
+            {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ content }),
+            }
+        );
+        if (!response.ok) throw new Error(`Failed to update prompt: ${response.statusText}`);
+        return response.json();
+    }
+
+    // S12-A fix: getDomainFields — отсутствовал
+    // GET /api/settings/domains/{domain_id}/fields → list[ClarificationField]
+    async getDomainFields(domainId) {
+        const response = await fetch(`${this.baseUrl}/api/settings/domains/${encodeURIComponent(domainId)}/fields`);
+        if (!response.ok) throw new Error(`Failed to get fields: ${response.statusText}`);
+        return response.json();
+    }
+
+    // S12-A fix: updateDomainFields — отсутствовал
+    // PUT /api/settings/domains/{domain_id}/fields  body: ClarificationFieldRequest[]
+    async updateDomainFields(domainId, fields) {
+        const response = await fetch(
+            `${this.baseUrl}/api/settings/domains/${encodeURIComponent(domainId)}/fields`,
+            {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(fields),
+            }
+        );
+        if (!response.ok) throw new Error(`Failed to update fields: ${response.statusText}`);
         return response.json();
     }
 }
