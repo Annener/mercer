@@ -175,29 +175,43 @@
 
 ---
 
-## C13 · S36 · /api/settings/vaults/* (showVaultModal — выбор домена)
+## C13 · S36-new · tab-vaults.js — showVaultModal использует getDomains()
 
 Аудит: 2026-06-01 · Проверено: tab-vaults.js, api.js
 
-| ID      | Слой     | Файл                                    | Проблема                                                                                                                                        | Статус |
-|---------|----------|-----------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------|--------|
-| S36-new | frontend | `app/static/js/settings/tab-vaults.js` | `showVaultModal` вызывает `this.api.getDomains()` (`/config/domains`) для заполнения `<select>` с доменами. Нужно `getSettingsDomains()` — иначе `is_system` домены могут не попасть в список при включённых фильтрах | 🔴     |
+| ID       | Слой     | Файл                                    | Проблема                                                                                                                                        | Статус |
+|----------|----------|-----------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------|--------|
+| S36-new  | frontend | `app/static/js/settings/tab-vaults.js` | `showVaultModal` вызывает `this.api.getDomains()` (`/config/domains`) для заполнения `<select>`. Нужно `getSettingsDomains()` — иначе выключенные домены не попадут в список | ✅     |
 
-> **Примечание**: `/config/domains` возвращает только `enabled=true` домены (sidebar-контракт). При добавлении vault к выключенному домену он не появится в списке. Для настроек нужен полный список через `/api/settings/domains`.
+> **Примечание**: `/config/domains` возвращает только `enabled=true` домены (sidebar-контракт). При создании vault для выключенного домена он не появится в `<select>`. Для настроек нужен полный список через `/api/settings/domains`.
 
 ---
 
-## C14 · handleVaultsAction / handleGenModelsAction / handleEmbModelsAction — заглушки
+## C14 · S14-A–S16-A · handleVaultsAction / handleGenModelsAction / handleEmbModelsAction — заглушки
 
 Аудит: 2026-06-01 · Проверено: settings.js
 
-| ID      | Слой     | Файл                            | Проблема                                                                                                                              | Статус |
-|---------|----------|---------------------------------|---------------------------------------------------------------------------------------------------------------------------------------|--------|
-| S14-A   | frontend | `app/static/js/settings.js`     | `handleVaultsAction(action, id)` — пустая заглушка `{}`. Кнопки edit-vault / toggle-vault / delete-vault / new-vault не работают     | 🔴     |
-| S15-A   | frontend | `app/static/js/settings.js`     | `handleGenModelsAction(action, id)` — пустая заглушка `{}`. Кнопки CRUD для generation-моделей не работают                           | 🔴     |
-| S16-A   | frontend | `app/static/js/settings.js`     | `handleEmbModelsAction(action, id)` — пустая заглушка `{}`. Кнопки CRUD для embedding-моделей не работают                            | 🔴     |
+| ID    | Слой     | Файл                            | Проблема                                                                                                                              | Статус |
+|-------|----------|---------------------------------|---------------------------------------------------------------------------------------------------------------------------------------|--------|
+| S14-A | frontend | `app/static/js/settings.js`     | `handleVaultsAction(action, id)` — пустая заглушка `{}`. Кнопки edit-vault / toggle-vault / delete-vault / new-vault не работают     | ✅     |
+| S15-A | frontend | `app/static/js/settings.js`     | `handleGenModelsAction(action, id)` — пустая заглушка `{}`. Кнопки CRUD для generation-моделей не работают                           | ✅     |
+| S16-A | frontend | `app/static/js/settings.js`     | `handleEmbModelsAction(action, id)` — пустая заглушка `{}`. Кнопки CRUD для embedding-моделей не работают                            | ✅     |
 
-> **Примечание**: модалы `showVaultModal`, `showEmbeddingModelModal` реализованы в tab-файлах — нужно только подключить вызовы из хэндлеров.
+---
+
+## C15 · S17-B, S18-B, S19-A · Vault toggle + Model activate — неверные/несуществующие эндпойнты
+
+Аудит: 2026-06-01 · Проверено: vaults.py, gen_models.py, emb_models.py, api.js, settings.js
+
+| ID    | Слой              | Файл                                        | Проблема                                                                                                                                                           | Статус |
+|-------|-------------------|---------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------|--------|
+| S17-B | frontend          | `app/static/js/settings.js`                 | `handleVaultsAction('toggle-vault')` делает `PUT /vaults/{id}` с `{enabled: !vault.enabled}` — работает технически, но семантически неправильно. Бэк имеет `POST /vaults/{id}/toggle`. `api.js` не содержит `toggleVault()` | ✅     |
+| S18-B | frontend + route  | `app/static/js/api.js`                      | `setActiveGenerationModel(id)` → `POST /models/generation/{id}/set_active` (404). Бэк: `POST /models/generation/{id}/activate`                                     | ✅     |
+| S19-A | backend           | `app/api/settings/emb_models.py`            | Роута `POST /models/embedding/{id}/activate` не существует. `setActiveEmbeddingModel(id)` → 404. Нужно добавить эндпойнт в `emb_models.py` аналогично `gen_models.py` | ✅     |
+
+> **Контекст S17-B**: `PUT /vaults/{id}` с `{enabled: bool}` через `updateVault` — технически работает (поле `enabled` есть в `VaultUpdateRequest`). Однако семантически toggle-операция должна идти через `POST /toggle`. Добавлен метод `toggleVault(id)` в `api.js` и исправлен вызов в `settings.js`.
+>
+> **Контекст S19-A**: У embedding-моделей нет концепции "активной" — в отличие от generation-моделей, несколько embedding-моделей могут использоваться параллельно разными vaults. Поэтому `activate` для emb-моделей **не нужен**. Метод `setActiveEmbeddingModel` и кнопка `set-active-emb-model` удалены из `api.js` и `settings.js`.
 
 ---
 
@@ -214,23 +228,25 @@
 
 ## Лог исправлений
 
-| Дата       | ID       | Файл                        | Что исправлено                                                                  | Коммит |
-|------------|----------|-----------------------------|---------------------------------------------------------------------------|--------|
-| 2026-06-01 | —        | `app/api/chat.py`           | IndentationError в `send_message_stream` (context.steps)                 | [1bddf09](https://github.com/Annener/mercer/commit/1bddf09e2e6062337f35e508fb1a488ccf5c0505) |
-| 2026-06-01 | A02      | `app/db/models.py`          | Добавлено поле `pipeline_versions: JSONB`                                        | — |
-| 2026-06-01 | A03      | `app/db/models.py`          | Добавлено поле `locked_pipeline_id: String`                                      | — |
-| 2026-06-01 | A04      | `app/api/chat.py`           | `_audit()`: `payload=` → `details=`                                        | — |
-| 2026-06-01 | B02      | `app/static/js/chat.js`     | `setupContextBar`: `chat.world_id` → `chat.domain_id`                       | [0fbe5f0](https://github.com/Annener/mercer/commit/0fbe5f010267055009f7dcca1c7de0b5d3a32646) |
-| 2026-06-01 | B05      | `app/static/js/chat.js`     | Удалена мёртвая ветка `else if (parsed.token)`                         | [0fbe5f0](https://github.com/Annener/mercer/commit/0fbe5f010267055009f7dcca1c7de0b5d3a32646) |
-| 2026-06-01 | B06      | `app/static/js/chat.js`     | Удалена мёртвая переменная `assistant_msg_id`                          | [0fbe5f0](https://github.com/Annener/mercer/commit/0fbe5f010267055009f7dcca1c7de0b5d3a32646) |
-| 2026-06-01 | B07      | `app/static/js/chat.js`     | `handleJSONResponse`: clarification check → `state && question`             | [0fbe5f0](https://github.com/Annener/mercer/commit/0fbe5f010267055009f7dcca1c7de0b5d3a32646) |
-| 2026-06-01 | B08      | `app/static/js/api.js`      | Добавлен `submitClarification(chatId, answers)`                            | [10a9401](https://github.com/Annener/mercer/commit/10a9401f09e8f7682885d9c01f99cdb987fcb0ac) |
-| 2026-06-01 | C01      | `app/static/js/api.js`      | `submitClarification`: добавлен `clarification_id` в сигнатуру и body       | [d10977b](https://github.com/Annener/mercer/commit/d10977b45bc31cf55d0eaff1c82ebd4a92eb5066) |
-| 2026-06-01 | C02      | `app/static/js/chat.js`     | `handleJSONResponse`: чек по `clarification_id`; `addMessage` принимает clarificationId | [6931bd7](https://github.com/Annener/mercer/commit/6931bd722c12dec50752ae27aad9a549c9a5a574) |
-| 2026-06-01 | A01      | `app/db/models.py`          | `Chat.domain_id`: `nullable=True` → `nullable=False`; `ondelete="SET NULL"` → `CASCADE` | [4966c39](https://github.com/Annener/mercer/commit/4966c394791e51a4a7a734fd8432f934e4b6dbb0) |
-| 2026-06-01 | A05      | `app/api/chat.py`           | `CreateChatRequest.domain_id`: `str \| None = None` → `str` (required)     | [c06876d](https://github.com/Annener/mercer/commit/c06876dc9ea6b58c06445e0bfebdfcb09912b419) |
-| 2026-06-01 | **B01**  | `app/api/chat.py`           | N+1 в `list_chats`: заменён один запрос `settings_service.get` + кэш `vault_enabled_cache` | [699f446](https://github.com/Annener/mercer/commit/699f446248c3cb6dcaf8b9e6512cad7f1e077219) |
-| 2026-06-01 | D04      | `app/api/settings/schemas.py` | Добавлен `CampaignTagCreateRequest(name, color)` | [afb77dd](https://github.com/Annener/mercer/commit/afb77ddc566dce8b8640cf41b0ca6fb0177dd6e8) |
-| 2026-06-01 | D03+D04  | `app/api/settings/campaigns.py` | N+1 → batch IN(); `payload: dict` → `CampaignTagCreateRequest` | [596f4af](https://github.com/Annener/mercer/commit/596f4af71d7a69bd1f0caa7c62e1dcb5d6288737) |
-| 2026-06-01 | D08+D09+D10 | `app/static/js/api.js` | null-safe getCampaigns; 8 campaign/tag методов; deleteChat/deleteCampaign/deleteTag — 204 no-json | [581e5c1](https://github.com/Annener/mercer/commit/581e5c171f1fa6d28e6fe05deeeee0893d6816fa) |
-| 2026-06-01 | S1-A..S13-A | `app/static/js/api.js`, `settings.js`, `tab-domains.js`, `tab-params.js` | Settings group S1–S13: все методы api.js добавлены; handleParamsAction / handleDomainsAction реализованы; showPromptsModal / showFieldsModal добавлены | — |
+| Дата       | ID           | Файл                        | Что исправлено                                                                  | Коммит |
+|------------|--------------|-----------------------------|---------------------------------------------------------------------------|--------|
+| 2026-06-01 | —            | `app/api/chat.py`           | IndentationError в `send_message_stream` (context.steps)                 | [1bddf09](https://github.com/Annener/mercer/commit/1bddf09e2e6062337f35e508fb1a488ccf5c0505) |
+| 2026-06-01 | A02          | `app/db/models.py`          | Добавлено поле `pipeline_versions: JSONB`                                        | — |
+| 2026-06-01 | A03          | `app/db/models.py`          | Добавлено поле `locked_pipeline_id: String`                                      | — |
+| 2026-06-01 | A04          | `app/api/chat.py`           | `_audit()`: `payload=` → `details=`                                        | — |
+| 2026-06-01 | B02          | `app/static/js/chat.js`     | `setupContextBar`: `chat.world_id` → `chat.domain_id`                       | [0fbe5f0](https://github.com/Annener/mercer/commit/0fbe5f010267055009f7dcca1c7de0b5d3a32646) |
+| 2026-06-01 | B05          | `app/static/js/chat.js`     | Удалена мёртвая ветка `else if (parsed.token)`                         | [0fbe5f0](https://github.com/Annener/mercer/commit/0fbe5f010267055009f7dcca1c7de0b5d3a32646) |
+| 2026-06-01 | B06          | `app/static/js/chat.js`     | Удалена мёртвая переменная `assistant_msg_id`                          | [0fbe5f0](https://github.com/Annener/mercer/commit/0fbe5f010267055009f7dcca1c7de0b5d3a32646) |
+| 2026-06-01 | B07          | `app/static/js/chat.js`     | `handleJSONResponse`: clarification check → `state && question`             | [0fbe5f0](https://github.com/Annener/mercer/commit/0fbe5f010267055009f7dcca1c7de0b5d3a32646) |
+| 2026-06-01 | B08          | `app/static/js/api.js`      | Добавлен `submitClarification(chatId, answers)`                            | [10a9401](https://github.com/Annener/mercer/commit/10a9401f09e8f7682885d9c01f99cdb987fcb0ac) |
+| 2026-06-01 | C01          | `app/static/js/api.js`      | `submitClarification`: добавлен `clarification_id` в сигнатуру и body       | [d10977b](https://github.com/Annener/mercer/commit/d10977b45bc31cf55d0eaff1c82ebd4a92eb5066) |
+| 2026-06-01 | C02          | `app/static/js/chat.js`     | `handleJSONResponse`: чек по `clarification_id`; `addMessage` принимает clarificationId | [6931bd7](https://github.com/Annener/mercer/commit/6931bd722c12dec50752ae27aad9a549c9a5a574) |
+| 2026-06-01 | A01          | `app/db/models.py`          | `Chat.domain_id`: `nullable=True` → `nullable=False`; `ondelete="SET NULL"` → `CASCADE` | [4966c39](https://github.com/Annener/mercer/commit/4966c394791e51a4a7a734fd8432f934e4b6dbb0) |
+| 2026-06-01 | A05          | `app/api/chat.py`           | `CreateChatRequest.domain_id`: `str \| None = None` → `str` (required)     | [c06876d](https://github.com/Annener/mercer/commit/c06876dc9ea6b58c06445e0bfebdfcb09912b419) |
+| 2026-06-01 | **B01**      | `app/api/chat.py`           | N+1 в `list_chats`: заменён один запрос `settings_service.get` + кэш `vault_enabled_cache` | [699f446](https://github.com/Annener/mercer/commit/699f446248c3cb6dcaf8b9e6512cad7f1e077219) |
+| 2026-06-01 | D04          | `app/api/settings/schemas.py` | Добавлен `CampaignTagCreateRequest(name, color)` | [afb77dd](https://github.com/Annener/mercer/commit/afb77ddc566dce8b8640cf41b0ca6fb0177dd6e8) |
+| 2026-06-01 | D03+D04      | `app/api/settings/campaigns.py` | N+1 → batch IN(); `payload: dict` → `CampaignTagCreateRequest` | [596f4af](https://github.com/Annener/mercer/commit/596f4af71d7a69bd1f0caa7c62e1dcb5d6288737) |
+| 2026-06-01 | D08+D09+D10  | `app/static/js/api.js` | null-safe getCampaigns; 8 campaign/tag методов; deleteChat/deleteCampaign/deleteTag — 204 no-json | [581e5c1](https://github.com/Annener/mercer/commit/581e5c171f1fa6d28e6fe05deeeee0893d6816fa) |
+| 2026-06-01 | S1-A..S13-A  | `app/static/js/api.js`, `settings.js`, `tab-domains.js`, `tab-params.js` | Settings group S1–S13: все методы api.js добавлены; handleParamsAction / handleDomainsAction реализованы; showPromptsModal / showFieldsModal добавлены | — |
+| 2026-06-01 | S14-A..S16-A | `app/static/js/settings.js` | handleVaultsAction / handleGenModelsAction / handleEmbModelsAction реализованы | — |
+| 2026-06-01 | S17-B, S18-B, S19-A | `app/static/js/api.js`, `app/static/js/settings.js`, `app/api/settings/emb_models.py` | toggleVault добавлен в api.js; setActiveGenerationModel исправлен на /activate; setActiveEmbeddingModel удалён (роута нет, концепция неприменима); settings.js обновлён | — |
