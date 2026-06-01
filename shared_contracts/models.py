@@ -13,9 +13,9 @@ class ORMModel(BaseModel):
     @model_validator(mode='before')
     @classmethod
     def _coerce_uuid_fields(cls, data: Any) -> Any:
-        """Auto-coerce uuid.UUID ORM attributes to str for all str-typed fields.
+        """Авто-конвертация uuid.UUID ORM-атрибутов в str для str-полей.
 
-        ВАЖНО: намеренно пропускаем list-поля (relationships типа tags, chats и т.п.).
+        ВАЖНО: намеренно пропускаем list-поля (релатионшипы типа tags, chats и т.п.).
         getattr на lazy SQLAlchemy relationship в async-контексте вызывает MissingGreenlet.
         List-поля заполняются явно снаружи (в роуте или хелпере) — не через from_attributes.
         """
@@ -23,8 +23,6 @@ class ORMModel(BaseModel):
             return data
         result: dict[str, Any] = {}
         for field_name, field_info in cls.model_fields.items():
-            # Пропускаем list-поля — они являются ORM relationships
-            # и не могут быть загружены синхронно в async-сессии
             annotation = field_info.annotation
             origin = getattr(annotation, '__origin__', None)
             if origin is list:
@@ -286,7 +284,7 @@ class VaultUpdate(BaseModel):
 
 
 class TagRead(ORMModel):
-    """Тег принадлежит домену (не Vault)."""
+    """\u0422\u0435\u0433 \u043f\u0440\u0438\u043d\u0430\u0434\u043b\u0435\u0436\u0438\u0442 \u0434\u043e\u043c\u0435\u043d\u0443 (\u043d\u0435 Vault)."""
     id: str
     name: str
     domain_id: str
@@ -296,7 +294,7 @@ class TagRead(ORMModel):
 
 
 class TagCreate(BaseModel):
-    """Создание тега: привязка к домену, не к Vault."""
+    """\u0421\u043e\u0437\u0434\u0430\u043d\u0438\u0435 \u0442\u0435\u0433\u0430: \u043f\u0440\u0438\u0432\u044f\u0437\u043a\u0430 \u043a \u0434\u043e\u043c\u0435\u043d\u0443, \u043d\u0435 \u043a Vault."""
     name: str
     domain_id: str
     campaign_id: str | None = None
@@ -309,7 +307,7 @@ class TagUpdate(BaseModel):
 
 
 class TagsGrouped(BaseModel):
-    """Ответ GET /tags — теги сгруппированы для UI"""
+    """\u041e\u0442\u0432\u0435\u0442 GET /tags \u2014 \u0442\u0435\u0433\u0438 \u0441\u0433\u0440\u0443\u043f\u043f\u0438\u0440\u043e\u0432\u0430\u043d\u044b \u0434\u043b\u044f UI"""
     global_tags: list[TagRead] = []
     by_campaign: dict[str, list[TagRead]] = {}  # campaign_id → теги
 
@@ -328,12 +326,12 @@ class DocumentRead(ORMModel):
 
 
 class DocumentLabelWrite(BaseModel):
-    """Полная замена тегов документа"""
+    """\u041f\u043e\u043b\u043d\u0430\u044f \u0437\u0430\u043c\u0435\u043d\u0430 \u0442\u0435\u0433\u043e\u0432 \u0434\u043e\u043a\u0443\u043c\u0435\u043d\u0442\u0430"""
     tag_ids: list[str]
 
 
 class CampaignRead(ORMModel):
-    """Кампания принадлежит домену (не Vault)."""
+    """\u041a\u0430\u043c\u043f\u0430\u043d\u0438\u044f \u043f\u0440\u0438\u043d\u0430\u0434\u043b\u0435\u0436\u0438\u0442 \u0434\u043e\u043c\u0435\u043d\u0443 (\u043d\u0435 Vault)."""
     id: str
     domain_id: str
     name: str
@@ -345,7 +343,7 @@ class CampaignRead(ORMModel):
 
 
 class CampaignCreate(BaseModel):
-    """Создание кампании: привязка к домену, не к Vault."""
+    """\u0421\u043e\u0437\u0434\u0430\u043d\u0438\u0435 \u043a\u0430\u043c\u043f\u0430\u043d\u0438\u0438: \u043f\u0440\u0438\u0432\u044f\u0437\u043a\u0430 \u043a \u0434\u043e\u043c\u0435\u043d\u0443, \u043d\u0435 \u043a Vault."""
     domain_id: str
     name: str
     description: str | None = None
@@ -406,7 +404,7 @@ class PipelineUpdate(BaseModel):
 
 
 class RetrievalContext(BaseModel):
-    """Контекст выполнения пайплайна. vault_id оставлен для back-compat (TODO: удалить в iter4-cleanup)."""
+    """\u041a\u043e\u043d\u0442\u0435\u043a\u0441\u0442 \u0432\u044b\u043f\u043e\u043b\u043d\u0435\u043d\u0438\u044f \u043f\u0430\u0439\u043f\u043b\u0430\u0439\u043d\u0430. vault_id \u043e\u0441\u0442\u0430\u0432\u043b\u0435\u043d \u0434\u043b\u044f back-compat (TODO: \u0443\u0434\u0430\u043b\u0438\u0442\u044c \u0432 iter4-cleanup)."""
     query: str
     vault_ids: list[str] = Field(default_factory=list)  # все enabled-Vault домена
     vault_id: str | None = None  # deprecated back-compat; используй vault_ids
@@ -541,7 +539,12 @@ class ClarificationAnswer(BaseModel):
 
 
 class PipelineExecutionContext(BaseModel):
-    """Полный контекст для запуска пайплайна."""
+    """Полный контекст для запуска пайплайна.
+
+    pipeline_id, pipeline_version, steps, final_composition — Optional:
+    объект создаётся до pipeline_router.select(), затем поля дописываются.
+    PipelineExecutor обязан проверять что поля заполнены перед запуском.
+    """
     chat_id: str
     message_id: str
     query: str
@@ -549,12 +552,14 @@ class PipelineExecutionContext(BaseModel):
     campaign_id: str | None = None
     vault_ids: list[str] = Field(default_factory=list)
     vault_id: str | None = None  # deprecated back-compat; используй vault_ids
-    pipeline_id: str
-    pipeline_version: str
-    steps: list[PipelineStep]
-    final_composition: FinalComposition
+    # C-STREAM02: заполняются после pipeline_router.select() — не при создании объекта
+    pipeline_id: str | None = None
+    pipeline_version: str | None = None
+    steps: list[PipelineStep] | None = None
+    final_composition: FinalComposition | None = None
     history: list[ChatMessage] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    retrieval_strategy: str | None = None
 
 
 class PipelineStepResult(BaseModel):
@@ -578,7 +583,7 @@ class PipelineResult(BaseModel):
 # ---------------------------------------------------------------------------
 
 class UpsertChunk(BaseModel):
-    """Один чанк для записи в LanceDB."""
+    """\u041e\u0434\u0438\u043d \u0447\u0430\u043d\u043a \u0434\u043b\u044f \u0437\u0430\u043f\u0438\u0441\u0438 \u0432 LanceDB."""
     document_id: str
     chunk_index: int
     text: str
@@ -644,7 +649,7 @@ class TaskStateResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 class WSFileChunkProgressMessage(BaseModel):
-    """Прогресс обработки файла: стадия + счётчики чанков."""
+    """\u041f\u0440\u043e\u0433\u0440\u0435\u0441\u0441 \u043e\u0431\u0440\u0430\u0431\u043e\u0442\u043a\u0438 \u0444\u0430\u0439\u043b\u0430: \u0441\u0442\u0430\u0434\u0438\u044f + \u0441\u0447\u0451\u0442\u0447\u0438\u043a\u0438 \u0447\u0430\u043d\u043a\u043e\u0432."""
     type: Literal["file_chunk_progress"] = "file_chunk_progress"
     task_id: str
     file_path: str
@@ -655,7 +660,7 @@ class WSFileChunkProgressMessage(BaseModel):
 
 
 class WSFileStatusMessage(BaseModel):
-    """Финальный статус файла после индексации."""
+    """\u0424\u0438\u043d\u0430\u043b\u044c\u043d\u044b\u0439 \u0441\u0442\u0430\u0442\u0443\u0441 \u0444\u0430\u0439\u043b\u0430 \u043f\u043e\u0441\u043b\u0435 \u0438\u043d\u0434\u0435\u043a\u0441\u0430\u0446\u0438\u0438."""
     type: Literal["file_status"] = "file_status"
     task_id: str
     file_path: str
@@ -665,13 +670,13 @@ class WSFileStatusMessage(BaseModel):
 
 
 class WSTaskCancelledMessage(BaseModel):
-    """Задача индексации отменена."""
+    """\u0417\u0430\u0434\u0430\u0447\u0430 \u0438\u043d\u0434\u0435\u043a\u0441\u0430\u0446\u0438\u0438 \u043e\u0442\u043c\u0435\u043d\u0435\u043d\u0430."""
     type: Literal["task_cancelled"] = "task_cancelled"
     task_id: str
 
 
 class WSTaskCompleteMessage(BaseModel):
-    """Задача индексации завершена успешно."""
+    """\u0417\u0430\u0434\u0430\u0447\u0430 \u0438\u043d\u0434\u0435\u043a\u0441\u0430\u0446\u0438\u0438 \u0437\u0430\u0432\u0435\u0440\u0448\u0435\u043d\u0430 \u0443\u0441\u043f\u0435\u0448\u043d\u043e."""
     type: Literal["task_complete"] = "task_complete"
     task_id: str
     files_total: int = 0
