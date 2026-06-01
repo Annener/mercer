@@ -203,6 +203,41 @@
 
 ---
 
+## C24 · S40–S42 — settings documents layer: фильтр по тегу сломан, методы api.js отсутствуют
+
+### Аудит (цепочка проверки)
+
+**Бэк (`app/api/settings/documents.py` → `GET /api/settings/documents`):**
+- Принимает: `vault_id?`, `domain_id?`, `status?`, `tag_id?`
+- `domain_id` **или** `vault_id` обязателен — иначе **HTTP 400**
+- `status` и `tag_id` — опциональные серверные фильтры
+
+**CONTRACTS.md:**
+- `S40 | GET | /api/settings/documents | query: vault_id?, domain_id?, status?, tag_id? | DocumentRead[]`
+- `S41 | GET | /api/settings/documents/{document_id} | — | DocumentRead`
+- `S42 | DELETE | /api/settings/documents/{document_id} | — | 204`
+
+**api.js — методы S40–S42:**
+- `getSettingsDocuments(params)` → **отсутствует** 🔴
+- `getSettingsDocument(documentId)` → **отсутствует** ⚠️ (не вызывается фронтом)
+- `deleteSettingsDocument(documentId)` → **отсутствует** ⚠️ (фронт использует DB-слой `deleteDocumentById`)
+
+**tab-documents.js → `loadDocumentsData`:**
+- Вызывает `this.api.getDocumentsByVault(vaultId)` — DB-слой, без серверных фильтров
+- Фильтр по статусу (`_docsFilterStatus`) → **клиентский** `docs.filter(...)` — работает, но неэффективно ⚠️
+- Фильтр по тегу (`_docsFilterTagId`) → `sel.onchange` устанавливает `this._docsFilterTagId`, затем вызывает `loadDocumentsData()`, но `loadDocumentsData` **нигде не передаёт** `_docsFilterTagId` в запрос → **фильтр по тегу полностью не работает** 🔴
+
+### Таблица багов
+
+| ID | Файл | Проблема | Исправление | Статус |
+|---|---|---|---|---|
+| S40-B | `api.js` | `getSettingsDocuments(params)` отсутствует — нет метода для `GET /api/settings/documents` с фильтрами | Добавить метод; поддерживает `{vaultId?, domainId?, status?, tagId?}` | 🔴 |
+| S40-A | `tab-documents.js` | `_docsFilterTagId` устанавливается но не передаётся в запрос → фильтр по тегу не работает | `loadDocumentsData` переключить на `getSettingsDocuments` с передачей `status` и `tagId` серверно | 🔴 |
+| S41-A | `api.js` | `getSettingsDocument(documentId)` отсутствует | Добавить: `GET /api/settings/documents/{id}` → `DocumentRead` | ⚠️ (не используется фронтом сейчас) |
+| S42-A | `api.js` / `tab-documents.js` | Удаление через DB-слой (`/api/db/documents/{id}?vault_id=`) вместо settings-слоя (`/api/settings/documents/{id}`, 204) | Контрактное расхождение; функционально равнозначно | ⚠️ |
+
+---
+
 ## Changelog
 
 | Дата | Баги | Файлы | Описание | Коммит |
@@ -219,3 +254,4 @@
 | 2026-06-01 | D6 | — | Верификация: роут PUT /api/settings/documents/{id}/labels уже реализован в бэке; фронт корректен; статус ⚠️ → ✅ | — |
 | 2026-06-01 | S22, D7 | `app/static/js/settings.js`, `app/static/js/api.js` | S22: DOMContentLoaded исправлены 4 несуществующих id; D7: добавлен метод textSearchByDomain | C22 |
 | 2026-06-01 | S44-A | `app/static/js/api.js` | Аудит S44: batchLabelDocuments отсутствовал → добавлен метод; S44-B: batch UI → ⚠️ backlog | C23 |
+| 2026-06-01 | S40-A, S40-B, S41-A, S42-A | `app/static/js/api.js`, `app/static/js/settings/tab-documents.js` | Аудит C24: фильтр по тегу сломан; getSettingsDocuments/getSettingsDocument отсутствуют | C24 |
