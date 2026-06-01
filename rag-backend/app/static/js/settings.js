@@ -221,10 +221,6 @@ class SettingsManager {
 
     // ─── Vaults ──────────────────────────────────────────────────────────────
 
-    /**
-     * S14-A fix: реализация вместо пустой заглушки.
-     * Обрабатывает: new-vault, edit-vault, toggle-vault, delete-vault.
-     */
     async handleVaultsAction(action, id) {
         if (action === 'new-vault') {
             await this.showVaultModal();
@@ -234,12 +230,10 @@ class SettingsManager {
             await this.showVaultModal(id);
             return;
         }
+        // S17-B fix: был updateVault({enabled: !vault.enabled}) — лишний GET + PUT;
+        // теперь toggleVault() → POST /vaults/{id}/toggle (атомарная операция на бэке)
         if (action === 'toggle-vault') {
-            const vaults = await this.api.getSettingsVaults();
-            const arr = Array.isArray(vaults) ? vaults : [];
-            const vault = arr.find(v => v.vault_id === id);
-            if (!vault) return;
-            await this.api.updateVault(id, { enabled: !vault.enabled });
+            await this.api.toggleVault(id);
             await this.loadTab('vaults');
             return;
         }
@@ -253,26 +247,31 @@ class SettingsManager {
 
     // ─── Generation models ────────────────────────────────────────────────────
 
-    /**
-     * S15-A fix: реализация вместо пустой заглушки.
-     * Обрабатывает: new-gen-model, edit-gen-model, toggle-gen-model,
-     *              set-active-gen-model, delete-gen-model.
-     */
     async handleGenModelsAction(action, id) {
-        if (action === 'new-gen-model') {
+        if (action === 'new-gen') {
             await this.showGenModelModal();
             return;
         }
-        if (action === 'edit-gen-model') {
+        if (action === 'edit-gen') {
             await this.showGenModelModal(id);
             return;
         }
-        if (action === 'set-active-gen-model') {
+        // C16 fix: data-action в tab-gen-models.js = "activate-gen", не "set-active-gen-model"
+        if (action === 'activate-gen') {
             await this.api.setActiveGenerationModel(id);
             await this.loadTab('gen-models');
             return;
         }
-        if (action === 'toggle-gen-model') {
+        // C16 fix: добавлена обработка check-gen
+        if (action === 'check-gen') {
+            const result = await this.api.checkGenerationModel(id);
+            const msg = result.ok
+                ? `✅ OK — latency ${result.latency_ms}ms`
+                : `❌ Ошибка: ${result.error}`;
+            alert(msg);
+            return;
+        }
+        if (action === 'toggle-gen') {
             const models = await this.api.getGenerationModels();
             const arr = Array.isArray(models) ? models : [];
             const model = arr.find(m => m.model_id === id);
@@ -281,7 +280,7 @@ class SettingsManager {
             await this.loadTab('gen-models');
             return;
         }
-        if (action === 'delete-gen-model') {
+        if (action === 'delete-gen') {
             if (!confirm(`Удалить модель «${id}»?`)) return;
             await this.api.deleteGenerationModel(id);
             await this.loadTab('gen-models');
@@ -290,26 +289,26 @@ class SettingsManager {
 
     // ─── Embedding models ─────────────────────────────────────────────────────
 
-    /**
-     * S16-A fix: реализация вместо пустой заглушки.
-     * Обрабатывает: new-emb-model, edit-emb-model, toggle-emb-model,
-     *              set-active-emb-model, delete-emb-model.
-     */
     async handleEmbModelsAction(action, id) {
-        if (action === 'new-emb-model') {
+        if (action === 'new-emb') {
             await this.showEmbModelModal();
             return;
         }
-        if (action === 'edit-emb-model') {
+        if (action === 'edit-emb') {
             await this.showEmbModelModal(id);
             return;
         }
-        if (action === 'set-active-emb-model') {
-            await this.api.setActiveEmbeddingModel(id);
-            await this.loadTab('emb-models');
+        // S19-A: блок set-active-emb-model удалён — метода нет, концепция неприменима
+        // C16 fix: добавлена обработка check-emb
+        if (action === 'check-emb') {
+            const result = await this.api.checkEmbeddingModel(id);
+            const msg = result.ok
+                ? `✅ OK — latency ${result.latency_ms}ms, dims ${result.dimensions}`
+                : `❌ Ошибка: ${result.error}`;
+            alert(msg);
             return;
         }
-        if (action === 'toggle-emb-model') {
+        if (action === 'toggle-emb') {
             const models = await this.api.getEmbeddingModels();
             const arr = Array.isArray(models) ? models : [];
             const model = arr.find(m => m.model_id === id);
@@ -318,7 +317,7 @@ class SettingsManager {
             await this.loadTab('emb-models');
             return;
         }
-        if (action === 'delete-emb-model') {
+        if (action === 'delete-emb') {
             if (!confirm(`Удалить модель «${id}»?`)) return;
             await this.api.deleteEmbeddingModel(id);
             await this.loadTab('emb-models');

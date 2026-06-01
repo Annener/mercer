@@ -190,6 +190,27 @@ class ChatAPI {
         // 204 No Content
     }
 
+    // C17 fix: createTag / updateTag — использовались в tab-documents.js, отсутствовали
+    async createTag(data) {
+        const response = await fetch(`${this.baseUrl}/api/settings/tags`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data),
+        });
+        if (!response.ok) throw new Error(`Failed to create tag: ${response.statusText}`);
+        return response.json();
+    }
+
+    async updateTag(tagId, data) {
+        const response = await fetch(`${this.baseUrl}/api/settings/tags/${tagId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data),
+        });
+        if (!response.ok) throw new Error(`Failed to update tag: ${response.statusText}`);
+        return response.json();
+    }
+
     // === Pipelines ===
 
     async getPipelines(domainId = null, campaignId = null) {
@@ -337,7 +358,6 @@ class ChatAPI {
     }
 
     // === Settings: Vaults CRUD ===
-    // S17-A fix: вся группа отсутствовала → TypeError в handleVaultsAction / showVaultModal
 
     async getSettingsVaults() {
         const response = await fetch(`${this.baseUrl}/api/settings/vaults`);
@@ -373,8 +393,16 @@ class ChatAPI {
         // 204 No Content
     }
 
+    // S17-B fix: toggleVault → POST /vaults/{id}/toggle (был updateVault({enabled}))
+    async toggleVault(vaultId) {
+        const response = await fetch(`${this.baseUrl}/api/settings/vaults/${encodeURIComponent(vaultId)}/toggle`, {
+            method: 'POST',
+        });
+        if (!response.ok) throw new Error(`Failed to toggle vault: ${response.statusText}`);
+        return response.json();
+    }
+
     // === Settings: Generation Models CRUD ===
-    // S18-A fix: вся группа отсутствовала → TypeError в handleGenModelsAction
 
     async getGenerationModels() {
         const response = await fetch(`${this.baseUrl}/api/settings/models/generation`);
@@ -410,16 +438,27 @@ class ChatAPI {
         // 204 No Content
     }
 
+    // S18-B fix: /set_active → /activate
     async setActiveGenerationModel(modelId) {
-        const response = await fetch(`${this.baseUrl}/api/settings/models/generation/${encodeURIComponent(modelId)}/set_active`, {
+        const response = await fetch(`${this.baseUrl}/api/settings/models/generation/${encodeURIComponent(modelId)}/activate`, {
             method: 'POST',
         });
-        if (!response.ok) throw new Error(`Failed to set active generation model: ${response.statusText}`);
+        if (!response.ok) throw new Error(`Failed to activate generation model: ${response.statusText}`);
+        return response.json();
+    }
+
+    // C16 fix: check-gen — POST /models/generation/{id}/check (роут есть в gen_models.py)
+    async checkGenerationModel(modelId) {
+        const response = await fetch(`${this.baseUrl}/api/settings/models/generation/${encodeURIComponent(modelId)}/check`, {
+            method: 'POST',
+        });
+        if (!response.ok) throw new Error(`Failed to check generation model: ${response.statusText}`);
         return response.json();
     }
 
     // === Settings: Embedding Models CRUD ===
-    // S19-A fix: вся группа отсутствовала → TypeError в handleEmbModelsAction
+    // S19-A: setActiveEmbeddingModel удалён — роута нет, концепция неприменима.
+    // Несколько embedding-моделей могут использоваться параллельно разными vaults.
 
     async getEmbeddingModels() {
         const response = await fetch(`${this.baseUrl}/api/settings/models/embedding`);
@@ -455,11 +494,70 @@ class ChatAPI {
         // 204 No Content
     }
 
-    async setActiveEmbeddingModel(modelId) {
-        const response = await fetch(`${this.baseUrl}/api/settings/models/embedding/${encodeURIComponent(modelId)}/set_active`, {
+    // C16 fix: check-emb — POST /models/embedding/{id}/check (роут уже есть в emb_models.py)
+    async checkEmbeddingModel(modelId) {
+        const response = await fetch(`${this.baseUrl}/api/settings/models/embedding/${encodeURIComponent(modelId)}/check`, {
             method: 'POST',
         });
-        if (!response.ok) throw new Error(`Failed to set active embedding model: ${response.statusText}`);
+        if (!response.ok) throw new Error(`Failed to check embedding model: ${response.statusText}`);
+        return response.json();
+    }
+
+    // === Settings: Documents ===
+    // C17 fix: все методы отсутствовали — tab-documents.js рушился при любом действии
+
+    // GET /api/settings/documents?domain_id=...&status=...&tag_id=...
+    async getDocumentsByDomain(domainId, status = null, tagId = null) {
+        const params = new URLSearchParams({ domain_id: domainId });
+        if (status) params.set('status', status);
+        if (tagId) params.set('tag_id', tagId);
+        const response = await fetch(`${this.baseUrl}/api/settings/documents?${params}`);
+        if (!response.ok) throw new Error(`Failed to get documents: ${response.statusText}`);
+        return response.json();
+    }
+
+    // PUT /api/settings/documents/{document_id}/labels
+    async updateDocumentLabels(documentId, tagIds) {
+        const response = await fetch(`${this.baseUrl}/api/settings/documents/${encodeURIComponent(documentId)}/labels`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ tag_ids: tagIds }),
+        });
+        if (!response.ok) throw new Error(`Failed to update document labels: ${response.statusText}`);
+        return response.json();
+    }
+
+    // DELETE /api/settings/documents/{document_id} → 204 No Content
+    async deleteDocumentById(documentId) {
+        const response = await fetch(`${this.baseUrl}/api/settings/documents/${encodeURIComponent(documentId)}`, {
+            method: 'DELETE',
+        });
+        if (!response.ok) throw new Error(`Failed to delete document: ${response.statusText}`);
+        // 204 No Content
+    }
+
+    // POST /api/settings/vaults/{vault_id}/reindex
+    async reindexVault(vaultId, force = false) {
+        const response = await fetch(`${this.baseUrl}/api/settings/vaults/${encodeURIComponent(vaultId)}/reindex`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ force }),
+        });
+        if (!response.ok) throw new Error(`Failed to reindex vault: ${response.statusText}`);
+        return response.json();
+    }
+
+    // WebSocket: ws(s)://host/api/settings/tasks/{task_id}/stream
+    connectToTaskStream(taskId) {
+        const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+        const wsUrl = `${proto}://${location.host}/api/settings/tasks/${encodeURIComponent(taskId)}/stream`;
+        return new WebSocket(wsUrl);
+    }
+
+    // GET /api/settings/tasks/{task_id}
+    async getIndexTaskState(taskId) {
+        const response = await fetch(`${this.baseUrl}/api/settings/tasks/${encodeURIComponent(taskId)}`);
+        if (!response.ok) throw new Error(`Failed to get task state: ${response.statusText}`);
         return response.json();
     }
 }
