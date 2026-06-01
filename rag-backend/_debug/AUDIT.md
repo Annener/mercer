@@ -129,6 +129,28 @@
 
 ---
 
+## C21 · settings.js — edit-pipeline вызывает showPipelineModal вместо showPipelineEditModal
+
+### Аудит (цепочка проверки)
+
+**arch.md / инвариант:** Pipeline редактируется через `PipelineBuilder.openEdit`, который принимает существующий объект pipeline.
+
+**tab-pipelines.js (mixin):**
+- `showPipelineModal()` — без аргументов → `PipelineBuilder.openCreate` (создание нового)
+- `showPipelineEditModal(pipelineId)` — принимает UUID → ищет pipeline в списке → `PipelineBuilder.openEdit`
+
+**settings.js → `handlePipelinesAction`:**
+- `new-pipeline` → `this.showPipelineModal()` ✅ корректно
+- `edit-pipeline` → `this.showPipelineModal(id)` 🔴 **НЕВЕРНО** — `showPipelineModal` игнорирует аргумент и всегда открывает форму создания; нужно `this.showPipelineEditModal(id)`
+
+### Таблица багов
+
+| ID | Файл | Проблема | Исправление | Статус |
+|---|---|---|---|---|
+| C21-A | `settings.js` | `edit-pipeline` → `this.showPipelineModal(id)` → открывает форму создания вместо редактирования | `this.showPipelineEditModal(id)` | 🔴 |
+
+---
+
 ## Changelog
 
 | Дата | Баги | Файлы | Описание | Коммит |
@@ -141,3 +163,4 @@
 | 2026-06-01 | S14-B, S15-B, S16-B | `app/static/js/settings.js`, `app/static/js/settings/tab-gen-models.js` | showGenerationModelModal / showEmbeddingModelModal; toggle-gen кнопка | C17 |
 | 2026-06-01 | D1–D5 | `app/static/js/api.js`, `app/static/js/settings/tab-documents.js` | 6 неверных путей db-management; vault_id-aware delete | C19 |
 | 2026-06-01 | S16-C, S16-D, S21-B | `app/api/settings/gen_models.py`, `app/static/js/settings.js` | toggle роут добавлен в бэк; check-gen/check-emb алерт исправлен на result.ok | C20 |
+| 2026-06-01 | C21-A | `app/static/js/settings.js` | audit: edit-pipeline вызывает showPipelineModal вместо showPipelineEditModal | — |
