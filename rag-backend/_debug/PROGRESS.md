@@ -39,20 +39,18 @@
 
 | ID | Группа | Файл | Статус | Примечания |
 |---|---|---|---|---|
-| C1-C9 | chat CRUD + send + stream | `api.js`, `chat.js`, `sidebar.js` | 🔴 | Аудит не проводился |
+| C1-C9 | chat CRUD + send + stream | `api.js`, `chat.js`, `sidebar.js` | ✅ | **C25**: C1–C9 + CF1–CF2 проверены; C25-A ✅ stream:true в sendMessage; C25-B ✅ locked_pipeline_id null-safe; C25-C ✅ clarification_id сохраняется при SSE; C25-D ⚠️ getConfigVaults → backlog |
 
 ## Config группа
 
 | ID | Группа | Файл | Статус | Примечания |
 |---|---|---|---|---|
-| CF1-CF2 | config domains + vaults | `api.js`, `sidebar.js`, `chat.js` | 🔴 | Аудит не проводился |
+| CF1-CF2 | config domains + vaults | `api.js`, `sidebar.js`, `chat.js` | ✅ | **C25**: CF1 ✅ getDomains корректен; CF2 ⚠️ getConfigVaults отсутствует → backlog |
 
 ---
 
 ## Следующая задача
 
-- [ ] **C25: Аудит chat группы (C1–C9) + config (CF1–CF2)**
-  - Цепочка: arch.md §chat → models.py → pydantic-схемы → роуты → CONTRACTS.md → api.js/chat.js/sidebar.js
-  - Особое внимание: SSE-стрим (C8), domain_id в CreateChatRequest, lock_pipeline (C6)
+- [ ] **Финальный smoke-test**: поднять dev-окружение, пройтись по всем вкладкам settings и chat
 - [ ] S44-B: batch-выбор документов в UI (`tab-documents.js`) — backlog, отдельная задача
-- [ ] Финальный smoke-test: поднять dev-окружение, пройтись по всем вкладкам settings
+- [ ] C25-D: `getConfigVaults` (`GET /config/vaults`) — backlog, фронт не вызывает сейчас

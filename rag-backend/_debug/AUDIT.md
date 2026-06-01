@@ -231,14 +231,14 @@
 
 | ID | Файл | Проблема | Исправление | Статус |
 |---|---|---|---|---|
-| S40-B | `api.js` | `getSettingsDocuments(params)` отсутствует — нет метода для `GET /api/settings/documents` с фильтрами | Добавить метод; поддерживает `{vaultId?, domainId?, status?, tagId?}` | 🔴 |
-| S40-A | `tab-documents.js` | `_docsFilterTagId` устанавливается но не передаётся в запрос → фильтр по тегу не работает | `loadDocumentsData` переключить на `getSettingsDocuments` с передачей `status` и `tagId` серверно | 🔴 |
-| S41-A | `api.js` | `getSettingsDocument(documentId)` отсутствует | Добавить: `GET /api/settings/documents/{id}` → `DocumentRead` | ⚠️ (не используется фронтом сейчас) |
+| S40-B | `api.js` | `getSettingsDocuments(params)` отсутствует — нет метода для `GET /api/settings/documents` с фильтрами | Добавить метод; поддерживает `{vaultId?, domainId?, status?, tagId?}` | ✅ |
+| S40-A | `tab-documents.js` | `_docsFilterTagId` устанавливается но не передаётся в запрос → фильтр по тегу не работает | `loadDocumentsData` переключить на `getSettingsDocuments` с передачей `status` и `tagId` серверно | ✅ |
+| S41-A | `api.js` | `getSettingsDocument(documentId)` отсутствует | Добавить: `GET /api/settings/documents/{id}` → `DocumentRead` | ✅ |
 | S42-A | `api.js` / `tab-documents.js` | Удаление через DB-слой (`/api/db/documents/{id}?vault_id=`) вместо settings-слоя (`/api/settings/documents/{id}`, 204) | Контрактное расхождение; функционально равнозначно | ⚠️ |
 
 ---
 
-## C25 · Chat C1–C9 + Config CF1–CF2 — аудит
+## C25 · Chat C1–C9 + Config CF1–CF2 — аудит и фиксы
 
 ### Цепочка проверки
 
@@ -261,10 +261,12 @@
 
 | ID | Файл | Проблема | Приоритет | Статус |
 |---|---|---|---|---|
-| C25-A | `api.js` | `sendMessage` не передаёт `stream: true` в body `/chat/{id}/send_stream` — расхождение с `SendMessageRequest` | 🔴 | 🔴 |
-| C25-B | `chat.js` | `setupContextBar` читает `chat.locked_pipeline_id` — поле отсутствует в `ChatHistoryResponse`; нужно проверить бэк-роут | ⚠️ | ⚠️ |
-| C25-C | `chat.js` | SSE-поток: при `type === 'clarification'` `clarification_id` не сохраняется → кнопка ответа не появляется при стриминге (non-stream работает корректно) | 🔴 | 🔴 |
-| C25-D | `api.js` | `getConfigVaults` (`GET /config/vaults`) отсутствует — не вызывается фронтом сейчас | ⚠️ | ⚠️ backlog |
+| C25-A | `api.js` | `sendMessage` не передавал `stream: true` в body → расхождение с `SendMessageRequest` | 🔴 | ✅ исправлен |
+| C25-B | `chat.js` | `setupContextBar` читает `chat.locked_pipeline_id` — null-safe guard добавлен | ⚠️ | ✅ исправлен |
+| C25-C | `chat.js` | SSE-поток: при `type === 'clarification'` `clarification_id` не сохранялся | 🔴 | ✅ исправлен |
+| C25-D | `api.js` | `getConfigVaults` (`GET /config/vaults`) отсутствует — фронт не вызывает сейчас | ⚠️ | ⚠️ backlog |
+
+**Закрыто в коммите C25.**
 
 ---
 
@@ -285,4 +287,4 @@
 | 2026-06-01 | S22, D7 | `app/static/js/settings.js`, `app/static/js/api.js` | S22: DOMContentLoaded исправлены 4 несуществующих id; D7: добавлен метод textSearchByDomain | C22 |
 | 2026-06-01 | S44-A | `app/static/js/api.js` | Аудит S44: batchLabelDocuments отсутствовал → добавлен метод; S44-B: batch UI → ⚠️ backlog | C23 |
 | 2026-06-01 | S40-A, S40-B, S41-A, S42-A | `app/static/js/api.js`, `app/static/js/settings/tab-documents.js` | Аудит C24: фильтр по тегу сломан; getSettingsDocuments/getSettingsDocument отсутствуют | C24 |
-| 2026-06-01 | C25-A..C25-D | `app/static/js/api.js`, `app/static/js/chat.js` | Аудит C25: stream:true отсутствует в sendMessage; locked_pipeline_id в ответе; clarification_id не сохраняется при SSE; getConfigVaults отсутствует | C25 |
+| 2026-06-01 | C25-A, C25-B, C25-C | `app/static/js/api.js`, `app/static/js/chat.js` | C25-A: stream:true добавлен в sendMessage; C25-B: locked_pipeline_id null-safe; C25-C: clarification_id сохраняется в SSE | C25 |
