@@ -214,6 +214,31 @@ class ChatAPI {
         return response.json();
     }
 
+    // F02-A fix: метод отсутствовал — pipeline_builder.js._save() вызывал его при создании pipeline
+    // Контракт: POST /api/settings/pipelines, body: PipelineCreate, ответ: PipelineRead
+    async createPipeline(data) {
+        const response = await fetch(`${this.baseUrl}/api/settings/pipelines`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data),
+        });
+        if (!response.ok) throw new Error(`Failed to create pipeline: ${response.statusText}`);
+        return response.json();
+    }
+
+    // F02-B fix: метод отсутствовал — pipeline_builder.js._save() вызывал его при обновлении pipeline
+    // Контракт: PUT /api/settings/pipelines/{pipeline_id}, body: PipelineUpdate, ответ: PipelineRead
+    // pipelineId — строковый pipeline_id (не UUID): например 'my_pipeline'
+    async updatePipeline(pipelineId, data) {
+        const response = await fetch(`${this.baseUrl}/api/settings/pipelines/${encodeURIComponent(pipelineId)}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data),
+        });
+        if (!response.ok) throw new Error(`Failed to update pipeline: ${response.statusText}`);
+        return response.json();
+    }
+
     async activatePipeline(pipelineId) {
         const response = await fetch(`${this.baseUrl}/api/settings/pipelines/${encodeURIComponent(pipelineId)}/activate`, {
             method: 'POST',
@@ -497,7 +522,6 @@ class ChatAPI {
 
     // S40-B fix: метод отсутствовал. Бэк: GET /api/settings/documents?vault_id=|domain_id=&status=&tag_id=
     // Один из vault_id / domain_id обязателен (иначе бэк вернёт 400).
-    // Фильтры status и tag_id — серверные, переносим фильтрацию на бэк.
     async getSettingsDocuments({ vaultId = null, domainId = null, status = null, tagId = null } = {}) {
         const params = new URLSearchParams();
         if (vaultId)  params.set('vault_id',  vaultId);
@@ -520,8 +544,6 @@ class ChatAPI {
     // DB Management: Documents
 
     // D1 fix: /api/db/documents?vault_id= (не /api/settings/documents?domain_id=)
-    // Параметр vault_id обязателен — бэк принимает только vault_id, не domain_id.
-    // tab-documents.js использует _resolveVaultId() перед вызовом.
     async getDocumentsByVault(vaultId, limit = 100, offset = 0, orderBy = 'document_id') {
         const params = new URLSearchParams({
             vault_id: vaultId,
@@ -545,10 +567,8 @@ class ChatAPI {
         return response.json(); // возвращает JSON, не 204
     }
 
-    // D6 fix: путь исправлен /api/db/ → /api/settings/
-    // Роут PUT /api/settings/documents/{id}/labels реализован в app/api/settings/documents.py
-    // Full-replace семантика: удаляет все старые метки, вставляет новые.
-    // Валидирует domain ownership тегов. Возвращает DocumentRead (200).
+    // D6 fix: PUT /api/settings/documents/{id}/labels
+    // Full-replace семантика: удаляет все старые метки, вставляет новые. Возвращает DocumentRead (200).
     async updateDocumentLabels(documentId, tagIds) {
         const response = await fetch(`${this.baseUrl}/api/settings/documents/${encodeURIComponent(documentId)}/labels`, {
             method: 'PUT',
@@ -559,7 +579,7 @@ class ChatAPI {
         return response.json();
     }
 
-    // S44-A fix: метод отсутствовал — db_management.js вызывал chatAPI.textSearchByDomain(), которого не было.
+    // S44-A fix: метод отсутствовал — additive батч-назначение тегов
     async batchLabelDocuments(documentIds, tagIds) {
         const response = await fetch(`${this.baseUrl}/api/settings/documents/labels/batch`, {
             method: 'POST',
@@ -582,7 +602,6 @@ class ChatAPI {
     }
 
     // runIndexer — алиас для reindexVault, используется в tab-integrations.js.
-    // Если vaultId не передан — берёт первый доступный vault.
     async runIndexer(vaultId = null, force = false) {
         if (!vaultId) {
             const vaults = await this.getSettingsVaults();
@@ -608,8 +627,7 @@ class ChatAPI {
         return response.json();
     }
 
-    // D7 fix: метод отсутствовал — db_management.js вызывал chatAPI.textSearchByDomain(), которого не было.
-    // Бэк: POST /api/db/search/domain, body: {domain_id, query_text, limit}
+    // D7 fix: POST /api/db/search/domain, body: {domain_id, query_text, limit}
     // Ответ: TextSearchResponse {results: [{chunk_id, document_id, text, score, metadata}]}
     async textSearchByDomain(domainId, queryText, limit = 20) {
         const response = await fetch(`${this.baseUrl}/api/db/search/domain`, {
