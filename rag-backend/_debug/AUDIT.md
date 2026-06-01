@@ -18,11 +18,11 @@
 
 | ID  | Слой     | Файл                        | Проблема                                                                 | Статус |
 |-----|----------|-----------------------------|--------------------------------------------------------------------------|--------|
-| A01 | model    | `app/db/models.py`          | `Chat.domain_id` — `nullable=True`, по концепту должен быть NOT NULL     | ⚠️     |
+| A01 | model    | `app/db/models.py`          | `Chat.domain_id` — `nullable=True`, по концепту должен быть NOT NULL; также `ondelete="SET NULL"` → исправлено на `CASCADE` | ✅     |
 | A02 | model    | `app/db/models.py`          | `Chat` не имеет поля `pipeline_versions`                                 | ✅     |
 | A03 | model    | `app/db/models.py`          | `Chat` не имеет поля `locked_pipeline_id`                                | ✅     |
 | A04 | route    | `app/api/chat.py`           | `_audit()` вызывался с `payload=`, в модели `AuditLog` поле `details=`  | ✅     |
-| A05 | schema   | `app/api/chat.py`           | `CreateChatRequest.domain_id` — опционален, концепт требует обязательного | ⚠️     |
+| A05 | schema   | `app/api/chat.py`           | `CreateChatRequest.domain_id` — был опционален (`str \| None = None`), концепт требует обязательного; исправлено на `str` | ✅     |
 | A06 | frontend | `app/static/js/sidebar.js`  | `createChat(domain, campaign)` — соответствует контракту                 | ⬜     |
 
 ---
@@ -85,7 +85,7 @@
 
 | ID  | Слой     | Файл                    | Проблема                                                            | Статус |
 |-----|----------|-------------------------|---------------------------------------------------------------------|--------|
-| —   | frontend | `app/static/js/api.js`  | `{content}` — верно, бэк не требует поле `stream` (два эндпоинта)  | ⬜     |
+| —   | frontend | `app/static/js/api.js`  | `{content}` — верно, бэк не требует поле `stream` (два эндпойнта)  | ⬜     |
 | —   | frontend | `app/static/js/chat.js` | `handleJSONResponse` разбирает `response.content` — верно           | ⬜     |
 
 ---
@@ -108,7 +108,7 @@
 | ID  | Слой     | Файл                        | Проблема                                                                                                             | Статус |
 |-----|----------|-----------------------------|----------------------------------------------------------------------------------------------------------------------|--------|
 | B07 | frontend | `app/static/js/chat.js`     | `handleJSONResponse`: `response.role === 'assistant' && response.state` → исправлено на `response.state && response.question` | ✅     |
-| B08 | frontend | `app/static/js/api.js`      | Добавлен `submitClarification(chatId, answers)` — эндпоинт C9 доступен с фронта                      | ✅     |
+| B08 | frontend | `app/static/js/api.js`      | Добавлен `submitClarification(chatId, answers)` — эндпойнт C9 доступен с фронта                      | ✅     |
 | C01 | frontend | `app/static/js/api.js`      | `submitClarification` шлёт `{ answers }` без `clarification_id` — бэк возвращал 422 (поле обязательно по `ClarificationAnswer`) | ✅     |
 | C02 | frontend | `app/static/js/chat.js`     | `handleJSONResponse` проверял `response.state && response.question` — таких полей нет в `ClarificationResponse`; исправлено на `response.clarification_id` | ✅     |
 
@@ -131,3 +131,5 @@
 | 2026-06-01 | B08      | `app/static/js/api.js`      | Добавлен `submitClarification(chatId, answers)`                            | [10a9401](https://github.com/Annener/mercer/commit/10a9401f09e8f7682885d9c01f99cdb987fcb0ac) |
 | 2026-06-01 | **C01**  | `app/static/js/api.js`      | `submitClarification`: добавлен `clarification_id` в сигнатуру и body       | [d10977b](https://github.com/Annener/mercer/commit/d10977b45bc31cf55d0eaff1c82ebd4a92eb5066) |
 | 2026-06-01 | **C02**  | `app/static/js/chat.js`     | `handleJSONResponse`: чек по `clarification_id`; `addMessage` принимает clarificationId | [6931bd7](https://github.com/Annener/mercer/commit/6931bd722c12dec50752ae27aad9a549c9a5a574) |
+| 2026-06-01 | **A01**  | `app/db/models.py`          | `Chat.domain_id`: `nullable=True` → `nullable=False`; `ondelete="SET NULL"` → `CASCADE` | [4966c39](https://github.com/Annener/mercer/commit/4966c394791e51a4a7a734fd8432f934e4b6dbb0) |
+| 2026-06-01 | **A05**  | `app/api/chat.py`           | `CreateChatRequest.domain_id`: `str \| None = None` → `str` (required)     | [c06876d](https://github.com/Annener/mercer/commit/c06876dc9ea6b58c06445e0bfebdfcb09912b419) |
