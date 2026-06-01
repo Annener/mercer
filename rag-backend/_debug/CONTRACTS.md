@@ -1,7 +1,7 @@
 # API Contracts — RAG Backend
 
 > Источник правды: `openapi.json` (FastAPI auto-generated)  
-> Бэкенд — источник правды. Фронт подстраивается под бэк.  
+> Бэкенд — источник правды. Фронт подстраивается под бэк.
 > Обновлено: 2026-06-01
 
 ---
@@ -105,7 +105,7 @@
 ### CreateChatRequest
 ```json
 {
-  "domain_id": "string | null",
+  "domain_id": "string",             // ОБЯЗАТЕЛЬНО — чат всегда принадлежит домену (arch.md §2.6, §8)
   "vault_id": "string | null",       // deprecated, back-compat
   "campaign_id": "string | null"
 }
