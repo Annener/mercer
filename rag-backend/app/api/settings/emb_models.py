@@ -16,6 +16,12 @@ from .schemas import EmbeddingModelCreateRequest, EmbeddingModelUpdateRequest
 router = APIRouter()
 
 
+async def _get_embedding_model_by_model_id(model_id: str, db: AsyncSession) -> EmbeddingModel | None:
+    """Lookup EmbeddingModel by model_id (string), not by PK (UUID)."""
+    result = await db.execute(select(EmbeddingModel).where(EmbeddingModel.model_id == model_id))
+    return result.scalar_one_or_none()
+
+
 @router.get("/models/embedding")
 async def list_embedding_models(db: AsyncSession = Depends(get_db)) -> list[dict[str, Any]]:
     return await settings_service.list_embedding_models(db)
@@ -25,14 +31,14 @@ async def list_embedding_models(db: AsyncSession = Depends(get_db)) -> list[dict
 async def create_embedding_model(req: EmbeddingModelCreateRequest, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
     if req.provider not in ["ollama", "openai_compatible"]:
         raise HTTPException(status_code=422, detail="Unsupported embedding provider")
-    if await db.get(EmbeddingModel, req.model_id) is not None:
+    if await _get_embedding_model_by_model_id(req.model_id, db) is not None:
         raise HTTPException(status_code=409, detail="Embedding model already exists")
     return await settings_service.create_embedding_model(req.model_dump(exclude_none=True), db)
 
 
 @router.post("/models/embedding/{model_id:path}/check")
 async def check_embedding_model(model_id: str, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
-    model = await db.get(EmbeddingModel, model_id)
+    model = await _get_embedding_model_by_model_id(model_id, db)
     if model is None:
         raise HTTPException(status_code=404, detail="Embedding model not found")
     started = time.perf_counter()
