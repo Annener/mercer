@@ -238,6 +238,36 @@
 
 ---
 
+## C25 · Chat C1–C9 + Config CF1–CF2 — аудит
+
+### Цепочка проверки
+
+`arch.md §chat` → `models/chat.py` → pydantic-схемы → `app/api/chat.py` → `CONTRACTS.md C1–C9, CF1–CF2` → `api.js` + `chat.js` + `sidebar.js`
+
+### Верифицированы (OK)
+
+| ID | Эндпоинт | Файл | Статус |
+|---|---|---|---|
+| C1 | `POST /chat/create` | `api.js` + `sidebar.js` | ⬜ `domain_id` + `campaign_id` передаются корректно; `null` вместо `""` |
+| C2 | `GET /chat/list?domain_id=` | `api.js` + `sidebar.js` | ⬜ query-param передаётся; ответ `{chats:[]}` парсится |
+| C3 | `GET /chat/{id}/history` | `api.js` + `chat.js` | ⬜ URL верный; `data.chat` + `data.messages` читаются |
+| C4 | `POST /chat/{id}/rename` | `api.js` + `sidebar.js` | ⬜ body `{title}` совпадает с `RenameChatRequest` |
+| C5 | `DELETE /chat/{id}` | `api.js` | ⬜ 204-safe, нет `.json()` |
+| C6 | `POST /chat/{id}/lock_pipeline` | `api.js` + `chat.js` | ⬜ body `{pipeline_id}`; `togglePipelineLock()` реализован |
+| C7 | `POST /chat/{id}/send` | `api.js` | ⬜ body `{content}` корректно |
+| CF1 | `GET /config/domains` | `api.js` + `sidebar.js` | ⬜ оба формата ответа поддержаны |
+
+### Таблица багов
+
+| ID | Файл | Проблема | Приоритет | Статус |
+|---|---|---|---|---|
+| C25-A | `api.js` | `sendMessage` не передаёт `stream: true` в body `/chat/{id}/send_stream` — расхождение с `SendMessageRequest` | 🔴 | 🔴 |
+| C25-B | `chat.js` | `setupContextBar` читает `chat.locked_pipeline_id` — поле отсутствует в `ChatHistoryResponse`; нужно проверить бэк-роут | ⚠️ | ⚠️ |
+| C25-C | `chat.js` | SSE-поток: при `type === 'clarification'` `clarification_id` не сохраняется → кнопка ответа не появляется при стриминге (non-stream работает корректно) | 🔴 | 🔴 |
+| C25-D | `api.js` | `getConfigVaults` (`GET /config/vaults`) отсутствует — не вызывается фронтом сейчас | ⚠️ | ⚠️ backlog |
+
+---
+
 ## Changelog
 
 | Дата | Баги | Файлы | Описание | Коммит |
@@ -255,3 +285,4 @@
 | 2026-06-01 | S22, D7 | `app/static/js/settings.js`, `app/static/js/api.js` | S22: DOMContentLoaded исправлены 4 несуществующих id; D7: добавлен метод textSearchByDomain | C22 |
 | 2026-06-01 | S44-A | `app/static/js/api.js` | Аудит S44: batchLabelDocuments отсутствовал → добавлен метод; S44-B: batch UI → ⚠️ backlog | C23 |
 | 2026-06-01 | S40-A, S40-B, S41-A, S42-A | `app/static/js/api.js`, `app/static/js/settings/tab-documents.js` | Аудит C24: фильтр по тегу сломан; getSettingsDocuments/getSettingsDocument отсутствуют | C24 |
+| 2026-06-01 | C25-A..C25-D | `app/static/js/api.js`, `app/static/js/chat.js` | Аудит C25: stream:true отсутствует в sendMessage; locked_pipeline_id в ответе; clarification_id не сохраняется при SSE; getConfigVaults отсутствует | C25 |
