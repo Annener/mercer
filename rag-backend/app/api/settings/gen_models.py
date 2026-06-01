@@ -40,6 +40,22 @@ async def activate_generation_model(model_id: str, db: AsyncSession = Depends(ge
     return {"status": "ok"}
 
 
+@router.post("/models/generation/{model_id:path}/toggle")
+async def toggle_generation_model(model_id: str, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+    model = await db.get(GenerationModel, model_id)
+    if model is None:
+        raise HTTPException(status_code=404, detail="Generation model not found")
+    if model.is_active and model.enabled:
+        raise HTTPException(status_code=409, detail="Cannot disable the active generation model")
+    try:
+        updated = await settings_service.update_generation_model(
+            model_id, {"enabled": not model.enabled}, db
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Generation model not found") from exc
+    return updated
+
+
 @router.post("/models/generation/{model_id:path}/check")
 async def check_generation_model(model_id: str, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
     model = await db.get(GenerationModel, model_id)

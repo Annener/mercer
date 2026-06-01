@@ -157,8 +157,13 @@ class SettingsManager {
             } catch (e) { alert('Ошибка: ' + e.message); }
         } else if (action === 'check-gen') {
             try {
+                // C20 fix: бэк возвращает {ok, latency_ms, error} — не {status}
                 const result = await this.api.checkGenerationModel(id);
-                alert(result?.status === 'ok' ? '✅ Модель доступна' : '❌ ' + (result?.detail || 'Недоступна'));
+                if (result?.ok) {
+                    alert(`✅ Модель доступна (${result.latency_ms} мс)`);
+                } else {
+                    alert('❌ ' + (result?.error || 'Недоступна'));
+                }
             } catch (e) { alert('Ошибка проверки: ' + e.message); }
         }
     }
@@ -178,8 +183,13 @@ class SettingsManager {
             } catch (e) { alert('Ошибка: ' + e.message); }
         } else if (action === 'check-emb') {
             try {
+                // бэк возвращает {ok, latency_ms, error}
                 const result = await this.api.checkEmbeddingModel(id);
-                alert(result?.status === 'ok' ? '✅ Модель доступна' : '❌ ' + (result?.detail || 'Недоступна'));
+                if (result?.ok) {
+                    alert(`✅ Модель доступна (${result.latency_ms} мс)`);
+                } else {
+                    alert('❌ ' + (result?.error || 'Недоступна'));
+                }
             } catch (e) { alert('Ошибка проверки: ' + e.message); }
         }
     }

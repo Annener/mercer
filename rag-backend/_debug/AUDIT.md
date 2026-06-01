@@ -27,7 +27,7 @@
 ## C14 · settings.js — пустые заглушки handlers
 
 | ID | Файл | Проблема | Статус |
-|---|---|---|---|
+|---|---|---|
 | S14-A | `settings.js` | `handleVaultsAction` — пустая заглушка `{}` | ✅ |
 | S15-A | `settings.js` | `handleGenModelsAction` — пустая заглушка `{}` | ✅ |
 | S16-A | `settings.js` | `handleEmbModelsAction` — пустая заглушка `{}` | ✅ |
@@ -93,11 +93,11 @@
 
 | ID | Метод api.js | Путь в api.js (до фикса) | Правильный путь | Доп. проблема | Статус |
 |---|---|---|---|---|---|
-| D1 | `getDocumentsByDomain(domainId)` | `GET /api/settings/documents?domain_id=` | `GET /api/db/documents?vault_id=` | Нужен `vault_id`, не `domain_id`; tab-documents.js обновлён | 🔴 → C19 |
-| D2 | `deleteDocumentById(docId)` | `DELETE /api/settings/documents/{id}` | `DELETE /api/db/documents/{id}?vault_id=` | vault_id обязателен как query-param; ответ JSON, не 204 | 🔴 → C19 |
-| D3 | `reindexVault(vaultId)` | `POST /api/settings/vaults/{id}/reindex` | `POST /vaults/{id}/reindex` | Лишний prefix `/api/settings` | 🔴 → C19 |
-| D4 | `connectToTaskStream(taskId)` | `WS /api/settings/tasks/{id}/stream` | `WS /ws/index-tasks/{id}` | Неверный путь WS | 🔴 → C19 |
-| D5 | `getIndexTaskState(taskId)` | `GET /api/settings/tasks/{id}` | `GET /index-tasks/{id}/state` | Нет суффикса `/state` | 🔴 → C19 |
+| D1 | `getDocumentsByDomain(domainId)` | `GET /api/settings/documents?domain_id=` | `GET /api/db/documents?vault_id=` | Нужен `vault_id`, не `domain_id`; tab-documents.js обновлён | ✅ → C19 |
+| D2 | `deleteDocumentById(docId)` | `DELETE /api/settings/documents/{id}` | `DELETE /api/db/documents/{id}?vault_id=` | vault_id обязателен как query-param; ответ JSON, не 204 | ✅ → C19 |
+| D3 | `reindexVault(vaultId)` | `POST /api/settings/vaults/{id}/reindex` | `POST /vaults/{id}/reindex` | Лишний prefix `/api/settings` | ✅ → C19 |
+| D4 | `connectToTaskStream(taskId)` | `WS /api/settings/tasks/{id}/stream` | `WS /ws/index-tasks/{id}` | Неверный путь WS | ✅ → C19 |
+| D5 | `getIndexTaskState(taskId)` | `GET /api/settings/tasks/{id}` | `GET /index-tasks/{id}/state` | Нет суффикса `/state` | ✅ → C19 |
 | D6 | `updateDocumentLabels(docId, tagIds)` | `PUT /api/settings/documents/{id}/labels` | **Роута нет в бэке** | TODO: добавить роут в settings/documents.py или db_management.py | ⚠️ |
 
 ---
@@ -117,6 +117,18 @@
 
 ---
 
+## C20 · gen_models.py + settings.js — toggle роут и check-gen ответ
+
+| ID | Файл | Проблема | Исправление | Статус |
+|---|---|---|---|---|
+| S16-C | `gen_models.py` | `POST /models/generation/{model_id:path}/toggle` отсутствовал → 404 при нажатии ⏸️/▶️ | Добавлен роут: атомарный flip `enabled`; если `is_active=True && enabled=True` → 409 | ✅ |
+| S16-D | `settings.js` | `check-gen`: `result?.status === 'ok'` → всегда `false` (бэк возвращает `{ok, latency_ms, error}`) | Исправлено на `result?.ok`; алерт показывает latency_ms | ✅ |
+| S21-B | `settings.js` | `check-emb`: аналогичная ошибка `result?.status === 'ok'` | Исправлено на `result?.ok` (попутно) | ✅ |
+
+**Закрыто в коммите C20.**
+
+---
+
 ## Changelog
 
 | Дата | Баги | Файлы | Описание | Коммит |
@@ -128,3 +140,4 @@
 | 2026-06-01 | S17-B, S18-B, S19-A | `app/static/js/api.js`, `app/static/js/settings.js`, `app/api/settings/emb_models.py` | toggleVault добавлен в api.js; setActiveGenerationModel исправлен на /activate; setActiveEmbeddingModel удалён | — |
 | 2026-06-01 | S14-B, S15-B, S16-B | `app/static/js/settings.js`, `app/static/js/settings/tab-gen-models.js` | showGenerationModelModal / showEmbeddingModelModal; toggle-gen кнопка | C17 |
 | 2026-06-01 | D1–D5 | `app/static/js/api.js`, `app/static/js/settings/tab-documents.js` | 6 неверных путей db-management; vault_id-aware delete | C19 |
+| 2026-06-01 | S16-C, S16-D, S21-B | `app/api/settings/gen_models.py`, `app/static/js/settings.js` | toggle роут добавлен в бэк; check-gen/check-emb алерт исправлен на result.ok | C20 |
