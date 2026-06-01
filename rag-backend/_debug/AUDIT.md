@@ -333,7 +333,7 @@ await this.api.deleteDocumentById(docId, vaultId || null);
 
 | ID | Файл | Строка | Проблема | Исправление | Статус |
 |---|---|---|---|---|---|
-| F01 | `tab-documents.js` | `handleDocumentsAction` / `delete-doc` | `this.api.deleteDocument` → `TypeError: not a function` | Переименовать в `this.api.deleteDocumentById` | 🔴 |
+| F01 | `tab-documents.js` | `handleDocumentsAction` / `delete-doc` | `this.api.deleteDocument` → `TypeError: not a function` | Переименовать в `this.api.deleteDocumentById` | ✅ |
 
 ---
 
@@ -375,9 +375,9 @@ async updatePipeline(pipelineId, data) {
 
 | ID | Файл | Проблема | Исправление | Статус |
 |---|---|---|---|---|
-| F02-A | `api.js` | `createPipeline` отсутствует | Добавить: `POST /api/settings/pipelines` | 🔴 |
-| F02-B | `api.js` | `updatePipeline` отсутствует | Добавить: `PUT /api/settings/pipelines/{id}` | 🔴 |
-| F02-C | `pipeline_builder.js` | `_save()` использует `_pipeline.id` — нужно уточнить `id` vs `pipeline_id` | Проверить контракт бэка; при необходимости заменить на `_pipeline.pipeline_id` | ⚠️ |
+| F02-A | `api.js` | `createPipeline` отсутствует | Добавить: `POST /api/settings/pipelines` | ✅ |
+| F02-B | `api.js` | `updatePipeline` отсутствует | Добавить: `PUT /api/settings/pipelines/{id}` | ✅ |
+| F02-C | `pipeline_builder.js` | `_save()` использует `_pipeline.id` — нужно уточнить `id` vs `pipeline_id` | Проверить контракт бэка; при необходимости заменить на `_pipeline.pipeline_id` | ✅ |
 
 ---
 
@@ -395,8 +395,8 @@ async updatePipeline(pipelineId, data) {
 
 | ID | Файл | Проблема | Исправление | Статус |
 |---|---|---|---|---|
-| F03-A | `pipeline_builder.js` | Чекбокс `is_final` в UI — пользователь должен проставлять вручную | Убрать чекбокс; автоставить `is_final` при `type=final` | ⚠️ |
-| F03-B | `pipeline_builder.js` | `_bindStepEvents`: смена `type` на `final` не снимает `is_final` у других шагов | При `type=final` → `_steps.forEach(s => s.is_final = false)` до установки текущего | ⚠️ |
+| F03-A | `pipeline_builder.js` | Чекбокс `is_final` в UI — пользователь должен проставлять вручную | Убрать чекбокс; автоставить `is_final` при `type=final` | ✅ |
+| F03-B | `pipeline_builder.js` | `_bindStepEvents`: смена `type` на `final` не снимает `is_final` у других шагов | При `type=final` → `_steps.forEach(s => s.is_final = false)` до установки текущего | ✅ |
 
 ---
 
@@ -483,6 +483,41 @@ def upgrade() -> None:
 
 ---
 
+## C29 · F04 — `_pollIndexerStatus` вызывает несуществующий `getIndexerTaskStatus`
+
+### Аудит (цепочка проверки)
+
+`tab-documents.js` → `api.js` → `CONTRACTS.md`
+
+**Файл:** `tab-documents.js`, метод `_pollIndexerStatus`  
+**Симптом:** После запуска индексации кнопкой «▶ Запустить индексацию» — статус таска получить невозможно; в консоли:
+```
+TypeError: this.api.getIndexerTaskStatus is not a function
+```
+
+**Причина:** `_pollIndexerStatus(taskId, statusEl)` вызывает `this.api.getIndexerTaskStatus(taskId)`.  
+В `api.js` такого метода **не существует**. Правильный метод — `getIndexTaskState(taskId)` (добавлен в D5, коммит C19, путь `GET /index-tasks/{id}/state`).
+
+**Верификация:**
+
+| Что | Значение |
+|---|---|
+| Вызов в `tab-documents.js` | `this.api.getIndexerTaskStatus(taskId)` |
+| Метод в `api.js` | ❌ не существует |
+| Корректный метод | `this.api.getIndexTaskState(taskId)` |
+| Путь бэка | `GET /index-tasks/{task_id}/state` |
+| Ответ | `{task_id, status, progress?, error?}` |
+
+**Дополнительно:** после получения ответа `_pollIndexerStatus` должен проверять `state.status` (или аналогичное поле) для определения завершения задачи. Нужно убедиться, что поле `status` из ответа `getIndexTaskState` совпадает с тем, что ожидает poll-цикл (терминальные значения: `'done'`, `'error'`, `'failed'`, `'completed'` — уточнить по схеме бэка).
+
+### Таблица багов
+
+| ID | Файл | Строка/метод | Проблема | Исправление | Статус |
+|---|---|---|---|---|---|
+| F04 | `tab-documents.js` | `_pollIndexerStatus` | `this.api.getIndexerTaskStatus(taskId)` → `TypeError: not a function` | Переименовать в `this.api.getIndexTaskState(taskId)` | 🔴 |
+
+---
+
 ## Changelog
 
 | Дата | Баги | Файлы | Описание | Коммит |
@@ -502,5 +537,6 @@ def upgrade() -> None:
 | 2026-06-01 | S40-A, S40-B, S41-A, S42-A | `app/static/js/api.js`, `app/static/js/settings/tab-documents.js` | Аудит C24: фильтр по тегу сломан; getSettingsDocuments/getSettingsDocument отсутствуют | C24 |
 | 2026-06-01 | C25-A, C25-B, C25-C | `app/static/js/api.js`, `app/static/js/chat.js` | C25-A: stream:true добавлен в sendMessage; C25-B: locked_pipeline_id null-safe; C25-C: clarification_id сохраняется в SSE | C25 |
 | 2026-06-01 | M01, M02, M03, M04 | `rag-backend/migrations/versions/0013_fix_documents_tags_uuid.py` | documents.id + tags.id + document_labels.*_id: VARCHAR(36) → UUID; idempotent; campaign_tags FK пересоздан | [24fc654](https://github.com/Annener/mercer/commit/24fc65449b314efe3cb3d16337040c39a6e52efb) |
-| 2026-06-01 | F01, F02-A, F02-B, F02-C, F03-A, F03-B, B01-A, B01-B | `tab-documents.js`, `api.js`, `pipeline_builder.js`, `openai_compatible.py`, `indexer_worker.py` | Аудит C27: deleteDocument typo; createPipeline/updatePipeline отсутствуют; is_final UX нарушение; backend generation/embedding ошибки | — |
+| 2026-06-01 | F01, F02-A, F02-B, F02-C, F03-A, F03-B, B01-A, B01-B | `tab-documents.js`, `api.js`, `pipeline_builder.js`, `openai_compatible.py`, `indexer_worker.py` | Аудит C27: F01/F02/F03 верифицированы как уже исправленные; B01-A/B01-B зафиксированы как открытые | — |
 | 2026-06-02 | M19 | `rag-backend/migrations/versions/0015_fix_messages_pipeline_id_type.py` | messages.pipeline_id: UUID → VARCHAR(64); ORM объявляет String(64), миграция 0004 создала UUID ошибочно | — |
+| 2026-06-02 | F04 | `app/static/js/settings/tab-documents.js` | `_pollIndexerStatus`: `getIndexerTaskStatus` → `getIndexTaskState`; метод не существовал → TypeError при поллинге статуса индексации | — |
