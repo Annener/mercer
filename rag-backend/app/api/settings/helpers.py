@@ -80,9 +80,11 @@ def vault_dict(vault: Vault) -> dict[str, Any]:
 
 
 def campaign_dict(campaign: Campaign) -> dict[str, Any]:
+    # S52-1 fix: removed vault_id — field was deleted by migration 0009 (Campaign is now
+    # domain-based). Accessing campaign.vault_id caused AttributeError at runtime.
     return {
         "id": str(campaign.id),
-        "vault_id": campaign.vault_id,
+        "domain_id": campaign.domain_id,
         "name": campaign.name,
         "description": campaign.description,
         "system_prompt": campaign.system_prompt,
