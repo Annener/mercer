@@ -16,15 +16,13 @@ router = APIRouter(prefix="/campaigns", tags=["campaigns"])
 @router.get("", response_model=list[CampaignRead])
 async def list_campaigns(
     domain_id: str | None = None,
-    vault_id: str | None = None,  # deprecated, kept for backward compat
+    vault_id: str | None = None,  # deprecated, ignored — campaigns bind to domain, not vault
     db: AsyncSession = Depends(get_db),
 ) -> list[CampaignRead]:
+    # S45-1 fix: vault_id backward-compat branch removed — Campaign.vault_id deleted by 0009
     stmt = select(Campaign).order_by(Campaign.created_at.desc())
     if domain_id:
         stmt = stmt.where(Campaign.domain_id == domain_id)
-    elif vault_id:
-        # backward compat: old clients that still pass vault_id
-        stmt = stmt.where(Campaign.vault_id == vault_id)
     result = await db.execute(stmt)
     campaigns = result.scalars().all()
     return [await _campaign_with_tags(c, db) for c in campaigns]
@@ -43,9 +41,10 @@ async def create_campaign(
     req: CampaignCreate,
     db: AsyncSession = Depends(get_db),
 ) -> CampaignRead:
+    # S46-1 fix: removed vault_id=req.vault_id (field deleted by 0009; CampaignCreate has no vault_id)
+    # S46-2 fix: removed hasattr guard — domain_id is required in CampaignCreate
     campaign = Campaign(
-        vault_id=req.vault_id,
-        domain_id=req.domain_id if hasattr(req, "domain_id") else None,
+        domain_id=req.domain_id,
         name=req.name,
         description=req.description,
         system_prompt=req.system_prompt,
@@ -65,12 +64,9 @@ async def update_campaign(
     campaign = await db.get(Campaign, uuid.UUID(campaign_id))
     if not campaign:
         raise HTTPException(404, "Campaign not found")
-    if req.name is not None:
-        campaign.name = req.name
-    if req.description is not None:
-        campaign.description = req.description
-    if req.system_prompt is not None:
-        campaign.system_prompt = req.system_prompt
+    # S48-1 fix: use exclude_unset so client can explicitly null out nullable fields
+    for field, value in req.model_dump(exclude_unset=True).items():
+        setattr(campaign, field, value)
     await db.commit()
     await db.refresh(campaign)
     return await _campaign_with_tags(campaign, db)
@@ -103,13 +99,13 @@ async def create_campaign_tag(
     payload: dict,
     db: AsyncSession = Depends(get_db),
 ) -> TagRead:
-    """Шорткат: создать тег кампании. vault_id берётся из кампании."""
+    """Шорткат: создать тег кампании. domain_id берётся из кампании."""
     campaign = await db.get(Campaign, uuid.UUID(campaign_id))
     if not campaign:
         raise HTTPException(404, "Campaign not found")
+    # S51-1 fix: removed vault_id=campaign.vault_id — Campaign and Tag have no vault_id after 0009
     tag = Tag(
         name=payload["name"],
-        vault_id=campaign.vault_id,
         domain_id=campaign.domain_id,
         campaign_id=campaign.id,
         color=payload.get("color"),
