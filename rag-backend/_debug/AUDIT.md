@@ -109,6 +109,10 @@
 |-----|----------|-----------------------------|----------------------------------------------------------------------------------------------------------------------|--------|
 | B07 | frontend | `app/static/js/chat.js`     | `handleJSONResponse`: `response.role === 'assistant' && response.state` → исправлено на `response.state && response.question` | ✅     |
 | B08 | frontend | `app/static/js/api.js`      | Добавлен `submitClarification(chatId, answers)` — эндпоинт C9 доступен с фронта                      | ✅     |
+| C01 | frontend | `app/static/js/api.js`      | 🔴 **Регрессия B08**: `submitClarification` шлёт `{ answers }` без `clarification_id` — бэк возвращает 422 (поле обязательно по `ClarificationAnswer`) | 🔴     |
+| C02 | frontend | `app/static/js/chat.js`     | 🔴 **Регрессия B07**: `handleJSONResponse` проверяет `response.state && response.question` — таких полей нет в `ClarificationResponse`; нужно `response.clarification_id` | 🔴     |
+
+> **Примечание к CONTRACTS.md**: поле `stream` в `SendMessageRequest` — документационная неточность. Бэкенд принимает `stream: bool = True` в Pydantic-схеме, но роутинг на `/send` vs `/send_stream` делается по URL. Фронт корректно использует URL, не поле. CONTRACTS.md требует уточнения, но это не баг кода.
 
 ---
 
