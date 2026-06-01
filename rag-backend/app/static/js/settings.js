@@ -37,18 +37,18 @@ class SettingsManager {
 
     /**
      * Резолвит активный domain_id для вкладок campaigns / documents / pipelines.
-     * Приоритет: sidebar currentDomain → первый домен из API.
+     * S36-new2 fix: используем getSettingsDomains() вместо getDomains()
+     * (полный список, включая системные домены).
      */
     async _resolveDomainId() {
         if (this._activeDomainId) return this._activeDomainId;
         try {
-            // Берём домен, выбранный в sidebar (если есть)
             const sidebarDomain = window.sidebarManager?.currentDomain || localStorage.getItem('currentDomain');
             if (sidebarDomain) {
                 this._activeDomainId = sidebarDomain;
                 return this._activeDomainId;
             }
-            const resp = await this.api.getDomains();
+            const resp = await this.api.getSettingsDomains();
             const domains = Array.isArray(resp) ? resp : (resp.domains || []);
             const active = domains.find(d => d.enabled !== false) || domains[0];
             this._activeDomainId = active?.domain_id || null;
@@ -63,16 +63,13 @@ class SettingsManager {
         if (!this._tabContent) return;
         this._tabContent.innerHTML = '<div class="loading-state">Загрузка...</div>';
 
-        // Резолвим контекст для вкладок, требующих domain_id
         if (tab === 'campaigns' || tab === 'pipelines') {
             this._activeDomainId = null;
             await this._resolveDomainId();
         }
-        // Documents по-прежнему работают через vault (физическое хранилище)
         if (tab === 'documents') {
             this._activeVaultId = null;
             await this._resolveVaultId();
-            // Также резолвим domain для тегов
             if (!this._activeDomainId) await this._resolveDomainId();
         }
 
@@ -160,10 +157,8 @@ class SettingsManager {
         }, { once: true });
     }
 
-    /**
-     * S2-B/S2-C fix: реализация вместо пустой заглушки.
-     * Обрабатывает действия: save-param, default-param, reset-params.
-     */
+    // ─── Params ──────────────────────────────────────────────────────────────
+
     async handleParamsAction(action, btn) {
         if (action === 'reset-params') {
             if (!confirm('Сбросить все параметры до значений по умолчанию?')) return;
@@ -188,7 +183,6 @@ class SettingsManager {
             const input = row.querySelector('[data-param]');
             if (!input) return;
             const isBool = input.type === 'checkbox';
-            // Приводим тип: bool остаётся bool, числовые строки приводимся к number если удаётся
             let value;
             if (isBool) {
                 value = input.checked;
@@ -211,27 +205,13 @@ class SettingsManager {
         }
     }
 
-    /**
-     * S5-C fix: реализация вместо пустой заглушки.
-     * Обрабатывает: new-domain, edit-domain, edit-prompts, edit-fields, delete-domain.
-     */
+    // ─── Domains ─────────────────────────────────────────────────────────────
+
     async handleDomainsAction(action, id) {
-        if (action === 'new-domain') {
-            await this.showDomainModal();
-            return;
-        }
-        if (action === 'edit-domain') {
-            await this.showDomainModal(id);
-            return;
-        }
-        if (action === 'edit-prompts') {
-            await this.showPromptsModal(id);
-            return;
-        }
-        if (action === 'edit-fields') {
-            await this.showFieldsModal(id);
-            return;
-        }
+        if (action === 'new-domain')    { await this.showDomainModal(); return; }
+        if (action === 'edit-domain')   { await this.showDomainModal(id); return; }
+        if (action === 'edit-prompts')  { await this.showPromptsModal(id); return; }
+        if (action === 'edit-fields')   { await this.showFieldsModal(id); return; }
         if (action === 'delete-domain') {
             if (!confirm(`Удалить домен «${id}»? Действие необратимо.`)) return;
             await this.api.deleteDomain(id);
@@ -239,9 +219,113 @@ class SettingsManager {
         }
     }
 
-    async handleVaultsAction(action, id) {}
-    async handleGenModelsAction(action, id) {}
-    async handleEmbModelsAction(action, id) {}
+    // ─── Vaults ──────────────────────────────────────────────────────────────
+
+    /**
+     * S14-A fix: реализация вместо пустой заглушки.
+     * Обрабатывает: new-vault, edit-vault, toggle-vault, delete-vault.
+     */
+    async handleVaultsAction(action, id) {
+        if (action === 'new-vault') {
+            await this.showVaultModal();
+            return;
+        }
+        if (action === 'edit-vault') {
+            await this.showVaultModal(id);
+            return;
+        }
+        if (action === 'toggle-vault') {
+            const vaults = await this.api.getSettingsVaults();
+            const arr = Array.isArray(vaults) ? vaults : [];
+            const vault = arr.find(v => v.vault_id === id);
+            if (!vault) return;
+            await this.api.updateVault(id, { enabled: !vault.enabled });
+            await this.loadTab('vaults');
+            return;
+        }
+        if (action === 'delete-vault') {
+            if (!confirm(`Удалить vault «${id}»? Действие необратимо.`)) return;
+            await this.api.deleteVault(id);
+            this._activeVaultId = null;
+            await this.loadTab('vaults');
+        }
+    }
+
+    // ─── Generation models ────────────────────────────────────────────────────
+
+    /**
+     * S15-A fix: реализация вместо пустой заглушки.
+     * Обрабатывает: new-gen-model, edit-gen-model, toggle-gen-model,
+     *              set-active-gen-model, delete-gen-model.
+     */
+    async handleGenModelsAction(action, id) {
+        if (action === 'new-gen-model') {
+            await this.showGenModelModal();
+            return;
+        }
+        if (action === 'edit-gen-model') {
+            await this.showGenModelModal(id);
+            return;
+        }
+        if (action === 'set-active-gen-model') {
+            await this.api.setActiveGenerationModel(id);
+            await this.loadTab('gen-models');
+            return;
+        }
+        if (action === 'toggle-gen-model') {
+            const models = await this.api.getGenerationModels();
+            const arr = Array.isArray(models) ? models : [];
+            const model = arr.find(m => m.model_id === id);
+            if (!model) return;
+            await this.api.updateGenerationModel(id, { enabled: !model.enabled });
+            await this.loadTab('gen-models');
+            return;
+        }
+        if (action === 'delete-gen-model') {
+            if (!confirm(`Удалить модель «${id}»?`)) return;
+            await this.api.deleteGenerationModel(id);
+            await this.loadTab('gen-models');
+        }
+    }
+
+    // ─── Embedding models ─────────────────────────────────────────────────────
+
+    /**
+     * S16-A fix: реализация вместо пустой заглушки.
+     * Обрабатывает: new-emb-model, edit-emb-model, toggle-emb-model,
+     *              set-active-emb-model, delete-emb-model.
+     */
+    async handleEmbModelsAction(action, id) {
+        if (action === 'new-emb-model') {
+            await this.showEmbModelModal();
+            return;
+        }
+        if (action === 'edit-emb-model') {
+            await this.showEmbModelModal(id);
+            return;
+        }
+        if (action === 'set-active-emb-model') {
+            await this.api.setActiveEmbeddingModel(id);
+            await this.loadTab('emb-models');
+            return;
+        }
+        if (action === 'toggle-emb-model') {
+            const models = await this.api.getEmbeddingModels();
+            const arr = Array.isArray(models) ? models : [];
+            const model = arr.find(m => m.model_id === id);
+            if (!model) return;
+            await this.api.updateEmbeddingModel(id, { enabled: !model.enabled });
+            await this.loadTab('emb-models');
+            return;
+        }
+        if (action === 'delete-emb-model') {
+            if (!confirm(`Удалить модель «${id}»?`)) return;
+            await this.api.deleteEmbeddingModel(id);
+            await this.loadTab('emb-models');
+        }
+    }
+
+    // ─── Pipelines ────────────────────────────────────────────────────────────
 
     async handlePipelinesAction(action, id) {
         if (action === 'new-pipeline') { await this.showPipelineModal(); return; }
@@ -287,7 +371,6 @@ document.addEventListener('DOMContentLoaded', () => {
             } else {
                 window.settingsManager._tabContent = document.getElementById('settings-content');
                 window.settingsManager._tabNav = document.querySelector('.settings-tabs');
-                // Сбрасываем кешированный domain при каждом открытии настроек
                 window.settingsManager._activeDomainId = null;
                 window.settingsManager.loadTab(window.settingsManager.currentTab || 'domains');
             }
