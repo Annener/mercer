@@ -135,7 +135,6 @@ async def text_search_by_domain(
     for hits in results_per_vault:
         all_results.extend(hits)
 
-    # Сортируем по score (score здесь = 1.0 для точного совпадения, так что сохраняем порядок)
     all_results = all_results[:req.limit]
     return TextSearchResponse(results=all_results)
 
@@ -157,7 +156,10 @@ async def delete_document(
     try:
         docs_response = await _fetch_documents_for_vault(vault_id)
         new_total = sum(int(doc.get("chunk_count", 0)) for doc in docs_response)
-        vault = await db.get(Vault, vault_id)
+        # B02 fix: Vault.id — UUID (internal PK), vault_id — строковый slug.
+        # db.get(Vault, vault_id) передавал slug как UUID → DataError.
+        # Используем select по Vault.vault_id.
+        vault = await _get_vault_by_slug(db, vault_id)
         if vault is not None:
             vault.chunk_count = new_total
     except Exception:
@@ -185,7 +187,7 @@ async def reindex_vault(vault_id: str, req: ReindexRequest | None = None) -> dic
 
 
 # === Index Tasks API ===
-# Согласно спецификации V3.0: /index-tasks/* (не /indexer/tasks/*)
+# Согласно спецификации V3.0: /index-tasks/* (не /indexer/tasks/*.)
 
 @router.delete("/index-tasks/{task_id}")
 async def cancel_index_task(task_id: str) -> dict[str, Any]:
@@ -214,7 +216,8 @@ async def detach_vault(vault_id: str, db: AsyncSession = Depends(get_db)) -> dic
         _raise_upstream(response)
         payload = response.json()
 
-    vault = await db.get(Vault, vault_id)
+    # B02 fix: та же проблема — db.get(Vault, vault_id) падает на строковом slug.
+    vault = await _get_vault_by_slug(db, vault_id)
     if vault is not None:
         vault.binding_status = "unbound"
         vault.chunk_count = 0
@@ -264,6 +267,12 @@ async def websocket_index_task_proxy(websocket: WebSocket, task_id: str):
 
 
 # === Вспомогательные функции ===
+
+async def _get_vault_by_slug(db: AsyncSession, vault_id: str) -> Vault | None:
+    """Lookup vault by string slug (vault_id), not by internal UUID PK (id)."""
+    result = await db.execute(select(Vault).where(Vault.vault_id == vault_id))
+    return result.scalar_one_or_none()
+
 
 async def _audit(
     db: AsyncSession,
