@@ -48,9 +48,9 @@
 
 | ID | Файл | Проблема | Статус |
 |---|---|---|---|
-| S14-B | `settings.js` | `showGenModelModal()` → метода нет; должно быть `showGenerationModelModal()` | 🔴 → C17 |
-| S15-B | `settings.js` | `showEmbModelModal()` → метода нет; должно быть `showEmbeddingModelModal()` | 🔴 → C17 |
-| S16-B | `tab-gen-models.js` | Кнопка `toggle-gen` отсутствует в `renderModelList` для `kind='gen'` | 🔴 → C17 |
+| S14-B | `settings.js` | `showGenModelModal()` → метода нет; должно быть `showGenerationModelModal()` | ✅ → C17 |
+| S15-B | `settings.js` | `showEmbModelModal()` → метода нет; должно быть `showEmbeddingModelModal()` | ✅ → C17 |
+| S16-B | `tab-gen-models.js` | Кнопка `toggle-gen` отсутствует в `renderModelList` для `kind='gen'` | ✅ → C17 |
 | S20-A | `tab-emb-models.js` | Рендер корректен; `activate-emb` не рендерится (инвариант) | ⬜ |
 | S25-A | `tab-vaults.js` | `showVaultModal` исправлен → `getSettingsDomains()` (S36-new) | ⬜ |
 | S27-A | `api.js` | `deleteVault` — 204-safe, нет `.json()` | ⬜ |
@@ -72,6 +72,51 @@
 
 ---
 
+## C18 · Аудит D1–D9: db-management group — расхождения путей api.js vs db_management.py
+
+### Маппинг бэк-роутов (db_management.py)
+
+| Метод | Путь | Описание |
+|---|---|---|
+| GET | `/api/db/documents?vault_id=&limit=&offset=&order_by=` | Список документов по vault |
+| GET | `/api/db/chunks?document_id=&vault_id=` | Чанки документа |
+| POST | `/api/db/search/text` | Текстовый поиск `{vault_id, query_text, limit}` |
+| POST | `/api/db/search/domain` | Поиск по домену `{domain_id, query_text, limit}` |
+| DELETE | `/api/db/documents/{document_id}?vault_id=` | Удаление документа → **JSON** (не 204!) |
+| POST | `/vaults/{vault_id}/reindex` | Запуск индексации |
+| DELETE | `/index-tasks/{task_id}` | Отмена задачи |
+| GET | `/index-tasks/{task_id}/state` | Состояние задачи |
+| POST | `/vaults/{vault_id}/detach` | Detach vault |
+| WS | `/ws/index-tasks/{task_id}` | WebSocket прогресс |
+
+### Баги api.js
+
+| ID | Метод api.js | Путь в api.js (до фикса) | Правильный путь | Доп. проблема | Статус |
+|---|---|---|---|---|---|
+| D1 | `getDocumentsByDomain(domainId)` | `GET /api/settings/documents?domain_id=` | `GET /api/db/documents?vault_id=` | Нужен `vault_id`, не `domain_id`; tab-documents.js обновлён | 🔴 → C19 |
+| D2 | `deleteDocumentById(docId)` | `DELETE /api/settings/documents/{id}` | `DELETE /api/db/documents/{id}?vault_id=` | vault_id обязателен как query-param; ответ JSON, не 204 | 🔴 → C19 |
+| D3 | `reindexVault(vaultId)` | `POST /api/settings/vaults/{id}/reindex` | `POST /vaults/{id}/reindex` | Лишний prefix `/api/settings` | 🔴 → C19 |
+| D4 | `connectToTaskStream(taskId)` | `WS /api/settings/tasks/{id}/stream` | `WS /ws/index-tasks/{id}` | Неверный путь WS | 🔴 → C19 |
+| D5 | `getIndexTaskState(taskId)` | `GET /api/settings/tasks/{id}` | `GET /index-tasks/{id}/state` | Нет суффикса `/state` | 🔴 → C19 |
+| D6 | `updateDocumentLabels(docId, tagIds)` | `PUT /api/settings/documents/{id}/labels` | **Роута нет в бэке** | TODO: добавить роут в settings/documents.py или db_management.py | ⚠️ |
+
+---
+
+## C19 · api.js + tab-documents.js — исправление D1–D5
+
+| ID | Файл | Исправление | Статус |
+|---|---|---|---|
+| D1 | `api.js` | `getDocumentsByDomain` → переименован в `getDocumentsByVault(vaultId)`, путь `/api/db/documents?vault_id=` | ✅ |
+| D2 | `api.js` | `deleteDocumentById(docId, vaultId)` — добавлен `vaultId`, путь `/api/db/documents/{id}?vault_id=`, ответ JSON | ✅ |
+| D3 | `api.js` | `reindexVault` → путь `/vaults/{id}/reindex` | ✅ |
+| D4 | `api.js` | `connectToTaskStream` → `WS /ws/index-tasks/{id}` | ✅ |
+| D5 | `api.js` | `getIndexTaskState` → `GET /index-tasks/{id}/state` | ✅ |
+| D1-tab | `tab-documents.js` | `loadDocumentsData` → `_resolveVaultId()` + `getDocumentsByVault(vaultId)`; `delete-doc` передаёт `data-vault` | ✅ |
+
+**D6 (updateDocumentLabels) — роут отсутствует в бэке, помечен ⚠️, требует отдельного решения.**
+
+---
+
 ## Changelog
 
 | Дата | Баги | Файлы | Описание | Коммит |
@@ -82,3 +127,4 @@
 | 2026-06-01 | S14-A..S16-A | `app/static/js/settings.js` | handleVaultsAction / handleGenModelsAction / handleEmbModelsAction реализованы | — |
 | 2026-06-01 | S17-B, S18-B, S19-A | `app/static/js/api.js`, `app/static/js/settings.js`, `app/api/settings/emb_models.py` | toggleVault добавлен в api.js; setActiveGenerationModel исправлен на /activate; setActiveEmbeddingModel удалён | — |
 | 2026-06-01 | S14-B, S15-B, S16-B | `app/static/js/settings.js`, `app/static/js/settings/tab-gen-models.js` | showGenerationModelModal / showEmbeddingModelModal; toggle-gen кнопка | C17 |
+| 2026-06-01 | D1–D5 | `app/static/js/api.js`, `app/static/js/settings/tab-documents.js` | 6 неверных путей db-management; vault_id-aware delete | C19 |

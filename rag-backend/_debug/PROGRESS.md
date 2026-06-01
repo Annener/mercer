@@ -18,7 +18,7 @@
 | S25-S29 | vaults CRUD | `tab-vaults.js` | ✅ | C16: S36-new ✅; handleVaultsAction ✅; deleteVault 204-safe ✅ |
 | S30-S35 | pipelines CRUD | `tab-pipelines.js` | ✅ | C16: pipeline.id=UUID ✅; activate/deactivate/delete 204-safe ✅ |
 | S36-S39 | tags CRUD | `api.js`, `tab-campaigns.js` | ✅ | D09 (getTags/deleteTag в api.js); tags.py корректен |
-| S40-S44 | documents CRUD | `tab-documents.js` | ✅ | C16: deleteDocumentById 204-safe ✅; reindexVault/connectToTaskStream ✅ |
+| S40-S44 | documents CRUD | `tab-documents.js` | ✅ | C19: D1–D5 ✅ пути исправлены; vault_id-aware delete ✅ |
 | S45-S51 | campaigns CRUD | `api.js`, `tab-campaigns.js`, `sidebar.js` | ✅ | D03, D04, D08, D09, D10, D14 |
 
 ---
@@ -27,10 +27,14 @@
 
 | ID | Группа | Файл | Статус | Примечания |
 |---|---|---|---|---|
-| D1-D9 | db-management | — | 🔴 | Не аудировано |
+| D1-D5 | db-management paths | `api.js`, `tab-documents.js` | ✅ | C18 аудит; C19: 5 путей исправлены |
+| D6 | updateDocumentLabels | `api.js` | ⚠️ | Роут `/api/settings/documents/{id}/labels` отсутствует в бэке — требует отдельного решения |
+| D7-D9 | db-management прочее | — | ⬜ | /api/db/chunks, /api/db/search/text, /api/db/search/domain — фронт не использует напрямую |
 
 ---
 
 ## Следующая задача
 
-- [ ] D1–D9: db-management group — начать аудит по паттерну
+- [ ] D6: добавить роут `PUT /api/settings/documents/{document_id}/labels` в бэке (или `PUT /api/db/documents/{id}/labels`) — обсудить с командой
+- [ ] Проверить `toggleGenerationModel` (используется в `handleGenModelsAction`) — роут в `gen_models.py` существует?
+- [ ] Финальный smoke-test: поднять dev-окружение, пройтись по всем вкладкам settings

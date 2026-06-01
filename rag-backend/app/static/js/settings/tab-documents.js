@@ -2,7 +2,7 @@ const DocumentsTabMixin = {
     _docsSidePanelOpen: false,
     _docsCurrentDoc: null,
     _docsAllTags: [],
-    _docsCurrentTags: [],   // массив UUID-строк
+    _docsCurrentTags: [],
     _docsAllDocs: [],
     _docsFilterStatus: '',
     _docsFilterTagId: '',
@@ -42,26 +42,31 @@ const DocumentsTabMixin = {
     },
 
     async loadDocumentsData() {
+        // D1 fix: бэк принимает vault_id, не domain_id
+        const vaultId = await this._resolveVaultId();
         const domainId = this._activeDomainId || await this._resolveDomainId();
         const tbody = document.getElementById('docs-tbody');
 
-        if (!domainId) {
-            if (tbody) tbody.innerHTML = '<tr><td colspan="5" class="empty-state">Домен не найден. Добавьте домен в настройках.</td></tr>';
+        if (!vaultId) {
+            if (tbody) tbody.innerHTML = '<tr><td colspan="5" class="empty-state">Vault не найден. Добавьте vault в настройках.</td></tr>';
             return;
         }
 
         try {
-            const statusFilter = this._docsFilterStatus || null;
-            const tagFilter = this._docsFilterTagId || null;
-            const docs = await this.api.getDocumentsByDomain(domainId, statusFilter, tagFilter);
-            this._docsAllDocs = Array.isArray(docs) ? docs : (docs.documents || []);
+            const resp = await this.api.getDocumentsByVault(vaultId);
+            let docs = Array.isArray(resp) ? resp : (resp.documents || []);
+
+            // Клиентская фильтрация по статусу
+            if (this._docsFilterStatus) {
+                docs = docs.filter(d => d.status === this._docsFilterStatus);
+            }
+
+            this._docsAllDocs = docs;
             this._renderDocsRows(this._docsAllDocs);
 
-            // Поисковый фильтр по имени
             const inp = document.getElementById('docs-search-input');
             if (inp) inp.oninput = () => this._filterDocsTable(inp.value);
 
-            // Фильтр по статусу
             const statusSel = document.getElementById('docs-status-filter');
             if (statusSel) {
                 statusSel.value = this._docsFilterStatus || '';
@@ -71,8 +76,7 @@ const DocumentsTabMixin = {
                 };
             }
 
-            // Загружаем теги для фильтра
-            await this._loadTagFilterOptions(domainId);
+            if (domainId) await this._loadTagFilterOptions(domainId);
 
         } catch (e) {
             if (tbody) tbody.innerHTML = `<tr><td colspan="5" class="empty-state" style="color:var(--color-error)">Ошибка: ${this.escapeHtml(e.message)}</td></tr>`;
@@ -112,12 +116,13 @@ const DocumentsTabMixin = {
             ).join('');
             const fileName = (doc.source_path || doc.path || String(doc.id)).split('/').pop();
             const vaultLabel = this.escapeHtml(doc.vault_id || '—');
+            // D2 fix: data-vault передаётся в кнопку удаления для vault_id
             return `<tr class="docs-row" data-id="${this.escapeHtml(String(doc.id))}" style="cursor:pointer;">
                 <td title="${this.escapeHtml(doc.source_path || String(doc.id))}">${this.escapeHtml(fileName)}</td>
                 <td style="color:var(--color-text-muted);font-size:var(--text-xs);">${vaultLabel}</td>
                 <td><span style="color:${statusColor(doc.status)};font-weight:600;">${this.escapeHtml(doc.status || '—')}</span></td>
                 <td>${tags || '<span style="color:var(--color-text-faint)">—</span>'}</td>
-                <td><button class="btn btn-sm" style="color:var(--color-error);" data-action="delete-doc" data-id="${this.escapeHtml(String(doc.id))}" data-path="${this.escapeHtml(doc.source_path || String(doc.id))}" title="Удалить">🗑</button></td>
+                <td><button class="btn btn-sm" style="color:var(--color-error);" data-action="delete-doc" data-id="${this.escapeHtml(String(doc.id))}" data-vault="${this.escapeHtml(doc.vault_id || '')}" data-path="${this.escapeHtml(doc.source_path || String(doc.id))}" title="Удалить">🗑</button></td>
             </tr>`;
         }).join('');
 
@@ -145,8 +150,6 @@ const DocumentsTabMixin = {
         );
     },
 
-    // ─── Side Panel: назначение тегов документу ───────────────────────────────
-
     async _openDocsSidePanel(doc) {
         this._docsCurrentDoc = doc;
         const domainId = this._activeDomainId || await this._resolveDomainId();
@@ -159,10 +162,7 @@ const DocumentsTabMixin = {
             const globalTags = Array.isArray(resp) ? resp : (resp.global_tags || []);
             const byCampaign = (resp && resp.by_campaign) ? Object.values(resp.by_campaign).flat() : [];
             this._docsAllTags = [...globalTags, ...byCampaign];
-
-            // _docsCurrentTags — UUID-строки
             this._docsCurrentTags = (doc.tags || []).map(t => String(typeof t === 'object' ? t.id : t));
-
             this._renderDocsSidePanel(panel, doc);
         } catch (e) {
             panel.innerHTML = `<div style="padding:var(--space-4);color:var(--color-error);">Ошибка загрузки тегов: ${this.escapeHtml(e.message)}</div>`;
@@ -192,11 +192,12 @@ const DocumentsTabMixin = {
                     </div>
                 </div>
                 <button class="btn btn-primary" data-action="save-doc-tags" style="width:100%;margin-bottom:var(--space-2);">Сохранить теги</button>
+                <p style="font-size:var(--text-xs);color:var(--color-text-faint);text-align:center;">⚠️ Сохранение тегов временно недоступно (роут в разработке)</p>
             </div>`;
 
         panel.querySelectorAll('.docs-tag-toggle').forEach(el => {
             el.addEventListener('click', () => {
-                const tid = String(el.dataset.tagId);  // UUID-строка
+                const tid = String(el.dataset.tagId);
                 if (this._docsCurrentTags.includes(tid)) {
                     this._docsCurrentTags = this._docsCurrentTags.filter(x => x !== tid);
                     el.style.background = 'var(--color-surface-offset)';
@@ -216,7 +217,6 @@ const DocumentsTabMixin = {
 
         panel.querySelector('[data-action="save-doc-tags"]')?.addEventListener('click', async () => {
             try {
-                // _docsCurrentTags — массив UUID-строк, бэкенд ждёт именно строки
                 await this.api.updateDocumentLabels(String(doc.id), this._docsCurrentTags);
                 await this.loadDocumentsData();
                 panel.style.display = 'none';
@@ -225,8 +225,6 @@ const DocumentsTabMixin = {
             }
         });
     },
-
-    // ─── Управление тегами домена (панель) ────────────────────────────────────
 
     async _openTagsManagePanel() {
         const domainId = this._activeDomainId || await this._resolveDomainId();
@@ -273,12 +271,10 @@ const DocumentsTabMixin = {
                     </div>
                 </div>`;
 
-            // Закрыть панель
             panel.querySelector('[data-action="close-panel"]')?.addEventListener('click', () => {
                 panel.style.display = 'none';
             });
 
-            // Создать тег
             panel.querySelector('[data-action="create-tag"]')?.addEventListener('click', async () => {
                 const nameEl = document.getElementById('new-tag-name');
                 const colorEl = document.getElementById('new-tag-color');
@@ -292,7 +288,6 @@ const DocumentsTabMixin = {
                 } catch (e) { alert('Ошибка создания тега: ' + e.message); }
             });
 
-            // Удалить тег
             panel.querySelectorAll('[data-action="delete-tag"]').forEach(btn => {
                 btn.addEventListener('click', async () => {
                     const tagId = String(btn.dataset.tagId);
@@ -306,7 +301,6 @@ const DocumentsTabMixin = {
                 });
             });
 
-            // Переименовать тег
             panel.querySelectorAll('[data-action="edit-tag-name"]').forEach(btn => {
                 btn.addEventListener('click', async () => {
                     const tagId = String(btn.dataset.tagId);
@@ -321,7 +315,6 @@ const DocumentsTabMixin = {
                 });
             });
 
-            // Изменить цвет тега
             panel.querySelectorAll('[data-tag-edit-color]').forEach(input => {
                 input.addEventListener('change', async () => {
                     const tagId = String(input.dataset.tagEditColor);
@@ -337,8 +330,6 @@ const DocumentsTabMixin = {
         }
     },
 
-    // ─── Действия по кнопкам ──────────────────────────────────────────────────
-
     async handleDocumentsAction(action, btn) {
         if (action === 'run-indexer') {
             await this._runIndexerWithProgress();
@@ -351,17 +342,17 @@ const DocumentsTabMixin = {
         if (action === 'delete-doc') {
             const id = btn.dataset?.id || btn;
             const path = typeof btn === 'object' ? btn.dataset?.path || id : id;
+            // D2 fix: vault_id обязателен для DELETE /api/db/documents/{id}?vault_id=
+            const vaultId = typeof btn === 'object' ? (btn.dataset?.vault || '') : '';
             if (!confirm(`Удалить документ "${path}"?\nЗапись в БД и чанки будут удалены. Файл останется.`)) return;
             try {
-                await this.api.deleteDocumentById(String(id));
+                await this.api.deleteDocumentById(String(id), vaultId);
                 await this.loadDocumentsData();
             } catch (e) {
                 alert('Ошибка удаления: ' + e.message);
             }
         }
     },
-
-    // ─── Индексация с прогресс-трекингом ──────────────────────────────────────
 
     async _runIndexerWithProgress() {
         const vaultId = await this._resolveVaultId();
@@ -373,7 +364,6 @@ const DocumentsTabMixin = {
             statusEl.style.color = color || 'var(--color-text-muted)';
         };
 
-        // Сбрасываем предыдущий поллинг
         if (this._docsIndexPollTimer) {
             clearInterval(this._docsIndexPollTimer);
             this._docsIndexPollTimer = null;
@@ -387,13 +377,10 @@ const DocumentsTabMixin = {
             if (taskId) {
                 this._docsIndexTaskId = taskId;
                 setStatus('Индексация запущена...');
-                // Пробуем WebSocket-стрим
                 this._connectIndexStream(taskId, statusEl);
             } else {
-                // Бэкенд не вернул task_id — простое подтверждение
                 setStatus('Индексация запущена', 'var(--color-success)');
                 setTimeout(() => setStatus(''), 5000);
-                // Обновляем список через 3 сек
                 setTimeout(() => this.loadDocumentsData(), 3000);
             }
         } catch (e) {
@@ -412,7 +399,6 @@ const DocumentsTabMixin = {
         try {
             ws = this.api.connectToTaskStream(taskId);
         } catch (_) {
-            // WebSocket недоступен — fallback на поллинг
             this._pollIndexStatus(taskId, statusEl);
             return;
         }
@@ -436,7 +422,6 @@ const DocumentsTabMixin = {
         };
 
         ws.onerror = () => {
-            // WebSocket упал — переходим на поллинг
             this._pollIndexStatus(taskId, statusEl);
         };
 
@@ -453,7 +438,7 @@ const DocumentsTabMixin = {
         };
 
         let attempts = 0;
-        const MAX = 60; // ~60 секунд
+        const MAX = 60;
         this._docsIndexPollTimer = setInterval(async () => {
             attempts++;
             if (attempts > MAX) {

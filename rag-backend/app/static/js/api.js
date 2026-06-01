@@ -56,11 +56,6 @@ class ChatAPI {
         return response.json();
     }
 
-    /**
-     * POST /chat/{chatId}/send (или /send_stream)
-     * stream=true → возвращает ReadableStream (SSE)
-     * stream=false → возвращает JSON
-     */
     async sendMessage(chatId, content, stream = true) {
         const url = stream
             ? `${this.baseUrl}/chat/${chatId}/send_stream`
@@ -84,10 +79,6 @@ class ChatAPI {
         return response.json();
     }
 
-    /**
-     * C01 fix: POST /chat/{chatId}/clarify (C9)
-     * ClarificationAnswer: { clarification_id: str, answers: Record<string, string> }
-     */
     async submitClarification(chatId, clarificationId, answers) {
         const response = await fetch(`${this.baseUrl}/chat/${chatId}/clarify`, {
             method: 'POST',
@@ -107,7 +98,6 @@ class ChatAPI {
 
     // === Domain / Campaign / Pipeline API ===
 
-    // S45-2 fix: /domains → /config/domains (CF1) — read-only для sidebar
     async getDomains() {
         const response = await fetch(`${this.baseUrl}/config/domains`);
         if (!response.ok) throw new Error(`Failed to get domains: ${response.statusText}`);
@@ -190,7 +180,6 @@ class ChatAPI {
         // 204 No Content
     }
 
-    // C17 fix: createTag / updateTag — использовались в tab-documents.js, отсутствовали
     async createTag(data) {
         const response = await fetch(`${this.baseUrl}/api/settings/tags`, {
             method: 'POST',
@@ -223,7 +212,6 @@ class ChatAPI {
         return response.json();
     }
 
-    // S22 fix: отсутствовали — вызывались из handlePipelinesAction
     async activatePipeline(pipelineId) {
         const response = await fetch(`${this.baseUrl}/api/settings/pipelines/${encodeURIComponent(pipelineId)}/activate`, {
             method: 'POST',
@@ -262,7 +250,6 @@ class ChatAPI {
         return response.json();
     }
 
-    // Ключ передаётся as-is — FastAPI {key:path} принимает точки напрямую
     async updateSettingsParam(key, value) {
         const response = await fetch(`${this.baseUrl}/api/settings/params/${key}`, {
             method: 'PUT',
@@ -283,8 +270,6 @@ class ChatAPI {
 
     // === Settings: Domains CRUD ===
 
-    // getDomains() сохраняется для sidebar (/config/domains, read-only).
-    // getSettingsDomains() — полный список для настроек.
     async getSettingsDomains() {
         const response = await fetch(`${this.baseUrl}/api/settings/domains`);
         if (!response.ok) throw new Error(`Failed to get domains: ${response.statusText}`);
@@ -393,7 +378,6 @@ class ChatAPI {
         // 204 No Content
     }
 
-    // S17-B fix: toggleVault → POST /vaults/{id}/toggle (был updateVault({enabled}))
     async toggleVault(vaultId) {
         const response = await fetch(`${this.baseUrl}/api/settings/vaults/${encodeURIComponent(vaultId)}/toggle`, {
             method: 'POST',
@@ -438,7 +422,6 @@ class ChatAPI {
         // 204 No Content
     }
 
-    // S18-B fix: /set_active → /activate
     async setActiveGenerationModel(modelId) {
         const response = await fetch(`${this.baseUrl}/api/settings/models/generation/${encodeURIComponent(modelId)}/activate`, {
             method: 'POST',
@@ -447,7 +430,14 @@ class ChatAPI {
         return response.json();
     }
 
-    // C16 fix: check-gen — POST /models/generation/{id}/check (роут есть в gen_models.py)
+    async toggleGenerationModel(modelId) {
+        const response = await fetch(`${this.baseUrl}/api/settings/models/generation/${encodeURIComponent(modelId)}/toggle`, {
+            method: 'POST',
+        });
+        if (!response.ok) throw new Error(`Failed to toggle generation model: ${response.statusText}`);
+        return response.json();
+    }
+
     async checkGenerationModel(modelId) {
         const response = await fetch(`${this.baseUrl}/api/settings/models/generation/${encodeURIComponent(modelId)}/check`, {
             method: 'POST',
@@ -458,7 +448,6 @@ class ChatAPI {
 
     // === Settings: Embedding Models CRUD ===
     // S19-A: setActiveEmbeddingModel удалён — роута нет, концепция неприменима.
-    // Несколько embedding-моделей могут использоваться параллельно разными vaults.
 
     async getEmbeddingModels() {
         const response = await fetch(`${this.baseUrl}/api/settings/models/embedding`);
@@ -494,7 +483,6 @@ class ChatAPI {
         // 204 No Content
     }
 
-    // C16 fix: check-emb — POST /models/embedding/{id}/check (роут уже есть в emb_models.py)
     async checkEmbeddingModel(modelId) {
         const response = await fetch(`${this.baseUrl}/api/settings/models/embedding/${encodeURIComponent(modelId)}/check`, {
             method: 'POST',
@@ -503,22 +491,38 @@ class ChatAPI {
         return response.json();
     }
 
-    // === Settings: Documents ===
-    // C17 fix: все методы отсутствовали — tab-documents.js рушился при любом действии
+    // === DB Management: Documents ===
 
-    // GET /api/settings/documents?domain_id=...&status=...&tag_id=...
-    async getDocumentsByDomain(domainId, status = null, tagId = null) {
-        const params = new URLSearchParams({ domain_id: domainId });
-        if (status) params.set('status', status);
-        if (tagId) params.set('tag_id', tagId);
-        const response = await fetch(`${this.baseUrl}/api/settings/documents?${params}`);
+    // D1 fix: /api/db/documents?vault_id= (не /api/settings/documents?domain_id=)
+    // Параметр vault_id обязателен — бэк принимает только vault_id, не domain_id.
+    // tab-documents.js использует _resolveVaultId() перед вызовом.
+    async getDocumentsByVault(vaultId, limit = 100, offset = 0, orderBy = 'document_id') {
+        const params = new URLSearchParams({
+            vault_id: vaultId,
+            limit: String(limit),
+            offset: String(offset),
+            order_by: orderBy,
+        });
+        const response = await fetch(`${this.baseUrl}/api/db/documents?${params}`);
         if (!response.ok) throw new Error(`Failed to get documents: ${response.statusText}`);
         return response.json();
     }
 
-    // PUT /api/settings/documents/{document_id}/labels
+    // D2 fix: DELETE /api/db/documents/{id}?vault_id= (не /api/settings/documents/{id})
+    // Ответ — JSON (не 204!), бэк возвращает payload с deleted_count.
+    async deleteDocumentById(documentId, vaultId) {
+        const params = new URLSearchParams({ vault_id: vaultId });
+        const response = await fetch(`${this.baseUrl}/api/db/documents/${encodeURIComponent(documentId)}?${params}`, {
+            method: 'DELETE',
+        });
+        if (!response.ok) throw new Error(`Failed to delete document: ${response.statusText}`);
+        return response.json(); // возвращает JSON, не 204
+    }
+
+    // D6 TODO: роут PUT /api/db/documents/{id}/labels отсутствует в бэке.
+    // Метод оставлен для будущей реализации.
     async updateDocumentLabels(documentId, tagIds) {
-        const response = await fetch(`${this.baseUrl}/api/settings/documents/${encodeURIComponent(documentId)}/labels`, {
+        const response = await fetch(`${this.baseUrl}/api/db/documents/${encodeURIComponent(documentId)}/labels`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ tag_ids: tagIds }),
@@ -527,36 +531,27 @@ class ChatAPI {
         return response.json();
     }
 
-    // DELETE /api/settings/documents/{document_id} → 204 No Content
-    async deleteDocumentById(documentId) {
-        const response = await fetch(`${this.baseUrl}/api/settings/documents/${encodeURIComponent(documentId)}`, {
-            method: 'DELETE',
-        });
-        if (!response.ok) throw new Error(`Failed to delete document: ${response.statusText}`);
-        // 204 No Content
-    }
-
-    // POST /api/settings/vaults/{vault_id}/reindex
+    // D3 fix: /vaults/{id}/reindex (не /api/settings/vaults/{id}/reindex)
     async reindexVault(vaultId, force = false) {
-        const response = await fetch(`${this.baseUrl}/api/settings/vaults/${encodeURIComponent(vaultId)}/reindex`, {
+        const response = await fetch(`${this.baseUrl}/vaults/${encodeURIComponent(vaultId)}/reindex`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ force }),
+            body: JSON.stringify({ force_reindex: force }),
         });
         if (!response.ok) throw new Error(`Failed to reindex vault: ${response.statusText}`);
         return response.json();
     }
 
-    // WebSocket: ws(s)://host/api/settings/tasks/{task_id}/stream
+    // D4 fix: WS /ws/index-tasks/{id} (не /api/settings/tasks/{id}/stream)
     connectToTaskStream(taskId) {
         const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-        const wsUrl = `${proto}://${location.host}/api/settings/tasks/${encodeURIComponent(taskId)}/stream`;
+        const wsUrl = `${proto}://${location.host}/ws/index-tasks/${encodeURIComponent(taskId)}`;
         return new WebSocket(wsUrl);
     }
 
-    // GET /api/settings/tasks/{task_id}
+    // D5 fix: GET /index-tasks/{id}/state (не /api/settings/tasks/{id})
     async getIndexTaskState(taskId) {
-        const response = await fetch(`${this.baseUrl}/api/settings/tasks/${encodeURIComponent(taskId)}`);
+        const response = await fetch(`${this.baseUrl}/index-tasks/${encodeURIComponent(taskId)}/state`);
         if (!response.ok) throw new Error(`Failed to get task state: ${response.statusText}`);
         return response.json();
     }
