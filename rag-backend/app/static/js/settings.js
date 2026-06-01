@@ -257,11 +257,17 @@ class SettingsManager {
 
 window.settingsManager = new SettingsManager();
 
+// S22 fix: DOMContentLoaded использовал несуществующие id:
+//   'open-settings-btn'   → реальный id: 'settings-btn'
+//   'settings-back-btn'   → реальный id: 'back-to-chat-btn'
+//   'main-app'            → реальный селектор: '.app-container'
+//   'settings-tab-nav'    → реальный селектор: '.settings-tabs' (nav без id)
+// Итог: все 4 getElementById возвращали null → обработчики не цеплялись → кнопка не работала.
 document.addEventListener('DOMContentLoaded', async () => {
-    const openBtn     = document.getElementById('open-settings-btn');
-    const backBtn     = document.getElementById('settings-back-btn');
+    const openBtn      = document.getElementById('settings-btn');
+    const backBtn      = document.getElementById('back-to-chat-btn');
     const settingsPage = document.getElementById('settings-page');
-    const mainApp     = document.getElementById('main-app');
+    const mainApp      = document.querySelector('.app-container');
 
     if (openBtn && settingsPage) {
         openBtn.addEventListener('click', async () => {
@@ -271,7 +277,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
     }
 
-    const tabNav = document.getElementById('settings-tab-nav');
+    // Таб-навигация: nav.settings-tabs (без id в index.html)
+    const tabNav = document.querySelector('.settings-tabs');
     if (tabNav) {
         tabNav.querySelectorAll('[data-tab]').forEach(btn => {
             btn.addEventListener('click', async () => {
