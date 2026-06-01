@@ -519,10 +519,12 @@ class ChatAPI {
         return response.json(); // возвращает JSON, не 204
     }
 
-    // D6 TODO: роут PUT /api/db/documents/{id}/labels отсутствует в бэке.
-    // Метод оставлен для будущей реализации.
+    // D6 fix: путь исправлен /api/db/ → /api/settings/
+    // Роут PUT /api/settings/documents/{id}/labels реализован в app/api/settings/documents.py
+    // Full-replace семантика: удаляет все старые метки, вставляет новые.
+    // Валидирует domain ownership тегов. Возвращает DocumentRead (200).
     async updateDocumentLabels(documentId, tagIds) {
-        const response = await fetch(`${this.baseUrl}/api/db/documents/${encodeURIComponent(documentId)}/labels`, {
+        const response = await fetch(`${this.baseUrl}/api/settings/documents/${encodeURIComponent(documentId)}/labels`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ tag_ids: tagIds }),

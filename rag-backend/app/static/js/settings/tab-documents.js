@@ -192,7 +192,6 @@ const DocumentsTabMixin = {
                     </div>
                 </div>
                 <button class="btn btn-primary" data-action="save-doc-tags" style="width:100%;margin-bottom:var(--space-2);">Сохранить теги</button>
-                <p style="font-size:var(--text-xs);color:var(--color-text-faint);text-align:center;">⚠️ Сохранение тегов временно недоступно (роут в разработке)</p>
             </div>`;
 
         panel.querySelectorAll('.docs-tag-toggle').forEach(el => {
