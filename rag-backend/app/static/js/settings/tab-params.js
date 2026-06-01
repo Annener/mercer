@@ -19,7 +19,15 @@ const SETTINGS_DEFAULTS = {
 
 const ParamsTabMixin = {
     getParamType(key) {
-        const boolKeys = ['retrieval.enabled', 'reranker.enabled', 'chat.stream_answers', 'chat.auto_title', 'chunking.entity_aware_mode', 'pdf_sidecar.fallback_to_pdfminer'];
+        const boolKeys = [
+            'retrieval.enabled',
+            'retrieval.reranker_enabled',
+            'reranker.enabled',
+            'chat.stream_answers',
+            'chat.auto_title',
+            'chunking.entity_aware_mode',
+            'pdf_sidecar.fallback_to_pdfminer',
+        ];
         return boolKeys.includes(key) ? 'bool' : 'string';
     },
 
@@ -65,6 +73,7 @@ const ParamsTabMixin = {
                             </div>
                             <div class="settings-param-control">
                                 ${inputHtml}
+                                <button class="btn btn-sm btn-primary" data-action="save-param" data-id="${this.escapeHtml(key)}">Сохранить</button>
                                 <button class="btn btn-sm btn-secondary" data-action="default-param" data-id="${this.escapeHtml(key)}">По умолчанию</button>
                             </div>
                         </div>`;
