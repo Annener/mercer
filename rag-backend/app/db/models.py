@@ -244,6 +244,10 @@ class Chat(Base):
     vault_id: Mapped[str | None] = mapped_column(String(128), nullable=True)  # deprecated back-compat
     domain_id: Mapped[str | None] = mapped_column(String(64), ForeignKey("domains.domain_id", ondelete="SET NULL"), nullable=True)
     campaign_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("campaigns.id", ondelete="SET NULL"), nullable=True)
+    # A02: pipeline_versions — JSONB dict для отслеживания версий пайплайна при создании чата
+    pipeline_versions: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True, default=None)
+    # A03: locked_pipeline_id — закреплённый пайплайн для этого чата (None = авто-выбор)
+    locked_pipeline_id: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
