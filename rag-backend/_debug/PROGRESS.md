@@ -18,7 +18,7 @@
 | S25-S29 | vaults CRUD | `tab-vaults.js` | ✅ | S36-new ✅; handleVaultsAction ✅; deleteVault 204-safe ✅ |
 | S30-S35 | pipelines CRUD | `tab-pipelines.js`, `settings.js` | ✅ | pipeline.id=UUID ✅; activate/deactivate/delete 204-safe ✅; C21: edit-pipeline → showPipelineEditModal ✅ |
 | S36-S39 | tags CRUD | `api.js`, `tab-campaigns.js` | ✅ | D09 (getTags/deleteTag в api.js); tags.py корректен |
-| S40-S44 | documents CRUD | `tab-documents.js` | ✅ | C19: D1–D5 ✅ пути исправлены; vault_id-aware delete ✅ |
+| S40-S44 | documents CRUD | `tab-documents.js`, `api.js` | ✅ | C19: D1–D5 ✅ пути исправлены; vault_id-aware delete ✅; C23: S44-A ✅ batchLabelDocuments добавлен; S44-B ⚠️ batch UI → backlog |
 | S45-S51 | campaigns CRUD | `api.js`, `tab-campaigns.js`, `sidebar.js` | ✅ | D03, D04, D08, D09, D10, D14 |
 | S22 | DOMContentLoaded ids | `settings.js` | ✅ | 4 несуществующих id → реальные; C22 |
 
@@ -39,3 +39,4 @@
 
 - [ ] Финальный smoke-test: поднять dev-окружение, пройтись по всем вкладкам settings
 - [ ] Проверить оставшиеся эндпоинты из CONTRACTS.md (если есть)
+- [ ] S44-B: batch-выбор документов в UI (`tab-documents.js`) — backlog, отдельная задача
