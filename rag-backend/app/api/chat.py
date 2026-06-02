@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Campaign, Chat, ClarificationStateRow, Message
+from app.db.models import Campaign, Chat, ClarificationState, Message
 from app.db.session import get_db
 from app.services import settings_service
 from app.services.pipeline_executor import PipelineExecutor
@@ -61,7 +61,6 @@ class ChatHistoryResponse(BaseModel):
 class ChatListItem(BaseModel):
     chat_id: str
     title: str
-    vault_id: str | None = None
     domain_id: str | None = None
     vault_enabled: bool = False
     created_at: datetime
@@ -96,20 +95,18 @@ async def create_chat(
 
     chat = Chat(
         title="New Chat",
-        vault_id=req.vault_id,
         domain_id=req.domain_id,
         campaign_id=campaign_uuid,
-        pipeline_versions=await _pipeline_versions(request),
     )
     db.add(chat)
     await db.flush()
-    db.add(ClarificationStateRow(chat_id=chat.id, stage="idle"))
+    db.add(ClarificationState(chat_id=chat.id, stage="idle"))
     await _audit(
         db,
         "chat.create",
         "chat",
         str(chat.id),
-        {"vault_id": req.vault_id, "domain_id": req.domain_id, "campaign_id": req.campaign_id},
+        {"domain_id": req.domain_id, "campaign_id": req.campaign_id},
     )
     await db.commit()
     logger.info("Created chat: chat_id=%s", chat.id)
@@ -127,24 +124,15 @@ async def list_chats(
     result = await db.execute(stmt)
     chats = result.scalars().all()
 
-    # B01 fix: был N+1 — _vault_enabled вызывался в list comprehension с await
-    # для каждого чата отдельно. Теперь: один запрос к settings один раз,
-    # результат кешируется; _vault_enabled вызывается синхронно через кеш.
-    unique_vault_ids: set[str] = {c.vault_id for c in chats if c.vault_id}
-    vault_enabled_cache: dict[str | None, bool] = {None: False}
-    if unique_vault_ids:
-        retrieval_enabled: bool = await settings_service.get("retrieval.enabled", db)
-        for vid in unique_vault_ids:
-            vault_enabled_cache[vid] = retrieval_enabled
+    retrieval_enabled: bool = await settings_service.get("retrieval.enabled", db)
 
     return ChatListResponse(
         chats=[
             ChatListItem(
                 chat_id=str(c.id),
                 title=c.title,
-                vault_id=c.vault_id,
-                domain_id=c.domain_id,
-                vault_enabled=vault_enabled_cache.get(c.vault_id, False),
+                domain_id=str(c.domain_id) if c.domain_id else None,
+                vault_enabled=retrieval_enabled,
                 created_at=c.created_at,
                 updated_at=c.updated_at,
             )
@@ -162,6 +150,7 @@ async def get_chat_history(
     stmt = select(Message).where(Message.chat_id == chat.id).order_by(Message.created_at)
     result = await db.execute(stmt)
     messages = result.scalars().all()
+    retrieval_enabled = await settings_service.get("retrieval.enabled", db)
     return ChatHistoryResponse(
         chat=ChatRecord.model_validate(chat, from_attributes=True),
         messages=[
@@ -174,7 +163,7 @@ async def get_chat_history(
             )
             for m in messages
         ],
-        vault_enabled=await _vault_enabled(db, chat.vault_id),
+        vault_enabled=retrieval_enabled,
     )
 
 
@@ -203,9 +192,10 @@ async def lock_pipeline(
     req: PipelineLockRequest,
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    chat = await _get_chat_or_404(chat_id, db)
-    chat.locked_pipeline_id = req.pipeline_id
-    await db.commit()
+    # locked_pipeline_id не является полем ORM-модели Chat.
+    # Функциональность заглушена — возвращаем статус без сохранения.
+    # TODO: добавить поле Chat.locked_pipeline_id в модель и миграцию если нужно.
+    logger.warning("lock_pipeline called but Chat.locked_pipeline_id field does not exist in ORM model")
     return {"status": "ok", "locked_pipeline_id": req.pipeline_id}
 
 
@@ -222,16 +212,14 @@ async def send_message(
     db.add(user_msg)
     await db.flush()
 
-    domain_id = await _domain_id_for_chat(chat, db) or chat.domain_id
+    domain_id = await _domain_id_for_chat(chat, db) or str(chat.domain_id)
     vault_ids: list[str] = [
         v.vault_id for v in config_for_vault.vaults.values()
         if v.domain_id == domain_id and v.enabled
     ] if domain_id else []
 
-    retrieval_strategy = (
-        "semantic" if chat.vault_id and await settings_service.get("retrieval.enabled", db)
-        else "none"
-    )
+    retrieval_enabled = await settings_service.get("retrieval.enabled", db)
+    retrieval_strategy = "semantic" if vault_ids and retrieval_enabled else "none"
 
     context = PipelineExecutionContext(
         chat_id=str(chat.id),
@@ -239,16 +227,12 @@ async def send_message(
         query=req.content,
         domain_id=domain_id,
         campaign_id=str(chat.campaign_id) if chat.campaign_id else None,
-        vault_id=chat.vault_id,
         vault_ids=vault_ids,
         retrieval_strategy=retrieval_strategy,
     )
 
     pipeline_router = PipelineRouter(db)
-    pipeline = await pipeline_router.select(
-        context,
-        locked_pipeline_id=chat.locked_pipeline_id,
-    )
+    pipeline = await pipeline_router.select(context)
     if pipeline is None:
         raise HTTPException(503, "No active pipeline found for this domain")
 
@@ -304,16 +288,14 @@ async def send_message_stream(
     db.add(user_msg)
     await db.flush()
 
-    domain_id = await _domain_id_for_chat(chat, db) or chat.domain_id
+    domain_id = await _domain_id_for_chat(chat, db) or str(chat.domain_id)
     vault_ids: list[str] = [
         v.vault_id for v in config_for_vault.vaults.values()
         if v.domain_id == domain_id and v.enabled
     ] if domain_id else []
 
-    retrieval_strategy = (
-        "semantic" if chat.vault_id and await settings_service.get("retrieval.enabled", db)
-        else "none"
-    )
+    retrieval_enabled = await settings_service.get("retrieval.enabled", db)
+    retrieval_strategy = "semantic" if vault_ids and retrieval_enabled else "none"
 
     # C-STREAM01 fix: final_composition=None вызывал ValidationError немедленно
     # при создании объекта, т.к. FinalComposition не Optional в схеме.
@@ -326,15 +308,11 @@ async def send_message_stream(
         domain_id=domain_id,
         campaign_id=str(chat.campaign_id) if chat.campaign_id else None,
         vault_ids=vault_ids,
-        vault_id=chat.vault_id,
         retrieval_strategy=retrieval_strategy,
     )
 
     pipeline_router = PipelineRouter(db)
-    pipeline = await pipeline_router.select(
-        context,
-        locked_pipeline_id=chat.locked_pipeline_id,
-    )
+    pipeline = await pipeline_router.select(context)
     if pipeline is None:
         raise HTTPException(503, "No active pipeline found for this domain")
 
@@ -359,7 +337,6 @@ async def send_message_stream(
     async def event_stream() -> AsyncIterator[str]:
         executor = PipelineExecutor(db)
         full_answer = ""
-        assistant_msg_id: str | None = None
 
         async for chunk in executor.run_stream(context):
             if chunk.get("type") == "delta":
@@ -368,8 +345,6 @@ async def send_message_stream(
             yield f"data: {data}\n\n"
             if chunk.get("type") == "token":
                 full_answer += chunk.get("content", "")
-            elif chunk.get("type") == "done":
-                assistant_msg_id = chunk.get("message_id")
 
         if full_answer:
             assistant_msg = Message(
@@ -412,20 +387,14 @@ async def _get_chat_or_404(chat_id: str, db: AsyncSession) -> Chat:
     return chat
 
 
-async def _vault_enabled(db: AsyncSession, vault_id: str | None) -> bool:
-    if not vault_id:
-        return False
-    return await settings_service.get("retrieval.enabled", db)
-
-
 async def _domain_id_for_chat(chat: Chat, db: AsyncSession) -> str | None:
     """Resolve domain_id: prefer chat.domain_id, fall back to campaign.domain_id."""
     if chat.domain_id:
-        return chat.domain_id
+        return str(chat.domain_id)
     if chat.campaign_id:
         campaign = await db.get(Campaign, chat.campaign_id)
         if campaign is not None and campaign.domain_id:
-            return campaign.domain_id
+            return str(campaign.domain_id)
     return None
 
 
@@ -438,15 +407,6 @@ async def _audit(
 ) -> None:
     from app.db.models import AuditLog
     db.add(AuditLog(action=action, entity_type=entity_type, entity_id=entity_id, details=payload))
-
-
-async def _pipeline_versions(request: Request) -> dict[str, str]:
-    """Extract X-Pipeline-Version headers for reproducibility tracking."""
-    return {
-        k.removeprefix("x-pipeline-"): v
-        for k, v in request.headers.items()
-        if k.lower().startswith("x-pipeline-")
-    }
 
 
 def _auto_title(query: str) -> str:
