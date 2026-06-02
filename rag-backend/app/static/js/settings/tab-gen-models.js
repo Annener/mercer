@@ -37,6 +37,21 @@ const GenModelsTabMixin = {
         return this.renderModelList('gen', Array.isArray(models) ? models : []);
     },
 
+    // UI-GM1: slug генерируется из ID провайдера автоматически.
+    // Берём часть после последнего "/", приводим к нижнему регистру,
+    // заменяем всё кроме [a-z0-9-] на "-", схлопываем дефисы, обрезаем до 64.
+    _genModelSlug(providerModelId) {
+        const base = providerModelId.includes('/')
+            ? providerModelId.split('/').pop()
+            : providerModelId;
+        return base
+            .toLowerCase()
+            .replace(/[^a-z0-9-]/g, '-')
+            .replace(/-+/g, '-')
+            .replace(/^-|-$/g, '')
+            .slice(0, 64);
+    },
+
     async showGenerationModelModal(modelId = null) {
         let model = null;
         if (modelId) {
@@ -50,12 +65,22 @@ const GenModelsTabMixin = {
             <div class="modal-content">
                 <h3>${model ? 'Редактировать модель' : 'Новая generation-модель'}</h3>
                 <div class="form-group">
-                    <label>ID модели</label>
-                    <input type="text" id="gen-model-id" value="${this.escapeHtml(model?.model_id || '')}" ${model ? 'disabled' : ''}>
+                    <label>ID модели провайдера</label>
+                    <input type="text" id="gen-model-provider-id"
+                        value="${this.escapeHtml(model?.model_id || '')}"
+                        placeholder="openrouter/deepseek/deepseek-chat-v3.1"
+                        ${model ? 'disabled' : ''}>
+                    ${!model ? `<small id="gen-model-slug-hint" style="color:var(--color-text-muted,#888);margin-top:4px;display:block;">
+                        Внутренний ключ: <code id="gen-model-slug-val">—</code>
+                    </small>` : `<small style="color:var(--color-text-muted,#888);margin-top:4px;display:block;">
+                        Внутренний ключ: <code>${this.escapeHtml(model.model_id)}</code>
+                    </small>`}
                 </div>
                 <div class="form-group">
-                    <label>Название</label>
-                    <input type="text" id="gen-model-name" value="${this.escapeHtml(model?.display_name || '')}">
+                    <label>Название модели в системе</label>
+                    <input type="text" id="gen-model-name"
+                        value="${this.escapeHtml(model?.display_name || '')}"
+                        placeholder="Deepseek via Proxy">
                 </div>
                 <div class="form-group">
                     <label>Провайдер</label>
@@ -71,7 +96,8 @@ const GenModelsTabMixin = {
                 </div>
                 <div class="form-group">
                     <label>Base URL</label>
-                    <input type="text" id="gen-model-base-url" value="${this.escapeHtml(model?.base_url || '')}">
+                    <input type="text" id="gen-model-base-url" value="${this.escapeHtml(model?.base_url || '')}"
+                        placeholder="https://openai.api.proxyapi.ru/v1">
                 </div>
                 <div class="form-group">
                     <label>Timeout (сек)</label>
@@ -84,6 +110,17 @@ const GenModelsTabMixin = {
             </div>`;
         document.body.appendChild(modal);
         const closeModal = () => modal.remove();
+
+        // Автогенерация slug при вводе ID провайдера (только для новой модели)
+        if (!model) {
+            const providerIdInput = modal.querySelector('#gen-model-provider-id');
+            const slugVal = modal.querySelector('#gen-model-slug-val');
+            providerIdInput.addEventListener('input', () => {
+                const slug = this._genModelSlug(providerIdInput.value.trim());
+                slugVal.textContent = slug || '—';
+            });
+        }
+
         modal.querySelector('#gen-model-cancel-btn').addEventListener('click', closeModal);
         modal.querySelector('#gen-model-save-btn').addEventListener('click', async () => {
             const data = {
@@ -94,9 +131,14 @@ const GenModelsTabMixin = {
             const apiKey = modal.querySelector('#gen-model-api-key').value;
             if (apiKey) data.api_key = apiKey;
             try {
-                if (modelId) await this.api.updateGenerationModel(modelId, data);
-                else {
-                    data.model_id = modal.querySelector('#gen-model-id').value;
+                if (modelId) {
+                    await this.api.updateGenerationModel(modelId, data);
+                } else {
+                    const providerModelId = modal.querySelector('#gen-model-provider-id').value.trim();
+                    if (!providerModelId) { alert('Укажите ID модели провайдера'); return; }
+                    // model_id = slug, чтобы использоваться как внутренний ключ
+                    data.model_id = this._genModelSlug(providerModelId);
+                    if (!data.model_id) { alert('Не удалось сформировать внутренний ключ из ID провайдера'); return; }
                     data.provider = modal.querySelector('#gen-model-provider').value;
                     await this.api.createGenerationModel(data);
                 }
