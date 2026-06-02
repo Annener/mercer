@@ -9,9 +9,9 @@ const SETTINGS_DEFAULTS = {
     'chat.stream_answers': true,
     'chat.auto_title': true,
     'reranker.enabled': false,
-    'reranker.provider': null,
-    'reranker.base_url': null,
-    'reranker.model_name': null,
+    'reranker.provider': '',
+    'reranker.base_url': '',
+    'reranker.model_name': '',
     'pdf_sidecar.url': 'http://host.docker.internal:8765',
     'pdf_sidecar.timeout_seconds': 180,
     'pdf_sidecar.fallback_to_pdfminer': true,
@@ -19,10 +19,6 @@ const SETTINGS_DEFAULTS = {
 
 const ParamsTabMixin = {
     getParamType(key) {
-        // S2-D fix: убран дубль 'reranker.enabled' — он уже присутствовал наряду с
-        // 'retrieval.reranker_enabled'. Оба ключа реальны (разные настройки),
-        // но в SETTINGS_DEFAULTS оба bool, поэтому оба остаются в boolKeys.
-        // Дубликатов нет — каждый ключ уникален.
         const boolKeys = [
             'retrieval.enabled',
             'retrieval.reranker_enabled',
@@ -60,14 +56,14 @@ const ParamsTabMixin = {
             <div class="settings-toolbar">
                 <button class="btn btn-secondary" data-action="reset-params">Сбросить все параметры</button>
             </div>
-            <div class="settings-params-fullwidth">
+            <form id="params-form" class="settings-params-fullwidth">
                 ${sortedKeys.map(key => {
                     const isBool = this.getParamType(key) === 'bool';
                     const currentValue = params[key];
                     const info = descriptions[key] || { label: key, desc: '' };
                     const inputHtml = isBool
-                        ? `<input type="checkbox" data-param="${this.escapeHtml(key)}" ${(currentValue === true || currentValue === 'true') ? 'checked' : ''}>`
-                        : `<input data-param="${this.escapeHtml(key)}" value="${this.escapeHtml(currentValue ?? '')}" style="width:100%; max-width:340px; box-sizing:border-box;">`;
+                        ? `<input type="checkbox" data-key="${this.escapeHtml(key)}" ${(currentValue === true || currentValue === 'true') ? 'checked' : ''}>`
+                        : `<input data-key="${this.escapeHtml(key)}" value="${this.escapeHtml(currentValue ?? '')}" style="width:100%; max-width:340px; box-sizing:border-box;">`;
                     return `
                         <div class="settings-param-row">
                             <div class="settings-param-info">
@@ -77,11 +73,12 @@ const ParamsTabMixin = {
                             </div>
                             <div class="settings-param-control">
                                 ${inputHtml}
-                                <button class="btn btn-sm btn-primary" data-action="save-param" data-id="${this.escapeHtml(key)}">Сохранить</button>
-                                <button class="btn btn-sm btn-secondary" data-action="default-param" data-id="${this.escapeHtml(key)}">По умолчанию</button>
                             </div>
                         </div>`;
                 }).join('')}
+            </form>
+            <div class="settings-params-footer">
+                <button class="btn btn-primary" data-action="save-params">Сохранить параметры</button>
             </div>`;
     },
 };

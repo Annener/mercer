@@ -38,14 +38,12 @@ class SettingsManager {
                 case 'emb-models': html = await this.renderEmbeddingModelsTab(); break;
                 case 'vaults':     html = await this.renderVaultsTab(); break;
                 case 'pipelines':  html = await this.renderPipelinesTab(); break;
-                // S26-B fix: case 'campaigns' was missing — always fell to default → 'Вкладка не найдена'
                 case 'campaigns':  html = await this.renderCampaignsTab(); break;
                 case 'documents':  html = await this.renderDocumentsTab(); break;
                 default: html = '<div>Вкладка не найдена</div>';
             }
             this._tabContent.innerHTML = html;
             this._attachTabListeners(tab);
-            // After rendering Documents tab, load data and wire up listeners
             if (tab === 'documents') {
                 await this.loadDocumentsData();
                 this._attachDocumentsListeners();
@@ -88,7 +86,6 @@ class SettingsManager {
             });
         });
 
-        // Tab-specific listeners for domain-selectors and other controls
         if (tab === 'campaigns' && typeof this._attachCampaignsTabListeners === 'function') {
             this._attachCampaignsTabListeners(this._tabContent);
         }
@@ -98,7 +95,6 @@ class SettingsManager {
     }
 
     _attachDocumentsListeners() {
-        // run-indexer button wired here because it renders outside _attachTabListeners flow
         const runBtn = this._tabContent?.querySelector('[data-action="run-indexer"]');
         if (runBtn) {
             runBtn.addEventListener('click', async (e) => {
@@ -151,18 +147,36 @@ class SettingsManager {
     // ─── Params ────────────────────────────────────────────────────────────────────────────
 
     async handleParamsAction(action, id, btn) {
+        // C30 fix: перечислены все три action; старый код знал только save-params через
+        // устаревший #params-form [data-key] и никогда не обрабатывал reset-params (P02),
+        // а updatePlatformSetting не существует в api.js — правильный метод updateSettingsParam (P03).
+        // Checkbox передавал .value («on»/«») вместо .checked → правильно сериализуем в 'true'/'false' (P04).
+
         if (action === 'save-params') {
             const form = this._tabContent.querySelector('#params-form');
             if (!form) return;
             const inputs = form.querySelectorAll('[data-key]');
             const updates = [];
-            inputs.forEach(input => updates.push({ key: input.dataset.key, value: input.value }));
+            inputs.forEach(input => {
+                const key = input.dataset.key;
+                const value = input.type === 'checkbox'
+                    ? (input.checked ? 'true' : 'false')
+                    : input.value;
+                updates.push({ key, value });
+            });
             try {
                 for (const u of updates) {
-                    await this.api.updatePlatformSetting(u.key, { value: u.value });
+                    await this.api.updateSettingsParam(u.key, u.value);
                 }
                 alert('Параметры сохранены');
             } catch (e) { alert('Ошибка: ' + e.message); }
+
+        } else if (action === 'reset-params') {
+            if (!confirm('Сбросить все параметры к значениям по умолчанию?')) return;
+            try {
+                await this.api.resetSettingsParams();
+                await this.loadTab('params');
+            } catch (e) { alert('Ошибка сброса: ' + e.message); }
         }
     }
 
@@ -191,7 +205,6 @@ class SettingsManager {
             } catch (e) { alert('Ошибка: ' + e.message); }
         } else if (action === 'check-gen') {
             try {
-                // C20 fix: бэк возвращает {ok, latency_ms, error} — не {status}
                 const result = await this.api.checkGenerationModel(id);
                 if (result?.ok) {
                     alert(`✅ Модель доступна (${result.latency_ms} мс)`);
@@ -217,7 +230,6 @@ class SettingsManager {
             } catch (e) { alert('Ошибка: ' + e.message); }
         } else if (action === 'check-emb') {
             try {
-                // бэк возвращает {ok, latency_ms, error}
                 const result = await this.api.checkEmbeddingModel(id);
                 if (result?.ok) {
                     alert(`✅ Модель доступна (${result.latency_ms} мс)`);
@@ -255,7 +267,6 @@ class SettingsManager {
         if (action === 'new-pipeline') {
             await this.showPipelineModal();
         } else if (action === 'edit-pipeline') {
-            // C21-A fix: раньше вызывалось showPipelineModal(id), который игнорирует аргумент и открывал форму создания
             await this.showPipelineEditModal(id);
         } else if (action === 'delete-pipeline') {
             if (!confirm('Удалить pipeline?')) return;
@@ -311,7 +322,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
     }
 
-    // Таб-навигация: nav.settings-tabs (без id в index.html)
     const tabNav = document.querySelector('.settings-tabs');
     if (tabNav) {
         tabNav.querySelectorAll('[data-tab]').forEach(btn => {
