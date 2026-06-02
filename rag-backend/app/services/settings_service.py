@@ -180,7 +180,7 @@ class SettingsService:
     async def update_generation_model(
         self, model_id: str, data: dict[str, Any], db: AsyncSession
     ) -> dict[str, Any]:
-        # E-CHK03: was db.get(GenerationModel, model_id)
+        # E-CHK03: was db.get(GenerationModel, model_id) — PK is UUID, model_id is string
         model = await self._get_generation_model(model_id, db)
         if model is None:
             raise KeyError(model_id)
@@ -342,8 +342,18 @@ class SettingsService:
             return "" if value is None else str(value)
         raise ValueError(f"Unsupported setting type: {value_type}")
 
-    def _serialize_value(self, value: Any) -> Any:
-        return value
+    def _serialize_value(self, value: Any) -> str:
+        """Serialize a setting value to plain TEXT string for storage.
+
+        Column is TEXT (not JSONB), so we store human-readable strings:
+        True -> 'true', False -> 'false', None -> '', numbers -> str(n).
+        This ensures asyncpg returns clean strings without JSON wrapping.
+        """
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        if value is None:
+            return ""
+        return str(value)
 
     def _generation_model_dict(self, model: GenerationModel) -> dict[str, Any]:
         return {
