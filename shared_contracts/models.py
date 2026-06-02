@@ -284,7 +284,7 @@ class VaultUpdate(BaseModel):
 
 
 class TagRead(ORMModel):
-    """\u0422\u0435\u0433 \u043f\u0440\u0438\u043d\u0430\u0434\u043b\u0435\u0436\u0438\u0442 \u0434\u043e\u043c\u0435\u043d\u0443 (\u043d\u0435 Vault)."""
+    """Тег принадлежит домену (не Vault)."""
     id: str
     name: str
     domain_id: str
@@ -294,7 +294,7 @@ class TagRead(ORMModel):
 
 
 class TagCreate(BaseModel):
-    """\u0421\u043e\u0437\u0434\u0430\u043d\u0438\u0435 \u0442\u0435\u0433\u0430: \u043f\u0440\u0438\u0432\u044f\u0437\u043a\u0430 \u043a \u0434\u043e\u043c\u0435\u043d\u0443, \u043d\u0435 \u043a Vault."""
+    """Создание тега: привязка к домену, не к Vault."""
     name: str
     domain_id: str
     campaign_id: str | None = None
@@ -307,7 +307,7 @@ class TagUpdate(BaseModel):
 
 
 class TagsGrouped(BaseModel):
-    """\u041e\u0442\u0432\u0435\u0442 GET /tags \u2014 \u0442\u0435\u0433\u0438 \u0441\u0433\u0440\u0443\u043f\u043f\u0438\u0440\u043e\u0432\u0430\u043d\u044b \u0434\u043b\u044f UI"""
+    """Ответ GET /tags — теги сгруппированы для UI"""
     global_tags: list[TagRead] = []
     by_campaign: dict[str, list[TagRead]] = {}  # campaign_id → теги
 
@@ -326,12 +326,12 @@ class DocumentRead(ORMModel):
 
 
 class DocumentLabelWrite(BaseModel):
-    """\u041f\u043e\u043b\u043d\u0430\u044f \u0437\u0430\u043c\u0435\u043d\u0430 \u0442\u0435\u0433\u043e\u0432 \u0434\u043e\u043a\u0443\u043c\u0435\u043d\u0442\u0430"""
+    """Полная замена тегов документа"""
     tag_ids: list[str]
 
 
 class CampaignRead(ORMModel):
-    """\u041a\u0430\u043c\u043f\u0430\u043d\u0438\u044f \u043f\u0440\u0438\u043d\u0430\u0434\u043b\u0435\u0436\u0438\u0442 \u0434\u043e\u043c\u0435\u043d\u0443 (\u043d\u0435 Vault)."""
+    """Кампания принадлежит домену (не Vault)."""
     id: str
     domain_id: str
     name: str
@@ -343,7 +343,7 @@ class CampaignRead(ORMModel):
 
 
 class CampaignCreate(BaseModel):
-    """\u0421\u043e\u0437\u0434\u0430\u043d\u0438\u0435 \u043a\u0430\u043c\u043f\u0430\u043d\u0438\u0438: \u043f\u0440\u0438\u0432\u044f\u0437\u043a\u0430 \u043a \u0434\u043e\u043c\u0435\u043d\u0443, \u043d\u0435 \u043a Vault."""
+    """Создание кампании: привязка к домену, не к Vault."""
     domain_id: str
     name: str
     description: str | None = None
@@ -404,7 +404,7 @@ class PipelineUpdate(BaseModel):
 
 
 class RetrievalContext(BaseModel):
-    """\u041a\u043e\u043d\u0442\u0435\u043a\u0441\u0442 \u0432\u044b\u043f\u043e\u043b\u043d\u0435\u043d\u0438\u044f \u043f\u0430\u0439\u043f\u043b\u0430\u0439\u043d\u0430. vault_id \u043e\u0441\u0442\u0430\u0432\u043b\u0435\u043d \u0434\u043b\u044f back-compat (TODO: \u0443\u0434\u0430\u043b\u0438\u0442\u044c \u0432 iter4-cleanup)."""
+    """Контекст выполнения пайплайна. vault_id оставлен для back-compat (TODO: удалить в iter4-cleanup)."""
     query: str
     vault_ids: list[str] = Field(default_factory=list)  # все enabled-Vault домена
     vault_id: str | None = None  # deprecated back-compat; используй vault_ids
@@ -583,7 +583,7 @@ class PipelineResult(BaseModel):
 # ---------------------------------------------------------------------------
 
 class UpsertChunk(BaseModel):
-    """\u041e\u0434\u0438\u043d \u0447\u0430\u043d\u043a \u0434\u043b\u044f \u0437\u0430\u043f\u0438\u0441\u0438 \u0432 LanceDB."""
+    """Один чанк для записи в LanceDB."""
     document_id: str
     chunk_index: int
     text: str
@@ -600,6 +600,7 @@ class UpsertResponse(BaseModel):
     status: Literal["ok", "partial"]
     upserted_count: int = 0
     failed_indices: list[int] = Field(default_factory=list)
+    error_details: list[str] = Field(default_factory=list)
 
 
 class SearchHit(BaseModel):
@@ -649,7 +650,7 @@ class TaskStateResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 class WSFileChunkProgressMessage(BaseModel):
-    """\u041f\u0440\u043e\u0433\u0440\u0435\u0441\u0441 \u043e\u0431\u0440\u0430\u0431\u043e\u0442\u043a\u0438 \u0444\u0430\u0439\u043b\u0430: \u0441\u0442\u0430\u0434\u0438\u044f + \u0441\u0447\u0451\u0442\u0447\u0438\u043a\u0438 \u0447\u0430\u043d\u043a\u043e\u0432."""
+    """Прогресс обработки файла: стадия + счётчики чанков."""
     type: Literal["file_chunk_progress"] = "file_chunk_progress"
     task_id: str
     file_path: str
@@ -660,7 +661,7 @@ class WSFileChunkProgressMessage(BaseModel):
 
 
 class WSFileStatusMessage(BaseModel):
-    """\u0424\u0438\u043d\u0430\u043b\u044c\u043d\u044b\u0439 \u0441\u0442\u0430\u0442\u0443\u0441 \u0444\u0430\u0439\u043b\u0430 \u043f\u043e\u0441\u043b\u0435 \u0438\u043d\u0434\u0435\u043a\u0441\u0430\u0446\u0438\u0438."""
+    """Финальный статус файла после индексации."""
     type: Literal["file_status"] = "file_status"
     task_id: str
     file_path: str
@@ -670,13 +671,13 @@ class WSFileStatusMessage(BaseModel):
 
 
 class WSTaskCancelledMessage(BaseModel):
-    """\u0417\u0430\u0434\u0430\u0447\u0430 \u0438\u043d\u0434\u0435\u043a\u0441\u0430\u0446\u0438\u0438 \u043e\u0442\u043c\u0435\u043d\u0435\u043d\u0430."""
+    """Задача индексации отменена."""
     type: Literal["task_cancelled"] = "task_cancelled"
     task_id: str
 
 
 class WSTaskCompleteMessage(BaseModel):
-    """\u0417\u0430\u0434\u0430\u0447\u0430 \u0438\u043d\u0434\u0435\u043a\u0441\u0430\u0446\u0438\u0438 \u0437\u0430\u0432\u0435\u0440\u0448\u0435\u043d\u0430 \u0443\u0441\u043f\u0435\u0448\u043d\u043e."""
+    """Задача индексации завершена успешно."""
     type: Literal["task_complete"] = "task_complete"
     task_id: str
     files_total: int = 0
