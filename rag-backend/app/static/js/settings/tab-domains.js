@@ -14,8 +14,8 @@ const DomainsTabMixin = {
                 </div>
                 <div class="settings-actions">
                     <button class="btn btn-sm btn-secondary" data-action="edit-domain" data-id="${this.escapeHtml(domain.domain_id)}">Изменить</button>
-                    <button class="btn btn-sm btn-secondary" data-action="edit-prompts" data-id="${this.escapeHtml(domain.domain_id)}">Промпты</button>
-                    <button class="btn btn-sm btn-secondary" data-action="edit-fields" data-id="${this.escapeHtml(domain.domain_id)}">Поля</button>
+                    <button class="btn btn-sm btn-secondary" data-action="manage-prompts" data-id="${this.escapeHtml(domain.domain_id)}">Промпты</button>
+                    <button class="btn btn-sm btn-secondary" data-action="manage-fields" data-id="${this.escapeHtml(domain.domain_id)}">Поля</button>
                     <button class="btn btn-sm btn-danger" data-action="delete-domain" data-id="${this.escapeHtml(domain.domain_id)}"${domain.is_system ? ' disabled' : ''}>Удалить</button>
                 </div>
                 <div>
