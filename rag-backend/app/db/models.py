@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, func
-from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 import uuid as _uuid
@@ -168,8 +168,7 @@ class Message(Base):
     role: Mapped[str] = mapped_column(String(16), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     pipeline_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    # JSONB: stores list of source dicts [{chunk_id, score, text, ...}]
-    sources: Mapped[Any | None] = mapped_column(JSONB, nullable=True)
+    sources: Mapped[Any | None] = mapped_column(nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -280,8 +279,7 @@ class PipelineDecision(Base):
     )
     pipeline_id: Mapped[str] = mapped_column(String(64), nullable=False)
     pipeline_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    # JSONB: stores list of executed step dicts [{name, status, duration_ms, ...}]
-    steps: Mapped[Any | None] = mapped_column(JSONB, nullable=True)
+    steps: Mapped[Any | None] = mapped_column(nullable=True)
     final_composition: Mapped[str | None] = mapped_column(Text, nullable=True)
     retrieval_strategy: Mapped[str | None] = mapped_column(String(32), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
