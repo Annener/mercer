@@ -9,6 +9,12 @@ from app.providers.generation.base import GenerationProvider, GenerationProvider
 
 logger = logging.getLogger(__name__)
 
+# Заголовки идентификации приложения для OpenRouter
+# (рекомендуется документацией proxyapi.ru/openrouter)
+_APP_SITE_URL = "http://mercer.local"
+_APP_TITLE = "Mercer RAG"
+
+
 class OpenAICompatibleProvider(GenerationProvider):
     def __init__(self, config: GenerationModelConfig, api_key: str, max_retries: int = 3) -> None:
         self.config = config
@@ -28,11 +34,7 @@ class OpenAICompatibleProvider(GenerationProvider):
                         "POST",
                         f"{self.config.base_url.rstrip('/')}/chat/completions",
                         headers=self._headers(),
-                        json={
-                            "model": self.config.model_id,
-                            "messages": messages,
-                            "stream": True,
-                        },
+                        json=_build_chat_payload(self.config.model_id, messages, stream=True),
                     ) as response:
                         response.raise_for_status()
                         async for line in response.aiter_lines():
@@ -40,6 +42,10 @@ class OpenAICompatibleProvider(GenerationProvider):
                             if token:
                                 yield token
                         return
+            except StreamProviderError as exc:
+                # Ошибка внутри SSE-потока (напр., finish_reason=error от OpenRouter)
+                last_error = exc
+                logger.warning("Stream provider error on attempt %s: %s", attempt + 1, exc)
             except (httpx.ConnectError, httpx.ConnectTimeout, httpx.NetworkError) as exc:
                 last_error = exc
                 logger.warning("Generation provider unavailable on attempt %s: %s", attempt + 1, exc)
@@ -64,11 +70,7 @@ class OpenAICompatibleProvider(GenerationProvider):
                 async with httpx.AsyncClient(timeout=self.timeout, headers=self._headers()) as client:
                     response = await client.post(
                         f"{self.config.base_url.rstrip('/')}/chat/completions",
-                        json={
-                            "model": self.config.model_id,
-                            "messages": messages,
-                            "stream": False,
-                        },
+                        json=_build_chat_payload(self.config.model_id, messages, stream=False),
                     )
                     response.raise_for_status()
                     return _parse_completion_response(response.json())
@@ -107,7 +109,6 @@ class OpenAICompatibleProvider(GenerationProvider):
         # Инъецируем системный промпт, требующий JSON, если его ещё нет
         json_system = {"role": "system", "content": "You must respond with valid JSON only. No markdown, no explanation, no code fences — just the raw JSON object."}
         if messages and messages[0].get("role") == "system":
-            # Дополняем существующий системный промпт
             enriched = list(messages)
             enriched[0] = {
                 "role": "system",
@@ -122,12 +123,7 @@ class OpenAICompatibleProvider(GenerationProvider):
                 async with httpx.AsyncClient(timeout=self.timeout, headers=self._headers()) as client:
                     response = await client.post(
                         f"{self.config.base_url.rstrip('/')}/chat/completions",
-                        json={
-                            "model": self.config.model_id,
-                            "messages": enriched,
-                            "stream": False,
-                            "temperature": 0.2,
-                        },
+                        json=_build_chat_payload(self.config.model_id, enriched, stream=False, temperature=0.2),
                     )
                     response.raise_for_status()
                     content = _parse_completion_response(response.json())
@@ -161,10 +157,37 @@ class OpenAICompatibleProvider(GenerationProvider):
         raise GenerationProviderUnavailableError("JSON generation provider is unavailable.") from last_error
 
     def _headers(self) -> dict[str, str]:
-        headers = {"Content-Type": "application/json"}
+        headers = {
+            "Content-Type": "application/json",
+            # Идентификация приложения для OpenRouter / ProxyAPI
+            # https://proxyapi.ru/docs/openrouter
+            "HTTP-Referer": _APP_SITE_URL,
+            "X-Title": _APP_TITLE,
+        }
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
         return headers
+
+
+class StreamProviderError(Exception):
+    """Ошибка, переданная провайдером внутри SSE-потока (finish_reason=error)."""
+
+
+def _build_chat_payload(
+    model_id: str,
+    messages: list[dict[str, str]],
+    *,
+    stream: bool,
+    temperature: float | None = None,
+) -> dict:
+    payload: dict = {
+        "model": model_id,
+        "messages": messages,
+        "stream": stream,
+    }
+    if temperature is not None:
+        payload["temperature"] = temperature
+    return payload
 
 
 def _parse_stream_line(line: str) -> str:
@@ -177,10 +200,26 @@ def _parse_stream_line(line: str) -> str:
         data = json.loads(payload)
     except json.JSONDecodeError:
         return ""
+
     choices = data.get("choices")
     if not isinstance(choices, list) or not choices:
         return ""
-    delta = choices[0].get("delta")
+
+    choice = choices[0]
+
+    # OpenRouter при ошибке провайдера возвращает чанк с finish_reason="error"
+    # вместо HTTP-ошибки. Нужно явно пробросить исключение, чтобы ретрай отработал.
+    finish_reason = choice.get("finish_reason")
+    if finish_reason == "error":
+        error_info = data.get("error") or choice.get("error") or {}
+        error_msg = (
+            error_info.get("message") or error_info.get("code") or str(error_info)
+            if isinstance(error_info, dict)
+            else str(error_info)
+        )
+        raise StreamProviderError(f"OpenRouter stream error: {error_msg}")
+
+    delta = choice.get("delta")
     if not isinstance(delta, dict):
         return ""
     content = delta.get("content")
