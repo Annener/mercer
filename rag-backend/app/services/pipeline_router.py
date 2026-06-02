@@ -49,6 +49,10 @@ class PipelineRouter:
         decide(query, chat, db) -> tuple[...]
     """
 
+    def __init__(self, db: AsyncSession) -> None:
+        # BUG-1 fix: сохраняем db в self, чтобы select() не требовал явной передачи
+        self.db = db
+
     # ------------------------------------------------------------------
     # Основной метод — принимает PipelineExecutionContext (iter2+)
     # ------------------------------------------------------------------
@@ -67,6 +71,8 @@ class PipelineRouter:
         3. LLM-роутинг по query + history.
         4. Вернуть PipelineRead или None (→ chat.py переходит на plain RAG).
         """
+        # BUG-1 fix: используем self.db как fallback когда db не передан явно
+        db = db or self.db
         if db is None:
             raise ValueError("db session is required for PipelineRouter.select()")
 
@@ -266,4 +272,4 @@ class PipelineRouter:
         await db.commit()
 
 
-pipeline_router = PipelineRouter()
+pipeline_router = PipelineRouter.__new__(PipelineRouter)

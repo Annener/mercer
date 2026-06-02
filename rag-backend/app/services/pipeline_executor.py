@@ -47,6 +47,10 @@ class PipelineExecutor:
         run_stream(context)  -> AsyncIterator[dict]       # SSE chunks, used by /send_stream
     """
 
+    def __init__(self, db: AsyncSession) -> None:
+        # BUG-2 fix: храним db в self — context не несёт db по контракту shared_contracts
+        self.db = db
+
     # ------------------------------------------------------------------
     # Non-streaming entry point  (used by chat.py /send)
     # ------------------------------------------------------------------
@@ -56,9 +60,8 @@ class PipelineExecutor:
 
         Collects all SSE chunks internally; does NOT stream to client.
         """
-        if context.db is None:  # type: ignore[attr-defined]
-            raise ValueError("context.db must be set before calling PipelineExecutor.run()")
-        db: AsyncSession = context.db  # type: ignore[attr-defined]
+        # BUG-2 fix: используем self.db вместо context.db (которого нет в модели)
+        db: AsyncSession = self.db
         pipeline = _pipeline_from_context(context)
         final_answer = ""
         sources: list[dict[str, Any]] = []
@@ -82,9 +85,8 @@ class PipelineExecutor:
         context: PipelineExecutionContext,
     ) -> AsyncIterator[dict[str, Any]]:
         """Yield SSE-ready dicts for streaming response."""
-        if context.db is None:  # type: ignore[attr-defined]
-            raise ValueError("context.db must be set before calling PipelineExecutor.run_stream()")
-        db: AsyncSession = context.db  # type: ignore[attr-defined]
+        # BUG-2 fix: используем self.db вместо context.db (которого нет в модели)
+        db: AsyncSession = self.db
         pipeline = _pipeline_from_context(context)
         async for chunk in self._execute(pipeline, context.query, _ctx_dict(context), db, request=None):
             yield chunk
@@ -371,11 +373,14 @@ class PipelineExecutor:
 
 def _pipeline_from_context(context: PipelineExecutionContext) -> PipelineRead:
     """Re-create a PipelineRead stub from the context fields set by PipelineRouter.select()."""
+    # BUG-3 fix: domain_id обязательно для PipelineRead (ORMModel)
     return PipelineRead(
+        id="",  # stub — нет UUID на этапе выполнения
         pipeline_id=context.pipeline_id,
-        version=context.pipeline_version,
-        name=context.pipeline_id,  # fallback name
-        steps=context.steps,
+        domain_id=context.domain_id or "default",
+        version=context.pipeline_version or "0",
+        name=context.pipeline_id or "unknown",
+        steps=context.steps or [],
         final_composition=context.final_composition,
         campaign_id=context.campaign_id,
     )
@@ -398,4 +403,4 @@ def _ctx_dict(context: PipelineExecutionContext) -> dict[str, Any]:
     }
 
 
-pipeline_executor = PipelineExecutor()
+pipeline_executor = PipelineExecutor.__new__(PipelineExecutor)
