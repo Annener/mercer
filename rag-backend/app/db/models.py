@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -39,6 +39,29 @@ class Domain(Base):
     )
     campaigns: Mapped[list[Campaign]] = relationship(back_populates="domain")
     tags: Mapped[list[Tag]] = relationship(back_populates="domain")
+    prompts: Mapped[list[DomainPrompt]] = relationship(back_populates="domain")
+    pipelines: Mapped[list[Pipeline]] = relationship(back_populates="domain")
+
+
+class DomainPrompt(Base):
+    __tablename__ = "domain_prompts"
+    __table_args__ = (
+        UniqueConstraint("domain_id", "prompt_type", name="uq_domain_prompts_domain_type"),
+    )
+
+    id: Mapped[_uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=_uuid.uuid4
+    )
+    domain_id: Mapped[_uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("domains.id", ondelete="CASCADE"), nullable=False
+    )
+    prompt_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    domain: Mapped[Domain] = relationship(back_populates="prompts")
 
 
 class Vault(Base):
@@ -123,10 +146,38 @@ class PlatformSetting(Base):
 
     key: Mapped[str] = mapped_column(String(128), primary_key=True)
     # TEXT instead of JSONB: values are plain scalars (str/int/bool).
-    # Storing as TEXT avoids JSON-wrapping quirks when read via asyncpg directly
-    # (e.g. in the indexer which bypasses SQLAlchemy).
+    # Storing as TEXT avoids JSON-wrapping quirks when read via asyncpg directly.
     value: Mapped[str] = mapped_column(Text, nullable=False)
     value_type: Mapped[str] = mapped_column(String(16), nullable=False, default="str")
+
+
+class Pipeline(Base):
+    __tablename__ = "pipelines"
+    __table_args__ = (
+        UniqueConstraint("pipeline_id", "version", name="uq_pipelines_id_version"),
+    )
+
+    id: Mapped[_uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=_uuid.uuid4
+    )
+    pipeline_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    domain_id: Mapped[_uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("domains.id"), nullable=False
+    )
+    campaign_id: Mapped[_uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("campaigns.id", ondelete="CASCADE"), nullable=True
+    )
+    version: Mapped[str] = mapped_column(String(16), nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    steps: Mapped[Any] = mapped_column(JSONB, nullable=False)
+    final_composition: Mapped[Any] = mapped_column(JSONB, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    domain: Mapped[Domain] = relationship(back_populates="pipelines")
 
 
 class Chat(Base):
@@ -154,6 +205,9 @@ class Chat(Base):
         back_populates="chat", cascade="all, delete-orphan"
     )
     campaign: Mapped[Campaign | None] = relationship(back_populates="chats")
+    clarification_state: Mapped[ClarificationState | None] = relationship(
+        back_populates="chat", uselist=False, cascade="all, delete-orphan"
+    )
 
 
 class Message(Base):
@@ -175,6 +229,39 @@ class Message(Base):
     )
 
     chat: Mapped[Chat] = relationship(back_populates="messages")
+
+
+class ClarificationState(Base):
+    __tablename__ = "clarification_states"
+
+    chat_id: Mapped[_uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("chats.id", ondelete="CASCADE"), primary_key=True
+    )
+    stage: Mapped[str] = mapped_column(String(32), nullable=False)
+    missing_fields: Mapped[Any | None] = mapped_column(JSONB, nullable=True)
+    collected: Mapped[Any | None] = mapped_column(JSONB, nullable=True)
+    turn: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    next_question: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    chat: Mapped[Chat] = relationship(back_populates="clarification_state")
+
+
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+
+    id: Mapped[_uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=_uuid.uuid4
+    )
+    action: Mapped[str] = mapped_column(String(64), nullable=False)
+    entity_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    entity_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    details: Mapped[Any | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
 
 
 class DomainClarificationField(Base):
