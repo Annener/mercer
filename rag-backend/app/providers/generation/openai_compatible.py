@@ -14,8 +14,6 @@ class OpenAICompatibleProvider(GenerationProvider):
         self.config = config
         self.api_key = api_key
         self.max_retries = max_retries
-        # Используем полный timeout из конфига для read, короткий для connect.
-        # Раньше min(..., 10.0) резал реальный timeout_seconds=60 из конфига.
         self.timeout = httpx.Timeout(
             float(config.timeout_seconds),
             connect=min(float(config.timeout_seconds), 10.0),
@@ -99,7 +97,25 @@ class OpenAICompatibleProvider(GenerationProvider):
         """
         Вызывает LLM с требованием вернуть валидный JSON.
         Используется агентом-планировщиком для выбора шагов/инструментов.
+
+        ВАЖНО: response_format={"type": "json_object"} намеренно НЕ используется.
+        OpenRouter не поддерживает это поле для всех моделей (в частности DeepSeek),
+        и при его наличии падает с внутренней ошибкой 'str' object has no attribute 'get'.
+        JSON-режим обеспечивается инъекцией системного промпта — универсальный подход
+        для любого OpenAI-совместимого провайдера.
         """
+        # Инъецируем системный промпт, требующий JSON, если его ещё нет
+        json_system = {"role": "system", "content": "You must respond with valid JSON only. No markdown, no explanation, no code fences — just the raw JSON object."}
+        if messages and messages[0].get("role") == "system":
+            # Дополняем существующий системный промпт
+            enriched = list(messages)
+            enriched[0] = {
+                "role": "system",
+                "content": enriched[0]["content"] + "\n\nIMPORTANT: Respond with valid JSON only.",
+            }
+        else:
+            enriched = [json_system] + list(messages)
+
         last_error: Exception | None = None
         for attempt in range(self.max_retries):
             try:
@@ -108,15 +124,18 @@ class OpenAICompatibleProvider(GenerationProvider):
                         f"{self.config.base_url.rstrip('/')}/chat/completions",
                         json={
                             "model": self.config.model_id,
-                            "messages": messages,
+                            "messages": enriched,
                             "stream": False,
-                            "response_format": {"type": "json_object"},
                             "temperature": 0.2,
                         },
                     )
                     response.raise_for_status()
                     content = _parse_completion_response(response.json())
-                    return json.loads(content)
+                    # Снимаем возможные code-fences если модель всё равно их добавила
+                    stripped = content.strip()
+                    if stripped.startswith("```"):
+                        stripped = stripped.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+                    return json.loads(stripped)
             except (httpx.ConnectError, httpx.ConnectTimeout, httpx.NetworkError, json.JSONDecodeError) as exc:
                 last_error = exc
                 logger.warning("JSON generation failed on attempt %s: %s", attempt + 1, exc)
