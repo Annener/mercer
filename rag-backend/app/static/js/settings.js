@@ -46,7 +46,6 @@ class SettingsManager {
             this._attachTabListeners(tab);
             if (tab === 'documents') {
                 await this.loadDocumentsData();
-                this._attachDocumentsListeners();
             }
         } catch (e) {
             this._tabContent.innerHTML = `<div class="error">Ошибка загрузки: ${this.escapeHtml(e.message)}</div>`;
@@ -72,7 +71,7 @@ class SettingsManager {
             document.querySelectorAll('.card-menu').forEach(m => m.classList.remove('open'));
         }, { capture: true, once: false });
 
-        // action buttons
+        // action buttons — единственное место подписки для всех вкладок
         this._tabContent.querySelectorAll('[data-action]').forEach(btn => {
             btn.addEventListener('click', async (e) => {
                 e.stopPropagation();
@@ -91,23 +90,6 @@ class SettingsManager {
         }
         if (tab === 'pipelines' && typeof this._attachPipelinesTabListeners === 'function') {
             this._attachPipelinesTabListeners(this._tabContent);
-        }
-    }
-
-    _attachDocumentsListeners() {
-        const runBtn = this._tabContent?.querySelector('[data-action="run-indexer"]');
-        if (runBtn) {
-            runBtn.addEventListener('click', async (e) => {
-                e.stopPropagation();
-                await this.handleDocumentsAction('run-indexer', runBtn);
-            });
-        }
-        const manageTagsBtn = this._tabContent?.querySelector('[data-action="manage-tags"]');
-        if (manageTagsBtn) {
-            manageTagsBtn.addEventListener('click', async (e) => {
-                e.stopPropagation();
-                await this.handleDocumentsAction('manage-tags', manageTagsBtn);
-            });
         }
     }
 
