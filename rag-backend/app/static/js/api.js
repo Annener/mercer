@@ -590,18 +590,8 @@ class ChatAPI {
         // 204 No Content
     }
 
-    // D3 fix: /vaults/{id}/reindex (не /api/settings/vaults/{id}/reindex)
-    async reindexVault(vaultId, force = false) {
-        const response = await fetch(`${this.baseUrl}/vaults/${encodeURIComponent(vaultId)}/reindex`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ force_reindex: force }),
-        });
-        if (!response.ok) throw new Error(`Failed to reindex vault: ${response.statusText}`);
-        return response.json();
-    }
-
-    // runIndexer — алиас для reindexVault, используется в tab-integrations.js.
+    // D3 fix: POST /vaults/{id}/reindex (не /api/settings/vaults/{id}/reindex)
+    // Если vaultId не передан — автоматически берёт первый активный vault из списка.
     async runIndexer(vaultId = null, force = false) {
         if (!vaultId) {
             const vaults = await this.getSettingsVaults();
@@ -610,7 +600,13 @@ class ChatAPI {
             vaultId = active ? (active.vault_id || active.id) : null;
         }
         if (!vaultId) throw new Error('Vault не найден — создайте vault перед запуском индексации');
-        return this.reindexVault(vaultId, force);
+        const response = await fetch(`${this.baseUrl}/vaults/${encodeURIComponent(vaultId)}/reindex`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ force_reindex: force }),
+        });
+        if (!response.ok) throw new Error(`Failed to reindex vault: ${response.statusText}`);
+        return response.json();
     }
 
     // D4 fix: WS /ws/index-tasks/{id} (не /api/settings/tasks/{id}/stream)
