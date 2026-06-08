@@ -41,6 +41,14 @@ Image и FigureCaption элементы отбрасываются — они н
 
 warmup_models() вызывается при старте сервера (lifespan hook в app.py).
 Инициализирует spaCy, YOLO, Table Transformer заранее.
+
+## Ghostscript нормализация
+
+Если PDFium не может открыть PDF (PDFium: Data format error), парсер
+нормализует файл через Ghostscript во временный файл и повторяет hi_res.
+Временный файл удаляется после парсинга в блоке finally.
+Если и после нормализации PDFium падает — пробрасывает исходное исключение
+в app.py, которое возвращает {"type": "error"} клиенту.
 """
 from __future__ import annotations
 
@@ -49,6 +57,7 @@ import math
 import multiprocessing
 import os
 import re
+import subprocess
 import tempfile
 import time
 from collections import defaultdict
@@ -86,6 +95,9 @@ _RENDER_DPI = int(os.getenv("PDF_RENDER_DPI", "200"))
 # все элементы классифицируются как UncategorizedText, заголовки и таблицы теряются.
 # yolox (FP32) — дефолт, лучшее качество.
 _YOLO_MODEL = os.getenv("UNSTRUCTURED_HI_RES_MODEL_NAME", "yolox")
+
+# Таймаут Ghostscript нормализации в секундах
+_GS_TIMEOUT = int(os.getenv("PDF_GS_TIMEOUT", "120"))
 
 # Глобальные флаги — применяются внутри каждого процесса
 _GPU_PATCHES_APPLIED = False
@@ -207,6 +219,58 @@ def warmup_models() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Ghostscript нормализация
+# ---------------------------------------------------------------------------
+
+def _is_pdfium_error(exc: Exception) -> bool:
+    """Возвращает True если исключение вызвано ошибкой PDFium при открытии файла."""
+    msg = str(exc)
+    return "PDFium" in msg or "Data format error" in msg
+
+
+def _normalize_with_ghostscript(src_path: str, source_name: str) -> str:
+    """
+    Нормализует PDF через Ghostscript, возвращает путь к временному файлу.
+    Caller ОБЯЗАН удалить файл после использования (используй try/finally).
+
+    Raises:
+        FileNotFoundError: если ghostscript (gs) не установлен
+        subprocess.CalledProcessError: если gs вернул ненулевой код
+        subprocess.TimeoutExpired: если нормализация превысила _GS_TIMEOUT
+    """
+    tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
+    tmp.close()
+
+    logger.info(
+        "[gs] Normalizing '%s' → %s (timeout=%ds)",
+        source_name, tmp.name, _GS_TIMEOUT,
+    )
+    t0 = time.monotonic()
+
+    subprocess.run(
+        [
+            "gs",
+            "-dBATCH",
+            "-dNOPAUSE",
+            "-dQUIET",
+            "-sDEVICE=pdfwrite",
+            f"-sOutputFile={tmp.name}",
+            src_path,
+        ],
+        check=True,
+        timeout=_GS_TIMEOUT,
+    )
+
+    elapsed = time.monotonic() - t0
+    size_mb = _file_size_mb(tmp.name)
+    logger.info(
+        "[gs] Normalization complete: '%s' → %.1f MB in %.1fs",
+        source_name, size_mb, elapsed,
+    )
+    return tmp.name
+
+
+# ---------------------------------------------------------------------------
 # Публичная точка входа
 # ---------------------------------------------------------------------------
 
@@ -218,20 +282,79 @@ def parse_pdf_unstructured(
     """
     Парсит PDF через unstructured hi_res с параллельным батч-парсингом.
 
+    Алгоритм:
+      1. Попытка 1 — парсинг оригинального файла через hi_res.
+      2. Если PDFium не смог открыть файл (Data format error) —
+         нормализуем через Ghostscript во временный файл.
+      3. Попытка 2 — парсинг нормализованного файла через hi_res.
+      4. Если и после нормализации PDFium падает — пробрасываем исключение
+         в app.py, который вернёт {"type": "error"} клиенту.
+         Временный файл удаляется в блоке finally.
+
     Args:
-        path: путь к PDF
-        source_name: имя файла для логов/метаданных
+        path: путь к PDF (оригинальный файл — не изменяется)
+        source_name: имя файла для логов/метаданных (всегда оригинальное)
         progress_callback(page_num, total_pages, n_elements, has_table):
-            вызывается после завершения каждой страницы (из рабочих процессов)
+            вызывается после завершения каждой страницы
     """
     source_name = source_name or path
+
+    try:
+        return _parse_hi_res(path, source_name, progress_callback)
+    except Exception as exc:
+        if not _is_pdfium_error(exc):
+            # Не PDFium-ошибка (например, YOLO упал, OOM) — пробрасываем как есть
+            raise
+
+    # PDFium не смог открыть файл — пробуем нормализацию
+    logger.warning(
+        "[gs] PDFium error for '%s', attempting Ghostscript normalization: %s",
+        source_name, exc,
+    )
+
+    normalized_path: Optional[str] = None
+    try:
+        normalized_path = _normalize_with_ghostscript(path, source_name)
+        # Парсим нормализованный файл, но source_name оставляем оригинальным —
+        # чтобы метаданные чанков ссылались на исходный файл
+        return _parse_hi_res(normalized_path, source_name, progress_callback)
+    except Exception as exc2:
+        logger.error(
+            "[gs] hi_res failed even after normalization for '%s': %s",
+            source_name, exc2,
+        )
+        # Пробрасываем исключение после нормализации — app.py вернёт {"type": "error"}
+        raise
+    finally:
+        if normalized_path is not None:
+            try:
+                os.unlink(normalized_path)
+                logger.debug("[gs] Removed normalized tmp file: %s", normalized_path)
+            except OSError as unlink_err:
+                logger.warning("[gs] Failed to remove tmp file %s: %s", normalized_path, unlink_err)
+
+
+# ---------------------------------------------------------------------------
+# Внутренний парсинг через hi_res (общий для оригинала и нормализованного файла)
+# ---------------------------------------------------------------------------
+
+def _parse_hi_res(
+    path: str,
+    source_name: str,
+    progress_callback: Optional[ProgressCallback],
+) -> dict[str, Any]:
+    """
+    Запускает hi_res парсинг для указанного пути.
+    source_name используется только для логов и метаданных результата.
+    """
     t_start = time.monotonic()
 
     patch_report = _apply_mps_patches()
     if patch_report != "already applied":
         logger.info("GPU patches: [%s]", patch_report)
 
-    # Считаем страницы
+    # Считаем страницы — pypdfium2 тоже использует PDFium,
+    # поэтому если файл битый — упадёт здесь с PDFium-ошибкой
     total_pages = _count_pdf_pages(path)
     logger.info(
         "[hi_res] %s — %d pages, DPI=%d, model=%s",
