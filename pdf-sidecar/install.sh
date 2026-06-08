@@ -1,171 +1,168 @@
 #!/usr/bin/env bash
-# =============================================================================
-# pdf-sidecar / install.sh
-# Устанавливает системные зависимости и Python-пакеты для pdf-sidecar.
-# Запускать от имени пользователя с правами sudo (или root).
-# =============================================================================
+# pdf-sidecar — установка зависимостей
+#
+# ВАЖНО: требует Python 3.11–3.13.
+# unstructured-inference несовместим с Python 3.14+.
+#
+# Требования системы:
+#   brew install ghostscript tesseract tesseract-lang poppler
+#
+# Запуск: chmod +x install.sh && ./install.sh
+#         PYTHON=/usr/local/bin/python3.13 ./install.sh  # указать явно если нужно
+
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VENV_DIR="${SCRIPT_DIR}/.venv"
+PYTHON="${PYTHON:-python3.13}"
 
-# ---------------------------------------------------------------------------
-# Цвета
-# ---------------------------------------------------------------------------
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m'
+# Проверяем что Python существует, иначе пробуем python3
+if ! command -v "${PYTHON}" &>/dev/null; then
+    echo "WARNING: ${PYTHON} not found, falling back to python3"
+    PYTHON="python3"
+fi
 
-log()  { echo -e "${GREEN}[install]${NC} $*"; }
-warn() { echo -e "${YELLOW}[warn]${NC}   $*"; }
-err()  { echo -e "${RED}[error]${NC}  $*" >&2; }
+PYTHON_VERSION=$("${PYTHON}" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+PYTHON_MAJOR=$("${PYTHON}" -c "import sys; print(sys.version_info.major)")
+PYTHON_MINOR=$("${PYTHON}" -c "import sys; print(sys.version_info.minor)")
 
-# ---------------------------------------------------------------------------
-# Определяем пакетный менеджер
-# ---------------------------------------------------------------------------
-detect_pkg_manager() {
-    if command -v apt-get &>/dev/null; then
-        echo "apt"
-    elif command -v brew &>/dev/null; then
-        echo "brew"
-    elif command -v dnf &>/dev/null; then
-        echo "dnf"
-    elif command -v yum &>/dev/null; then
-        echo "yum"
+echo "=== pdf-sidecar install ==="
+echo "Python: $("${PYTHON}" --version) at $(command -v "${PYTHON}")"
+
+# Проверяем совместимость версии Python
+if [[ "${PYTHON_MAJOR}" -eq 3 && "${PYTHON_MINOR}" -ge 14 ]]; then
+    echo ""
+    echo "ERROR: Python ${PYTHON_VERSION} не поддерживается."
+    echo "  unstructured-inference требует Python 3.11–3.13."
+    echo ""
+    echo "  Установите Python 3.13:"
+    echo "    brew install python@3.13"
+    echo ""
+    echo "  Затем запустите:"
+    echo "    PYTHON=python3.13 ./install.sh"
+    echo "  или:"
+    echo "    PYTHON=/opt/homebrew/bin/python3.13 ./install.sh"
+    exit 1
+fi
+
+if [[ "${PYTHON_MAJOR}" -eq 3 && "${PYTHON_MINOR}" -lt 11 ]]; then
+    echo "WARNING: Python ${PYTHON_VERSION} < 3.11, могут быть проблемы совместимости."
+fi
+
+echo "Python ${PYTHON_VERSION} — OK"
+
+# 1. Создаём или пересоздаём venv
+if [[ -d "${VENV_DIR}" ]]; then
+    # Проверяем что venv создан с нужной версией Python
+    VENV_PYTHON_VER=$("${VENV_DIR}/bin/python" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "unknown")
+    if [[ "${VENV_PYTHON_VER}" != "${PYTHON_VERSION}" ]]; then
+        echo "[1/6] venv существует но использует Python ${VENV_PYTHON_VER}."
+        echo "      Пересоздаём с Python ${PYTHON_VERSION}…"
+        rm -rf "${VENV_DIR}"
+        "${PYTHON}" -m venv "${VENV_DIR}"
     else
-        echo "unknown"
+        echo "[1/6] venv уже существует (Python ${VENV_PYTHON_VER}) — пропускаем"
     fi
-}
+else
+    echo "[1/6] Создаём venv в ${VENV_DIR}…"
+    "${PYTHON}" -m venv "${VENV_DIR}"
+fi
 
-PKG_MGR=$(detect_pkg_manager)
-log "Package manager detected: ${PKG_MGR}"
+# shellcheck disable=SC1091
+source "${VENV_DIR}/bin/activate"
+echo "      Active Python: $(python --version) at $(command -v python)"
 
-# ---------------------------------------------------------------------------
-# Системные зависимости
-# ---------------------------------------------------------------------------
-install_system_deps() {
-    log "Installing system dependencies..."
+echo "[2/6] Upgrading pip…"
+pip install --upgrade pip --quiet
 
-    case "${PKG_MGR}" in
-        apt)
-            sudo apt-get update -qq
-            sudo apt-get install -y --no-install-recommends \
-                ghostscript \
-                tesseract-ocr \
-                tesseract-ocr-rus \
-                tesseract-ocr-eng \
-                libpoppler-cpp-dev \
-                poppler-utils \
-                libmagic1 \
-                libgl1 \
-                libglib2.0-0
-            ;;
-        brew)
-            # macOS — ghostscript обязателен для _normalize_with_ghostscript
-            brew install ghostscript tesseract tesseract-lang poppler
-            ;;
-        dnf|yum)
-            sudo ${PKG_MGR} install -y \
-                ghostscript \
-                tesseract \
-                tesseract-langpack-rus \
-                poppler-utils \
-                file-libs
-            ;;
-        *)
-            warn "Unknown package manager. Install manually: ghostscript, tesseract, poppler-utils"
-            ;;
-    esac
+echo "[3/6] Installing requirements.txt…"
+pip install -r "${SCRIPT_DIR}/requirements.txt"
 
-    log "System dependencies installed."
-}
-
-# ---------------------------------------------------------------------------
-# Проверка наличия ghostscript после установки
-# ---------------------------------------------------------------------------
-check_ghostscript() {
-    if command -v gs &>/dev/null; then
-        GS_VER=$(gs --version 2>/dev/null || echo "unknown")
-        log "Ghostscript OK: ${GS_VER}"
+# 4. detectron2 — нет wheel для arm64/PyPI, нужна сборка из исходников
+echo "[4/6] Installing detectron2…"
+if python -c "import detectron2" 2>/dev/null; then
+    echo "      detectron2 already installed — OK"
+else
+    echo "      Compiling from GitHub source (займёт 3–5 минут)…"
+    if pip install 'git+https://github.com/facebookresearch/detectron2.git' 2>/dev/null; then
+        echo "      detectron2 installed OK"
     else
-        err "ghostscript (gs) not found in PATH after installation!"
-        err "PDF normalization fallback will not work."
-        exit 1
+        echo "      WARNING: detectron2 не установился."
+        echo "      unstructured hi_res требует detectron2 или yolox."
+        echo "      yolox (ONNX-based) используется по умолчанию — продолжаем."
+        echo "      Если нужен detectron2, запустите вручную:"
+        echo "        pip install 'git+https://github.com/facebookresearch/detectron2.git'"
     fi
-}
+fi
 
-# ---------------------------------------------------------------------------
-# Python-окружение
-# ---------------------------------------------------------------------------
-setup_python_env() {
-    VENV_DIR="${SCRIPT_DIR}/.venv"
+# 5. Системные зависимости
+echo "[5/6] Checking system dependencies…"
+ALL_OK=true
 
-    if [ ! -d "${VENV_DIR}" ]; then
-        log "Creating Python virtual environment at ${VENV_DIR}..."
-        python3 -m venv "${VENV_DIR}"
+if ! command -v gs &>/dev/null; then
+    echo "      ✗ ghostscript не найден. Установите: brew install ghostscript"
+    ALL_OK=false
+else
+    echo "      ✓ ghostscript: $(gs --version 2>/dev/null || echo unknown)"
+fi
+
+if ! command -v tesseract &>/dev/null; then
+    echo "      ✗ tesseract не найден. Установите: brew install tesseract tesseract-lang"
+    ALL_OK=false
+else
+    echo "      ✓ tesseract: $(tesseract --version 2>&1 | head -1)"
+    if ! tesseract --list-langs 2>/dev/null | grep -q "rus"; then
+        echo "      ✗ Русский язык OCR отсутствует. Установите: brew install tesseract-lang"
+        ALL_OK=false
     else
-        log "Virtual environment already exists: ${VENV_DIR}"
+        echo "      ✓ Russian OCR: OK"
     fi
+fi
 
-    # Активируем
-    # shellcheck disable=SC1091
-    source "${VENV_DIR}/bin/activate"
+if ! command -v pdftoppm &>/dev/null; then
+    echo "      ✗ poppler не найден. Установите: brew install poppler"
+    ALL_OK=false
+else
+    echo "      ✓ poppler: OK"
+fi
 
-    log "Upgrading pip..."
-    pip install --upgrade pip --quiet
+# 6. Итоговая проверка
+echo "[6/6] Checking GPU/acceleration…"
+python - << 'PYCHECK'
+import sys
 
-    log "Installing Python dependencies from requirements.txt..."
-    pip install -r "${SCRIPT_DIR}/requirements.txt"
+# PyTorch MPS (Table Transformer)
+try:
+    import torch
+    mps = torch.backends.mps.is_available()
+    print(f"{'✓' if mps else '✗'} PyTorch MPS (Table Transformer GPU): {'доступен' if mps else 'недоступен'}")
+    print(f"  torch version: {torch.__version__}")
+except ImportError:
+    print("  PyTorch не установлен (ставится как зависимость unstructured)")
 
-    log "Python environment ready."
-}
+# ONNX Runtime (YOLO layout detection)
+try:
+    import onnxruntime as ort
+    providers = ort.get_available_providers()
+    has_coreml = 'CoreMLExecutionProvider' in providers
+    print(f"{'✓' if has_coreml else '○'} ONNX CoreML (YOLO GPU): {'доступен' if has_coreml else 'недоступен (будет CPU)'}")
+    print(f"  onnxruntime version: {ort.__version__}")
+    print(f"  available providers: {providers}")
+    if not has_coreml:
+        print("  Для CoreML нужна кастомная сборка onnxruntime с --use_coreml")
+        print("  (готовых wheel для Python 3.12/3.13 не существует)")
+except ImportError:
+    print("  onnxruntime не установлен")
 
-# ---------------------------------------------------------------------------
-# Загрузка языковых данных для spaCy
-# ---------------------------------------------------------------------------
-download_spacy_models() {
-    VENV_DIR="${SCRIPT_DIR}/.venv"
-    # shellcheck disable=SC1091
-    source "${VENV_DIR}/bin/activate"
+PYCHECK
 
-    log "Downloading spaCy language models..."
-    python3 -m spacy download en_core_web_sm  2>/dev/null || warn "en_core_web_sm already installed or failed"
-    python3 -m spacy download ru_core_news_sm 2>/dev/null || warn "ru_core_news_sm already installed or failed"
-    log "spaCy models OK."
-}
-
-# ---------------------------------------------------------------------------
-# Загрузка NLTK-данных (нужны unstructured)
-# ---------------------------------------------------------------------------
-download_nltk_data() {
-    VENV_DIR="${SCRIPT_DIR}/.venv"
-    # shellcheck disable=SC1091
-    source "${VENV_DIR}/bin/activate"
-
-    log "Downloading NLTK data..."
-    python3 - <<'PYEOF'
-import nltk
-for pkg in ["punkt", "punkt_tab", "averaged_perceptron_tagger", "averaged_perceptron_tagger_eng"]:
-    try:
-        nltk.download(pkg, quiet=True)
-    except Exception as e:
-        print(f"NLTK warning: {pkg}: {e}")
-PYEOF
-    log "NLTK data OK."
-}
-
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-main() {
-    log "=== pdf-sidecar install ==="
-    install_system_deps
-    check_ghostscript
-    setup_python_env
-    download_spacy_models
-    download_nltk_data
-    log "=== Installation complete ==="
-    log "Run: ./start.sh"
-}
-
-main "$@"
+echo ""
+if [[ "${ALL_OK}" == "true" ]]; then
+    echo "=== Установка завершена успешно ==="
+else
+    echo "=== Установка завершена с предупреждениями (см. выше) ==="
+fi
+echo ""
+echo "Запуск:  ./start.sh"
+echo "Статус:  ./status.sh"
+echo "Логи:    tail -f logs/sidecar.log"

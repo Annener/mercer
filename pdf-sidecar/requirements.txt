@@ -1,20 +1,35 @@
-# PDF parsing
-unstructured[pdf]
-unstructured-inference
-pdfminer.six
-pypdfium2
+# pdf-sidecar dependencies
+# Требует Python 3.11–3.13 (unstructured-inference несовместим с 3.14+)
+# Установка: python3.13 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt
 
-# FastAPI + server
-fastapi
-uvicorn[standard]
-python-multipart
+# Web-сервер
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0
+python-multipart>=0.0.9
 
-# ML / GPU
-torch
-onnxruntime
+# Основной парсер
+unstructured[pdf]>=0.14.0
 
-# NLP
-spacy
+# Явные пины для стабильности
+pdfminer.six>=20221105
+pdf2image>=1.17.0
+pillow>=10.0.0
+pytesseract>=0.3.10
 
-# ghostscript python bindings (системный ghostscript ставится в install.sh)
-ghostscript
+# ONNX Runtime — стандартный пакет.
+# На macOS arm64 НЕ включает CoreMLExecutionProvider (нужна кастомная сборка).
+# YOLO layout detection работает на CPU через стандартный onnxruntime.
+# Table Transformer ускоряется через PyTorch MPS (Apple Silicon GPU) — см. parser.py.
+# Примечание: onnxruntime-silicon (CoreML) не имеет wheel для Python 3.12/3.13.
+onnxruntime>=1.17.0
+
+# Для корректного парсинга HTML-таблиц из unstructured (lxml ускоряет HTMLParser)
+lxml>=5.0.0
+
+# Утилиты
+pyyaml>=6.0
+
+# Ghostscript Python-биндинги (системный gs ставится через brew — см. install.sh)
+# Нужен для _normalize_with_ghostscript в parser.py:
+# если PDFium не может открыть битый PDF — нормализуем через gs и повторяем hi_res.
+ghostscript>=0.7
