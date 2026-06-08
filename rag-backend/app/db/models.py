@@ -82,7 +82,9 @@ class PlatformSetting(Base):
     __tablename__ = "platform_settings"
 
     key: Mapped[str] = mapped_column(String(128), primary_key=True)
-    value: Mapped[Any] = mapped_column(JSONB, nullable=False)
+    # value хранится как plain TEXT.
+    # Десериализацию в нативный Python-тип выполняет SettingsService.deserialize_value().
+    value: Mapped[str] = mapped_column(Text, nullable=False)
     value_type: Mapped[str] = mapped_column(String(16), nullable=False)
     group_name: Mapped[str] = mapped_column(String(64), nullable=False)
     label: Mapped[str] = mapped_column(String(256), nullable=False)
