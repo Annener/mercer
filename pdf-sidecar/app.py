@@ -18,6 +18,14 @@ FIX v3.1:
     итерация оставляла висячий поток заблокированный на progress_q.get().
     Один из этих потоков перехватывал sentinel None раньше основного цикла,
     и цикл уже никогда не получал сигнал завершения → зависание на 50+ минут.
+
+FIX v3.2:
+  - В _generate() при логировании ошибки парсинга передаём exc_info=exc
+    (объект исключения) вместо exc_info=True.
+    exc_info=True читает sys.exc_info() из текущего контекста, но вне блока
+    except переменная exc не определена → UnboundLocalError:
+    "cannot access local variable 'exc' where it is not associated with a value".
+    Передача объекта напрямую позволяет logging извлечь трейсбек из него.
 """
 from __future__ import annotations
 
@@ -100,7 +108,7 @@ async def lifespan(app: FastAPI):
     logger.info("=== PDF Sidecar shutting down ===")
 
 
-app = FastAPI(title="PDF Sidecar", version="3.1.0", lifespan=lifespan)
+app = FastAPI(title="PDF Sidecar", version="3.2.0", lifespan=lifespan)
 
 
 # ---------------------------------------------------------------------------
@@ -261,9 +269,14 @@ async def parse_pdf_stream(file: UploadFile = File(...)) -> StreamingResponse:
             Path(tmp_path).unlink(missing_ok=True)
 
         if error_holder:
-            logger.error("Parsing failed for %s: %s", filename, error_holder[0], exc_info=True)
+            # FIX v3.2: передаём объект исключения напрямую в exc_info=,
+            # а не exc_info=True. exc_info=True читает sys.exc_info() из
+            # текущего контекста, но здесь мы вне блока except — переменная
+            # exc не определена в этой области видимости → UnboundLocalError.
+            parse_exc = error_holder[0]
+            logger.error("Parsing failed for %s: %s", filename, parse_exc, exc_info=parse_exc)
             yield json.dumps(
-                {"type": "error", "detail": str(error_holder[0])},
+                {"type": "error", "detail": str(parse_exc)},
                 ensure_ascii=False,
             ) + "\n"
             return
