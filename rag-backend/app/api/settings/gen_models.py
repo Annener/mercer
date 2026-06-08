@@ -84,7 +84,10 @@ async def check_generation_model(model_id: str, db: AsyncSession = Depends(get_d
             ),
             api_key=api_key, max_retries=1,
         )
-        await provider.generate({"role": "user", "content": "ping"})
+        # FIX: generate() expects list[dict], not a bare dict.
+        # Passing a plain dict caused "messages" to be serialized as a JSON
+        # object instead of an array → OpenRouter: 'str' object has no attribute 'get'.
+        await provider.generate([{"role": "user", "content": "ping"}])
         return {"ok": True, "latency_ms": int((time.perf_counter() - started) * 1000), "error": None}
     except Exception as exc:
         return {"ok": False, "latency_ms": int((time.perf_counter() - started) * 1000), "error": str(exc)}
