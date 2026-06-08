@@ -3,16 +3,17 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import uuid
 from typing import Any
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import HTMLResponse
 
-from app.db.models import AuditLog, Vault
+from app.db.models import AuditLog, Document, Vault
 from app.db.session import get_db
 from shared_contracts.models import ChunkRecord, DocumentRecord, SearchHit
 
@@ -145,6 +146,7 @@ async def delete_document(
     vault_id: str = Query(..., min_length=1),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
+    # 1. Удаляем документ в storage (db-api-server / LanceDB)
     async with httpx.AsyncClient(base_url=STORAGE_API_URL, timeout=20) as client:
         response = await client.delete(
             f"/index/document/{document_id}",
@@ -153,6 +155,23 @@ async def delete_document(
         _raise_upstream(response)
         payload = response.json()
 
+    # 2. Синхронизируем таблицу documents в Postgres — удаляем запись по (id, vault_id).
+    #    Если запись отсутствует — DELETE молча ничего не делает (идемпотентно).
+    #    Если document_id не является валидным UUID — логируем предупреждение и пропускаем.
+    try:
+        doc_uuid = uuid.UUID(document_id)
+        await db.execute(
+            delete(Document).where(
+                Document.id == doc_uuid,
+                Document.vault_id == vault_id,
+            )
+        )
+    except ValueError:
+        logger.warning("delete_document: invalid UUID, skipping Postgres delete: document_id=%s", document_id)
+    except Exception:
+        logger.warning("delete_document: failed to delete from documents table: document_id=%s vault_id=%s", document_id, vault_id, exc_info=True)
+
+    # 3. Пересчитываем chunk_count vault'а по актуальным данным из storage
     try:
         docs_response = await _fetch_documents_for_vault(vault_id)
         new_total = sum(int(doc.get("chunk_count", 0)) for doc in docs_response)
@@ -187,7 +206,7 @@ async def reindex_vault(vault_id: str, req: ReindexRequest | None = None) -> dic
 
 
 # === Index Tasks API ===
-# Согласно спецификации V3.0: /index-tasks/* (не /indexer/tasks/*.)
+# Согласно спецификации V3.0: /index-tasks/* (не /indexer/tasks/*.）
 
 @router.delete("/index-tasks/{task_id}")
 async def cancel_index_task(task_id: str) -> dict[str, Any]:
