@@ -11,7 +11,7 @@ from cryptography.fernet import Fernet
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import GenerationModelConfig
+from app.config import EmbeddingModelConfig, GenerationModelConfig
 from app.db.models import EmbeddingModel, GenerationModel, PlatformSetting
 from app.providers.generation.base import GenerationProvider
 from app.providers.generation.openai_compatible import OpenAICompatibleProvider
@@ -227,6 +227,42 @@ class SettingsService:
             select(EmbeddingModel).order_by(EmbeddingModel.created_at.desc())
         )
         return [self._embedding_model_dict(model) for model in result.scalars().all()]
+
+    async def get_active_embedding_config(self, db: AsyncSession) -> EmbeddingModelConfig | None:
+        """Возвращает активную (enabled=True) embedding-модель как EmbeddingModelConfig.
+
+        Используется в fallback-путях (plain LLM stream), где AppConfig недоступен.
+        Выбирает первую попавшуюся enabled-модель — так же как _select_embedding_model
+        в retrieval.py перебирает config.embedding_models.values().
+        """
+        result = await db.execute(
+            select(EmbeddingModel)
+            .where(EmbeddingModel.enabled == True)
+            .order_by(EmbeddingModel.created_at.asc())
+            .limit(1)
+        )
+        model = result.scalar_one_or_none()
+        if model is None:
+            return None
+        api_key_env: str | None = None
+        if model.encrypted_api_key:
+            # Для openai_compatible провайдеров ключ хранится зашифрованным.
+            # EmbeddingModelConfig принимает api_key_env (имя env-переменной),
+            # но в fallback-пути нам нужен сам ключ — передаём его через
+            # специальный sentinel-атрибут, который _embed_openai_compatible читает.
+            api_key_env = "_MERCER_FALLBACK_API_KEY"
+            os.environ[api_key_env] = self.decrypt_api_key(model.encrypted_api_key)
+        return EmbeddingModelConfig(
+            model_id=model.model_id,
+            provider=model.provider,
+            model_name=model.model_name,
+            base_url=model.base_url,
+            dimensions=model.dimensions,
+            timeout_seconds=model.timeout_seconds,
+            max_retries=model.max_retries,
+            enabled=model.enabled,
+            api_key_env=api_key_env or "",
+        )
 
     async def create_embedding_model(self, data: dict[str, Any], db: AsyncSession) -> dict[str, Any]:
         payload = dict(data)
