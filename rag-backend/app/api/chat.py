@@ -18,6 +18,12 @@ from app.db.session import get_db
 from app.services.domain_service import domain_service
 from app.services.pipeline_executor import PipelineExecutor
 from app.services.pipeline_router import PipelineRouter
+from app.services.retrieval import (
+    format_context,
+    get_allowed_tag_ids,
+    get_document_ids_by_tags,
+    retrieve_multi_vault,
+)
 from app.services.settings_service import settings_service
 from app.services.vault_config_service import VaultConfigService
 from shared_contracts.models import (
@@ -28,6 +34,7 @@ from shared_contracts.models import (
     CreateChatRequest,
     CreateChatResponse,
     PipelineExecutionContext,
+    SearchHit,
     SendMessageRequest,
 )
 
@@ -265,7 +272,6 @@ async def send_message(
     )
 
     if pipeline is None:
-        # Fallback: нет активных пайплайнов — прямой диалог с LLM
         logger.info(
             "No pipeline found for domain_id=%s — falling back to plain LLM chat", domain_id
         )
@@ -328,10 +334,6 @@ async def send_message_stream(
         else "none"
     )
 
-    # C-STREAM01 fix: final_composition=None вызывал ValidationError немедленно
-    # при создании объекта, т.к. FinalComposition не Optional в схеме.
-    # Паттерн как в send_message: контекст создаётся без final_composition,
-    # поле дописывается после pipeline_router.select().
     context = PipelineExecutionContext(
         chat_id=str(chat.id),
         message_id=str(user_msg.id),
@@ -363,7 +365,6 @@ async def send_message_stream(
     )
 
     if pipeline is None:
-        # Fallback: нет активных пайплайнов — прямой стриминг от LLM
         logger.info(
             "No pipeline found for domain_id=%s — falling back to plain LLM stream", domain_id
         )
@@ -377,9 +378,23 @@ async def send_message_stream(
                 return
 
             system_prompt = await _resolve_system_prompt(context.campaign_id, domain_id, db)
+
+            # RAG: если выбрана кампания — ищем только в её скоупе (теги кампании + глобальные теги домена).
+            # Если кампании нет — ищем по всему домену (без фильтра по document_ids).
+            hits: list[SearchHit] = await _fallback_retrieve(
+                query=req.content,
+                vault_ids=vault_ids,
+                domain_id=domain_id,
+                campaign_id=context.campaign_id,
+                db=db,
+            )
+
+            rag_context = format_context(hits)
+            full_system = f"{system_prompt}\n\n{rag_context}" if system_prompt else rag_context
+
             messages: list[dict[str, str]] = []
-            if system_prompt:
-                messages.append({"role": "system", "content": system_prompt})
+            if full_system:
+                messages.append({"role": "system", "content": full_system})
             for m in (context.history or []):
                 messages.append({"role": m.role, "content": m.content})
             messages.append({"role": "user", "content": req.content})
@@ -390,6 +405,7 @@ async def send_message_stream(
                 chunk = json.dumps({"type": "token", "content": token}, ensure_ascii=False)
                 yield f"data: {chunk}\n\n"
 
+            # Сохраняем сообщение и отправляем источники
             if full_answer:
                 assistant_msg = Message(chat_id=chat.id, role="assistant", content=full_answer)
                 db.add(assistant_msg)
@@ -397,6 +413,17 @@ async def send_message_stream(
                 if chat.title == "New Chat":
                     chat.title = _auto_title(req.content)
                     await db.commit()
+
+            if hits:
+                sources_chunk = json.dumps(
+                    {
+                        "type": "sources",
+                        "grouped_by_step": False,
+                        "sources": _hits_to_sources(hits),
+                    },
+                    ensure_ascii=False,
+                )
+                yield f"data: {sources_chunk}\n\n"
 
             yield "data: [DONE]\n\n"
 
@@ -498,6 +525,86 @@ async def _resolve_system_prompt(
     return await domain_service.get_prompt(domain_id or "default", "system", db)
 
 
+async def _fallback_retrieve(
+    query: str,
+    vault_ids: list[str],
+    domain_id: str | None,
+    campaign_id: str | None,
+    db: AsyncSession,
+) -> list[SearchHit]:
+    """RAG retrieval for the no-pipeline fallback path.
+
+    - campaign выбрана: фильтруем по document_ids документов с тегами кампании + глобальными тегами домена.
+    - общий режим: ищем по всему домену (без фильтра по document_ids).
+    - если vault_ids пустой — возвращаем [].
+    """
+    if not vault_ids or not domain_id:
+        logger.info(
+            "Fallback RAG skipped: vault_ids=%s domain_id=%s",
+            vault_ids, domain_id,
+        )
+        return []
+
+    retrieval_enabled: bool = await settings_service.get("retrieval.enabled", db)
+    if not retrieval_enabled:
+        logger.info("Fallback RAG skipped: retrieval.enabled=False")
+        return []
+
+    top_k: int = int(await settings_service.get("retrieval.top_k", db))
+    config = config_for_vault.config
+
+    document_ids: list[str] | None = None  # None = весь домен, без фильтра
+
+    if campaign_id:
+        allowed_tag_ids = await get_allowed_tag_ids(domain_id, campaign_id, db)
+        if allowed_tag_ids:
+            document_ids = await get_document_ids_by_tags(
+                list(allowed_tag_ids), domain_id, db
+            )
+            logger.info(
+                "Fallback RAG campaign scope: campaign_id=%s allowed_tags=%d document_ids=%d",
+                campaign_id, len(allowed_tag_ids), len(document_ids),
+            )
+            # Если теги есть, но документов нет — не расширяемся на весь домен
+            if document_ids == []:
+                logger.info(
+                    "Fallback RAG: no indexed documents for campaign tags, returning empty"
+                )
+                return []
+        else:
+            # Нет тегов в кампании — ищем по всему домену (document_ids=None)
+            logger.info(
+                "Fallback RAG: campaign has no tags, searching full domain domain_id=%s",
+                domain_id,
+            )
+
+    return await retrieve_multi_vault(
+        query,
+        vault_ids,
+        document_ids=document_ids,
+        top_k=top_k,
+        strategy="semantic",
+        config=config,
+    )
+
+
+def _hits_to_sources(hits: list[SearchHit]) -> list[dict[str, Any]]:
+    """Convert SearchHit list to sources format for SSE sources chunk."""
+    sources: list[dict[str, Any]] = []
+    seen: set[tuple[str, int | None, str]] = set()
+    for hit in hits:
+        metadata = hit.metadata or {}
+        path = metadata.get("source_path") or hit.document_id
+        page = metadata.get("page_number")
+        vault_id = metadata.get("vault_id") or ""
+        key = (path, page, vault_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        sources.append({"path": path, "page": page, "vault_id": vault_id})
+    return sources
+
+
 async def _plain_llm_reply(
     query: str,
     context: PipelineExecutionContext,
@@ -510,9 +617,22 @@ async def _plain_llm_reply(
         raise HTTPException(503, "No LLM provider configured")
 
     system_prompt = await _resolve_system_prompt(context.campaign_id, domain_id, db)
+
+    vault_ids: list[str] = getattr(context, "vault_ids", []) or []
+    hits: list[SearchHit] = await _fallback_retrieve(
+        query=query,
+        vault_ids=vault_ids,
+        domain_id=domain_id,
+        campaign_id=context.campaign_id,
+        db=db,
+    )
+
+    rag_context = format_context(hits)
+    full_system = f"{system_prompt}\n\n{rag_context}" if system_prompt else rag_context
+
     messages: list[dict[str, str]] = []
-    if system_prompt:
-        messages.append({"role": "system", "content": system_prompt})
+    if full_system:
+        messages.append({"role": "system", "content": full_system})
     for m in (context.history or []):
         messages.append({"role": m.role, "content": m.content})
     messages.append({"role": "user", "content": query})
