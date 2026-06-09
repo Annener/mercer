@@ -11,23 +11,24 @@ const DocumentsTabMixin = {
 
     async renderDocumentsTab() {
         return `
-        <div class="settings-toolbar" style="gap:var(--space-3);align-items:center;display:flex;flex-wrap:wrap;">
-            <button class="btn btn-primary" data-action="run-indexer">▶ Запустить индексацию</button>
-            <input type="text" id="docs-search-input" placeholder="🔍 поиск по имени..." class="input-field" style="max-width:220px;">
-            <select id="docs-status-filter" class="input-field" style="max-width:150px;">
-                <option value="">Все статусы</option>
-                <option value="indexed">indexed</option>
-                <option value="pending">pending</option>
-                <option value="error">error</option>
-            </select>
-            <select id="docs-tag-filter" class="input-field" style="max-width:180px;">
-                <option value="">Все теги</option>
-            </select>
-            <button class="btn btn-secondary" data-action="manage-tags" style="margin-left:auto;">🏷 Теги домена</button>
-            <span id="docs-indexer-status" style="color:var(--color-text-muted);font-size:var(--text-sm);"></span>
+        <div class="docs-toolbar">
+            <div class="docs-toolbar-left">
+                <button class="btn btn-primary docs-toolbar-btn" data-action="run-indexer">▶ Запустить индексацию</button>
+                <input type="text" id="docs-search-input" placeholder="🔍 поиск по имени..." class="input-field docs-toolbar-input">
+                <select id="docs-status-filter" class="input-field docs-toolbar-select">
+                    <option value="">Все статусы</option>
+                    <option value="indexed">indexed</option>
+                    <option value="pending">pending</option>
+                    <option value="error">error</option>
+                </select>
+                <select id="docs-tag-filter" class="input-field docs-toolbar-select">
+                    <option value="">Все теги</option>
+                </select>
+                <span id="docs-indexer-status" class="docs-indexer-status"></span>
+            </div>
         </div>
-        <div class="docs-layout" style="display:flex;gap:var(--space-4);margin-top:var(--space-4);">
-            <div style="flex:1;overflow:auto;">
+        <div class="docs-layout">
+            <div class="docs-table-wrap">
                 <table class="data-table" id="docs-table">
                     <thead><tr>
                         <th>Файл</th><th>Vault</th><th>Статус</th><th>Теги</th><th style="width:48px;"></th>
@@ -37,13 +38,22 @@ const DocumentsTabMixin = {
                     </tbody>
                 </table>
             </div>
-            <div id="docs-side-panel" class="docs-side-panel" style="display:none;width:320px;flex-shrink:0;"></div>
+            <div class="docs-tags-panel" id="docs-tags-panel">
+                <div class="docs-tags-panel-header">Теги домена</div>
+                <div id="docs-tags-panel-list" class="docs-tags-panel-list">Загрузка...</div>
+                <div class="docs-tags-panel-create">
+                    <div class="docs-tag-create-row">
+                        <input type="text" id="new-tag-name" placeholder="Название" class="input-field docs-tag-name-input">
+                        <input type="color" id="new-tag-color" value="#01696f" class="docs-tag-color-input" title="Цвет">
+                        <button class="btn btn-primary docs-tag-add-btn" data-action="create-tag">➕</button>
+                    </div>
+                </div>
+            </div>
+            <div id="docs-side-panel" class="docs-side-panel" style="display:none;width:300px;flex-shrink:0;"></div>
         </div>`;
     },
 
     async loadDocumentsData() {
-        // S40-A fix: перешли на getSettingsDocuments — серверные фильтры status и tag_id.
-        // Один из vaultId или domainId обязателен (бэк вернёт 400 если не передать).
         const vaultId  = await this._resolveVaultId();
         const domainId = this._activeDomainId || await this._resolveDomainId();
         const tbody = document.getElementById('docs-tbody');
@@ -76,7 +86,10 @@ const DocumentsTabMixin = {
                 };
             }
 
-            if (domainId) await this._loadTagFilterOptions(domainId);
+            if (domainId) {
+                await this._loadTagFilterOptions(domainId);
+                await this._refreshTagsPanel(domainId);
+            }
 
         } catch (e) {
             if (tbody) tbody.innerHTML = `<tr><td colspan="5" class="empty-state" style="color:var(--color-error)">Ошибка: ${this.escapeHtml(e.message)}</td></tr>`;
@@ -102,6 +115,85 @@ const DocumentsTabMixin = {
         } catch (_) { /* не критично */ }
     },
 
+    // ─── Панель тегов домена (всегда открыта) ─────────────────────────────────────
+
+    async _refreshTagsPanel(domainId) {
+        const listEl = document.getElementById('docs-tags-panel-list');
+        if (!listEl) return;
+        try {
+            const resp = await this.api.getTags(domainId);
+            const globalTags = Array.isArray(resp) ? resp : (resp.global_tags || []);
+
+            if (!globalTags.length) {
+                listEl.innerHTML = '<span class="docs-tags-empty">Тегов нет</span>';
+            } else {
+                listEl.innerHTML = globalTags.map(t => `
+                    <div class="docs-tag-row">
+                        <span class="badge" style="background:${t.color || 'var(--color-primary)'};color:white;flex:1;overflow:hidden;text-overflow:ellipsis;max-width:110px;">${this.escapeHtml(t.name)}</span>
+                        <input type="color" value="${t.color || '#01696f'}" data-tag-edit-color="${String(t.id)}" class="docs-tag-color-input" title="Цвет тега">
+                        <button class="btn btn-xs" data-action="edit-tag-name" data-tag-id="${String(t.id)}" data-tag-name="${this.escapeHtml(t.name)}" title="Переименовать">✏️</button>
+                        <button class="btn btn-xs" style="color:var(--color-error);" data-action="delete-tag" data-tag-id="${String(t.id)}" data-tag-name="${this.escapeHtml(t.name)}" title="Удалить">🗑</button>
+                    </div>`).join('');
+            }
+
+            // цвет тега
+            listEl.querySelectorAll('[data-tag-edit-color]').forEach(inp => {
+                inp.addEventListener('change', async () => {
+                    try {
+                        await this.api.updateTag(inp.dataset.tagEditColor, { color: inp.value });
+                        await this._refreshTagsPanel(domainId);
+                        await this.loadDocumentsData();
+                    } catch (e) { alert('Ошибка цвета: ' + e.message); }
+                });
+            });
+
+            // переименование
+            listEl.querySelectorAll('[data-action="edit-tag-name"]').forEach(btn => {
+                btn.addEventListener('click', async () => {
+                    const newName = prompt('Новое название:', btn.dataset.tagName);
+                    if (!newName || !newName.trim()) return;
+                    try {
+                        await this.api.updateTag(btn.dataset.tagId, { name: newName.trim() });
+                        await this._refreshTagsPanel(domainId);
+                    } catch (e) { alert('Ошибка: ' + e.message); }
+                });
+            });
+
+            // удаление
+            listEl.querySelectorAll('[data-action="delete-tag"]').forEach(btn => {
+                btn.addEventListener('click', async () => {
+                    if (!confirm(`Удалить тег «${btn.dataset.tagName}»?`)) return;
+                    try {
+                        await this.api.deleteTag(btn.dataset.tagId);
+                        await this._refreshTagsPanel(domainId);
+                        await this.loadDocumentsData();
+                    } catch (e) { alert('Ошибка удаления: ' + e.message); }
+                });
+            });
+
+            // создать тег
+            const createBtn = document.querySelector('[data-action="create-tag"]');
+            if (createBtn && !createBtn._bound) {
+                createBtn._bound = true;
+                createBtn.addEventListener('click', async () => {
+                    const nameInp  = document.getElementById('new-tag-name');
+                    const colorInp = document.getElementById('new-tag-color');
+                    const name = nameInp?.value?.trim();
+                    if (!name) return;
+                    try {
+                        await this.api.createTag({ name, color: colorInp?.value || '#01696f', domain_id: domainId });
+                        if (nameInp) nameInp.value = '';
+                        await this._refreshTagsPanel(domainId);
+                        await this._loadTagFilterOptions(domainId);
+                    } catch (e) { alert('Ошибка создания: ' + e.message); }
+                });
+            }
+
+        } catch (e) {
+            if (listEl) listEl.innerHTML = `<span style="color:var(--color-error);font-size:var(--text-xs);">Ошибка: ${this.escapeHtml(e.message)}</span>`;
+        }
+    },
+
     _renderDocsRows(docs) {
         const tbody = document.getElementById('docs-tbody');
         if (!tbody) return;
@@ -116,7 +208,6 @@ const DocumentsTabMixin = {
             ).join('');
             const fileName = (doc.source_path || doc.path || String(doc.id)).split('/').pop();
             const vaultLabel = this.escapeHtml(doc.vault_id || '—');
-            // D2 fix: data-vault передаётся в кнопку удаления для vault_id
             return `<tr class="docs-row" data-id="${this.escapeHtml(String(doc.id))}" style="cursor:pointer;">
                 <td title="${this.escapeHtml(doc.source_path || String(doc.id))}">${this.escapeHtml(fileName)}</td>
                 <td style="color:var(--color-text-muted);font-size:var(--text-xs);">${vaultLabel}</td>
@@ -225,116 +316,6 @@ const DocumentsTabMixin = {
         });
     },
 
-    async _openTagsManagePanel() {
-        const domainId = this._activeDomainId || await this._resolveDomainId();
-        const panel = document.getElementById('docs-side-panel');
-        if (!panel) return;
-        panel.style.display = 'block';
-        panel.innerHTML = `<div style="padding:var(--space-4);"><b>Теги домена</b><div class="empty-state" style="padding:var(--space-4)">Загрузка...</div></div>`;
-
-        if (!domainId) {
-            panel.innerHTML = '<div style="padding:var(--space-4);color:var(--color-error);">Домен не выбран</div>';
-            return;
-        }
-        await this._renderTagsManagePanel(panel, domainId);
-    },
-
-    async _renderTagsManagePanel(panel, domainId) {
-        try {
-            const resp = await this.api.getTags(domainId);
-            const globalTags = Array.isArray(resp) ? resp : (resp.global_tags || []);
-
-            const tagsHtml = globalTags.length
-                ? globalTags.map(t => `
-                    <div class="docs-tag-row" style="display:flex;align-items:center;gap:var(--space-2);margin-bottom:var(--space-2);">
-                        <span class="badge" style="background:${t.color || 'var(--color-primary)'};color:white;flex:1;overflow:hidden;text-overflow:ellipsis;">${this.escapeHtml(t.name)}</span>
-                        <input type="color" value="${t.color || '#01696f'}" data-tag-edit-color="${String(t.id)}" style="width:28px;height:28px;padding:1px;border:1px solid var(--color-border);border-radius:var(--radius-sm);cursor:pointer;" title="Цвет тега">
-                        <button class="btn btn-sm" data-action="edit-tag-name" data-tag-id="${String(t.id)}" data-tag-name="${this.escapeHtml(t.name)}" title="Переименовать">✏️</button>
-                        <button class="btn btn-sm" style="color:var(--color-error);" data-action="delete-tag" data-tag-id="${String(t.id)}" data-tag-name="${this.escapeHtml(t.name)}" title="Удалить тег">🗑</button>
-                    </div>`).join('')
-                : '<p style="color:var(--color-text-muted);font-size:var(--text-sm);">Тегов нет</p>';
-
-            panel.innerHTML = `
-                <div style="padding:var(--space-4);">
-                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:var(--space-3);">
-                        <b>Теги домена</b>
-                        <button data-action="close-panel" style="background:none;border:none;cursor:pointer;color:var(--color-text-muted);font-size:1.2rem;">✕</button>
-                    </div>
-                    <div style="margin-bottom:var(--space-4);max-height:300px;overflow-y:auto;">${tagsHtml}</div>
-                    <div style="border-top:1px solid var(--color-divider);padding-top:var(--space-3);">
-                        <p style="font-size:var(--text-sm);margin-bottom:var(--space-2);"><b>Создать тег:</b></p>
-                        <div style="display:flex;gap:var(--space-2);">
-                            <input type="text" id="new-tag-name" placeholder="Название тега" class="input-field" style="flex:1;">
-                            <input type="color" id="new-tag-color" value="#01696f" style="width:36px;height:36px;padding:2px;border:1px solid var(--color-border);border-radius:var(--radius-sm);cursor:pointer;">
-                            <button class="btn btn-primary" data-action="create-tag">➕</button>
-                        </div>
-                    </div>
-                </div>`;
-
-            panel.querySelector('[data-action="close-panel"]')?.addEventListener('click', () => {
-                panel.style.display = 'none';
-            });
-
-            panel.querySelectorAll('[data-action="delete-tag"]').forEach(btn => {
-                btn.addEventListener('click', async () => {
-                    const tagId = btn.dataset.tagId;
-                    const tagName = btn.dataset.tagName;
-                    if (!confirm(`Удалить тег «${tagName}»?`)) return;
-                    try {
-                        await this.api.deleteTag(tagId);
-                        await this._renderTagsManagePanel(panel, domainId);
-                        await this.loadDocumentsData();
-                    } catch (e) {
-                        alert('Ошибка удаления: ' + e.message);
-                    }
-                });
-            });
-
-            panel.querySelectorAll('[data-action="edit-tag-name"]').forEach(btn => {
-                btn.addEventListener('click', async () => {
-                    const tagId = btn.dataset.tagId;
-                    const newName = prompt('Новое название:', btn.dataset.tagName);
-                    if (!newName || !newName.trim()) return;
-                    try {
-                        await this.api.updateTag(tagId, { name: newName.trim() });
-                        await this._renderTagsManagePanel(panel, domainId);
-                    } catch (e) {
-                        alert('Ошибка переименования: ' + e.message);
-                    }
-                });
-            });
-
-            panel.querySelectorAll('[data-tag-edit-color]').forEach(inp => {
-                inp.addEventListener('change', async () => {
-                    const tagId = inp.dataset.tagEditColor;
-                    try {
-                        await this.api.updateTag(tagId, { color: inp.value });
-                        await this.loadDocumentsData();
-                    } catch (e) {
-                        alert('Ошибка цвета: ' + e.message);
-                    }
-                });
-            });
-
-            panel.querySelector('[data-action="create-tag"]')?.addEventListener('click', async () => {
-                const nameInp  = panel.querySelector('#new-tag-name');
-                const colorInp = panel.querySelector('#new-tag-color');
-                const name = nameInp?.value?.trim();
-                if (!name) return;
-                try {
-                    await this.api.createTag({ name, color: colorInp?.value || '#01696f', domain_id: domainId });
-                    if (nameInp) nameInp.value = '';
-                    await this._renderTagsManagePanel(panel, domainId);
-                } catch (e) {
-                    alert('Ошибка создания: ' + e.message);
-                }
-            });
-
-        } catch (e) {
-            panel.innerHTML = `<div style="padding:var(--space-4);color:var(--color-error);">Ошибка загрузки тегов: ${this.escapeHtml(e.message)}</div>`;
-        }
-    },
-
     async handleDocumentsAction(action, btn) {
         if (action === 'run-indexer') {
             const statusEl = document.getElementById('docs-indexer-status');
@@ -350,10 +331,6 @@ const DocumentsTabMixin = {
             }
             return;
         }
-        if (action === 'manage-tags') {
-            await this._openTagsManagePanel();
-            return;
-        }
         if (action === 'delete-doc') {
             const docId   = btn?.dataset?.id;
             const vaultId = btn?.dataset?.vault;
@@ -361,7 +338,6 @@ const DocumentsTabMixin = {
             if (!docId) return;
             if (!confirm(`Удалить документ «${path || docId}»?`)) return;
             try {
-                // F01 fix: метод переименован в deleteDocumentById (добавлен в api.js в коммите C19)
                 await this.api.deleteDocumentById(docId, vaultId || null);
                 await this.loadDocumentsData();
             } catch (e) {
@@ -377,7 +353,6 @@ const DocumentsTabMixin = {
         this._docsIndexPollTimer = setInterval(async () => {
             attempts++;
             try {
-                // F04 fix: getIndexerTaskStatus → getIndexTaskState (добавлен в D5, коммит C19)
                 const status = await this.api.getIndexTaskState(taskId);
                 const state = status?.state || status?.status || 'unknown';
                 if (statusEl) statusEl.textContent = `Задача ${taskId}: ${state}`;
@@ -413,6 +388,4 @@ const DocumentsTabMixin = {
     },
 };
 
-// S26-C fix: Object.assign was missing — DocumentsTabMixin methods were never mixed
-// into SettingsManager.prototype, causing 'renderDocumentsTab is not a function'.
 Object.assign(SettingsManager.prototype, DocumentsTabMixin);
