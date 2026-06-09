@@ -6,7 +6,6 @@
 
 const PipelineBuilder = (() => {
 
-  const STEP_TYPES = ['retrieval', 'final'];
   const STEP_ROLES = ['methodology', 'lore', 'campaign_context', 'character_sheet', 'session_log', 'rules'];
   const ROLE_LABELS = {
     methodology:      'Методология',
@@ -186,21 +185,18 @@ const PipelineBuilder = (() => {
   }
 
   function _stepHTML(step, idx) {
-    const typeOptions = STEP_TYPES.map(t =>
-      `<option value="${t}" ${step.type === t ? 'selected' : ''}>${t}</option>`
-    ).join('');
     const roleOptions = STEP_ROLES.map(r =>
       `<option value="${r}" ${step.role === r ? 'selected' : ''}>${ROLE_LABELS[r] || r}</option>`
     ).join('');
 
-    // F03-A fix: is_final — служебный атрибут, управляется автоматически через type.
-    // Чекбокс убран из UI. Тип «final» визуально помечен бейджем.
-    const isFinal = step.type === 'final';
+    const tagOptions = _tags.map(t =>
+      `<option value="${_esc(String(t.id))}" ${(step.tag_ids || []).map(String).includes(String(t.id)) ? 'selected' : ''}>${_esc(t.name)}</option>`
+    ).join('');
 
     return `
-      <div class="pb-step ${isFinal ? 'pb-step--final' : ''}" data-idx="${idx}">
+      <div class="pb-step" data-idx="${idx}">
         <div class="pb-step-header">
-          <span class="pb-step-num">Шаг ${idx + 1}${isFinal ? ' <span class="pb-badge-final">final</span>' : ''}</span>
+          <span class="pb-step-num">Шаг ${idx + 1}</span>
           <div class="pb-step-actions">
             <button class="btn btn-xs" data-action="step-up"   data-idx="${idx}" ${idx === 0 ? 'disabled' : ''}>↑</button>
             <button class="btn btn-xs" data-action="step-down" data-idx="${idx}" ${idx === _steps.length - 1 ? 'disabled' : ''}>↓</button>
@@ -213,10 +209,6 @@ const PipelineBuilder = (() => {
               <label>Название шага</label>
               <input type="text" class="input pb-step-name" data-idx="${idx}" value="${_esc(step.name || '')}" placeholder="Rule Search">
             </div>
-            <div class="form-group" style="width:140px">
-              <label>Тип</label>
-              <select class="input pb-step-type" data-idx="${idx}">${typeOptions}</select>
-            </div>
             <div class="form-group" style="width:190px">
               <label>Роль</label>
               <select class="input pb-step-role" data-idx="${idx}">${roleOptions}</select>
@@ -226,7 +218,12 @@ const PipelineBuilder = (() => {
               <input type="number" class="input pb-step-topk" data-idx="${idx}" value="${step.top_k || ''}" placeholder="10" min="1" max="100">
             </div>
           </div>
-          ${_stepTypeFieldsHTML(step, idx)}
+          <div class="form-group">
+            <label>Теги (tag_ids) <span class="pb-hint">зажмите Ctrl/Cmd для множественного выбора</span></label>
+            <select class="input pb-step-tag-ids" data-idx="${idx}" multiple size="4" style="min-height:80px;">
+              ${tagOptions || '<option disabled>Теги не найдены</option>'}
+            </select>
+          </div>
           <div class="form-group">
             <label>System prompt шага</label>
             <textarea class="input pb-step-prompt pb-textarea-sm" data-idx="${idx}" rows="3"
@@ -238,50 +235,9 @@ const PipelineBuilder = (() => {
     `;
   }
 
-  function _stepTypeFieldsHTML(step, idx) {
-    // Retrieval-шаги (type !== 'final') имеют мультиселект тегов.
-    // Финальные шаги (type === 'final') tag_ids не имеют — бэкенд вернёт 422.
-    if (step.type !== 'final') {
-      const tagOptions = _tags.map(t =>
-        `<option value="${_esc(String(t.id))}" ${(step.tag_ids || []).map(String).includes(String(t.id)) ? 'selected' : ''}>${_esc(t.name)}</option>`
-      ).join('');
-      return `
-        <div class="pb-type-fields" data-typefield="retrieval" data-idx="${idx}">
-          <div class="form-group">
-            <label>Теги (tag_ids) <span class="pb-hint">зажмите Ctrl/Cmd для множественного выбора</span></label>
-            <select class="input pb-step-tag-ids" data-idx="${idx}" multiple size="4" style="min-height:80px;">
-              ${tagOptions || '<option disabled>Теги не найдены</option>'}
-            </select>
-          </div>
-        </div>`;
-    }
-    return '';
-  }
-
-  // ─── step events ───────────────────────────────────────────────────────────────────────────────
+  // ─── step events ──────────────────────────────────────────────────────────────────────────────
 
   function _bindStepEvents(container) {
-    container.querySelectorAll('.pb-step-type').forEach(sel => {
-      sel.addEventListener('change', e => {
-        const idx = parseInt(e.target.dataset.idx);
-        _syncStepFromDOM(idx);
-        const newType = e.target.value;
-        _steps[idx].type = newType;
-        _steps[idx].tag_ids = undefined;
-
-        // F03-A/B fix: is_final управляется автоматически через type.
-        // При type=final → is_final=true у этого шага, false у всех остальных.
-        // При type=retrieval → is_final=false.
-        if (newType === 'final') {
-          _steps.forEach((s, i) => { s.is_final = (i === idx); });
-        } else {
-          _steps[idx].is_final = false;
-        }
-
-        _renderStepsList();
-      });
-    });
-
     container.querySelectorAll('[data-action]').forEach(btn => {
       const action = btn.dataset.action;
       const idx = parseInt(btn.dataset.idx);
@@ -299,20 +255,14 @@ const PipelineBuilder = (() => {
     const get = cls => stepEl.querySelector(cls);
     const step = _steps[idx];
     step.name          = get('.pb-step-name')?.value?.trim()   || '';
-    step.type          = get('.pb-step-type')?.value           || 'retrieval';
+    step.type          = 'retrieval';
+    step.is_final      = false;
     step.role          = get('.pb-step-role')?.value           || 'rules';
     step.system_prompt = get('.pb-step-prompt')?.value?.trim() || '';
     const topk = parseInt(get('.pb-step-topk')?.value);
     step.top_k = isNaN(topk) ? undefined : topk;
-    // F03-A fix: is_final выводится из type, не читается из DOM (чекбокса больше нет)
-    step.is_final = (step.type === 'final');
-    // tag_ids только для не-final шагов
-    if (step.type !== 'final') {
-      const tagSel = get('.pb-step-tag-ids');
-      step.tag_ids = tagSel ? Array.from(tagSel.selectedOptions).map(o => o.value) : [];
-    } else {
-      step.tag_ids = undefined;
-    }
+    const tagSel = get('.pb-step-tag-ids');
+    step.tag_ids = tagSel ? Array.from(tagSel.selectedOptions).map(o => o.value) : [];
   }
 
   function _syncAllSteps() { _steps.forEach((_, idx) => _syncStepFromDOM(idx)); }
@@ -343,11 +293,6 @@ const PipelineBuilder = (() => {
     if (!finalPrompt)   return _showError('Заполните system prompt финальной композиции');
     if (!_steps.length) return _showError('Добавьте хотя бы один шаг');
 
-    // Guard: is_final управляется через type, но проверяем программную корректность
-    const finalSteps = _steps.filter(s => s.is_final);
-    if (finalSteps.length === 0) return _showError('Добавьте шаг с типом «final»');
-    if (finalSteps.length > 1)   return _showError('Только один шаг может иметь тип «final»');
-
     for (let i = 0; i < _steps.length; i++) {
       const s = _steps[i];
       if (!s.name)          return _showError(`Шаг ${i+1}: введите название`);
@@ -362,8 +307,6 @@ const PipelineBuilder = (() => {
 
     try {
       if (_pipeline) {
-        // F02-C fix: pipeline идентифицируется строковым pipeline_id, не UUID-полем id.
-        // PipelineRead возвращает pipeline_id (slug), id (UUID) — URL роута принимает pipeline_id.
         await _api.updatePipeline(_pipeline.pipeline_id, payload);
       } else {
         payload.pipeline_id = _modal.querySelector('#pb-id')?.value?.trim() || `pipeline_${Date.now()}`;
@@ -377,7 +320,7 @@ const PipelineBuilder = (() => {
     }
   }
 
-  // ─── helpers ───────────────────────────────────────────────────────────────────────────────────
+  // ─── helpers ──────────────────────────────────────────────────────────────────────────────────
 
   function _close() { _modal?.remove(); _modal = null; }
 
@@ -394,7 +337,7 @@ const PipelineBuilder = (() => {
     return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   }
 
-  // ─── styles ───────────────────────────────────────────────────────────────────────────────────
+  // ─── styles ──────────────────────────────────────────────────────────────────────────────────
 
   function _injectStyles() {
     if (document.getElementById('pb-styles')) return;
@@ -437,15 +380,8 @@ const PipelineBuilder = (() => {
       .pb-steps-list { display: flex; flex-direction: column; gap: 0.75rem; }
       .pb-empty { text-align:center; color:var(--color-text-faint,#bbb); padding:2rem; border:1px dashed var(--color-border,#ddd); border-radius:8px; }
       .pb-step { border: 1px solid var(--color-border,#ddd); border-radius: 8px; background: var(--color-surface,#fff); overflow: hidden; }
-      .pb-step--final { border-color: var(--color-primary, #01696f); }
       .pb-step-header { display:flex; align-items:center; justify-content:space-between; padding:0.5rem 0.75rem; background:var(--color-surface-offset,#f5f5f5); border-bottom:1px solid var(--color-border,#ddd); }
-      .pb-step--final .pb-step-header { background: var(--color-primary-highlight, #cedcd8); }
       .pb-step-num { font-weight:600; font-size:0.85rem; display:flex; align-items:center; gap:0.4rem; }
-      .pb-badge-final {
-        display:inline-block; font-size:0.7rem; font-weight:700; text-transform:uppercase;
-        letter-spacing:0.06em; padding:1px 6px; border-radius:4px;
-        background: var(--color-primary,#01696f); color: #fff;
-      }
       .pb-step-actions { display:flex; gap:0.25rem; }
       .pb-step-body { padding:0.75rem; display:flex; flex-direction:column; gap:0.5rem; }
       .form-row { display:flex; gap:0.75rem; flex-wrap:wrap; align-items:flex-start; }
@@ -463,5 +399,4 @@ const PipelineBuilder = (() => {
   return { openCreate, openEdit };
 })();
 
-// S26-A fix: IIFE result was never assigned to window — PipelineBuilder was always undefined.
 window.PipelineBuilder = PipelineBuilder;

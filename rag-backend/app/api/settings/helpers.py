@@ -80,8 +80,6 @@ def vault_dict(vault: Vault) -> dict[str, Any]:
 
 
 def campaign_dict(campaign: Campaign) -> dict[str, Any]:
-    # S52-1 fix: removed vault_id — field was deleted by migration 0009 (Campaign is now
-    # domain-based). Accessing campaign.vault_id caused AttributeError at runtime.
     return {
         "id": str(campaign.id),
         "domain_id": campaign.domain_id,
@@ -126,33 +124,23 @@ def _validate_pipeline_json(steps: list[dict[str, Any]], final_composition: dict
         raise HTTPException(status_code=422, detail="steps must be a non-empty list")
 
     orders: set[int] = set()
-    final_count = 0
 
     for step in steps:
-        for key in ["order", "type", "name", "system_prompt"]:
+        for key in ["order", "name", "system_prompt"]:
             if key not in step:
                 raise HTTPException(status_code=422, detail=f"Pipeline step missing key: {key}")
         if not isinstance(step["order"], int) or step["order"] in orders:
             raise HTTPException(status_code=422, detail="Pipeline step order must be unique int")
         orders.add(step["order"])
 
-        step_type = step.get("type")
+        # Все шаги — retrieval. Поле type необязательно (backward compat),
+        # но если передано — должно быть 'retrieval'.
+        step_type = step.get("type", "retrieval")
         if step_type not in ("retrieval", "final"):
             raise HTTPException(
                 status_code=422,
-                detail=f"Invalid step type: {step_type!r}. Must be 'retrieval' or 'final'",
+                detail=f"Invalid step type: {step_type!r}. Must be 'retrieval'",
             )
-
-        if step.get("is_final"):
-            final_count += 1
-            if step.get("tag_ids"):
-                raise HTTPException(status_code=422, detail="Final step must not have tag_ids")
-
-    if final_count != 1:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Pipeline must have exactly one final step (is_final=True), got {final_count}",
-        )
 
     if not isinstance(final_composition, dict) or not isinstance(final_composition.get("system_prompt"), str):
         raise HTTPException(status_code=422, detail="final_composition.system_prompt is required")
