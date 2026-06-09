@@ -342,8 +342,17 @@ class SettingsService:
             return "" if value is None else str(value)
         raise ValueError(f"Unsupported setting type: {value_type}")
 
-    def _serialize_value(self, value: Any) -> Any:
-        return value
+    def _serialize_value(self, value: Any) -> str:
+        """Serialize a typed Python value to a VARCHAR string for storage.
+
+        platform_settings.value is VARCHAR — asyncpg requires str, never bool/int/float.
+        Symmetric with _cast_value: bool → "true"/"false", numeric → str(x), None → "".
+        """
+        if value is None:
+            return ""
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        return str(value)
 
     def _generation_model_dict(self, model: GenerationModel) -> dict[str, Any]:
         return {
