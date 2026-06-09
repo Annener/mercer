@@ -109,11 +109,15 @@ async def retrieve(
     top_k: int | None = None,
     strategy: str = "semantic",
     config: AppConfig | None = None,
+    db: AsyncSession | None = None,
 ) -> list[SearchHit]:
     """
     document_ids = None  → поиск по всему vault без фильтра
     document_ids = []    → вернуть [] сразу, без запроса к LanceDB
     document_ids = [...] → поиск с фильтром {"document_id": {"$in": document_ids}}
+
+    config=None + db → embedding-модель берётся из БД через settings_service.
+    config=None + db=None → падает ValueError.
     """
     if document_ids is not None and len(document_ids) == 0:
         return []
@@ -133,9 +137,7 @@ async def retrieve(
         logger.info("Retrieval strategy is not implemented yet: %s", strategy)
         return []
     try:
-        if config is None:
-            raise ValueError("Embedding configuration is not available.")
-        embedding_model = _select_embedding_model(config)
+        embedding_model = await _resolve_embedding_model(config, db)
         vector = await _embed_query(query, embedding_model)
 
         filter_expr: dict[str, Any] | None = None
@@ -192,8 +194,12 @@ async def retrieve_multi_vault(
     top_k: int | None = None,
     strategy: str = "semantic",
     config: AppConfig | None = None,
+    db: AsyncSession | None = None,
 ) -> list[SearchHit]:
-    """Ищет во всех указанных vault'ах, объединяет результаты, сортирует по score, возвращает top_k."""
+    """Ищет во всех указанных vault'ах, объединяет результаты, сортирует по score, возвращает top_k.
+
+    config=None + db → embedding-модель берётся из БД через settings_service.
+    """
     if not vault_ids:
         return []
     # Инвариант: пустой document_ids = нет документов → не запускать retrieve
@@ -204,6 +210,19 @@ async def retrieve_multi_vault(
         query, vault_ids, top_k
     )
     effective_top_k = top_k or await _default_top_k()
+
+    # Раз решаем embedding-модель, чтобы не делать н-запросов к БД
+    resolved_config = config
+    if resolved_config is None and db is not None:
+        emb_model = await settings_service.get_active_embedding_config(db)
+        if emb_model is not None:
+            # Пакуем как AppConfig с одной embedding-моделью
+            from app.config import AppConfig
+            resolved_config = AppConfig(
+                embedding_models={emb_model.model_id: emb_model},
+                generation_models={},
+            )
+
     all_hits: list[SearchHit] = []
     for vault_id in vault_ids:
         hits = await retrieve(
@@ -212,7 +231,8 @@ async def retrieve_multi_vault(
             document_ids=document_ids,
             top_k=effective_top_k,
             strategy=strategy,
-            config=config,
+            config=resolved_config,
+            db=db,
         )
         all_hits.extend(hits)
     all_hits.sort(key=lambda h: h.score, reverse=True)
@@ -278,6 +298,25 @@ async def _default_top_k() -> int:
         return int(await settings_service.get("retrieval.top_k"))
     except KeyError:
         return 10
+
+
+async def _resolve_embedding_model(
+    config: AppConfig | None,
+    db: AsyncSession | None,
+) -> EmbeddingModelConfig:
+    """Returns the active EmbeddingModelConfig.
+
+    Priority:
+      1. config (AppConfig) — used by pipeline executor path
+      2. settings_service.get_active_embedding_config(db) — used by fallback path
+    """
+    if config is not None:
+        return _select_embedding_model(config)
+    if db is not None:
+        model = await settings_service.get_active_embedding_config(db)
+        if model is not None:
+            return model
+    raise ValueError("Embedding configuration is not available.")
 
 
 def _select_embedding_model(config: AppConfig) -> EmbeddingModelConfig:
