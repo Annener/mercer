@@ -76,8 +76,6 @@ function escapeHtml(text) {
 function extractCitedIndices(text) {
     if (!text) return new Set();
     const cited = new Set();
-    // Ищем все [N] и [N, M, ...] в тексте
-    // ВАЖНО: экранируем квадратные скобки в regex!
     const re = /\[(\d+)\]/g;
     let m;
     while ((m = re.exec(text)) !== null) {
@@ -124,6 +122,65 @@ function renderSourcesBlock(sources, answerText) {
             : '';
         return `<div class="src-item" title="${escapeHtml(item.path)}">${numBadge}<span class="src-name">${escapeHtml(fileName)}</span>${pageSpan}</div>`;
     }).join('');
+    return `<div class="sources-block"><div class="sources-label">Источники</div><div class="sources-list">${rows}</div></div>`;
+}
+
+/**
+ * Рендерит блок источников из grouped_by_step формата.
+ *
+ * Разворачивает все шаги в единый нумерованный список — нумерация совпадает
+ * с [1], [2], ... которые LLM вставляет в текст (источники передаются модели
+ * в порядке шагов, поэтому порядок сохранён).
+ *
+ * Дедупликация по (path, page): один и тот же чанк из нескольких шагов
+ * считается одним источником с одним номером.
+ *
+ * Фильтрация: показываем только источники, процитированные в answerText ([N]).
+ * Если LLM не поставил ни одной цитаты — показываем все.
+ *
+ * @param {Array} stepGroups  — [{step, step_name, sources: [{path, page, vault_id}]}]
+ * @param {string} answerText — финальный текст ответа для сопоставления [N]
+ */
+function renderGroupedSources(stepGroups, answerText) {
+    if (!stepGroups || stepGroups.length === 0) return '';
+
+    // Разворачиваем все источники из всех шагов в порядке шагов,
+    // дедупликация по (path, page) — каждому уникальному источнику
+    // присваивается свой глобальный номер.
+    const seen = new Map(); // key → global 1-based index
+    const allItems = [];   // [{path, page, vault_id, num}]
+
+    for (const group of stepGroups) {
+        for (const src of (group.sources || [])) {
+            const key = `${src.path}\x00${src.page ?? ''}`;
+            if (!seen.has(key)) {
+                const num = allItems.length + 1;
+                seen.set(key, num);
+                allItems.push({ path: src.path, page: src.page, vault_id: src.vault_id, num });
+            }
+        }
+    }
+
+    if (allItems.length === 0) return '';
+
+    // Фильтруем по цитатам в тексте
+    const cited = extractCitedIndices(answerText);
+    const items = cited.size > 0
+        ? allItems.filter(item => cited.has(item.num))
+        : allItems; // LLM не поставил ни одной цитаты — показываем все
+
+    if (items.length === 0) return '';
+
+    const rows = items.map(item => {
+        const fileName = (item.path || '').split('/').pop() || item.path;
+        const pagesLabel = item.page != null ? `стр. ${item.page}` : '';
+        const numBadge = `<span class="src-num">${item.num}</span>`;
+        const pageSpan = pagesLabel
+            ? `<span class="src-page">${escapeHtml(pagesLabel)}</span>`
+            : '';
+        return `<div class="src-item" title="${escapeHtml(item.path || '')}">${numBadge}<span class="src-name">${escapeHtml(fileName)}</span>${pageSpan}</div>`;
+    }).join('');
+
     return `<div class="sources-block"><div class="sources-label">Источники</div><div class="sources-list">${rows}</div></div>`;
 }
 
@@ -235,8 +292,8 @@ class ChatManager {
         let assistantMessage = null;
         let fullContent = '';
         let pendingContent = '';  // буфер для debounced рендера
-        let pendingSources = null; // источник из SSE
-        let pendingGroupedSources = null;
+        let pendingSources = null; // источник из SSE (старый формат без grouped_by_step)
+        let pendingGroupedSources = null; // grouped_by_step формат
         let streamDone = false;
 
         try {
@@ -315,15 +372,20 @@ class ChatManager {
             }
         }
 
-        // Блок источников — только те источники, на которые LLM реально сослался ([1], [2]...)
-        if (assistantMessage && pendingSources && pendingSources.length > 0) {
+        // Блок источников:
+        // Приоритет: grouped_by_step (основной формат бэкенда) > flat sources (legacy)
+        if (assistantMessage && pendingGroupedSources) {
+            // Передаём fullContent для фильтрации по [N] в тексте ответа
+            const sourcesHtml = renderGroupedSources(pendingGroupedSources, fullContent);
+            if (sourcesHtml) {
+                assistantMessage.insertAdjacentHTML('beforeend', sourcesHtml);
+            }
+        } else if (assistantMessage && pendingSources && pendingSources.length > 0) {
+            // Fallback: старый flat-формат
             const sourcesHtml = renderSourcesBlock(pendingSources, fullContent);
             if (sourcesHtml) {
                 assistantMessage.insertAdjacentHTML('beforeend', sourcesHtml);
             }
-        }
-        if (assistantMessage && pendingGroupedSources) {
-            assistantMessage.insertAdjacentHTML('beforeend', this.renderGroupedSources(pendingGroupedSources));
         }
 
         this.scrollToBottom();
@@ -394,27 +456,6 @@ class ChatManager {
 
     markStepDone(messageEl, step) {
         messageEl.querySelector(`.pipeline-step[data-step="${step}"]`)?.classList.add('done');
-    }
-
-    renderGroupedSources(stepGroups) {
-        return `
-            <div class="sources-grouped">
-                <div class="sources-label">Источники по шагам</div>
-                ${(stepGroups || []).map(group => `
-                    <details class="sources-group" ${group.step === 1 ? 'open' : ''}>
-                        <summary>Шаг ${group.step}: ${escapeHtml(group.step_name)} (${group.sources.length})</summary>
-                        <div class="sources-list">
-                            ${group.sources.map(src => `
-                                <div class="src-item">
-                                    <span class="src-name">${escapeHtml(src.path || '')}</span>
-                                    ${src.page ? `<span class="src-page">стр. ${src.page}</span>` : ''}
-                                    <span class="src-vault">${escapeHtml(src.vault_id || '')}</span>
-                                </div>
-                            `).join('')}
-                        </div>
-                    </details>
-                `).join('')}
-            </div>`;
     }
 
     /**
