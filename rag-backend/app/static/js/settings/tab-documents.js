@@ -228,6 +228,30 @@ const DocumentsTabMixin = {
         );
     },
 
+    // ─── Вспомогательная: разбор списка файлов из TaskStateResponse ──────────
+
+    _parseTaskStateFiles(resp) {
+        const s = resp?.state || resp || {};
+        const filesInState = s.files || {};
+        const fileList = Array.isArray(filesInState)
+            ? filesInState
+            : Object.entries(filesInState).map(([path, info]) => ({ path, ...info }));
+        const files = {};
+        let doneCount = 0;
+        for (const f of fileList) {
+            const path = f.path || f.file_path || '';
+            if (!path) continue;
+            files[path] = {
+                status:       f.status || 'pending',
+                chunks_done:  f.chunks_sent || f.chunks_done || 0,
+                chunks_total: f.chunks_total || 0,
+                name:         path.split('/').pop(),
+            };
+            if (f.status === 'indexed' || f.status === 'done') doneCount++;
+        }
+        return { files, total: fileList.length, done: doneCount, status: s.status };
+    },
+
     // ─── Прогресс-панель индексации ──────────────────────────────────────────
 
     /**
@@ -334,6 +358,20 @@ const DocumentsTabMixin = {
         };
         this._renderIndexProgress(state);
 
+        // Сразу подтягиваем список файлов через REST, не дожидаясь WS-snapshot.
+        // Это гарантирует корректный total/done даже если snapshot придёт позже
+        // или не придёт вовсе (задача уже завершена в момент подключения).
+        this.api.getIndexTaskState(taskId).then(resp => {
+            const parsed = this._parseTaskStateFiles(resp);
+            if (parsed.total > 0 && Object.keys(state.files).length === 0) {
+                state.files  = parsed.files;
+                state.total  = parsed.total;
+                state.done   = parsed.done;
+                if (parsed.status) state.status = parsed.status;
+                this._renderIndexProgress(state);
+            }
+        }).catch(() => {});
+
         const ws = this.api.connectToTaskStream(taskId);
         this._docsIndexWs = ws;
 
@@ -342,27 +380,13 @@ const DocumentsTabMixin = {
             try { msg = JSON.parse(ev.data); } catch (_) { return; }
 
             if (msg.type === 'snapshot') {
+                // FIX: читаем s.files напрямую (не s.state.files)
                 const s = msg.state || msg;
                 state.status = s.status || state.status;
-                // Заполняем список файлов из snapshot
-                const filesInState = s.state?.files || s.files || {};
-                state.files = {};
-                let doneCount = 0;
-                const fileList = Array.isArray(filesInState)
-                    ? filesInState
-                    : Object.entries(filesInState).map(([path, info]) => ({ path, ...info }));
-                for (const f of fileList) {
-                    const path = f.path || f.file_path || '';
-                    state.files[path] = {
-                        status:       f.status || 'pending',
-                        chunks_done:  f.chunks_sent || f.chunks_done || 0,
-                        chunks_total: f.chunks_total || 0,
-                        name:         (path).split('/').pop(),
-                    };
-                    if (f.status === 'indexed' || f.status === 'done') doneCount++;
-                }
-                state.total = fileList.length;
-                state.done  = doneCount;
+                const parsed = this._parseTaskStateFiles(s);
+                state.files = parsed.files;
+                state.total = parsed.total;
+                state.done  = parsed.done;
             } else if (msg.type === 'file_progress') {
                 const path = msg.file_path || msg.path || '';
                 if (!state.files[path]) state.files[path] = { name: path.split('/').pop(), status: 'indexing', chunks_done: 0, chunks_total: 0 };
@@ -370,6 +394,8 @@ const DocumentsTabMixin = {
                 state.files[path].chunks_total = msg.chunks_total || state.files[path].chunks_total;
                 state.files[path].status = 'indexing';
                 state.status = 'running';
+                // Обновляем total если файл появился впервые
+                state.total = Math.max(state.total, Object.keys(state.files).length);
             } else if (msg.type === 'file_done') {
                 const path = msg.file_path || msg.path || '';
                 if (!state.files[path]) state.files[path] = { name: path.split('/').pop(), status: 'pending', chunks_done: 0, chunks_total: 0 };
@@ -377,16 +403,39 @@ const DocumentsTabMixin = {
                 if (msg.chunks_total) state.files[path].chunks_total = msg.chunks_total;
                 if (msg.chunks_done)  state.files[path].chunks_done  = msg.chunks_done;
                 // Пересчитываем done
-                state.done = Object.values(state.files).filter(f => f.status === 'indexed' || f.status === 'done').length;
+                state.done  = Object.values(state.files).filter(f => f.status === 'indexed' || f.status === 'done').length;
                 state.total = Math.max(state.total, Object.keys(state.files).length);
             } else if (msg.type === 'task_complete' || msg.type === 'completed') {
-                state.status = 'completed';
-                state.done = state.total;
-                // Помечаем все pending → indexed
-                for (const f of Object.values(state.files)) {
-                    if (f.status === 'pending' || f.status === 'indexing') f.status = 'indexed';
-                }
-                setTimeout(() => this.loadDocumentsData(), 800);
+                // FIX: re-fetch финального состояния с бэкенда, чтобы получить
+                // реальный total/done, а не нули из in-memory счётчиков
+                this.api.getIndexTaskState(taskId).then(resp => {
+                    const parsed = this._parseTaskStateFiles(resp);
+                    if (parsed.total > 0) {
+                        state.files = parsed.files;
+                        state.total = parsed.total;
+                        state.done  = parsed.done || parsed.total;
+                    } else {
+                        // Если бэк вернул пустой список — считаем done = total
+                        state.done = state.total;
+                    }
+                    state.status = 'completed';
+                    // Помечаем оставшиеся pending/indexing → indexed
+                    for (const f of Object.values(state.files)) {
+                        if (f.status === 'pending' || f.status === 'indexing') f.status = 'indexed';
+                    }
+                    this._renderIndexProgress(state);
+                    setTimeout(() => this.loadDocumentsData(), 800);
+                }).catch(() => {
+                    // Fallback если REST недоступен
+                    state.status = 'completed';
+                    state.done   = state.total;
+                    for (const f of Object.values(state.files)) {
+                        if (f.status === 'pending' || f.status === 'indexing') f.status = 'indexed';
+                    }
+                    this._renderIndexProgress(state);
+                    setTimeout(() => this.loadDocumentsData(), 800);
+                });
+                return; // _renderIndexProgress вызовется внутри then/catch
             } else if (msg.type === 'task_cancelled' || msg.type === 'cancelled') {
                 state.status = 'cancelled';
             } else if (msg.type === 'error' || msg.type === 'task_failed') {
@@ -418,8 +467,21 @@ const DocumentsTabMixin = {
             attempts++;
             try {
                 const resp = await this.api.getIndexTaskState(taskId);
-                const st = resp?.status || resp?.state?.status || 'unknown';
-                if (state) { state.status = st; this._renderIndexProgress(state); }
+                const parsed = this._parseTaskStateFiles(resp);
+                // Обновляем файловый список из polling-ответа
+                if (parsed.total > 0) {
+                    if (state) {
+                        state.files = parsed.files;
+                        state.total = parsed.total;
+                        state.done  = parsed.done;
+                        state.status = parsed.status || state.status;
+                    }
+                } else if (state) {
+                    const st = resp?.status || resp?.state?.status || 'unknown';
+                    state.status = st;
+                }
+                if (state) this._renderIndexProgress(state);
+                const st = state?.status || 'unknown';
                 if (['completed', 'failed', 'cancelled', 'done', 'error', 'SUCCESS', 'FAILURE'].includes(st) || attempts > 120) {
                     clearInterval(this._docsIndexPollTimer);
                     this._docsIndexPollTimer = null;
