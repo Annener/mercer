@@ -49,6 +49,14 @@ warmup_models() вызывается при старте сервера (lifespa
 Временный файл удаляется после парсинга в блоке finally.
 Если и после нормализации PDFium падает — пробрасывает исходное исключение
 в app.py, которое возвращает {"type": "error"} клиенту.
+
+## Склейка OCR-переносов
+
+Tesseract возвращает тексты с \n внутри элементов для переносов строк
+в PDF-колонках: «выва-\nливается». Это нормализуется сразу после получения
+текста элемента (до попадания в чанкер) через:
+    re.sub(r'(\w+)-\s*\n\s*(\w)', r'\1\2', text)
+Дополнительная защита — в preprocessor.py (шаг 4a).
 """
 from __future__ import annotations
 
@@ -470,6 +478,23 @@ def _extract_pdf_pages(src_path: str, first_page: int, last_page: int) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Вспомогательная: нормализация OCR-переносов в тексте элемента
+# ---------------------------------------------------------------------------
+
+def _fix_ocr_hyphenation(text: str) -> str:
+    """
+    Склеивает дефисные переносы строк, которые Tesseract вставляет для
+    слов, разорванных на границе строки в PDF-колонке:
+        «выва-\\nливается» → «вываливается»
+        «едино-\\nрог»     → «единорог»
+
+    Применяется сразу после получения raw_text от unstructured,
+    пока \\n ещё присутствует в тексте элемента (до попадания в чанкер).
+    """
+    return re.sub(r"(\w+)-\s*\n\s*(\w)", r"\1\2", text)
+
+
+# ---------------------------------------------------------------------------
 # Парсинг одного батча (запускается в дочернем процессе)
 # ---------------------------------------------------------------------------
 
@@ -550,7 +575,8 @@ def _parse_batch_worker(
                 raw_text = str(el)
             except TypeError:
                 raw_text = ""
-        text = (raw_text or "").strip()
+        # Фикс A: склеиваем OCR-переносы пока \n ещё в тексте элемента
+        text = _fix_ocr_hyphenation((raw_text or "").strip())
 
         text_as_html: Optional[str] = None
         if category == "Table" and meta is not None:
@@ -738,9 +764,10 @@ def _parse_single(
                 raw_text = str(el)
             except TypeError:
                 raw_text = ""
+        # Фикс A: склеиваем OCR-переносы пока \n ещё в тексте элемента
         serialized.append({
             "category": category,
-            "text": (raw_text or "").strip(),
+            "text": _fix_ocr_hyphenation((raw_text or "").strip()),
             "page_number": page_number,
             "text_as_html": text_as_html,
             "y0": _extract_y0(el),
