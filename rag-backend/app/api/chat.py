@@ -376,7 +376,7 @@ async def send_message_stream(
                 yield "data: [DONE]\n\n"
                 return
 
-            system_prompt = await domain_service.get_prompt(domain_id or "default", "system", db)
+            system_prompt = await _resolve_system_prompt(context.campaign_id, domain_id, db)
             messages: list[dict[str, str]] = []
             if system_prompt:
                 messages.append({"role": "system", "content": system_prompt})
@@ -480,6 +480,24 @@ async def _domain_id_for_chat(chat: Chat, db: AsyncSession) -> str | None:
     return None
 
 
+async def _resolve_system_prompt(
+    campaign_id: str | None,
+    domain_id: str | None,
+    db: AsyncSession,
+) -> str:
+    """Return the effective system prompt for the fallback (no-pipeline) path.
+
+    Priority:
+      1. campaign.system_prompt  — when a campaign is selected and has a non-empty prompt
+      2. domain system prompt    — general mode or campaign without its own prompt
+    """
+    if campaign_id:
+        campaign = await db.get(Campaign, uuid.UUID(campaign_id))
+        if campaign is not None and campaign.system_prompt:
+            return campaign.system_prompt
+    return await domain_service.get_prompt(domain_id or "default", "system", db)
+
+
 async def _plain_llm_reply(
     query: str,
     context: PipelineExecutionContext,
@@ -491,7 +509,7 @@ async def _plain_llm_reply(
     if provider is None:
         raise HTTPException(503, "No LLM provider configured")
 
-    system_prompt = await domain_service.get_prompt(domain_id or "default", "system", db)
+    system_prompt = await _resolve_system_prompt(context.campaign_id, domain_id, db)
     messages: list[dict[str, str]] = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
