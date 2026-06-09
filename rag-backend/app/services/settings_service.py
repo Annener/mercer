@@ -12,7 +12,7 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import EmbeddingModelConfig, GenerationModelConfig
-from app.db.models import EmbeddingModel, GenerationModel, PlatformSetting
+from app.db.models import EmbeddingModel, GenerationModel, PlatformSetting, Vault
 from app.providers.generation.base import GenerationProvider
 from app.providers.generation.openai_compatible import OpenAICompatibleProvider
 
@@ -228,41 +228,48 @@ class SettingsService:
         )
         return [self._embedding_model_dict(model) for model in result.scalars().all()]
 
-    async def get_active_embedding_config(self, db: AsyncSession) -> EmbeddingModelConfig | None:
-        """Возвращает активную (enabled=True) embedding-модель как EmbeddingModelConfig.
+    async def get_active_embedding_config(
+        self,
+        db: AsyncSession,
+        vault_id: str | None = None,
+    ) -> EmbeddingModelConfig | None:
+        """Returns the EmbeddingModelConfig to use for retrieval.
 
-        Используется в fallback-путях (plain LLM stream), где AppConfig недоступен.
-        Выбирает первую попавшуюся enabled-модель — так же как _select_embedding_model
-        в retrieval.py перебирает config.embedding_models.values().
+        Приоритет выбора модели:
+          1. vault_id задан → берём Vault.embedding_model_id — модель,
+             которой реально индексировался ваулт.
+          2. Fallback: первая enabled=True модель из embedding_models
+             (по created_at ASC) — если vault не задан или у него
+             нет embedding_model_id.
+
+        Используется в fallback-путях (plain LLM stream),
+        где AppConfig недоступен.
         """
-        result = await db.execute(
-            select(EmbeddingModel)
-            .where(EmbeddingModel.enabled == True)
-            .order_by(EmbeddingModel.created_at.asc())
-            .limit(1)
-        )
-        model = result.scalar_one_or_none()
-        if model is None:
+        orm_model: EmbeddingModel | None = None
+
+        # Шаг 1: если vault_id задан — берём модель привязанную к vaultу
+        if vault_id is not None:
+            vault_result = await db.execute(
+                select(Vault).where(Vault.vault_id == vault_id)
+            )
+            vault = vault_result.scalar_one_or_none()
+            if vault is not None and vault.embedding_model_id:
+                orm_model = await self._get_embedding_model(vault.embedding_model_id, db)
+
+        # Шаг 2: fallback — первая enabled-модель
+        if orm_model is None:
+            result = await db.execute(
+                select(EmbeddingModel)
+                .where(EmbeddingModel.enabled == True)
+                .order_by(EmbeddingModel.created_at.asc())
+                .limit(1)
+            )
+            orm_model = result.scalar_one_or_none()
+
+        if orm_model is None:
             return None
-        api_key_env: str | None = None
-        if model.encrypted_api_key:
-            # Для openai_compatible провайдеров ключ хранится зашифрованным.
-            # EmbeddingModelConfig принимает api_key_env (имя env-переменной),
-            # но в fallback-пути нам нужен сам ключ — передаём его через
-            # специальный sentinel-атрибут, который _embed_openai_compatible читает.
-            api_key_env = "_MERCER_FALLBACK_API_KEY"
-            os.environ[api_key_env] = self.decrypt_api_key(model.encrypted_api_key)
-        return EmbeddingModelConfig(
-            model_id=model.model_id,
-            provider=model.provider,
-            model_name=model.model_name,
-            base_url=model.base_url,
-            dimensions=model.dimensions,
-            timeout_seconds=model.timeout_seconds,
-            max_retries=model.max_retries,
-            enabled=model.enabled,
-            api_key_env=api_key_env or "",
-        )
+
+        return self._build_embedding_config(orm_model)
 
     async def create_embedding_model(self, data: dict[str, Any], db: AsyncSession) -> dict[str, Any]:
         payload = dict(data)
@@ -307,6 +314,28 @@ class SettingsService:
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
+
+    def _build_embedding_config(self, model: EmbeddingModel) -> EmbeddingModelConfig:
+        """Convert ORM EmbeddingModel → EmbeddingModelConfig.
+
+        Для openai_compatible: расшифрованный ключ прокидывается
+        через sentinel env-переменную, которую читает _embed_openai_compatible.
+        """
+        api_key_env: str | None = None
+        if model.encrypted_api_key:
+            api_key_env = "_MERCER_FALLBACK_API_KEY"
+            os.environ[api_key_env] = self.decrypt_api_key(model.encrypted_api_key)
+        return EmbeddingModelConfig(
+            model_id=model.model_id,
+            provider=model.provider,
+            model_name=model.model_name,
+            base_url=model.base_url,
+            dimensions=model.dimensions,
+            timeout_seconds=model.timeout_seconds,
+            max_retries=model.max_retries,
+            enabled=model.enabled,
+            api_key_env=api_key_env or "",
+        )
 
     def _build_generation_provider(self, model: GenerationModel) -> GenerationProvider:
         api_key = self.decrypt_api_key(model.encrypted_api_key) if model.encrypted_api_key else ""
