@@ -7,6 +7,7 @@ const DocumentsTabMixin = {
     _docsFilterTagId: '',
     _docsIndexTaskId: null,
     _docsIndexPollTimer: null,
+    _docsIndexWs: null,
 
     async renderDocumentsTab() {
         return `
@@ -23,9 +24,9 @@ const DocumentsTabMixin = {
                 <select id="docs-tag-filter" class="input-field docs-toolbar-select">
                     <option value="">Все теги</option>
                 </select>
-                <span id="docs-indexer-status" class="docs-indexer-status"></span>
             </div>
         </div>
+        <div id="docs-index-progress-panel" class="docs-index-progress-panel" style="display:none;"></div>
         <div class="docs-layout">
             <div class="docs-table-wrap">
                 <table class="data-table" id="docs-table">
@@ -181,16 +182,15 @@ const DocumentsTabMixin = {
             tbody.innerHTML = '<tr><td colspan="5" class="empty-state">Документов нет</td></tr>';
             return;
         }
-        const statusColor = s => ({ indexed: 'var(--color-success)', pending: 'var(--color-gold)', error: 'var(--color-error)' }[s] || 'var(--color-text-muted)');
         tbody.innerHTML = docs.map(doc => {
             const tags = (doc.tags || []).map(t =>
                 `<span class="badge" style="background:${t.color || 'var(--color-primary-highlight)'};color:var(--color-text);margin-right:2px;">${this.escapeHtml(t.name)}</span>`
             ).join('');
             const fileName = (doc.source_path || doc.path || String(doc.id)).split('/').pop();
-            return `<tr class="docs-row" data-id="${this.escapeHtml(String(doc.id))}" style="cursor:pointer;" title="Нажмите для редактирования тегов">
+            return `<tr class="docs-row" data-id="${this.escapeHtml(String(doc.id))}" data-path="${this.escapeHtml(doc.source_path || String(doc.id))}" style="cursor:pointer;" title="Нажмите для редактирования тегов">
                 <td title="${this.escapeHtml(doc.source_path || String(doc.id))}">${this.escapeHtml(fileName)}</td>
                 <td style="color:var(--color-text-muted);font-size:var(--text-xs);">${this.escapeHtml(doc.vault_id || '—')}</td>
-                <td><span style="color:${statusColor(doc.status)};font-weight:600;">${this.escapeHtml(doc.status || '—')}</span></td>
+                <td>${this._docStatusBadge(doc.status)}</td>
                 <td>${tags || '<span style="color:var(--color-text-faint)">—</span>'}</td>
                 <td><button class="btn btn-sm" style="color:var(--color-error);" data-action="delete-doc" data-id="${this.escapeHtml(String(doc.id))}" data-vault="${this.escapeHtml(doc.vault_id || '')}" data-path="${this.escapeHtml(doc.source_path || String(doc.id))}" title="Удалить">🗑</button></td>
             </tr>`;
@@ -209,6 +209,17 @@ const DocumentsTabMixin = {
         });
     },
 
+    _docStatusBadge(status) {
+        const map = {
+            indexed: { bg: '#e6f5ee', color: '#206a43', label: 'indexed' },
+            pending: { bg: '#fff7e0', color: '#7a5700', label: 'pending' },
+            error:   { bg: '#fdecea', color: '#a12c7b', label: 'error' },
+            indexing:{ bg: '#e8f0fd', color: '#1a4fa3', label: 'indexing' },
+        };
+        const s = map[status] || { bg: '#eef2f6', color: '#657789', label: status || '—' };
+        return `<span class="doc-status-badge" style="background:${s.bg};color:${s.color};">${this.escapeHtml(s.label)}</span>`;
+    },
+
     _filterDocsTable(query) {
         const q = (query || '').toLowerCase();
         this._renderDocsRows(q
@@ -217,13 +228,215 @@ const DocumentsTabMixin = {
         );
     },
 
+    // ─── Прогресс-панель индексации ──────────────────────────────────────────
+
+    /**
+     * Рендерит панель прогресса индексации.
+     * state = {
+     *   status: 'running'|'completed'|'failed'|'cancelled',
+     *   total: N, done: N,      // количество файлов
+     *   files: { [path]: { status, chunks_done, chunks_total, name } }
+     * }
+     */
+    _renderIndexProgress(state) {
+        const panel = document.getElementById('docs-index-progress-panel');
+        if (!panel) return;
+        if (!state) { panel.style.display = 'none'; return; }
+
+        panel.style.display = 'block';
+
+        const total = state.total || 0;
+        const done  = state.done  || 0;
+        const pct   = total > 0 ? Math.round((done / total) * 100) : 0;
+        const isActive = state.status === 'running' || state.status === 'queued';
+
+        const statusLabel = {
+            running:   '⚙️ Индексация…',
+            queued:    '⏳ Очередь…',
+            completed: '✅ Готово',
+            failed:    '❌ Ошибка',
+            cancelled: '⛔ Отменено',
+        }[state.status] || state.status;
+
+        // Строим список активных/обрабатываемых файлов
+        const filesHtml = Object.entries(state.files || {}).map(([path, f]) => {
+            const name = f.name || path.split('/').pop();
+            const ct = f.chunks_total || 0;
+            const cd = f.chunks_done  || 0;
+            const fp = ct > 0 ? Math.round((cd / ct) * 100) : 0;
+            const fIsActive = f.status === 'indexing';
+            return `
+            <div class="idx-file-row">
+                <div class="idx-file-header">
+                    <span class="idx-file-name" title="${this.escapeHtml(path)}">${this.escapeHtml(name)}</span>
+                    ${this._docStatusBadge(f.status)}
+                    ${ct > 0 ? `<span class="idx-file-chunks">${cd}/${ct} чанков</span>` : ''}
+                </div>
+                ${(fIsActive || ct > 0) ? `
+                <div class="idx-file-bar-wrap">
+                    <div class="idx-bar idx-bar-file ${fIsActive ? 'idx-bar-anim' : ''}" style="width:${fp}%;"></div>
+                </div>` : ''}
+            </div>`;
+        }).join('');
+
+        panel.innerHTML = `
+        <div class="idx-panel-inner">
+            <div class="idx-global-header">
+                <span class="idx-status-label">${statusLabel}</span>
+                <span class="idx-global-count">${done} / ${total} файлов</span>
+                <span class="idx-pct">${pct}%</span>
+                ${isActive ? `<button class="btn btn-sm idx-cancel-btn" data-action="cancel-indexer" data-task-id="${this.escapeHtml(state.task_id || '')}">✕ Отмена</button>` : ''}
+            </div>
+            <div class="idx-global-bar-wrap">
+                <div class="idx-bar idx-bar-global ${isActive ? 'idx-bar-anim' : ''}" style="width:${pct}%;"></div>
+            </div>
+            ${filesHtml ? `<div class="idx-files-list">${filesHtml}</div>` : ''}
+        </div>`;
+
+        const cancelBtn = panel.querySelector('[data-action="cancel-indexer"]');
+        if (cancelBtn) {
+            cancelBtn.addEventListener('click', () => this._cancelIndexTask(cancelBtn.dataset.taskId));
+        }
+    },
+
+    async _cancelIndexTask(taskId) {
+        if (!taskId) return;
+        try {
+            await fetch(`/api/v1/tasks/${encodeURIComponent(taskId)}/cancel`, { method: 'POST' });
+        } catch (_) {}
+    },
+
+    // ─── WebSocket-поток индексации ──────────────────────────────────────────
+
+    /**
+     * Открывает WS и строит state по событиям.
+     * WS-события (по websocket_manager.py / indexer_service):
+     *   { type: "snapshot", state: TaskStateResponse }
+     *   { type: "file_progress", file_path, chunks_done, chunks_total, status }
+     *   { type: "file_done",     file_path, status }
+     *   { type: "task_complete", status }
+     *   { type: "task_cancelled" }
+     */
+    _startIndexerWs(taskId) {
+        // Закрываем старый WS если есть
+        if (this._docsIndexWs) {
+            try { this._docsIndexWs.close(); } catch (_) {}
+            this._docsIndexWs = null;
+        }
+
+        // Начальное состояние
+        const state = {
+            task_id: taskId,
+            status: 'queued',
+            total: 0,
+            done: 0,
+            files: {},
+        };
+        this._renderIndexProgress(state);
+
+        const ws = this.api.connectToTaskStream(taskId);
+        this._docsIndexWs = ws;
+
+        ws.onmessage = (ev) => {
+            let msg;
+            try { msg = JSON.parse(ev.data); } catch (_) { return; }
+
+            if (msg.type === 'snapshot') {
+                const s = msg.state || msg;
+                state.status = s.status || state.status;
+                // Заполняем список файлов из snapshot
+                const filesInState = s.state?.files || s.files || {};
+                state.files = {};
+                let doneCount = 0;
+                const fileList = Array.isArray(filesInState)
+                    ? filesInState
+                    : Object.entries(filesInState).map(([path, info]) => ({ path, ...info }));
+                for (const f of fileList) {
+                    const path = f.path || f.file_path || '';
+                    state.files[path] = {
+                        status:       f.status || 'pending',
+                        chunks_done:  f.chunks_sent || f.chunks_done || 0,
+                        chunks_total: f.chunks_total || 0,
+                        name:         (path).split('/').pop(),
+                    };
+                    if (f.status === 'indexed' || f.status === 'done') doneCount++;
+                }
+                state.total = fileList.length;
+                state.done  = doneCount;
+            } else if (msg.type === 'file_progress') {
+                const path = msg.file_path || msg.path || '';
+                if (!state.files[path]) state.files[path] = { name: path.split('/').pop(), status: 'indexing', chunks_done: 0, chunks_total: 0 };
+                state.files[path].chunks_done  = msg.chunks_done  || msg.chunks_sent || 0;
+                state.files[path].chunks_total = msg.chunks_total || state.files[path].chunks_total;
+                state.files[path].status = 'indexing';
+                state.status = 'running';
+            } else if (msg.type === 'file_done') {
+                const path = msg.file_path || msg.path || '';
+                if (!state.files[path]) state.files[path] = { name: path.split('/').pop(), status: 'pending', chunks_done: 0, chunks_total: 0 };
+                state.files[path].status = msg.status || 'indexed';
+                if (msg.chunks_total) state.files[path].chunks_total = msg.chunks_total;
+                if (msg.chunks_done)  state.files[path].chunks_done  = msg.chunks_done;
+                // Пересчитываем done
+                state.done = Object.values(state.files).filter(f => f.status === 'indexed' || f.status === 'done').length;
+                state.total = Math.max(state.total, Object.keys(state.files).length);
+            } else if (msg.type === 'task_complete' || msg.type === 'completed') {
+                state.status = 'completed';
+                state.done = state.total;
+                // Помечаем все pending → indexed
+                for (const f of Object.values(state.files)) {
+                    if (f.status === 'pending' || f.status === 'indexing') f.status = 'indexed';
+                }
+                setTimeout(() => this.loadDocumentsData(), 800);
+            } else if (msg.type === 'task_cancelled' || msg.type === 'cancelled') {
+                state.status = 'cancelled';
+            } else if (msg.type === 'error' || msg.type === 'task_failed') {
+                state.status = 'failed';
+            }
+
+            this._renderIndexProgress(state);
+        };
+
+        ws.onerror = () => {
+            // Если WS недоступен — фоллбэк на polling
+            this._docsIndexWs = null;
+            this._pollIndexerStatus(taskId, state);
+        };
+
+        ws.onclose = () => {
+            this._docsIndexWs = null;
+            // Если задача ещё не завершена — reload таблицы
+            if (state.status !== 'completed' && state.status !== 'failed' && state.status !== 'cancelled') {
+                this.loadDocumentsData();
+            }
+        };
+    },
+
+    _pollIndexerStatus(taskId, state) {
+        if (this._docsIndexPollTimer) clearInterval(this._docsIndexPollTimer);
+        let attempts = 0;
+        this._docsIndexPollTimer = setInterval(async () => {
+            attempts++;
+            try {
+                const resp = await this.api.getIndexTaskState(taskId);
+                const st = resp?.status || resp?.state?.status || 'unknown';
+                if (state) { state.status = st; this._renderIndexProgress(state); }
+                if (['completed', 'failed', 'cancelled', 'done', 'error', 'SUCCESS', 'FAILURE'].includes(st) || attempts > 120) {
+                    clearInterval(this._docsIndexPollTimer);
+                    this._docsIndexPollTimer = null;
+                    await this.loadDocumentsData();
+                }
+            } catch (_) {
+                if (attempts > 20) { clearInterval(this._docsIndexPollTimer); this._docsIndexPollTimer = null; }
+            }
+        }, 3000);
+    },
+
     // ─── Модальное окно документа ───────────────────────────────────────────
 
     async _openDocModal(doc) {
         this._docsCurrentDoc = doc;
         const domainId = this._activeDomainId || await this._resolveDomainId();
 
-        // Удаляем старый модал если есть
         document.getElementById('docs-modal-backdrop')?.remove();
 
         const backdrop = document.createElement('div');
@@ -233,18 +446,17 @@ const DocumentsTabMixin = {
         const fileName = (doc.source_path || doc.path || String(doc.id)).split('/').pop();
         const fullPath = doc.source_path || doc.path || '—';
 
-        // Строим метаданные документа
         const metaRows = [
-            ['ID',           doc.id           || '—'],
-            ['Vault',        doc.vault_id     || '—'],
-            ['Путь',        fullPath],
-            ['Статус',      doc.status       || '—'],
-            ['Мим-тип',    doc.mime_type    || '—'],
-            ['Размер',      doc.file_size != null ? `${(doc.file_size / 1024).toFixed(1)} KB` : '—'],
-            ['Страниц',   doc.page_count   != null ? doc.page_count : '—'],
-            ['Чанков',    doc.chunk_count  != null ? doc.chunk_count : '—'],
+            ['ID',          doc.id           || '—'],
+            ['Vault',       doc.vault_id     || '—'],
+            ['Путь',       fullPath],
+            ['Статус',     doc.status       || '—'],
+            ['Мим-тип',   doc.mime_type    || '—'],
+            ['Размер',     doc.file_size != null ? `${(doc.file_size / 1024).toFixed(1)} KB` : '—'],
+            ['Страниц',  doc.page_count   != null ? doc.page_count : '—'],
+            ['Чанков',   doc.chunk_count  != null ? doc.chunk_count : '—'],
             ['Добавлен', doc.created_at ? new Date(doc.created_at).toLocaleString('ru') : '—'],
-            ['Изменён', doc.updated_at ? new Date(doc.updated_at).toLocaleString('ru') : '—'],
+            ['Изменён',  doc.updated_at ? new Date(doc.updated_at).toLocaleString('ru') : '—'],
         ].filter(([, v]) => v && v !== '—');
 
         backdrop.innerHTML = `
@@ -276,7 +488,6 @@ const DocumentsTabMixin = {
         document.body.appendChild(backdrop);
         document.body.style.overflow = 'hidden';
 
-        // Закрытие по backdrop / Escape
         const closeModal = () => {
             backdrop.remove();
             document.body.style.overflow = '';
@@ -286,7 +497,6 @@ const DocumentsTabMixin = {
         const escHandler = e => { if (e.key === 'Escape') { closeModal(); document.removeEventListener('keydown', escHandler); } };
         document.addEventListener('keydown', escHandler);
 
-        // Загрузим теги
         try {
             const resp = domainId ? await this.api.getTags(domainId) : [];
             const globalTags = Array.isArray(resp) ? resp : (resp.global_tags || []);
@@ -358,15 +568,24 @@ const DocumentsTabMixin = {
 
     async handleDocumentsAction(action, btn) {
         if (action === 'run-indexer') {
-            const statusEl = document.getElementById('docs-indexer-status');
+            const runBtn = document.querySelector('[data-action="run-indexer"]');
+            if (runBtn) { runBtn.disabled = true; runBtn.textContent = '⏳ Запуск…'; }
             try {
-                if (statusEl) statusEl.textContent = '⏳ Запуск...';
                 const result = await this.api.runIndexer();
                 const taskId = result?.task_id || result?.id || null;
                 this._docsIndexTaskId = taskId;
-                if (statusEl) statusEl.textContent = taskId ? `Задача: ${taskId}` : '✅ Запущено';
-                if (taskId) this._pollIndexerStatus(taskId, statusEl);
-            } catch (e) { if (statusEl) statusEl.textContent = '❌ ' + e.message; }
+                if (runBtn) { runBtn.disabled = false; runBtn.textContent = '▶ Запустить индексацию'; }
+                if (taskId) {
+                    this._startIndexerWs(taskId);
+                } else {
+                    // Нет task_id — просто показываем статус
+                    this._renderIndexProgress({ status: 'completed', total: 0, done: 0, files: {} });
+                    await this.loadDocumentsData();
+                }
+            } catch (e) {
+                if (runBtn) { runBtn.disabled = false; runBtn.textContent = '▶ Запустить индексацию'; }
+                this._renderIndexProgress({ status: 'failed', total: 0, done: 0, files: {}, error: e.message });
+            }
             return;
         }
         if (action === 'delete-doc') {
@@ -379,23 +598,6 @@ const DocumentsTabMixin = {
             catch (e) { alert('Ошибка удаления: ' + e.message); }
             return;
         }
-    },
-
-    _pollIndexerStatus(taskId, statusEl) {
-        if (this._docsIndexPollTimer) clearInterval(this._docsIndexPollTimer);
-        let attempts = 0;
-        this._docsIndexPollTimer = setInterval(async () => {
-            attempts++;
-            try {
-                const status = await this.api.getIndexTaskState(taskId);
-                const state = status?.state || status?.status || 'unknown';
-                if (statusEl) statusEl.textContent = `Задача ${taskId}: ${state}`;
-                if (['SUCCESS', 'FAILURE', 'REVOKED', 'completed', 'failed', 'done', 'error'].includes(state) || attempts > 60) {
-                    clearInterval(this._docsIndexPollTimer); this._docsIndexPollTimer = null;
-                    await this.loadDocumentsData();
-                }
-            } catch (_) { if (attempts > 10) { clearInterval(this._docsIndexPollTimer); this._docsIndexPollTimer = null; } }
-        }, 3000);
     },
 
     async _resolveVaultId() {
