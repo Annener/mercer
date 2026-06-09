@@ -551,10 +551,6 @@ async def _fallback_retrieve(
 
     top_k: int = int(await settings_service.get("retrieval.top_k", db))
 
-    # AppConfig не хранится в settings_service — retrieve_multi_vault принимает
-    # config=None и корректно подгружает эмбеддинг-модель из БД самостоятельно.
-    config = None
-
     document_ids: list[str] | None = None  # None = весь домен, без фильтра
 
     if campaign_id:
@@ -584,7 +580,8 @@ async def _fallback_retrieve(
         document_ids=document_ids,
         top_k=top_k,
         strategy="semantic",
-        config=config,
+        config=None,
+        db=db,
     )
 
 
