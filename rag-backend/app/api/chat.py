@@ -15,10 +15,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Campaign, Chat, ClarificationStateRow, Message
 from app.db.session import get_db
-from app.services import settings_service
 from app.services.domain_service import domain_service
 from app.services.pipeline_executor import PipelineExecutor
 from app.services.pipeline_router import PipelineRouter
+from app.services.settings_service import settings_service
 from app.services.vault_config_service import VaultConfigService
 from shared_contracts.models import (
     ChatMessage,
