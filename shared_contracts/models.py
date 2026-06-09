@@ -560,6 +560,10 @@ class PipelineExecutionContext(BaseModel):
     history: list[ChatMessage] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
     retrieval_strategy: str | None = None
+    # Заполняются pipeline_router.select() после выбора пайплайна
+    confidence: float | None = None
+    reasoning: str | None = None
+    mode: str | None = None
 
 
 class PipelineStepResult(BaseModel):
@@ -600,7 +604,7 @@ class UpsertResponse(BaseModel):
     status: Literal["ok", "partial"]
     upserted_count: int = 0
     failed_indices: list[int] = Field(default_factory=list)
-    error_details: list[str] = Field(default_factory=list)
+    error_details: list[str] = Field(default_factory=str)
 
 
 class SearchHit(BaseModel):
