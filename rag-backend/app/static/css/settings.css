@@ -234,7 +234,6 @@
    Documents tab layout
    ============================================================ */
 
-/* Toolbar */
 .docs-toolbar {
     display: flex;
     align-items: center;
@@ -251,7 +250,6 @@
     flex: 1;
 }
 
-/* Единая высота для всех элементов тулбара */
 .docs-toolbar-btn,
 .docs-toolbar-input,
 .docs-toolbar-select {
@@ -263,15 +261,8 @@
     line-height: 32px;
 }
 
-.docs-toolbar-input {
-    min-width: 180px;
-    max-width: 220px;
-}
-
-.docs-toolbar-select {
-    min-width: 120px;
-    max-width: 160px;
-}
+.docs-toolbar-input  { min-width: 180px; max-width: 220px; }
+.docs-toolbar-select { min-width: 120px; max-width: 160px; }
 
 .docs-indexer-status {
     font-size: 12px;
@@ -280,7 +271,7 @@
     white-space: nowrap;
 }
 
-/* Main layout: table + tags panel */
+/* Main layout */
 .docs-layout {
     display: flex;
     gap: 12px;
@@ -293,7 +284,7 @@
     min-width: 0;
 }
 
-/* Панель тегов — всегда видна */
+/* Панель тегов */
 .docs-tags-panel {
     width: 440px;
     flex-shrink: 0;
@@ -338,7 +329,6 @@
     gap: 4px;
 }
 
-/* Компактная форма создания тега */
 .docs-tags-panel-create {
     border-top: 1px solid var(--color-border, #dfe6ee);
     padding: 6px 8px;
@@ -378,5 +368,155 @@
     padding: 0 8px !important;
     font-size: 13px !important;
     line-height: 26px;
+    flex-shrink: 0;
+}
+
+/* ============================================================
+   Document modal
+   ============================================================ */
+
+.docs-modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.45);
+    z-index: 2000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    animation: docs-fade-in 0.15s ease;
+}
+
+@keyframes docs-fade-in {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+}
+
+.docs-modal {
+    background: #fff;
+    border-radius: 10px;
+    box-shadow: 0 8px 40px rgba(0, 0, 0, 0.18);
+    width: 100%;
+    max-width: 720px;
+    max-height: 85vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    animation: docs-slide-up 0.18s ease;
+}
+
+@keyframes docs-slide-up {
+    from { transform: translateY(12px); opacity: 0; }
+    to   { transform: translateY(0);    opacity: 1; }
+}
+
+.docs-modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 18px 12px;
+    border-bottom: 1px solid #e4eaf0;
+    flex-shrink: 0;
+    background: #f8fafc;
+}
+
+.docs-modal-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+.docs-modal-filename {
+    font-size: 15px;
+    font-weight: 600;
+    color: #2c3e50;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 500px;
+}
+
+.docs-modal-close {
+    background: none;
+    border: none;
+    font-size: 18px;
+    color: #7f8c8d;
+    cursor: pointer;
+    padding: 2px 6px;
+    border-radius: 4px;
+    transition: background 0.12s, color 0.12s;
+    flex-shrink: 0;
+}
+.docs-modal-close:hover { background: #f0f0f0; color: #2c3e50; }
+
+.docs-modal-body {
+    display: flex;
+    gap: 0;
+    flex: 1;
+    overflow: hidden;
+}
+
+.docs-modal-left {
+    width: 280px;
+    flex-shrink: 0;
+    padding: 16px 18px;
+    border-right: 1px solid #e4eaf0;
+    overflow-y: auto;
+    background: #fafbfc;
+}
+
+.docs-modal-right {
+    flex: 1;
+    padding: 16px 18px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+}
+
+.docs-modal-section-title {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: #8a99a8;
+    margin-bottom: 10px;
+}
+
+/* Метаданные */
+.docs-modal-meta {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+
+.docs-modal-meta tr + tr td {
+    border-top: 1px solid #edf1f5;
+}
+
+.docs-modal-meta-key {
+    color: #7a8d9d;
+    padding: 5px 8px 5px 0;
+    white-space: nowrap;
+    vertical-align: top;
+    width: 80px;
+}
+
+.docs-modal-meta-val {
+    color: #2c3e50;
+    padding: 5px 0;
+    word-break: break-all;
+}
+
+/* Теги в модале */
+.docs-modal-tag-badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    flex: 1;
+    align-content: flex-start;
+}
+
+.docs-modal-save-btn {
     flex-shrink: 0;
 }
