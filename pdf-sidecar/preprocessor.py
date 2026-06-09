@@ -76,7 +76,11 @@ def preprocess(text: str, source_hint: str = "") -> str:
     for bad, good in CHAR_MAP.items():
         text = text.replace(bad, good)
     text = re.sub(r"^\s*\d+\s*$", "", text, flags=re.MULTILINE)
+    # 4. Склеивание с \n
     text = re.sub(r"(\w+)-\s*\n\s*(\w+)", r"\1\2", text)
+    # 4a. Склеивание когда \n уже заменён пробелом: "выва- ливается" → "вываливается"
+    # Не затрагивает «эльф-обыватель», «2023-01-01», «978-5-04» — у них нет пробела после дефиса.
+    text = re.sub(r"(\w+)-\s+(\w)", r"\1\2", text)
     text = text.replace("\n\n", "\u2400\u2400")
     text = text.replace("\n", " ")
     text = text.replace("\u2400\u2400", "\n\n")
