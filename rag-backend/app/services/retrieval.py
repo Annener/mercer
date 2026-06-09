@@ -110,14 +110,17 @@ async def retrieve(
     strategy: str = "semantic",
     config: AppConfig | None = None,
     db: AsyncSession | None = None,
+    _embedding_model: EmbeddingModelConfig | None = None,
 ) -> list[SearchHit]:
     """
     document_ids = None  → поиск по всему vault без фильтра
     document_ids = []    → вернуть [] сразу, без запроса к LanceDB
     document_ids = [...] → поиск с фильтром {"document_id": {"$in": document_ids}}
 
-    config=None + db → embedding-модель берётся из БД через settings_service.
-    config=None + db=None → падает ValueError.
+    Приоритет резолюции embedding-модели:
+      1. _embedding_model  — прямая передача (retrieve_multi_vault раз решает)
+      2. config            — AppConfig из pipeline-пути
+      3. db                — подтягивает из БД через settings_service (фаллбэк-путь)
     """
     if document_ids is not None and len(document_ids) == 0:
         return []
@@ -137,7 +140,9 @@ async def retrieve(
         logger.info("Retrieval strategy is not implemented yet: %s", strategy)
         return []
     try:
-        embedding_model = await _resolve_embedding_model(config, db)
+        embedding_model = await _resolve_embedding_model(
+            config=config, db=db, direct=_embedding_model
+        )
         vector = await _embed_query(query, embedding_model)
 
         filter_expr: dict[str, Any] | None = None
@@ -198,7 +203,7 @@ async def retrieve_multi_vault(
 ) -> list[SearchHit]:
     """Ищет во всех указанных vault'ах, объединяет результаты, сортирует по score, возвращает top_k.
 
-    config=None + db → embedding-модель берётся из БД через settings_service.
+    config=None + db → embedding-модель берётся из БД через settings_service (фаллбэк-путь).
     """
     if not vault_ids:
         return []
@@ -211,17 +216,15 @@ async def retrieve_multi_vault(
     )
     effective_top_k = top_k or await _default_top_k()
 
-    # Раз решаем embedding-модель, чтобы не делать н-запросов к БД
-    resolved_config = config
-    if resolved_config is None and db is not None:
-        emb_model = await settings_service.get_active_embedding_config(db)
-        if emb_model is not None:
-            # Пакуем как AppConfig с одной embedding-моделью
-            from app.config import AppConfig
-            resolved_config = AppConfig(
-                embedding_models={emb_model.model_id: emb_model},
-                generation_models={},
-            )
+    # Раз решаем embedding-модель здесь, чтобы не делать N запросов к БД на каждый vault
+    embedding_model: EmbeddingModelConfig | None = None
+    if config is not None:
+        embedding_model = _select_embedding_model(config)
+    elif db is not None:
+        embedding_model = await settings_service.get_active_embedding_config(db)
+
+    if embedding_model is None:
+        raise ValueError("Embedding configuration is not available.")
 
     all_hits: list[SearchHit] = []
     for vault_id in vault_ids:
@@ -231,8 +234,7 @@ async def retrieve_multi_vault(
             document_ids=document_ids,
             top_k=effective_top_k,
             strategy=strategy,
-            config=resolved_config,
-            db=db,
+            _embedding_model=embedding_model,
         )
         all_hits.extend(hits)
     all_hits.sort(key=lambda h: h.score, reverse=True)
@@ -303,13 +305,17 @@ async def _default_top_k() -> int:
 async def _resolve_embedding_model(
     config: AppConfig | None,
     db: AsyncSession | None,
+    direct: EmbeddingModelConfig | None = None,
 ) -> EmbeddingModelConfig:
     """Returns the active EmbeddingModelConfig.
 
     Priority:
-      1. config (AppConfig) — used by pipeline executor path
-      2. settings_service.get_active_embedding_config(db) — used by fallback path
+      1. direct           — прямая передача из retrieve_multi_vault (1 запрос на все vaultы)
+      2. config (AppConfig)— pipeline-путь
+      3. db               — fallback: берёт из БД через settings_service
     """
+    if direct is not None:
+        return direct
     if config is not None:
         return _select_embedding_model(config)
     if db is not None:
