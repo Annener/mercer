@@ -50,7 +50,6 @@ class CreateChatRequest(BaseModel):
     vault_id оставлен nullable для back-compat (старые клиенты).
     campaign_id — опциональная привязка к кампании.
     """
-    # A05 fix: domain_id стал обязательным — чат не может существовать вне домена
     domain_id: str
     vault_id: str | None = None  # deprecated back-compat
     campaign_id: str | None = None
@@ -135,9 +134,6 @@ async def list_chats(
     result = await db.execute(stmt)
     chats = result.scalars().all()
 
-    # B01 fix: был N+1 — _vault_enabled вызывался в list comprehension с await
-    # для каждого чата отдельно. Теперь: один запрос к settings один раз,
-    # результат кешируется; _vault_enabled вызывается синхронно через кеш.
     unique_vault_ids: set[str] = {c.vault_id for c in chats if c.vault_id}
     vault_enabled_cache: dict[str | None, bool] = {None: False}
     if unique_vault_ids:
@@ -231,6 +227,9 @@ async def send_message(
     await db.flush()
 
     domain_id = await _domain_id_for_chat(chat, db) or chat.domain_id
+
+    # ensure_loaded: кэш может быть пустым после старта сервиса
+    await config_for_vault.ensure_loaded(db)
     vault_ids: list[str] = [
         v.vault_id for v in config_for_vault.vaults.values()
         if v.domain_id == domain_id and v.enabled
@@ -324,6 +323,9 @@ async def send_message_stream(
     await db.flush()
 
     domain_id = await _domain_id_for_chat(chat, db) or chat.domain_id
+
+    # ensure_loaded: кэш может быть пустым после старта сервиса
+    await config_for_vault.ensure_loaded(db)
     vault_ids: list[str] = [
         v.vault_id for v in config_for_vault.vaults.values()
         if v.domain_id == domain_id and v.enabled
@@ -379,8 +381,6 @@ async def send_message_stream(
 
             system_prompt = await _resolve_system_prompt(context.campaign_id, domain_id, db)
 
-            # RAG: если выбрана кампания — ищем только в её скоупе (теги кампании + глобальные теги домена).
-            # Если кампании нет — ищем по всему домену (без фильтра по document_ids).
             hits: list[SearchHit] = await _fallback_retrieve(
                 query=req.content,
                 vault_ids=vault_ids,
@@ -405,7 +405,6 @@ async def send_message_stream(
                 chunk = json.dumps({"type": "token", "content": token}, ensure_ascii=False)
                 yield f"data: {chunk}\n\n"
 
-            # Сохраняем сообщение и отправляем источники
             if full_answer:
                 assistant_msg = Message(chat_id=chat.id, role="assistant", content=full_answer)
                 db.add(assistant_msg)
@@ -551,7 +550,9 @@ async def _fallback_retrieve(
         return []
 
     top_k: int = int(await settings_service.get("retrieval.top_k", db))
-    config = config_for_vault.config
+
+    # AppConfig берём через settings_service, а не через config_for_vault (который не хранит AppConfig)
+    config = settings_service.get_app_config()
 
     document_ids: list[str] | None = None  # None = весь домен, без фильтра
 
@@ -565,14 +566,12 @@ async def _fallback_retrieve(
                 "Fallback RAG campaign scope: campaign_id=%s allowed_tags=%d document_ids=%d",
                 campaign_id, len(allowed_tag_ids), len(document_ids),
             )
-            # Если теги есть, но документов нет — не расширяемся на весь домен
             if document_ids == []:
                 logger.info(
                     "Fallback RAG: no indexed documents for campaign tags, returning empty"
                 )
                 return []
         else:
-            # Нет тегов в кампании — ищем по всему домену (document_ids=None)
             logger.info(
                 "Fallback RAG: campaign has no tags, searching full domain domain_id=%s",
                 domain_id,
