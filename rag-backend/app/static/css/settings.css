@@ -372,6 +372,176 @@
 }
 
 /* ============================================================
+   Document status badge (inline in table cells)
+   ============================================================ */
+
+.doc-status-badge {
+    display: inline-block;
+    border-radius: 4px;
+    padding: 2px 8px;
+    font-size: 12px;
+    font-weight: 600;
+    white-space: nowrap;
+    letter-spacing: 0.01em;
+}
+
+/* ============================================================
+   Indexer progress panel
+   ============================================================ */
+
+.docs-index-progress-panel {
+    margin-bottom: 14px;
+    animation: idx-fadein 0.2s ease;
+}
+
+@keyframes idx-fadein {
+    from { opacity: 0; transform: translateY(-4px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+
+.idx-panel-inner {
+    background: #fff;
+    border: 1px solid #dfe6ee;
+    border-radius: 8px;
+    padding: 12px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+/* Global header row */
+.idx-global-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.idx-status-label {
+    font-size: 13px;
+    font-weight: 600;
+    color: #2c3e50;
+    flex-shrink: 0;
+}
+
+.idx-global-count {
+    font-size: 12px;
+    color: #657789;
+    flex-shrink: 0;
+}
+
+.idx-pct {
+    font-size: 13px;
+    font-weight: 700;
+    color: #01696f;
+    margin-left: auto;
+    flex-shrink: 0;
+}
+
+.idx-cancel-btn {
+    font-size: 12px !important;
+    padding: 2px 10px !important;
+    height: 26px !important;
+    line-height: 22px !important;
+    flex-shrink: 0;
+    color: #e74c3c !important;
+    border-color: #f5c6cb !important;
+    background: #fff5f5 !important;
+}
+.idx-cancel-btn:hover {
+    background: #fdecea !important;
+    border-color: #e74c3c !important;
+}
+
+/* Global progress bar */
+.idx-global-bar-wrap {
+    width: 100%;
+    height: 8px;
+    background: #e9eef4;
+    border-radius: 999px;
+    overflow: hidden;
+}
+
+/* Per-file progress bar */
+.idx-file-bar-wrap {
+    width: 100%;
+    height: 4px;
+    background: #eef2f6;
+    border-radius: 999px;
+    overflow: hidden;
+    margin-top: 4px;
+}
+
+/* Bar fill — shared */
+.idx-bar {
+    height: 100%;
+    background: #01696f;
+    border-radius: 999px;
+    transition: width 0.3s ease;
+    min-width: 0;
+}
+
+/* Animated shimmer for active bars */
+@keyframes idx-shimmer {
+    0%   { background-position: -200% center; }
+    100% { background-position: 200% center; }
+}
+
+.idx-bar-anim {
+    background: linear-gradient(
+        90deg,
+        #01696f 0%,
+        #4f98a3 40%,
+        #01696f 60%,
+        #01696f 100%
+    );
+    background-size: 200% 100%;
+    animation: idx-shimmer 1.8s linear infinite;
+}
+
+/* Files list */
+.idx-files-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 260px;
+    overflow-y: auto;
+    padding-right: 2px;
+}
+
+.idx-file-row {
+    background: #f8fafc;
+    border: 1px solid #edf1f5;
+    border-radius: 6px;
+    padding: 6px 10px;
+}
+
+.idx-file-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.idx-file-name {
+    font-size: 12px;
+    color: #2c3e50;
+    font-weight: 500;
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.idx-file-chunks {
+    font-size: 11px;
+    color: #8a99a8;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+/* ============================================================
    Document modal
    ============================================================ */
 
