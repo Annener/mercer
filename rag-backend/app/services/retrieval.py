@@ -143,7 +143,6 @@ async def retrieve(
         embedding_model = await _resolve_embedding_model(
             config=config, db=db, direct=_embedding_model
         )
-        # [DIAG] Какую модель используем для эмбеддинга
         logger.info(
             "RETRIEVE embedding_model=%s provider=%s base_url=%s dimensions=%d",
             embedding_model.model_id,
@@ -174,7 +173,6 @@ async def retrieve(
         search_response = SearchResponse.model_validate(response.json())
 
         raw_hits = search_response.results
-        # [DIAG] Сколько хитов вернул LanceDB ДО питоновской постфильтрации
         logger.info(
             "RETRIEVE raw_hits=%d filter_expr=%s sample_doc_ids=%s",
             len(raw_hits),
@@ -190,7 +188,6 @@ async def retrieve(
                 if h.document_id in doc_set
                 or (h.metadata or {}).get("document_id") in doc_set
             ]
-            # [DIAG] Сколько осталось после постфильтрации
             if len(results) != len(raw_hits):
                 logger.info(
                     "RETRIEVE post-filter: raw=%d → filtered=%d (doc_set sample=%s)",
@@ -226,11 +223,11 @@ async def retrieve_multi_vault(
 ) -> list[SearchHit]:
     """Ищет во всех указанных vault'ах, объединяет результаты, сортирует по score, возвращает top_k.
 
-    config=None + db → embedding-модель берётся из БД через settings_service (фаллбэк-путь).
+    Если vault'ы используют разные embedding-модели (напр. разные dimensions),
+    каждый vault решается отдельно.
     """
     if not vault_ids:
         return []
-    # Инвариант: пустой document_ids = нет документов → не запускать retrieve
     if isinstance(document_ids, list) and len(document_ids) == 0:
         return []
     logger.info(
@@ -239,18 +236,22 @@ async def retrieve_multi_vault(
     )
     effective_top_k = top_k or await _default_top_k()
 
-    # Раз решаем embedding-модель здесь, чтобы не делать N запросов к БД на каждый vault
-    embedding_model: EmbeddingModelConfig | None = None
-    if config is not None:
-        embedding_model = _select_embedding_model(config)
-    elif db is not None:
-        embedding_model = await settings_service.get_active_embedding_config(db)
-
-    if embedding_model is None:
-        raise ValueError("Embedding configuration is not available.")
-
     all_hits: list[SearchHit] = []
     for vault_id in vault_ids:
+        # Каждый vault может быть индексирован своей моделью —
+        # решаем embedding по vault_id через Vault.embedding_model_id
+        embedding_model: EmbeddingModelConfig | None = None
+        if config is not None:
+            embedding_model = _select_embedding_model(config)
+        elif db is not None:
+            embedding_model = await settings_service.get_active_embedding_config(
+                db, vault_id=vault_id
+            )
+
+        if embedding_model is None:
+            logger.warning("RETRIEVE_MULTI no embedding model for vault=%s, skipping", vault_id)
+            continue
+
         hits = await retrieve(
             query,
             vault_id,
@@ -260,6 +261,7 @@ async def retrieve_multi_vault(
             _embedding_model=embedding_model,
         )
         all_hits.extend(hits)
+
     all_hits.sort(key=lambda h: h.score, reverse=True)
     result = all_hits[:effective_top_k]
     logger.info(
@@ -333,7 +335,7 @@ async def _resolve_embedding_model(
     """Returns the active EmbeddingModelConfig.
 
     Priority:
-      1. direct           — прямая передача из retrieve_multi_vault (1 запрос на все vaultы)
+      1. direct           — прямая передача из retrieve_multi_vault (vault уже решил)
       2. config (AppConfig)— pipeline-путь
       3. db               — fallback: берёт из БД через settings_service
     """
