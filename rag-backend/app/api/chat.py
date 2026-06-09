@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import Campaign, Chat, ClarificationStateRow, Message
 from app.db.session import get_db
 from app.services import settings_service
+from app.services.domain_service import domain_service
 from app.services.pipeline_executor import PipelineExecutor
 from app.services.pipeline_router import PipelineRouter
 from app.services.vault_config_service import VaultConfigService
@@ -244,19 +245,6 @@ async def send_message(
         retrieval_strategy=retrieval_strategy,
     )
 
-    pipeline_router = PipelineRouter(db)
-    pipeline = await pipeline_router.select(
-        context,
-        locked_pipeline_id=chat.locked_pipeline_id,
-    )
-    if pipeline is None:
-        raise HTTPException(503, "No active pipeline found for this domain")
-
-    context.pipeline_id = pipeline.pipeline_id
-    context.pipeline_version = pipeline.version
-    context.steps = pipeline.steps
-    context.final_composition = pipeline.final_composition
-
     history_stmt = select(Message).where(Message.chat_id == chat.id).order_by(Message.created_at).limit(20)
     history_result = await db.execute(history_stmt)
     context.history = [
@@ -269,6 +257,31 @@ async def send_message(
         )
         for m in history_result.scalars().all()
     ]
+
+    pipeline_router = PipelineRouter(db)
+    pipeline = await pipeline_router.select(
+        context,
+        locked_pipeline_id=chat.locked_pipeline_id,
+    )
+
+    if pipeline is None:
+        # Fallback: нет активных пайплайнов — прямой диалог с LLM
+        logger.info(
+            "No pipeline found for domain_id=%s — falling back to plain LLM chat", domain_id
+        )
+        answer = await _plain_llm_reply(req.content, context, domain_id, db)
+        assistant_msg = Message(chat_id=chat.id, role="assistant", content=answer)
+        db.add(assistant_msg)
+        await db.commit()
+        if chat.title == "New Chat":
+            chat.title = _auto_title(req.content)
+            await db.commit()
+        return MessageResponse(content=answer, message_id=str(assistant_msg.id))
+
+    context.pipeline_id = pipeline.pipeline_id
+    context.pipeline_version = pipeline.version
+    context.steps = pipeline.steps
+    context.final_composition = pipeline.final_composition
 
     executor = PipelineExecutor(db)
     result = await executor.run(context)
@@ -330,19 +343,6 @@ async def send_message_stream(
         retrieval_strategy=retrieval_strategy,
     )
 
-    pipeline_router = PipelineRouter(db)
-    pipeline = await pipeline_router.select(
-        context,
-        locked_pipeline_id=chat.locked_pipeline_id,
-    )
-    if pipeline is None:
-        raise HTTPException(503, "No active pipeline found for this domain")
-
-    context.pipeline_id = pipeline.pipeline_id
-    context.pipeline_version = pipeline.version
-    context.steps = pipeline.steps
-    context.final_composition = pipeline.final_composition
-
     history_stmt = select(Message).where(Message.chat_id == chat.id).order_by(Message.created_at).limit(20)
     history_result = await db.execute(history_stmt)
     context.history = [
@@ -355,6 +355,57 @@ async def send_message_stream(
         )
         for m in history_result.scalars().all()
     ]
+
+    pipeline_router = PipelineRouter(db)
+    pipeline = await pipeline_router.select(
+        context,
+        locked_pipeline_id=chat.locked_pipeline_id,
+    )
+
+    if pipeline is None:
+        # Fallback: нет активных пайплайнов — прямой стриминг от LLM
+        logger.info(
+            "No pipeline found for domain_id=%s — falling back to plain LLM stream", domain_id
+        )
+
+        async def plain_stream() -> AsyncIterator[str]:
+            provider = settings_service.get_active_provider()
+            if provider is None:
+                error_data = json.dumps({"type": "error", "message": "No LLM provider configured"}, ensure_ascii=False)
+                yield f"data: {error_data}\n\n"
+                yield "data: [DONE]\n\n"
+                return
+
+            system_prompt = await domain_service.get_prompt(domain_id or "default", "system", db)
+            messages: list[dict[str, str]] = []
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
+            for m in (context.history or []):
+                messages.append({"role": m.role, "content": m.content})
+            messages.append({"role": "user", "content": req.content})
+
+            full_answer = ""
+            async for token in provider.generate_stream(messages):
+                full_answer += token
+                chunk = json.dumps({"type": "token", "content": token}, ensure_ascii=False)
+                yield f"data: {chunk}\n\n"
+
+            if full_answer:
+                assistant_msg = Message(chat_id=chat.id, role="assistant", content=full_answer)
+                db.add(assistant_msg)
+                await db.commit()
+                if chat.title == "New Chat":
+                    chat.title = _auto_title(req.content)
+                    await db.commit()
+
+            yield "data: [DONE]\n\n"
+
+        return StreamingResponse(plain_stream(), media_type="text/event-stream")
+
+    context.pipeline_id = pipeline.pipeline_id
+    context.pipeline_version = pipeline.version
+    context.steps = pipeline.steps
+    context.final_composition = pipeline.final_composition
 
     async def event_stream() -> AsyncIterator[str]:
         executor = PipelineExecutor(db)
@@ -427,6 +478,28 @@ async def _domain_id_for_chat(chat: Chat, db: AsyncSession) -> str | None:
         if campaign is not None and campaign.domain_id:
             return campaign.domain_id
     return None
+
+
+async def _plain_llm_reply(
+    query: str,
+    context: PipelineExecutionContext,
+    domain_id: str | None,
+    db: AsyncSession,
+) -> str:
+    """Direct LLM reply without any pipeline (fallback when no pipelines are configured)."""
+    provider = settings_service.get_active_provider()
+    if provider is None:
+        raise HTTPException(503, "No LLM provider configured")
+
+    system_prompt = await domain_service.get_prompt(domain_id or "default", "system", db)
+    messages: list[dict[str, str]] = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    for m in (context.history or []):
+        messages.append({"role": m.role, "content": m.content})
+    messages.append({"role": "user", "content": query})
+
+    return await provider.generate(messages)
 
 
 async def _audit(
