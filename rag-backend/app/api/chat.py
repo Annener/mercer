@@ -551,8 +551,9 @@ async def _fallback_retrieve(
 
     top_k: int = int(await settings_service.get("retrieval.top_k", db))
 
-    # AppConfig берём через settings_service, а не через config_for_vault (который не хранит AppConfig)
-    config = settings_service.get_app_config()
+    # AppConfig не хранится в settings_service — retrieve_multi_vault принимает
+    # config=None и корректно подгружает эмбеддинг-модель из БД самостоятельно.
+    config = None
 
     document_ids: list[str] | None = None  # None = весь домен, без фильтра
 
