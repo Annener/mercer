@@ -143,6 +143,14 @@ async def retrieve(
         embedding_model = await _resolve_embedding_model(
             config=config, db=db, direct=_embedding_model
         )
+        # [DIAG] Какую модель используем для эмбеддинга
+        logger.info(
+            "RETRIEVE embedding_model=%s provider=%s base_url=%s dimensions=%d",
+            embedding_model.model_id,
+            embedding_model.provider,
+            embedding_model.base_url,
+            embedding_model.dimensions,
+        )
         vector = await _embed_query(query, embedding_model)
 
         filter_expr: dict[str, Any] | None = None
@@ -165,7 +173,16 @@ async def retrieve(
             response.raise_for_status()
         search_response = SearchResponse.model_validate(response.json())
 
-        results = search_response.results
+        raw_hits = search_response.results
+        # [DIAG] Сколько хитов вернул LanceDB ДО питоновской постфильтрации
+        logger.info(
+            "RETRIEVE raw_hits=%d filter_expr=%s sample_doc_ids=%s",
+            len(raw_hits),
+            filter_expr,
+            [h.document_id for h in raw_hits[:3]],
+        )
+
+        results = raw_hits
         if document_ids is not None:
             doc_set = set(document_ids)
             results = [
@@ -173,6 +190,12 @@ async def retrieve(
                 if h.document_id in doc_set
                 or (h.metadata or {}).get("document_id") in doc_set
             ]
+            # [DIAG] Сколько осталось после постфильтрации
+            if len(results) != len(raw_hits):
+                logger.info(
+                    "RETRIEVE post-filter: raw=%d → filtered=%d (doc_set sample=%s)",
+                    len(raw_hits), len(results), list(doc_set)[:3],
+                )
         results = results[:effective_top_k]
 
         logger.info(
