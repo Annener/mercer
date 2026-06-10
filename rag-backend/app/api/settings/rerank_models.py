@@ -4,7 +4,7 @@ import time
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import RerankModel
@@ -76,7 +76,8 @@ async def deactivate_rerank_model(model_id: str, db: AsyncSession = Depends(get_
     model.is_active = False
     await db.commit()
     await db.refresh(model)
-    return await settings_service.get_rerank_model(model_id, db)
+    # _rerank_model_dict converts the ORM object to the expected dict shape
+    return settings_service._rerank_model_dict(model)
 
 
 @router.post("/models/rerank/{model_id:path}/check")
