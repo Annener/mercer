@@ -238,15 +238,37 @@ class SidebarManager {
         if (chatItem) chatItem.classList.add('active');
         if (window.chatManager) {
             await window.chatManager.loadChat(chatId);
-            // После загрузки чата — применяем блокировку селектора кампании
-            // на основе campaign_id из загруженного чата
+            // Блокируем селектор кампании только если в чате есть сообщения И есть campaign_id.
+            // Пустой чат (нет сообщений) — селектор остаётся разблокированным,
+            // даже если у чата уже прописан campaign_id.
             const chat = window.chatManager.currentChat;
-            if (chat && chat.campaign_id) {
+            const hasMessages = this._chatHasMessages();
+            if (chat && chat.campaign_id && hasMessages) {
                 this.lockCampaignToChat(String(chat.campaign_id));
             } else {
+                // Пустой чат или нет кампании — показываем кампанию из чата (если есть),
+                // но не блокируем: пользователь ещё может её поменять.
+                if (chat && chat.campaign_id) {
+                    const select = this.campaignSelect;
+                    if (select && select.querySelector(`option[value="${chat.campaign_id}"]`)) {
+                        select.value = String(chat.campaign_id);
+                        this.currentCampaignId = String(chat.campaign_id);
+                    }
+                }
                 this.unlockCampaign();
             }
         }
+    }
+
+    /**
+     * Возвращает true если в текущем чате есть хотя бы одно сообщение.
+     * Считает по DOM: любой .message в контейнере сообщений.
+     */
+    _chatHasMessages() {
+        if (!window.chatManager) return false;
+        const container = window.chatManager.messagesContainer;
+        if (!container) return false;
+        return container.querySelectorAll('.message').length > 0;
     }
 
     async createChatForCurrentDomain() {
@@ -261,10 +283,10 @@ class SidebarManager {
                 this.currentCampaignId || null
             );
             await this.loadChats();
-            // Новый чат без сообщений — разблокируем селектор
-            // (блокировка произойдёт после первого ответа через lockCampaignToChat)
-            this.unlockCampaign();
             await this.selectChat(response.chat_id);
+            // Новый чат всегда без сообщений — принудительно снимаем блокировку
+            // (selectChat мог заблокировать если у чата уже проставлен campaign_id на бэкенде)
+            this.unlockCampaign();
         } catch (error) {
             console.error('Failed to create chat:', error);
             alert('Не удалось создать беседу');
@@ -320,7 +342,7 @@ class SidebarManager {
 
     /**
      * Блокирует селектор кампании, отображая кампанию привязанную к текущему чату.
-     * Вызывается при открытии чата у которого есть campaign_id,
+     * Вызывается при открытии чата у которого есть campaign_id И есть сообщения,
      * а также после первого ответа в новом чате с кампанией.
      */
     lockCampaignToChat(campaignId) {
@@ -335,7 +357,8 @@ class SidebarManager {
 
     /**
      * Снимает блокировку селектора кампании.
-     * Вызывается при создании нового чата или смене домена.
+     * Вызывается при создании нового чата, смене домена,
+     * а также при открытии пустого чата (без сообщений).
      */
     unlockCampaign() {
         this.applyLockStyle(false);
