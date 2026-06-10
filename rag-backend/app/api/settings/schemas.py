@@ -124,3 +124,22 @@ class PipelineUpdateRequest(BaseModel):
     steps: list[dict[str, Any]] | None = None
     final_composition: dict[str, Any] | None = None
     is_active: bool | None = None
+
+
+class RerankModelCreateRequest(BaseModel):
+    model_id: str = Field(min_length=1, max_length=128)
+    provider: str = "openai_compatible"
+    display_name: str | None = None
+    base_url: str
+    api_key: str | None = None
+    timeout_seconds: int = 30
+    enabled: bool = True
+
+
+class RerankModelUpdateRequest(BaseModel):
+    provider: str | None = None
+    display_name: str | None = None
+    base_url: str | None = None
+    api_key: str | None = None
+    timeout_seconds: int | None = None
+    enabled: bool | None = None
