@@ -1,158 +1,490 @@
-/* =============================================
-   Settings page styles
-   ============================================= */
-
-/* ─── Layout ─────────────────────────────────────────────────────────────── */
-
+/* === Settings Page === */
 .settings-page {
     display: flex;
     flex-direction: column;
-    height: 100%;
-    overflow: hidden;
+    height: 100vh;
+    background: #f5f7fa;
+    color: #2c3e50;
+    padding: 28px;
+    overflow-y: auto;
 }
 
-.settings-tabs {
+.settings-header {
     display: flex;
-    gap: 2px;
-    border-bottom: 1px solid #ddd;
-    padding: 0 16px;
-    background: #fff;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 18px;
     flex-shrink: 0;
 }
 
-.settings-tab-btn {
-    padding: 10px 16px;
-    font-size: 14px;
-    font-weight: 500;
-    color: #7f8c8d;
-    border-bottom: 2px solid transparent;
-    background: none;
-    border-top: none;
-    border-left: none;
-    border-right: none;
+.settings-header h2 {
+    font-size: 24px;
+    font-weight: 650;
+}
+
+/* === Tabs === */
+.settings-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    border-bottom: 1px solid #d9e1ea;
+    margin-bottom: 18px;
+}
+
+.settings-tabs button {
+    border: 0;
+    background: transparent;
+    color: #526579;
+    padding: 10px 12px;
     cursor: pointer;
+    border-bottom: 2px solid transparent;
+    font: inherit;
+    font-size: 14px;
     transition: color 0.18s, border-color 0.18s;
-    white-space: nowrap;
 }
 
-.settings-tab-btn:hover {
+.settings-tabs button:hover,
+.settings-tabs button:focus {
+    color: #1f6fa8;
+    outline: none;
+}
+
+.settings-tabs button.active {
     color: #2c3e50;
-}
-
-.settings-tab-btn.active {
-    color: #3498db;
     border-bottom-color: #3498db;
 }
 
-.settings-tab-content {
+/* === Content & layout === */
+.settings-content {
+    max-width: 1180px;
     flex: 1;
-    overflow: auto;
+    min-height: 0;
+}
+
+.settings-toolbar {
+    margin-bottom: 14px;
+}
+
+.settings-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 12px;
+}
+
+/* === Settings cards === */
+.settings-card {
+    background: #fff;
+    border: 1px solid #dfe6ee;
+    border-radius: 6px;
+    padding: 14px;
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    min-height: 82px;
+}
+
+.settings-card h3 {
+    font-size: 15px;
+    margin-bottom: 4px;
+}
+
+.settings-card p {
+    color: #6b7d8f;
+    font-size: 13px;
+}
+
+.settings-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 10px;
+}
+
+.world-card {
+    min-height: 116px;
+}
+
+/* === Param list === */
+.settings-param-list {
+    display: grid;
+    gap: 8px;
+    max-width: 760px;
+}
+
+.settings-param-row {
+    display: grid;
+    grid-template-columns: minmax(220px, 1fr) minmax(180px, 260px) auto;
+    align-items: center;
+    gap: 12px;
+    background: #fff;
+    border: 1px solid #dfe6ee;
+    border-radius: 6px;
+    padding: 10px 12px;
+}
+
+.settings-param-row input {
+    border: 1px solid #d4dde7;
+    border-radius: 5px;
+    padding: 7px 9px;
+    font: inherit;
+    font-size: 14px;
+}
+
+.settings-note {
+    color: #657789;
+    margin-bottom: 14px;
+    font-size: 13px;
+}
+
+/* === JSON editor === */
+.json-editor {
+    width: 100%;
+    min-height: 220px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 13px;
+    padding: 10px;
+    border: 1px solid #d4dde7;
+    border-radius: 5px;
+    resize: vertical;
+}
+
+/* === Badges === */
+.badge {
+    align-self: flex-start;
+    border-radius: 999px;
+    padding: 3px 8px;
+    font-size: 12px;
+    white-space: nowrap;
+}
+
+.badge.ok {
+    background: #e6f5ee;
+    color: #206a43;
+}
+
+.badge.muted {
+    background: #eef2f6;
+    color: #657789;
+}
+
+/* === Pipeline card dropdown menu === */
+.card-menu-container {
+    position: relative;
+    display: inline-block;
+}
+
+.card-menu-btn {
+    background: none;
+    border: none;
+    padding: 4px 8px;
+    cursor: pointer;
+    font-size: 18px;
+    color: #526579;
+    border-radius: 4px;
+    line-height: 1;
+}
+
+.card-menu-btn:hover {
+    background: #eef2f6;
+}
+
+.card-menu-dropdown {
+    position: absolute;
+    right: 0;
+    top: 100%;
+    background: #fff;
+    border: 1px solid #dfe6ee;
+    border-radius: 6px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+    z-index: 100;
+    min-width: 140px;
+    padding: 4px 0;
+}
+
+.card-menu-dropdown button {
+    display: block;
+    width: 100%;
+    padding: 8px 14px;
+    background: none;
+    border: none;
+    text-align: left;
+    cursor: pointer;
+    font-size: 13px;
+    color: #2c3e50;
+    transition: background 0.12s;
+}
+
+.card-menu-dropdown button:hover {
+    background: #f5f7fa;
+}
+
+.card-menu-dropdown button.danger {
+    color: #e74c3c;
+}
+
+/* === Domains tab === */
+.domain-list {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin-bottom: 24px;
+}
+
+.domain-card {
+    background: #fff;
+    border: 1px solid #dfe6ee;
+    border-radius: 8px;
     padding: 16px;
 }
 
-/* ─── Section ────────────────────────────────────────────────────────────── */
-
-.settings-section {
-    max-width: 860px;
+.domain-card-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 12px;
 }
 
-.settings-section-title {
+.domain-card-title {
+    font-weight: 600;
+    font-size: 15px;
+    flex: 1;
+}
+
+.domain-card-body {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.domain-field-row {
+    display: grid;
+    grid-template-columns: 120px 1fr;
+    align-items: center;
+    gap: 12px;
+}
+
+.domain-field-label {
+    font-size: 12px;
+    color: #7f8c8d;
+    font-weight: 500;
+}
+
+.domain-card-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 12px;
+    justify-content: flex-end;
+}
+
+.domain-add-form {
+    background: #fff;
+    border: 1px dashed #dfe6ee;
+    border-radius: 8px;
+    padding: 16px;
+}
+
+/* === Models tab === */
+.model-list {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin-bottom: 24px;
+}
+
+.model-card {
+    background: #fff;
+    border: 1px solid #dfe6ee;
+    border-radius: 8px;
+    padding: 16px;
+}
+
+.model-card.active-model {
+    border-color: #27ae60;
+    box-shadow: 0 0 0 2px #e6f5ee;
+}
+
+.model-card-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 12px;
+}
+
+.model-card-title {
+    font-weight: 600;
+    font-size: 15px;
+    flex: 1;
+}
+
+.model-card-body {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.model-field-row {
+    display: grid;
+    grid-template-columns: 140px 1fr;
+    align-items: center;
+    gap: 12px;
+}
+
+.model-field-label {
+    font-size: 12px;
+    color: #7f8c8d;
+    font-weight: 500;
+}
+
+.model-card-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 12px;
+    justify-content: flex-end;
+}
+
+.model-add-form {
+    background: #fff;
+    border: 1px dashed #dfe6ee;
+    border-radius: 8px;
+    padding: 16px;
+}
+
+.model-add-form-title {
     font-size: 14px;
     font-weight: 600;
+    margin-bottom: 12px;
     color: #2c3e50;
-    margin-bottom: 16px;
-    padding-bottom: 8px;
-    border-bottom: 1px solid #ddd;
 }
 
-.settings-row {
+.model-add-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 12px;
+    margin-bottom: 12px;
+}
+
+.model-add-row {
     display: flex;
     flex-direction: column;
     gap: 4px;
-    margin-bottom: 16px;
 }
 
-.settings-label {
-    font-size: 13px;
-    font-weight: 500;
-    color: #7f8c8d;
-}
-
-.settings-hint {
+.model-add-label {
     font-size: 12px;
-    color: #95a5a6;
-    margin-top: 4px;
+    color: #7f8c8d;
+    font-weight: 500;
 }
 
-/* ─── Input (settings-specific, not in base.css) ─────────────────────────── */
+/* === Campaigns tab === */
+.campaigns-layout {
+    display: grid;
+    grid-template-columns: 280px 1fr;
+    gap: 24px;
+    height: 100%;
+    min-height: 0;
+}
 
-.input-field {
-    padding: 8px 12px;
-    border: 1px solid #ddd;
-    border-radius: 6px;
+.campaigns-list-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    overflow-y: auto;
+}
+
+.campaign-item {
     background: #fff;
-    color: #333;
-    font-size: 14px;
-    transition: border-color 0.18s;
-    width: 100%;
+    border: 1px solid #dfe6ee;
+    border-radius: 6px;
+    padding: 10px 12px;
+    cursor: pointer;
+    transition: border-color 0.15s, box-shadow 0.15s;
+    display: flex;
+    align-items: center;
+    gap: 8px;
 }
 
-.input-field:focus {
-    outline: none;
+.campaign-item:hover {
     border-color: #3498db;
-    box-shadow: 0 0 0 3px rgba(52, 152, 219, 0.15);
 }
 
-.input-field::placeholder {
-    color: #bdc3c7;
+.campaign-item.active {
+    border-color: #3498db;
+    box-shadow: 0 0 0 2px rgba(52, 152, 219, 0.15);
+    background: #f0f7ff;
 }
 
-/* ─── Data table (settings-specific, not in base.css) ───────────────────── */
-
-.data-table {
-    width: 100%;
-    border-collapse: collapse;
+.campaign-item-name {
     font-size: 14px;
-}
-
-.data-table thead tr {
-    border-bottom: 1px solid #ddd;
-}
-
-.data-table th {
-    text-align: left;
-    padding: 8px 12px;
-    font-weight: 600;
-    color: #7f8c8d;
-    font-size: 12px;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    white-space: nowrap;
-}
-
-.data-table td {
-    padding: 8px 12px;
-    border-bottom: 1px solid #ecf0f1;
-    vertical-align: middle;
-}
-
-.data-table tbody tr:hover {
-    background: #f8f9fa;
-}
-
-.data-table tbody tr:last-child td {
-    border-bottom: none;
-}
-
-/* ─── Doc status badge ───────────────────────────────────────────────────── */
-
-.doc-status-badge {
-    display: inline-block;
-    padding: 2px 8px;
-    border-radius: 12px;
-    font-size: 12px;
     font-weight: 500;
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
     white-space: nowrap;
+}
+
+.campaign-detail-panel {
+    overflow-y: auto;
+}
+
+/* === Vaults tab === */
+.vaults-list {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin-bottom: 24px;
+}
+
+.vault-card {
+    background: #fff;
+    border: 1px solid #dfe6ee;
+    border-radius: 8px;
+    padding: 16px;
+}
+
+.vault-card-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 12px;
+}
+
+.vault-card-title {
+    font-weight: 600;
+    flex: 1;
+}
+
+.vault-card-body {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.vault-field-row {
+    display: grid;
+    grid-template-columns: 120px 1fr;
+    align-items: center;
+    gap: 12px;
+}
+
+.vault-field-label {
+    font-size: 12px;
+    color: #7f8c8d;
+    font-weight: 500;
+}
+
+.vault-card-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 12px;
+    justify-content: flex-end;
+}
+
+.vault-add-form {
+    background: #fff;
+    border: 1px dashed #dfe6ee;
+    border-radius: 8px;
+    padding: 16px;
 }
 
 /* ===================================================== */
@@ -204,7 +536,7 @@
     width: 440px;
     flex-shrink: 0;
     background: #fff;
-    border: 1px solid #ddd;
+    border: 1px solid #dfe6ee;
     border-radius: 8px;
     padding: 16px;
     display: flex;
@@ -215,7 +547,7 @@
 .docs-tags-panel-header {
     font-size: 13px;
     font-weight: 600;
-    color: #7f8c8d;
+    color: #526579;
 }
 
 .docs-tags-panel-list {
@@ -227,7 +559,7 @@
 }
 
 .docs-tags-empty {
-    color: #bdc3c7;
+    color: #95a5a6;
     font-size: 12px;
 }
 
@@ -238,7 +570,7 @@
 }
 
 .docs-tags-panel-create {
-    border-top: 1px solid #ecf0f1;
+    border-top: 1px solid #dfe6ee;
     padding-top: 12px;
 }
 
@@ -256,7 +588,7 @@
 .docs-tag-color-input {
     width: 32px;
     height: 32px;
-    border: 1px solid #ddd;
+    border: 1px solid #d4dde7;
     border-radius: 4px;
     padding: 2px;
     cursor: pointer;
@@ -272,7 +604,7 @@
 
 .docs-index-progress-panel {
     margin-bottom: 16px;
-    border: 1px solid #ddd;
+    border: 1px solid #dfe6ee;
     border-radius: 8px;
     overflow: hidden;
 }
@@ -295,12 +627,12 @@
 
 .idx-global-count {
     font-size: 12px;
-    color: #7f8c8d;
+    color: #657789;
 }
 
 .idx-pct {
     font-size: 12px;
-    color: #7f8c8d;
+    color: #657789;
     margin-left: auto;
 }
 
@@ -310,7 +642,7 @@
 
 .idx-global-bar-wrap {
     height: 6px;
-    background: #ecf0f1;
+    background: #eef2f6;
     border-radius: 99px;
     overflow: hidden;
     margin-bottom: 12px;
@@ -341,7 +673,7 @@
     max-height: 260px;
     overflow-y: auto;
     padding-top: 8px;
-    border-top: 1px solid #ecf0f1;
+    border-top: 1px solid #dfe6ee;
 }
 
 .idx-file-row {
@@ -367,13 +699,13 @@
 
 .idx-file-chunks {
     font-size: 12px;
-    color: #bdc3c7;
+    color: #95a5a6;
     white-space: nowrap;
 }
 
 .idx-file-bar-wrap {
     height: 3px;
-    background: #ecf0f1;
+    background: #eef2f6;
     border-radius: 99px;
     overflow: hidden;
 }
@@ -390,7 +722,7 @@
 .docs-modal-backdrop {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.5);
+    background: rgba(0,0,0,0.45);
     z-index: 1000;
     display: flex;
     align-items: center;
@@ -400,14 +732,14 @@
 
 .docs-modal {
     background: #fff;
-    border: 1px solid #ddd;
-    border-radius: 12px;
+    border: 1px solid #dfe6ee;
+    border-radius: 10px;
     width: 100%;
-    max-width: 680px;
-    max-height: 85vh;
+    max-width: 640px;
+    max-height: 80vh;
     display: flex;
     flex-direction: column;
-    box-shadow: 0 12px 32px rgba(0,0,0,0.12);
+    box-shadow: 0 8px 28px rgba(0,0,0,0.13);
     overflow: hidden;
 }
 
@@ -415,8 +747,8 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 16px 20px;
-    border-bottom: 1px solid #ddd;
+    padding: 14px 18px;
+    border-bottom: 1px solid #e4eaf0;
     flex-shrink: 0;
 }
 
@@ -428,7 +760,7 @@
 }
 
 .docs-modal-filename {
-    font-size: 15px;
+    font-size: 14px;
     font-weight: 600;
     color: #2c3e50;
     overflow: hidden;
@@ -447,277 +779,133 @@
     border: none;
     cursor: pointer;
 }
-
-.docs-modal-close:hover {
-    color: #2c3e50;
-    background: #f5f5f5;
-}
+.docs-modal-close:hover { background: #f0f0f0; color: #2c3e50; }
 
 .docs-modal-body {
     display: flex;
-    gap: 20px;
-    padding: 20px;
-    overflow-y: auto;
+    gap: 0;
     flex: 1;
+    overflow: hidden;
 }
 
 .docs-modal-left {
-    flex: 1;
-    min-width: 0;
+    width: 280px;
+    flex-shrink: 0;
+    padding: 16px 18px;
+    border-right: 1px solid #e4eaf0;
+    overflow-y: auto;
+    background: #fafbfc;
 }
 
 .docs-modal-right {
-    width: 240px;
-    flex-shrink: 0;
+    flex: 1;
+    padding: 16px 18px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
 }
 
 .docs-modal-section-title {
-    font-size: 12px;
-    font-weight: 600;
+    font-size: 11px;
+    font-weight: 700;
     text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: #7f8c8d;
-    margin-bottom: 12px;
+    letter-spacing: 0.07em;
+    color: #8a99a8;
+    margin-bottom: 10px;
 }
 
+/* Метаданные */
 .docs-modal-meta {
     width: 100%;
     border-collapse: collapse;
+    font-size: 13px;
 }
 
-.docs-modal-meta td {
-    padding: 4px 8px 4px 0;
-    vertical-align: top;
-    font-size: 12px;
+.docs-modal-meta tr + tr td {
+    border-top: 1px solid #edf1f5;
 }
 
 .docs-modal-meta-key {
-    color: #7f8c8d;
+    color: #7a8d9d;
+    padding: 5px 8px 5px 0;
     white-space: nowrap;
-    padding-right: 12px !important;
-    font-weight: 500;
+    vertical-align: top;
+    width: 80px;
 }
 
 .docs-modal-meta-val {
-    color: #333;
+    color: #2c3e50;
+    padding: 5px 0;
     word-break: break-all;
 }
 
+/* Теги в модале */
 .docs-modal-tag-badges {
     display: flex;
     flex-wrap: wrap;
-    gap: 4px;
-    margin-bottom: 8px;
+    gap: 6px;
+    flex: 1;
+    align-content: flex-start;
 }
 
 .docs-modal-save-btn {
-    width: 100%;
+    flex-shrink: 0;
 }
 
 /* ===================================================== */
-/* Vaults tab                                            */
-/* ===================================================== */
-
-.vaults-list {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-    margin-bottom: 24px;
-}
-
-.vault-card {
-    background: #fff;
-    border: 1px solid #ddd;
-    border-radius: 8px;
-    padding: 16px;
-}
-
-.vault-card-header {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    margin-bottom: 12px;
-}
-
-.vault-card-title {
-    font-weight: 600;
-    flex: 1;
-}
-
-.vault-card-body {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-}
-
-.vault-field-row {
-    display: grid;
-    grid-template-columns: 120px 1fr;
-    align-items: center;
-    gap: 12px;
-}
-
-.vault-field-label {
-    font-size: 12px;
-    color: #7f8c8d;
-    font-weight: 500;
-}
-
-.vault-card-actions {
-    display: flex;
-    gap: 8px;
-    margin-top: 12px;
-    justify-content: flex-end;
-}
-
-.vault-add-form {
-    background: #fff;
-    border: 1px dashed #ddd;
-    border-radius: 8px;
-    padding: 16px;
-}
-
-/* ===================================================== */
-/* Domains tab                                           */
-/* ===================================================== */
-
-.domain-list {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-    margin-bottom: 24px;
-}
-
-.domain-card {
-    background: #fff;
-    border: 1px solid #ddd;
-    border-radius: 8px;
-    padding: 16px;
-}
-
-.domain-card.is-disabled {
-    opacity: 0.6;
-}
-
-.domain-card-header {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    margin-bottom: 12px;
-}
-
-.domain-card-title {
-    font-weight: 600;
-    flex: 1;
-}
-
-.domain-card-actions {
-    display: flex;
-    gap: 8px;
-    margin-top: 12px;
-    justify-content: flex-end;
-}
-
-.domain-add-form {
-    background: #fff;
-    border: 1px dashed #ddd;
-    border-radius: 8px;
-    padding: 16px;
-}
-
-/* ===================================================== */
-/* Models / LLM tab                                      */
-/* ===================================================== */
-
-.models-section {
-    margin-bottom: 24px;
-}
-
-.models-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-    gap: 12px;
-}
-
-.model-card {
-    background: #fff;
-    border: 1px solid #ddd;
-    border-radius: 8px;
-    padding: 16px;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-}
-
-.model-card.is-active {
-    border-color: #3498db;
-    background: #ebf5fb;
-}
-
-.model-card-name {
-    font-weight: 600;
-    font-size: 14px;
-}
-
-.model-card-meta {
-    font-size: 12px;
-    color: #7f8c8d;
-}
-
-.model-card-actions {
-    display: flex;
-    gap: 8px;
-    margin-top: auto;
-}
-
-/* ===================================================== */
-/* Дерево документов (новые классы, не пересекаются      */
-/* с base.css)                                           */
+/* Directory tree (collapsible folders in docs tab)      */
 /* ===================================================== */
 
 .docs-dir-row {
-    background: #f5f6fa;
+    background: #f0f4f8;
+    cursor: pointer;
     user-select: none;
 }
+
 .docs-dir-row:hover {
-    background: #eaecf0;
-    cursor: pointer;
+    background: #e4edf5;
 }
+
 .docs-dir-cell {
-    font-size: 13px;
     font-weight: 600;
+    font-size: 13px;
     color: #2c3e50;
+    padding-top: 6px !important;
+    padding-bottom: 6px !important;
     white-space: nowrap;
-    padding-top: 5px !important;
-    padding-bottom: 5px !important;
 }
+
 .docs-dir-toggle {
     display: inline-block;
     width: 14px;
-    font-size: 10px;
+    font-size: 11px;
     color: #7f8c8d;
     margin-right: 2px;
+    transition: transform 0.12s;
 }
+
 .docs-dir-icon {
-    margin-right: 3px;
-    font-size: 13px;
-}
-.docs-dir-name {
     margin-right: 4px;
 }
-.docs-dir-count {
-    color: #95a5a6;
-    font-size: 12px;
-    font-weight: 400;
+
+.docs-dir-name {
+    margin-right: 6px;
 }
+
+.docs-dir-count {
+    font-size: 11px;
+    font-weight: 400;
+    color: #95a5a6;
+}
+
 .docs-file-icon {
     margin-right: 4px;
-    font-size: 12px;
-    opacity: 0.65;
+    font-size: 13px;
 }
+
 .docs-row td:first-child {
-    white-space: nowrap;
+    max-width: 320px;
     overflow: hidden;
     text-overflow: ellipsis;
-    max-width: 300px;
+    white-space: nowrap;
 }
