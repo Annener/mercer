@@ -15,8 +15,8 @@
 | 1 | ORM модель `RerankModel` + миграция БД | [x] | — |
 | 2 | CRUD методы в `settings_service.py` | [x] | — |
 | 3 | Pydantic схемы в `schemas.py` | [x] | — |
-| 4 | API роутер `rerank_models.py` + регистрация | [ ] | — |
-| 5 | `_check_reranker_provider()` в `helpers.py` | [ ] | — |
+| 4 | API роутер `rerank_models.py` + регистрация | [x] | — |
+| 5 | `_check_reranker_provider()` в `helpers.py` | [x] | — |
 | 6 | Логика rerankinga в `retrieval.py` | [ ] | — |
 | 7 | Фронтенд: вкладка + `rerank_models.js` | [ ] | — |
 | 8 | Удаление старых ключей `reranker.*` из platform_settings | [ ] | — |
@@ -29,6 +29,10 @@
 [Step 2] Добавлены методы `_get_rerank_model`, `list_rerank_models`, `create_rerank_model`, `update_rerank_model`, `delete_rerank_model`, `activate_rerank_model`, `get_active_rerank_model`, `_rerank_model_dict` в конец класса `SettingsService`. Существующие методы не изменены. Добавлен импорт `RerankModel` в строку импортов.
 
 [Step 3] Добавлены `RerankModelCreateRequest` и `RerankModelUpdateRequest` в конец `schemas.py`. Существующие схемы не изменены.
+
+[Step 4] Создан `rag-backend/app/api/settings/rerank_models.py` — роутер по аналогии с `emb_models.py`. Имплементированы все 7 эндпоинтов: GET list, POST create, PUT update, DELETE delete, POST activate, POST deactivate, POST check. Lookup по `model_id` (str), не по UUID PK. Роутер зарегистрирован в `__init__.py` рядом с `emb_models_router`.
+
+[Step 5] Добавлена функция `_check_reranker_provider(model: RerankModel)` в конец `helpers.py`. Добавлен импорт `RerankModel` в строку импортов. Существующие функции не тронуты. Поддерживаются openai_compatible / cohere / jina (единый формат POST /rerank).
 
 ## Зависимости между шагами
 
