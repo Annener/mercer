@@ -40,6 +40,7 @@ const RerankModelsTabMixin = {
                     <button class="card-menu-toggle" data-id="${this.escapeHtml(model.model_id)}" aria-label="Меню модели">⋮</button>
                     <div class="card-menu">
                         ${activateBtn}
+                        <button class="card-menu-item" data-action="edit-rerank" data-id="${this.escapeHtml(model.model_id)}">✏️ Редактировать</button>
                         <button class="card-menu-item" data-action="check-rerank" data-id="${this.escapeHtml(model.model_id)}">🔍 Проверить</button>
                         <button class="card-menu-item card-menu-danger" data-action="delete-rerank" data-id="${this.escapeHtml(model.model_id)}"${isActive ? ' disabled title="Нельзя удалить активную модель"' : ''}>🗑️ Удалить</button>
                     </div>
@@ -53,6 +54,16 @@ const RerankModelsTabMixin = {
     async handleRerankModelsAction(action, id, btn) {
         if (action === 'new-rerank') {
             await this.showRerankModelModal();
+
+        } else if (action === 'edit-rerank') {
+            // Получаем актуальные данные модели из уже загруженного списка
+            // или делаем запрос к API через список моделей
+            try {
+                const models = await this.api.getRerankModels();
+                const model = (Array.isArray(models) ? models : []).find(m => m.model_id === id);
+                if (!model) { alert('Модель не найдена'); return; }
+                await this.showRerankModelEditModal(model);
+            } catch (e) { alert('Ошибка загрузки данных модели: ' + e.message); }
 
         } else if (action === 'activate-rerank') {
             try {
@@ -91,7 +102,7 @@ const RerankModelsTabMixin = {
         }
     },
 
-    // ─── Modal ────────────────────────────────────────────────────────────────────
+    // ─── Create modal ─────────────────────────────────────────────────────────────
 
     async showRerankModelModal() {
         const modal = document.createElement('div');
@@ -104,8 +115,7 @@ const RerankModelsTabMixin = {
                     <label>ID модели <span style="color:var(--color-error,#c00)">*</span></label>
                     <input type="text" id="rerank-model-id" placeholder="dengcao/Qwen3-Reranker-0.6B:Q8_0">
                     <small style="color:var(--color-text-muted,#888);margin-top:4px;display:block;">
-                        Для Ollama — полное имя модели (например <code>dengcao/Qwen3-Reranker-0.6B:Q8_0</code>).
-                        Для других провайдеров — slug, передаётся как <code>"model"</code> в API-запросе.
+                        Для Ollama — полное имя модели. Для других провайдеров — slug.
                     </small>
                 </div>
 
@@ -152,13 +162,8 @@ const RerankModelsTabMixin = {
         const closeModal = () => modal.remove();
 
         modal.querySelector('#rerank-model-cancel-btn').addEventListener('click', closeModal);
+        modal.addEventListener('click', (e) => { if (e.target === modal) closeModal(); });
 
-        // Close on backdrop click
-        modal.addEventListener('click', (e) => {
-            if (e.target === modal) closeModal();
-        });
-
-        // ── Ollama: скрыть API Key, обновить placeholder Base URL ──────────────
         const providerSelect = modal.querySelector('#rerank-model-provider');
         const apiKeyGroup = modal.querySelector('#rerank-api-key-group');
         const baseUrlInput = modal.querySelector('#rerank-model-base-url');
@@ -166,22 +171,18 @@ const RerankModelsTabMixin = {
         const _onProviderChange = () => {
             const isOllama = providerSelect.value === 'ollama';
             apiKeyGroup.style.display = isOllama ? 'none' : '';
-            baseUrlInput.placeholder = isOllama
-                ? 'http://localhost:11434'
-                : 'http://localhost:8001';
+            baseUrlInput.placeholder = isOllama ? 'http://localhost:11434' : 'http://localhost:8001';
         };
         providerSelect.addEventListener('change', _onProviderChange);
-        _onProviderChange(); // применить сразу при открытии
+        _onProviderChange();
 
         modal.querySelector('#rerank-model-save-btn').addEventListener('click', async () => {
             const modelId = modal.querySelector('#rerank-model-id').value.trim();
             const baseUrl = modal.querySelector('#rerank-model-base-url').value.trim();
-
             if (!modelId) { alert('Укажите ID модели'); return; }
             if (!baseUrl) { alert('Укажите Base URL'); return; }
 
             const provider = modal.querySelector('#rerank-model-provider').value;
-
             const data = {
                 model_id: modelId,
                 display_name: modal.querySelector('#rerank-model-name').value.trim() || null,
@@ -189,8 +190,6 @@ const RerankModelsTabMixin = {
                 base_url: baseUrl,
                 timeout_seconds: parseInt(modal.querySelector('#rerank-model-timeout').value, 10) || 30,
             };
-
-            // API Key не нужен для Ollama
             if (provider !== 'ollama') {
                 const apiKey = modal.querySelector('#rerank-model-api-key').value;
                 if (apiKey) data.api_key = apiKey;
@@ -199,9 +198,120 @@ const RerankModelsTabMixin = {
             const saveBtn = modal.querySelector('#rerank-model-save-btn');
             saveBtn.disabled = true;
             saveBtn.textContent = 'Сохранение...';
-
             try {
                 await this.api.createRerankModel(data);
+                closeModal();
+                await this.loadTab('rerank-models');
+            } catch (err) {
+                alert('Ошибка: ' + err.message);
+                saveBtn.disabled = false;
+                saveBtn.textContent = 'Сохранить';
+            }
+        });
+    },
+
+    // ─── Edit modal ───────────────────────────────────────────────────────────────
+
+    async showRerankModelEditModal(model) {
+        const modal = document.createElement('div');
+        modal.className = 'modal';
+        modal.innerHTML = `
+            <div class="modal-content">
+                <h3>Редактировать reranker-модель</h3>
+
+                <div class="form-group">
+                    <label>ID модели</label>
+                    <input type="text" id="rerank-edit-id" value="${this.escapeHtml(model.model_id)}" disabled
+                        style="background:var(--color-surface-offset,#f3f3f3);color:var(--color-text-muted,#888);cursor:not-allowed;">
+                    <small style="color:var(--color-text-muted,#888);margin-top:4px;display:block;">ID нельзя изменить после создания.</small>
+                </div>
+
+                <div class="form-group">
+                    <label>Название (display name)</label>
+                    <input type="text" id="rerank-edit-name" value="${this.escapeHtml(model.display_name || '')}" placeholder="Qwen3 Reranker 0.6B">
+                </div>
+
+                <div class="form-group">
+                    <label>Провайдер</label>
+                    <select id="rerank-edit-provider">
+                        <option value="openai_compatible"${model.provider === 'openai_compatible' ? ' selected' : ''}>OpenAI Compatible</option>
+                        <option value="cohere"${model.provider === 'cohere' ? ' selected' : ''}>Cohere</option>
+                        <option value="jina"${model.provider === 'jina' ? ' selected' : ''}>Jina</option>
+                        <option value="ollama"${model.provider === 'ollama' ? ' selected' : ''}>Ollama</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label>Base URL <span style="color:var(--color-error,#c00)">*</span></label>
+                    <input type="text" id="rerank-edit-base-url" value="${this.escapeHtml(model.base_url || '')}" placeholder="http://host.docker.internal:11434">
+                </div>
+
+                <div class="form-group" id="rerank-edit-api-key-group">
+                    <label>API Key</label>
+                    <input type="password" id="rerank-edit-api-key" placeholder="${model.has_api_key ? '••••••••  (оставьте пустым, чтобы не менять)' : '••••••••'}">
+                    <small style="color:var(--color-text-muted,#888);margin-top:4px;display:block;">
+                        ${model.has_api_key ? 'Ключ задан. Введите новый чтобы заменить, или оставьте пустым.' : 'Оставьте пустым, если аутентификация не нужна.'}
+                    </small>
+                </div>
+
+                <div class="form-group">
+                    <label>Timeout (сек)</label>
+                    <input type="number" id="rerank-edit-timeout" value="${model.timeout_seconds || 30}" min="1" max="300">
+                </div>
+
+                <div class="form-group">
+                    <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+                        <input type="checkbox" id="rerank-edit-enabled"${model.enabled !== false ? ' checked' : ''}>
+                        Включена (enabled)
+                    </label>
+                    <small style="color:var(--color-text-muted,#888);margin-top:4px;display:block;">Отключённую модель нельзя активировать.</small>
+                </div>
+
+                <div class="modal-actions">
+                    <button id="rerank-edit-save-btn" class="btn btn-primary">Сохранить</button>
+                    <button id="rerank-edit-cancel-btn" class="btn btn-secondary">Отмена</button>
+                </div>
+            </div>`;
+
+        document.body.appendChild(modal);
+        const closeModal = () => modal.remove();
+
+        modal.querySelector('#rerank-edit-cancel-btn').addEventListener('click', closeModal);
+        modal.addEventListener('click', (e) => { if (e.target === modal) closeModal(); });
+
+        // Скрывать API key для Ollama
+        const providerSelect = modal.querySelector('#rerank-edit-provider');
+        const apiKeyGroup = modal.querySelector('#rerank-edit-api-key-group');
+        const _onProviderChange = () => {
+            apiKeyGroup.style.display = providerSelect.value === 'ollama' ? 'none' : '';
+        };
+        providerSelect.addEventListener('change', _onProviderChange);
+        _onProviderChange();
+
+        modal.querySelector('#rerank-edit-save-btn').addEventListener('click', async () => {
+            const baseUrl = modal.querySelector('#rerank-edit-base-url').value.trim();
+            if (!baseUrl) { alert('Укажите Base URL'); return; }
+
+            const provider = modal.querySelector('#rerank-edit-provider').value;
+            const data = {
+                display_name: modal.querySelector('#rerank-edit-name').value.trim() || null,
+                provider,
+                base_url: baseUrl,
+                timeout_seconds: parseInt(modal.querySelector('#rerank-edit-timeout').value, 10) || 30,
+                enabled: modal.querySelector('#rerank-edit-enabled').checked,
+            };
+
+            // API key: отправляем только если что-то введено
+            if (provider !== 'ollama') {
+                const apiKey = modal.querySelector('#rerank-edit-api-key').value;
+                if (apiKey) data.api_key = apiKey;
+            }
+
+            const saveBtn = modal.querySelector('#rerank-edit-save-btn');
+            saveBtn.disabled = true;
+            saveBtn.textContent = 'Сохранение...';
+            try {
+                await this.api.updateRerankModel(model.model_id, data);
                 closeModal();
                 await this.loadTab('rerank-models');
             } catch (err) {
