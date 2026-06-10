@@ -17,7 +17,7 @@
 | 3 | Pydantic схемы в `schemas.py` | [x] | — |
 | 4 | API роутер `rerank_models.py` + регистрация | [x] | — |
 | 5 | `_check_reranker_provider()` в `helpers.py` | [x] | — |
-| 6 | Логика rerankinga в `retrieval.py` | [ ] | — |
+| 6 | Логика rerankinga в `retrieval.py` | [x] | — |
 | 7 | Фронтенд: вкладка + `rerank_models.js` | [ ] | — |
 | 8 | Удаление старых ключей `reranker.*` из platform_settings | [ ] | — |
 | 9 | Сквозное тестирование (manual QA) | [ ] | — |
@@ -33,6 +33,8 @@
 [Step 4] Создан `rag-backend/app/api/settings/rerank_models.py` — роутер по аналогии с `emb_models.py`. Имплементированы все 7 эндпоинтов: GET list, POST create, PUT update, DELETE delete, POST activate, POST deactivate, POST check. Lookup по `model_id` (str), не по UUID PK. Роутер зарегистрирован в `__init__.py` рядом с `emb_models_router`.
 
 [Step 5] Добавлена функция `_check_reranker_provider(model: RerankModel)` в конец `helpers.py`. Добавлен импорт `RerankModel` в строку импортов. Существующие функции не тронуты. Поддерживаются openai_compatible / cohere / jina (единый формат POST /rerank).
+
+[Step 6] Добавлена функция `rerank_hits(query, hits, db)` в конец `retrieval.py`. Функция вызывает `settings_service.get_active_rerank_model(db)` — если модели нет или `enabled=False`, возвращает hits без изменений. Поддерживаются оба формата ответа провайдера: `relevance_score` и `score`. В `retrieve_multi_vault()` добавлен вызов `result = await rerank_hits(query, result, db)` сразу после `result = all_hits[:effective_top_k]`. Функция `retrieve()` не тронута. `httpx` был уже импортирован — новый импорт не добавлялся. Логирование: `RERANK_HITS start` и `RERANK_HITS done`.
 
 ## Зависимости между шагами
 
