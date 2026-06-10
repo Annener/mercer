@@ -166,6 +166,7 @@
       Спецификация — в CONCEPT.md секция "6. retrieval.py".
       Функция должна: получить активную модель, если нет — вернуть hits без изменений,
       сделать POST /rerank к провайдеру, пересортировать hits по scores.
+      ВАЖНО: если в retrieval.py отсутствует `import httpx`, добавить его в блок импортов.
    b) В функции retrieve_multi_vault() — добавить вызов rerank_hits() перед return.
       Место вставки: после строки `result = all_hits[:effective_top_k]`
       Добавить:
@@ -195,7 +196,7 @@
 ## ШАГ 7: Фронтенд — вкладка Reranker
 
 **Что делаем:**
-- Создаём `rerank_models.js` в `frontend/static/js/`
+- Создаём `tab-rerank-models.js` в `rag-backend/app/static/js/settings/`
 - Добавляем вкладку в HTML настроек
 
 ---
@@ -215,7 +216,7 @@
    - Plan/RULES.md — правила работы
 
 2. НАЙТИ и ПРОЧИТАТЬ фронтенд-файлы:
-   - Найти папку frontend/ (или static/) в репозитории
+   - Найти папку `rag-backend/app/static/js/settings/` в репозитории
    - Найти существующий JS файл для embedding или generation моделей — использовать как эталон
    - Найти HTML файл настроек — где добавлять вкладку
 
@@ -226,8 +227,8 @@
    - Активная модель визуально выделена (badge "АКТИВНА", зелёный индикатор)
 
 4. РЕАЛИЗОВАТЬ:
-   a) Создать frontend/static/js/rerank_models.js по образцу существующего embedding JS.
-      API-эндпоинты: /settings/models/rerank (list, create, update, delete, activate, check)
+   a) Создать `rag-backend/app/static/js/settings/tab-rerank-models.js` по образцу существующего embedding JS.
+      API-эндпоинты: /settings/models/rerank (list, create, update, delete, activate, deactivate, check)
    b) Добавить вкладку в HTML страницу настроек.
       ВАЖНО: добавить только новую вкладку, не менять существующие.
 
@@ -284,5 +285,8 @@
    □ Удаление модели работает корректно
    □ После удаления активной модели поиск не падает (graceful fallback)
 
-4. ОБНОВИТЬ PROGRESS.md: статусы шагов 8, 9 на [x]
+4. ОБНОВИТЬ PROGRESS.md:
+   - Изменить статус шагов 8, 9 на [x]
+   - Добавить записи в Notes
+   - Кратко зафиксировать результаты QA по чеклисту
 ```
