@@ -9,7 +9,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Campaign, EmbeddingModel, Pipeline, Vault
+from app.db.models import Campaign, EmbeddingModel, Pipeline, RerankModel, Vault
 from app.services.settings_service import settings_service
 
 STORAGE_API_URL = os.getenv("STORAGE_API_URL", "http://db-api-server:8080")
@@ -152,3 +152,31 @@ def _increment_patch(version: str) -> str:
     except ValueError:
         return "1.0.1"
     return f"{major}.{minor}.{patch + 1}"
+
+
+async def _check_reranker_provider(model: RerankModel) -> dict:
+    """
+    Отправляет тестовый rerank-запрос к провайдеру.
+    Формат запроса: POST /rerank
+    Body: {"model": model_id, "query": "test", "documents": ["doc one", "doc two"]}
+    Ожидаемый ответ: список scores или results с полем relevance_score.
+    Возвращает {"ok": True, "latency_ms": N} или бросает исключение.
+    Поддерживаемые форматы:
+    - OpenAI-compatible / Jina / BGE: POST /rerank, body {query, documents, model}
+    - Cohere: POST /rerank, body {query, documents, model} — тот же формат
+    """
+    api_key = settings_service.decrypt_api_key(model.encrypted_api_key) if model.encrypted_api_key else ""
+    async with httpx.AsyncClient(
+        timeout=model.timeout_seconds,
+        headers={"Authorization": f"Bearer {api_key}"},
+    ) as client:
+        response = await client.post(
+            f"{model.base_url.rstrip('/')}/rerank",
+            json={"model": model.model_id, "query": "test", "documents": ["doc one", "doc two"]},
+        )
+    response.raise_for_status()
+    data = response.json()
+    results = data.get("results") or data.get("data") or []
+    if not isinstance(results, list):
+        raise ValueError("Provider returned unexpected rerank response format")
+    return data
