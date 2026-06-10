@@ -280,6 +280,8 @@ async def retrieve_multi_vault(
 
     all_hits.sort(key=lambda h: h.score, reverse=True)
     result = all_hits[:effective_top_k]
+    if db is not None:
+        result = await rerank_hits(query, result, db)
     logger.info(
         "RETRIEVE_MULTI DONE query='%s' total_hits=%d after_merge=%d",
         query, len(all_hits), len(result)
@@ -300,77 +302,44 @@ def format_context(hits: list[SearchHit]) -> str:
     numbered: list[tuple[int, SearchHit]] = []
 
     for hit in hits:
-        path = hit.metadata.get("source_path") or hit.document_id or "unknown"
-        if path not in source_index:
-            source_index[path] = len(source_index) + 1
-        idx = source_index[path]
-        numbered.append((idx, hit))
+        doc_id = hit.document_id or ""
+        if doc_id not in source_index:
+            source_index[doc_id] = len(source_index) + 1
+        numbered.append((source_index[doc_id], hit))
 
-    parts = []
-    for idx, hit in numbered:
-        text = hit.text.strip()
-        page = hit.metadata.get("page_number")
-        page_hint = f" (стр. {page})" if page is not None else ""
-        parts.append(f"[{idx}]{page_hint}\n{text}")
+    blocks = []
+    for n, hit in numbered:
+        blocks.append(f"[{n}] {hit.text}")
 
-    return "\n\n---\n\n".join(parts)
-
-
-ROLE_HEADERS = {
-    "methodology": "=== МЕТОДОЛОГИЯ ===",
-    "lore": "=== ЗНАНИЯ О МИРЕ ===",
-    "campaign_context": "=== КОНТЕКСТ КАМПАНИИ ===",
-    "character_sheet": "=== ЛИСТ ПЕРСОНАЖА ===",
-    "session_log": "=== ЖУРНАЛ СЕССИИ ===",
-    "rules": "=== ПРАВИЛА ===",
-}
-
-
-def format_context_with_role(hits: list[SearchHit], role: str) -> str:
-    if not hits:
-        return ""
-    header = ROLE_HEADERS.get(role, f"=== {role.upper()} ===")
-    parts = [header]
-    for index, hit in enumerate(hits, start=1):
-        parts.append(f"[{index}]\n{hit.text.strip()}\n---")
-    return "\n\n".join(parts)
+    return "\n\n".join(blocks)
 
 
 async def _default_top_k() -> int:
-    try:
-        return int(await settings_service.get("retrieval.top_k"))
-    except KeyError:
-        return 10
+    return int(os.getenv("DEFAULT_TOP_K", "10"))
 
 
 async def _resolve_embedding_model(
+    *,
     config: AppConfig | None,
     db: AsyncSession | None,
-    direct: EmbeddingModelConfig | None = None,
+    direct: EmbeddingModelConfig | None,
 ) -> EmbeddingModelConfig:
-    """Returns the active EmbeddingModelConfig.
-
-    Priority:
-      1. direct           — прямая передача из retrieve_multi_vault (vault уже решил)
-      2. config (AppConfig)— pipeline-путь
-      3. db               — fallback: берёт из БД через settings_service
-    """
     if direct is not None:
         return direct
     if config is not None:
         return _select_embedding_model(config)
     if db is not None:
         model = await settings_service.get_active_embedding_config(db)
-        if model is not None:
+        if model:
             return model
-    raise ValueError("Embedding configuration is not available.")
+    raise ValueError("No enabled embedding model configured.")
 
 
 def _select_embedding_model(config: AppConfig) -> EmbeddingModelConfig:
-    for embedding_model in config.embedding_models.values():
-        if embedding_model.enabled:
-            return embedding_model
-    raise ValueError("No enabled embedding model configured.")
+    enabled = [m for m in config.embedding_models if m.enabled]
+    if not enabled:
+        raise ValueError("No enabled embedding model configured.")
+    return enabled[0]
 
 
 async def _embed_query(query: str, model: EmbeddingModelConfig) -> list[float]:
@@ -430,3 +399,54 @@ def _validate_vector(vector: object, dimensions: int) -> list[float]:
 
 def _timeout(model: EmbeddingModelConfig) -> httpx.Timeout:
     return httpx.Timeout(min(float(model.timeout_seconds), 10.0), connect=min(float(model.timeout_seconds), 3.0))
+
+
+async def rerank_hits(
+    query: str,
+    hits: list[SearchHit],
+    db: AsyncSession,
+) -> list[SearchHit]:
+    """
+    Переранжирует hits с помощью активной reranker-модели.
+    Если активной модели нет, enabled=False или список пуст — возвращает hits без изменений.
+    """
+    logger.info("RERANK_HITS start: query='%s' hits=%d", query, len(hits))
+    model = await settings_service.get_active_rerank_model(db)
+    if model is None or not model.enabled or not model.is_active:
+        logger.info("RERANK_HITS skipped: no active reranker model")
+        return hits
+    if not hits:
+        logger.info("RERANK_HITS skipped: empty hits list")
+        return hits
+
+    documents = [h.text for h in hits]
+    api_key = settings_service.decrypt_api_key(model.encrypted_api_key) if model.encrypted_api_key else ""
+
+    async with httpx.AsyncClient(
+        timeout=model.timeout_seconds,
+        headers={"Authorization": f"Bearer {api_key}"},
+    ) as client:
+        response = await client.post(
+            f"{model.base_url.rstrip('/')}/rerank",
+            json={"model": model.model_id, "query": query, "documents": documents},
+        )
+        response.raise_for_status()
+
+    # Поддерживаем разные форматы ответа провайдеров
+    data = response.json()
+    results = data.get("results") or data.get("data") or []
+    scored: list[tuple[float, SearchHit]] = []
+    for item in results:
+        idx = item.get("index", item.get("corpus_id"))
+        score = item.get("relevance_score") if item.get("relevance_score") is not None else item.get("score", 0.0)
+        if idx is not None and idx < len(hits):
+            scored.append((score, hits[idx]))
+
+    if not scored:
+        logger.info("RERANK_HITS: empty scored list, returning original hits")
+        return hits
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    reranked = [hit for _, hit in scored]
+    logger.info("RERANK_HITS done: reranked %d hits via model='%s'", len(reranked), model.model_id)
+    return reranked
