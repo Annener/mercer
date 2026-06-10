@@ -156,15 +156,32 @@ def _increment_patch(version: str) -> str:
 
 async def _check_reranker_provider(model: RerankModel) -> dict:
     """
-    Отправляет тестовый rerank-запрос к провайдеру.
-    Формат запроса: POST /rerank
-    Body: {"model": model_id, "query": "test", "documents": ["doc one", "doc two"]}
-    Ожидаемый ответ: список scores или results с полем relevance_score.
-    Возвращает {"ok": True, "latency_ms": N} или бросает исключение.
-    Поддерживаемые форматы:
-    - OpenAI-compatible / Jina / BGE: POST /rerank, body {query, documents, model}
-    - Cohere: POST /rerank, body {query, documents, model} — тот же формат
+    Отправляет тестовый запрос к провайдеру реранкера.
+
+    Ollama: POST /api/generate — генеративный режим, проверяет доступность модели.
+    OpenAI-compatible / Cohere / Jina: POST /rerank с тестовыми документами.
     """
+    if model.provider == "ollama":
+        # Ollama не имеет /rerank endpoint — проверяем через /api/generate.
+        # stream=False чтобы получить ответ одним куском и не ждать долго.
+        prompt = (
+            "<Instruct>: Given a query and a document, determine if the document is relevant.\n"
+            "<query>: test\n"
+            "<document>: test document\n"
+            "<response>:"
+        )
+        async with httpx.AsyncClient(timeout=model.timeout_seconds) as client:
+            response = await client.post(
+                f"{model.base_url.rstrip('/')}/api/generate",
+                json={"model": model.model_id, "prompt": prompt, "stream": False},
+            )
+        response.raise_for_status()
+        data = response.json()
+        if "response" not in data and "error" in data:
+            raise ValueError(f"Ollama error: {data['error']}")
+        return data
+
+    # OpenAI-compatible / Cohere / Jina — стандартный /rerank endpoint
     api_key = settings_service.decrypt_api_key(model.encrypted_api_key) if model.encrypted_api_key else ""
     async with httpx.AsyncClient(
         timeout=model.timeout_seconds,
