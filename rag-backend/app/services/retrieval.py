@@ -19,6 +19,11 @@ from shared_contracts.models import SearchHit, SearchRequest, SearchResponse
 logger = logging.getLogger(__name__)
 STORAGE_API_URL = os.getenv("STORAGE_API_URL", "http://db-api-server:8080")
 
+# Максимальное число одновременных запросов к Ollama reranker.
+# Ollama обрабатывает запросы последовательно, поэтому большой параллелизм
+# приводит к таймаутам. Значение можно переопределить через env RERANK_OLLAMA_CONCURRENCY.
+_RERANK_OLLAMA_CONCURRENCY = int(os.getenv("RERANK_OLLAMA_CONCURRENCY", "1"))
+
 
 async def delete_document_chunks(document_id: str, vault_id: str) -> None:
     """
@@ -324,7 +329,7 @@ def format_context_with_role(hits: list[SearchHit], role: str) -> str:
     if not hits:
         return ""
 
-    header = f"=== {role} ==="if role else ""
+    header = f"=== {role} ===" if role else ""
 
     source_index: dict[str, int] = {}
     numbered: list[tuple[int, SearchHit]] = []
@@ -487,10 +492,16 @@ async def _rerank_single_ollama(
     query: str,
     document: str,
     idx: int,
+    semaphore: asyncio.Semaphore,
 ) -> tuple[int, float]:
     """
     Один запрос к Ollama для одного документа.
     Возвращает (idx, score) — индекс нужен для сборки результатов после asyncio.gather.
+
+    semaphore ограничивает параллелизм: Ollama обрабатывает запросы последовательно,
+    поэтому N параллельных запросов → каждый ждёт N*T секунд → таймаут.
+    По умолчанию concurrency=1 (строго последовательно). Можно увеличить через
+    переменную окружения RERANK_OLLAMA_CONCURRENCY если Ollama запущена с --parallel.
 
     Примечание: Ollama /api/generate НЕ поддерживает параметры logprobs/top_logprobs
     (это параметры OpenAI API). Оцениваем релевантность по тексту ответа.
@@ -499,28 +510,29 @@ async def _rerank_single_ollama(
         query=query,
         document=document[:2000],  # обрезаем чтобы не превышать контекст
     )
-    try:
-        response = await client.post(
-            f"{base_url.rstrip('/')}/api/generate",
-            json={
-                "model": model_id,
-                "prompt": prompt,
-                "stream": False,
-            },
-        )
-        response.raise_for_status()
-        data = response.json()
-        if "error" in data:
-            raise ValueError(f"Ollama error: {data['error']}")
-        response_text = data.get("response", "")
-        score = _score_from_response_text(response_text)
-        logger.debug(
-            "RERANK_OLLAMA idx=%d score=%.3f last_tokens=%r",
-            idx, score, response_text.strip()[-40:],
-        )
-    except Exception as exc:
-        logger.warning("RERANK_OLLAMA doc idx=%d failed: %s", idx, exc)
-        score = 0.0
+    async with semaphore:
+        try:
+            response = await client.post(
+                f"{base_url.rstrip('/')}/api/generate",
+                json={
+                    "model": model_id,
+                    "prompt": prompt,
+                    "stream": False,
+                },
+            )
+            response.raise_for_status()
+            data = response.json()
+            if "error" in data:
+                raise ValueError(f"Ollama error: {data['error']}")
+            response_text = data.get("response", "")
+            score = _score_from_response_text(response_text)
+            logger.debug(
+                "RERANK_OLLAMA idx=%d score=%.3f last_tokens=%r",
+                idx, score, response_text.strip()[-40:],
+            )
+        except Exception as exc:
+            logger.warning("RERANK_OLLAMA doc idx=%d failed", idx, exc_info=True)
+            score = 0.0
     return idx, score
 
 
@@ -530,17 +542,26 @@ async def _rerank_hits_ollama(
     model: Any,  # RerankModel ORM-объект
 ) -> list[SearchHit]:
     """
-    Ollama-реранжирование: параллельные запросы /api/generate для каждого документа,
-    парсинг финального yes/no из текста ответа → relevance score.
+    Ollama-реранжирование с ограниченным параллелизмом через asyncio.Semaphore.
+
+    Ollama обрабатывает запросы к одной модели последовательно — запуск N задач
+    через asyncio.gather без ограничения приводит к тому, что каждая задача ждёт
+    (N-1) других и превышает timeout. Semaphore гарантирует не более
+    RERANK_OLLAMA_CONCURRENCY одновременных HTTP-запросов.
+
+    timeout у httpx.AsyncClient должен покрывать время одного запроса (не всех N),
+    поэтому берём model.timeout_seconds как per-request timeout.
     """
     documents = [h.text for h in hits]
     base_url = model.base_url or ""
     model_id = model.model_id
     timeout = float(model.timeout_seconds)
 
+    semaphore = asyncio.Semaphore(_RERANK_OLLAMA_CONCURRENCY)
+
     async with httpx.AsyncClient(timeout=timeout) as client:
         tasks = [
-            _rerank_single_ollama(client, base_url, model_id, query, doc, idx)
+            _rerank_single_ollama(client, base_url, model_id, query, doc, idx, semaphore)
             for idx, doc in enumerate(documents)
         ]
         results: list[tuple[int, float]] = await asyncio.gather(*tasks)
