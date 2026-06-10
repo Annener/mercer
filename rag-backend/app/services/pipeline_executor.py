@@ -129,13 +129,14 @@ class PipelineExecutor:
             for index, step in enumerate(steps, start=1):
                 yield {"type": "progress", "step": index, "total": total, "step_name": step.name}
 
-            logger.info("Pipeline parallel start: steps=%d pipeline=%s", total, pipeline.pipeline_id)
-            tasks = [
-                self._run_step(index, step, query, chat_context, db, provider)
-                for index, step in enumerate(steps, start=1)
-            ]
-            step_results = await asyncio.gather(*tasks)
-            logger.info("Pipeline parallel done: pipeline=%s", pipeline.pipeline_id)
+            # NOTE: шаги выполняются последовательно, а не через asyncio.gather,
+            # т.к. SQLAlchemy async запрещает конкурентный доступ к одной сессии.
+            logger.info("Pipeline sequential start: steps=%d pipeline=%s", total, pipeline.pipeline_id)
+            step_results = []
+            for index, step in enumerate(steps, start=1):
+                result = await self._run_step(index, step, query, chat_context, db, provider)
+                step_results.append(result)
+            logger.info("Pipeline sequential done: pipeline=%s", pipeline.pipeline_id)
 
             step_hits: list[list[SearchHit]] = []
             partial_results: list[str] = []
