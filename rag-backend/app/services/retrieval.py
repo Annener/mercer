@@ -314,6 +314,34 @@ def format_context(hits: list[SearchHit]) -> str:
     return "\n\n".join(blocks)
 
 
+def format_context_with_role(hits: list[SearchHit], role: str) -> str:
+    """
+    Формирует блок контекста с заголовком роли для pipeline-шагов.
+    Добавляет строку вида "=== <role> ===", затем нумерованные блоки [1], [2], ...
+    Если hits пуст — возвращает пустую строку (pipeline-executor проверяет это сам).
+    """
+    if not hits:
+        return ""
+
+    header = f"=== {role} ==="if role else ""
+
+    source_index: dict[str, int] = {}
+    numbered: list[tuple[int, SearchHit]] = []
+
+    for hit in hits:
+        doc_id = hit.document_id or ""
+        if doc_id not in source_index:
+            source_index[doc_id] = len(source_index) + 1
+        numbered.append((source_index[doc_id], hit))
+
+    blocks = []
+    for n, hit in numbered:
+        blocks.append(f"[{n}] {hit.text}")
+
+    body = "\n\n".join(blocks)
+    return f"{header}\n{body}" if header else body
+
+
 async def _default_top_k() -> int:
     return int(os.getenv("DEFAULT_TOP_K", "10"))
 
