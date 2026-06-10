@@ -600,7 +600,7 @@
     flex-shrink: 0;
 }
 
-/* ─── Прогресс-панель ────────────────────────────────────────────────────── */
+/* ─── Прогресс-панель ─────────────────────────────────────────────────────── */
 
 .docs-index-progress-panel {
     margin-bottom: 16px;
@@ -717,7 +717,7 @@
     min-width: 2px;
 }
 
-/* ─── Модальное окно документа ───────────────────────────────────────────── */
+/* ─── Модальное окно документа ────────────────────────────────────────────── */
 
 .docs-modal-backdrop {
     position: fixed;
@@ -848,8 +848,34 @@
     align-content: flex-start;
 }
 
-.docs-modal-save-btn {
+/* Футер модала — кнопки «Сохранить теги» и «🗑 Удалить» в одну строку */
+.docs-modal-footer-btns {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 12px;
     flex-shrink: 0;
+}
+
+.docs-modal-save-btn {
+    flex: 1;
+}
+
+.docs-modal-delete-btn {
+    background: #e74c3c;
+    color: #fff;
+    border: none;
+    border-radius: var(--radius-md, 6px);
+    padding: 8px 14px;
+    font-size: 13px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 0.15s;
+    flex-shrink: 0;
+}
+
+.docs-modal-delete-btn:hover {
+    background: #c0392b;
 }
 
 /* ===================================================== */
