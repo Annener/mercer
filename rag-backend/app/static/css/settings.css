@@ -168,12 +168,24 @@
     color: #657789;
 }
 
-/* === Pipeline card dropdown menu === */
+/* ===================================================== */
+/* Card dropdown menu                                    */
+/* Used by: vaults, gen-models, emb-models,              */
+/*          pipelines, campaigns, reranker tabs          */
+/* JS uses: card-menu-toggle / card-menu /               */
+/*          card-menu-item / card-menu-danger            */
+/* Legacy names kept as aliases below.                   */
+/* ===================================================== */
+
 .card-menu-container {
     position: relative;
     display: inline-block;
 }
 
+/* ── Trigger button ── */
+/* JS name */
+.card-menu-toggle,
+/* legacy alias */
 .card-menu-btn {
     background: none;
     border: none;
@@ -185,11 +197,17 @@
     line-height: 1;
 }
 
+.card-menu-toggle:hover,
 .card-menu-btn:hover {
     background: #eef2f6;
 }
 
+/* ── Dropdown panel ── */
+/* JS name */
+.card-menu,
+/* legacy alias */
 .card-menu-dropdown {
+    display: none;
     position: absolute;
     right: 0;
     top: 100%;
@@ -198,10 +216,19 @@
     border-radius: 6px;
     box-shadow: 0 4px 12px rgba(0,0,0,0.1);
     z-index: 100;
-    min-width: 140px;
+    min-width: 160px;
     padding: 4px 0;
 }
 
+.card-menu.open,
+.card-menu-dropdown.open {
+    display: block;
+}
+
+/* ── Menu items ── */
+/* JS name */
+.card-menu-item,
+/* legacy: any button inside the dropdown panel */
 .card-menu-dropdown button {
     display: block;
     width: 100%;
@@ -215,12 +242,29 @@
     transition: background 0.12s;
 }
 
+.card-menu-item:hover,
 .card-menu-dropdown button:hover {
     background: #f5f7fa;
 }
 
+.card-menu-item:disabled,
+.card-menu-dropdown button:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+    pointer-events: none;
+}
+
+/* ── Danger item ── */
+/* JS name */
+.card-menu-danger,
+/* legacy alias */
 .card-menu-dropdown button.danger {
     color: #e74c3c;
+}
+
+.card-menu-danger:hover {
+    background: #fef0ef;
+    color: #c0392b;
 }
 
 /* === Domains tab === */
