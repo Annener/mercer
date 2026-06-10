@@ -33,3 +33,9 @@ pyyaml>=6.0
 # Нужен для _normalize_with_ghostscript в parser.py:
 # если PDFium не может открыть битый PDF — нормализуем через gs и повторяем hi_res.
 ghostscript>=0.7
+
+# Reranker — CrossEncoder для /rerank endpoint
+# torch: MPS-ускорение на Apple Silicon (автоопределение в reranker.py)
+# sentence-transformers: обёртка над CrossEncoder (bge-reranker-v2-m3 и др.)
+torch>=2.2.0
+sentence-transformers>=3.0.0
