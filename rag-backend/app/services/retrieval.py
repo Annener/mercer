@@ -442,60 +442,42 @@ _OLLAMA_RERANK_PROMPT_TEMPLATE = (
     "<response>:"
 )
 
-# Token strings that Ollama may return for yes/no.
-_YES_TOKENS: frozenset[str] = frozenset({"yes", "Yes", "YES", "▁yes", "▁Yes"})
-_NO_TOKENS: frozenset[str] = frozenset({"no", "No", "NO", "▁no", "▁No"})
+# Token strings that indicate yes/no relevance.
+_YES_TOKENS: frozenset[str] = frozenset({"yes", "Yes", "YES"})
+_NO_TOKENS: frozenset[str] = frozenset({"no", "No", "NO"})
 
 
-def _logprob_score_from_response(data: dict) -> float:
+def _score_from_response_text(response_text: str) -> float:
     """
-    Извлекает relevance score для одного документа из ответа Ollama /api/generate.
+    Извлекает relevance score из текстового ответа Ollama.
 
-    Приоритеты:
-    1. logprobs.top_logprobs[0] — берём logprob токена 'yes' (или 'Yes' / с пробелом).
-       Если есть и yes, и no — считаем softmax по этим двум и возвращаем P(yes).
-    2. Если logprobs нет или токен 'yes' не найден — смотрим на первый response-токен:
-       если он yes-like → 1.0, no-like → 0.0, иначе 0.5 (нейтральный fallback).
+    Qwen3-Reranker и другие instruct-модели могут генерировать цепочку
+    рассуждений (<think>...</think>) перед финальным ответом.
+    Поэтому ищем yes/no в КОНЦЕ текста, а не в начале.
+
+    Логика:
+    1. Убираем <think>...</think> блоки если есть.
+    2. Берём последнее непустое слово очищенного текста.
+    3. yes-like → 1.0, no-like → 0.0, иначе 0.5 (нейтральный fallback).
     """
-    # -- путь 1: logprobs --
-    logprobs_obj = data.get("logprobs") or {}
-    top_lp: list[dict] = []
-    if isinstance(logprobs_obj, dict):
-        # Ollama /api/generate с logprobs=True возвращает
-        # {"logprobs": {"content": [{"token": "yes", "logprob": -0.12, ...}]}}
-        content_lp = logprobs_obj.get("content") or []
-        if content_lp and isinstance(content_lp[0], dict):
-            top_lp = content_lp[0].get("top_logprobs") or []
-    elif isinstance(logprobs_obj, list) and logprobs_obj:
-        # Some versions return a flat list of dicts
-        top_lp = logprobs_obj[0].get("top_logprobs") or [] if isinstance(logprobs_obj[0], dict) else []
-
-    if top_lp:
-        lp_map: dict[str, float] = {}
-        for entry in top_lp:
-            if isinstance(entry, dict):
-                lp_map[entry.get("token", "")] = float(entry.get("logprob", -999))
-
-        yes_lp: float | None = next((lp_map[t] for t in _YES_TOKENS if t in lp_map), None)
-        no_lp: float | None = next((lp_map[t] for t in _NO_TOKENS if t in lp_map), None)
-
-        if yes_lp is not None and no_lp is not None:
-            # Softmax по двум логитам → P(yes)
-            yes_p = 1.0 / (1.0 + math.exp(no_lp - yes_lp))
-            return yes_p
-        if yes_lp is not None:
-            # Только yes найден — нормализуем через sigmoid
-            return 1.0 / (1.0 + math.exp(-yes_lp))
-        if no_lp is not None:
-            return 1.0 - 1.0 / (1.0 + math.exp(-no_lp))
-
-    # -- путь 2: по тексту ответа --
-    response_text = (data.get("response") or "").strip().lower()
-    if response_text.startswith("yes"):
+    import re
+    # Убираем thinking-блоки
+    cleaned = re.sub(r"<think>.*?</think>", "", response_text, flags=re.DOTALL)
+    # Берём последний токен (слово) из очищенного ответа
+    tokens = cleaned.strip().split()
+    last_token = tokens[-1].strip(".,!?;:") if tokens else ""
+    if last_token in _YES_TOKENS:
         return 1.0
-    if response_text.startswith("no"):
+    if last_token in _NO_TOKENS:
         return 0.0
-    return 0.5  # нейтральный fallback
+    # Fallback: ищем yes/no в любом месте очищенного текста (слева направо, последнее вхождение)
+    found_yes = cleaned.lower().rfind("yes")
+    found_no = cleaned.lower().rfind("no")
+    if found_yes > found_no:
+        return 1.0
+    if found_no > found_yes:
+        return 0.0
+    return 0.5
 
 
 async def _rerank_single_ollama(
@@ -509,6 +491,9 @@ async def _rerank_single_ollama(
     """
     Один запрос к Ollama для одного документа.
     Возвращает (idx, score) — индекс нужен для сборки результатов после asyncio.gather.
+
+    Примечание: Ollama /api/generate НЕ поддерживает параметры logprobs/top_logprobs
+    (это параметры OpenAI API). Оцениваем релевантность по тексту ответа.
     """
     prompt = _OLLAMA_RERANK_PROMPT_TEMPLATE.format(
         query=query,
@@ -521,12 +506,18 @@ async def _rerank_single_ollama(
                 "model": model_id,
                 "prompt": prompt,
                 "stream": False,
-                "logprobs": True,
-                "top_logprobs": 5,
             },
         )
         response.raise_for_status()
-        score = _logprob_score_from_response(response.json())
+        data = response.json()
+        if "error" in data:
+            raise ValueError(f"Ollama error: {data['error']}")
+        response_text = data.get("response", "")
+        score = _score_from_response_text(response_text)
+        logger.debug(
+            "RERANK_OLLAMA idx=%d score=%.3f last_tokens=%r",
+            idx, score, response_text.strip()[-40:],
+        )
     except Exception as exc:
         logger.warning("RERANK_OLLAMA doc idx=%d failed: %s", idx, exc)
         score = 0.0
@@ -540,7 +531,7 @@ async def _rerank_hits_ollama(
 ) -> list[SearchHit]:
     """
     Ollama-реранжирование: параллельные запросы /api/generate для каждого документа,
-    парсинг logprobs токена yes → relevance score.
+    парсинг финального yes/no из текста ответа → relevance score.
     """
     documents = [h.text for h in hits]
     base_url = model.base_url or ""
