@@ -473,3 +473,6 @@ class ChatAPI {
         return response.json();
     }
 }
+
+// Глобальный синглтон — используется в chat.js, sidebar.js, settings.js
+window.chatAPI = new ChatAPI();
