@@ -37,8 +37,9 @@ async def _check_embedding_provider(model: EmbeddingModel) -> list[float]:
                 json={"model": model.model_name, "prompt": "test"},
             )
     elif model.provider == "openai_compatible":
-        api_key = settings_service.decrypt_api_key(model.encrypted_api_key) if model.encrypted_api_key else ""
-        async with httpx.AsyncClient(timeout=model.timeout_seconds, headers={"Authorization": f"Bearer {api_key}"}) as client:
+        api_key = settings_service.decrypt_api_key(model.encrypted_api_key) if model.encrypted_api_key else None
+        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+        async with httpx.AsyncClient(timeout=model.timeout_seconds, headers=headers) as client:
             response = await client.post(
                 f"{model.base_url.rstrip('/')}/embeddings",
                 json={"model": model.model_name, "input": "test"},
@@ -182,10 +183,11 @@ async def _check_reranker_provider(model: RerankModel) -> dict:
         return data
 
     # OpenAI-compatible / Cohere / Jina — стандартный /rerank endpoint
-    api_key = settings_service.decrypt_api_key(model.encrypted_api_key) if model.encrypted_api_key else ""
+    api_key = settings_service.decrypt_api_key(model.encrypted_api_key) if model.encrypted_api_key else None
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
     async with httpx.AsyncClient(
         timeout=model.timeout_seconds,
-        headers={"Authorization": f"Bearer {api_key}"},
+        headers=headers,
     ) as client:
         response = await client.post(
             f"{model.base_url.rstrip('/')}/rerank",
