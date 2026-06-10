@@ -114,7 +114,7 @@ async def create_campaign_tag(
     payload: CampaignTagCreateRequest,  # D04 fix: was payload: dict — KeyError → 500
     db: AsyncSession = Depends(get_db),
 ) -> TagRead:
-    """Шорткат: создать тег кампании. domain_id берётся из кампании."""
+    """\u0428\u043e\u0440\u0442\u043a\u0430\u0442: \u0441\u043e\u0437\u0434\u0430\u0442\u044c \u0442\u0435\u0433 \u043a\u0430\u043c\u043f\u0430\u043d\u0438\u0438. domain_id \u0431\u0435\u0440\u0451\u0442\u0441\u044f \u0438\u0437 \u043a\u0430\u043c\u043f\u0430\u043d\u0438\u0438."""
     campaign = await db.get(Campaign, uuid.UUID(campaign_id))
     if not campaign:
         raise HTTPException(404, "Campaign not found")
@@ -138,7 +138,7 @@ async def get_campaign_global_tags(
     campaign_id: str,
     db: AsyncSession = Depends(get_db),
 ) -> list[TagRead]:
-    """Вернуть глобальные теги домена, явно подключённые к этой кампании."""
+    """\u0412\u0435\u0440\u043d\u0443\u0442\u044c \u0433\u043b\u043e\u0431\u0430\u043b\u044c\u043d\u044b\u0435 \u0442\u0435\u0433\u0438 \u0434\u043e\u043c\u0435\u043d\u0430, \u044f\u0432\u043d\u043e \u043f\u043e\u0434\u043a\u043b\u044e\u0447\u0451\u043d\u043d\u044b\u0435 \u043a \u044d\u0442\u043e\u0439 \u043a\u0430\u043c\u043f\u0430\u043d\u0438\u0438."""
     camp_uuid = uuid.UUID(campaign_id)
     stmt = (
         select(Tag)
@@ -158,7 +158,7 @@ async def link_global_tag(
     tag_id: str,
     db: AsyncSession = Depends(get_db),
 ) -> TagRead:
-    """Подключить глобальный тег домена к кампании."""
+    """\u041f\u043e\u0434\u043a\u043b\u044e\u0447\u0438\u0442\u044c \u0433\u043b\u043e\u0431\u0430\u043b\u044c\u043d\u044b\u0439 \u0442\u0435\u0433 \u0434\u043e\u043c\u0435\u043d\u0430 \u043a \u043a\u0430\u043c\u043f\u0430\u043d\u0438\u0438."""
     camp_uuid = uuid.UUID(campaign_id)
     tag_uuid = uuid.UUID(tag_id)
 
@@ -174,7 +174,6 @@ async def link_global_tag(
     if tag.domain_id != campaign.domain_id:
         raise HTTPException(400, "Tag does not belong to the same domain as campaign")
 
-    # Проверяем что связь ещё не существует
     existing = await db.execute(
         select(campaign_tags).where(
             campaign_tags.c.campaign_id == camp_uuid,
@@ -182,7 +181,6 @@ async def link_global_tag(
         )
     )
     if existing.first() is not None:
-        # Уже подключён — idempotent, возвращаем 200
         return TagRead.model_validate(tag, from_attributes=True)
 
     await db.execute(
@@ -198,7 +196,7 @@ async def unlink_global_tag(
     tag_id: str,
     db: AsyncSession = Depends(get_db),
 ) -> None:
-    """Отключить глобальный тег от кампании (тег не удаляется, только связь)."""
+    """\u041e\u0442\u043a\u043b\u044e\u0447\u0438\u0442\u044c \u0433\u043b\u043e\u0431\u0430\u043b\u044c\u043d\u044b\u0439 \u0442\u0435\u0433 \u043e\u0442 \u043a\u0430\u043c\u043f\u0430\u043d\u0438\u0438 (\u0442\u0435\u0433 \u043d\u0435 \u0443\u0434\u0430\u043b\u044f\u0435\u0442\u0441\u044f, \u0442\u043e\u043b\u044c\u043a\u043e \u0441\u0432\u044f\u0437\u044c)."""
     camp_uuid = uuid.UUID(campaign_id)
     tag_uuid = uuid.UUID(tag_id)
     await db.execute(
@@ -208,3 +206,19 @@ async def unlink_global_tag(
         )
     )
     await db.commit()
+
+
+# --- Вспомогательные ---
+
+async def _campaign_with_tags(campaign: Campaign, db: AsyncSession) -> CampaignRead:
+    """\u0418\u0441\u043f\u043e\u043b\u044c\u0437\u0443\u0435\u0442\u0441\u044f \u0434\u043b\u044f \u043e\u0434\u0438\u043d\u043e\u0447\u043d\u044b\u0445 \u043e\u0431\u044a\u0435\u043a\u0442\u043e\u0432 (get/create/update). \u0414\u043b\u044f \u0441\u043f\u0438\u0441\u043a\u0430 — batch \u0432 list_campaigns."""
+    stmt = select(Tag).where(Tag.campaign_id == campaign.id)
+    result = await db.execute(stmt)
+    tags = [TagRead.model_validate(t, from_attributes=True) for t in result.scalars().all()]
+    return _campaign_read(campaign, tags)
+
+
+def _campaign_read(campaign: Campaign, tags: list[TagRead]) -> CampaignRead:
+    data = CampaignRead.model_validate(campaign, from_attributes=True)
+    data.tags = tags
+    return data
