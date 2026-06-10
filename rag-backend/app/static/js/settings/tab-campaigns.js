@@ -62,7 +62,8 @@ const CampaignsTabMixin = {
         let campaign = { name: '', description: '', system_prompt: '' };
         let campaignTags = [];
         let globalTags = [];
-        const domainId = this._activeDomainId || null;
+        // selectedDomainId — домен из UI-фильтра (для создания новой кампании)
+        const selectedDomainId = this._activeDomainId || null;
 
         if (isEdit) {
             try {
@@ -71,10 +72,15 @@ const CampaignsTabMixin = {
             } catch (e) { alert('Ошибка загрузки кампании: ' + e.message); return; }
         }
 
+        // fix: при редактировании берём домен из самой кампании, а не из UI-селектора
+        const effectiveDomainId = isEdit
+            ? (campaign.domain_id || selectedDomainId || null)
+            : selectedDomainId;
+
         // Загружаем глобальные теги домена (для выбора) + уже подключённые к кампании
-        if (domainId) {
+        if (effectiveDomainId) {
             try {
-                const tagsResp = await this.api.getTags(domainId);
+                const tagsResp = await this.api.getTags(effectiveDomainId);
                 const grouped = Array.isArray(tagsResp) ? { global_tags: tagsResp, by_campaign: {} } : (tagsResp || {});
                 globalTags = Array.isArray(grouped.global_tags) ? grouped.global_tags : [];
             } catch (e) { /* ignore */ }
@@ -104,7 +110,7 @@ const CampaignsTabMixin = {
                     ${domains.map(d => {
                         const did = this.escapeHtml(d.domain_id || d.id || '');
                         const dname = this.escapeHtml(d.display_name || d.domain_id || d.id || '');
-                        const sel = (d.domain_id || d.id) === domainId ? ' selected' : '';
+                        const sel = (d.domain_id || d.id) === selectedDomainId ? ' selected' : '';
                         return `<option value="${did}"${sel}>${dname}</option>`;
                     }).join('')}
                 </select>
@@ -264,12 +270,12 @@ const CampaignsTabMixin = {
                 if (isEdit) {
                     await this.api.updateCampaign(campaignId, data);
                 } else {
-                    const selectedDomain = overlay.querySelector('#camp-domain-id')?.value || domainId;
-                    if (!selectedDomain) {
+                    const chosenDomain = overlay.querySelector('#camp-domain-id')?.value || selectedDomainId;
+                    if (!chosenDomain) {
                         alert('Выберите домен для кампании');
                         return;
                     }
-                    data.domain_id = selectedDomain;
+                    data.domain_id = chosenDomain;
                     await this.api.createCampaign(data);
                 }
                 overlay.remove();
