@@ -117,7 +117,7 @@ class LanceDBStore:
             if req.score_threshold is not None and score < req.score_threshold:
                 continue
             metadata = _decode_metadata(row.get("metadata"))
-            if req.filter and not _matches_filter(metadata, req.filter):
+            if req.filter and not _matches_filter(row, metadata, req.filter):
                 continue
             hits.append(
                 SearchHit(
@@ -134,7 +134,7 @@ class LanceDBStore:
             "SEARCH DONE vault='%s' hits=%d scores=[%s]",
             req.vault_id,
             len(hits),
-            ", ".join(f"{h.score:.3f}" for h in hits[:5]),  # первые 5 scores
+            ", ".join(f"{h.score:.3f}" for h in hits[:5]),
         )
         return SearchResponse(results=hits)
 
@@ -230,8 +230,6 @@ class LanceDBStore:
         return self._db().create_table(_table_name(vault_id), data=rows)
 
     def _replace_rows(self, table: Any, rows: list[dict[str, Any]]) -> None:
-        # Батчевый upsert: удаляем все chunk_id за одну операцию, затем вставляем все сразу.
-        # Раньше делалось N отдельных DELETE по одному чанку — для 1345 чанков это 1345 транзакций LanceDB.
         if not rows:
             return
         chunk_ids = [_escape_sql_literal(str(row["chunk_id"])) for row in rows]
@@ -303,8 +301,27 @@ def _decode_metadata(value: Any) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
-def _matches_filter(metadata: dict[str, Any], filter_values: dict[str, Any]) -> bool:
-    return all(metadata.get(key) == value for key, value in filter_values.items())
+def _matches_filter(row: dict[str, Any], metadata: dict[str, Any], filter_values: dict[str, Any]) -> bool:
+    """
+    Проверяет строку LanceDB на соответствие фильтру.
+    Поля-колонки (document_id, chunk_id и др.) берутся из row,
+    остальные — из metadata. Поддерживаются операторы $in и $eq,
+    а также прямое сравнение значений.
+    """
+    for key, condition in filter_values.items():
+        # Колонки строки имеют приоритет над metadata
+        value = row.get(key) if key in row else metadata.get(key)
+        if isinstance(condition, dict):
+            if "$in" in condition:
+                if value not in condition["$in"]:
+                    return False
+            elif "$eq" in condition:
+                if value != condition["$eq"]:
+                    return False
+        else:
+            if value != condition:
+                return False
+    return True
 
 
 def _escape_sql_literal(value: str) -> str:
