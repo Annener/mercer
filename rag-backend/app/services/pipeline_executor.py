@@ -8,14 +8,14 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import settings_service
+from app.services.settings_service import settings_service
 from app.services.retrieval import (
     get_allowed_tag_ids,
     get_document_ids_by_tags,
     retrieve,
     retrieve_multi_vault,
 )
-from app.shared_contracts.models import PipelineExecutionContext, PipelineStep
+from shared_contracts.models import PipelineExecutionContext, PipelineStep
 
 logger = logging.getLogger(__name__)
 
