@@ -15,7 +15,7 @@ from .schemas import RerankModelCreateRequest, RerankModelUpdateRequest
 
 router = APIRouter()
 
-SUPPORTED_RERANK_PROVIDERS = ["openai_compatible", "cohere", "jina"]
+SUPPORTED_RERANK_PROVIDERS = ["openai_compatible", "cohere", "jina", "ollama"]
 
 
 async def _get_rerank_model_by_model_id(model_id: str, db: AsyncSession) -> RerankModel | None:
