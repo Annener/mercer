@@ -2,6 +2,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import json
+import math
 import os
 import uuid
 from typing import Any
@@ -429,6 +430,141 @@ def _timeout(model: EmbeddingModelConfig) -> httpx.Timeout:
     return httpx.Timeout(min(float(model.timeout_seconds), 10.0), connect=min(float(model.timeout_seconds), 3.0))
 
 
+# ---------------------------------------------------------------------------
+# Ollama reranker helpers
+# ---------------------------------------------------------------------------
+
+_OLLAMA_RERANK_PROMPT_TEMPLATE = (
+    "<Instruct>: Given a query and a document, output yes or no to indicate "
+    "whether the document is relevant to the query.\n"
+    "<query>: {query}\n"
+    "<document>: {document}\n"
+    "<response>:"
+)
+
+# Token strings that Ollama may return for yes/no.
+_YES_TOKENS: frozenset[str] = frozenset({"yes", "Yes", "YES", "▁yes", "▁Yes"})
+_NO_TOKENS: frozenset[str] = frozenset({"no", "No", "NO", "▁no", "▁No"})
+
+
+def _logprob_score_from_response(data: dict) -> float:
+    """
+    Извлекает relevance score для одного документа из ответа Ollama /api/generate.
+
+    Приоритеты:
+    1. logprobs.top_logprobs[0] — берём logprob токена 'yes' (или 'Yes' / с пробелом).
+       Если есть и yes, и no — считаем softmax по этим двум и возвращаем P(yes).
+    2. Если logprobs нет или токен 'yes' не найден — смотрим на первый response-токен:
+       если он yes-like → 1.0, no-like → 0.0, иначе 0.5 (нейтральный fallback).
+    """
+    # -- путь 1: logprobs --
+    logprobs_obj = data.get("logprobs") or {}
+    top_lp: list[dict] = []
+    if isinstance(logprobs_obj, dict):
+        # Ollama /api/generate с logprobs=True возвращает
+        # {"logprobs": {"content": [{"token": "yes", "logprob": -0.12, ...}]}}
+        content_lp = logprobs_obj.get("content") or []
+        if content_lp and isinstance(content_lp[0], dict):
+            top_lp = content_lp[0].get("top_logprobs") or []
+    elif isinstance(logprobs_obj, list) and logprobs_obj:
+        # Some versions return a flat list of dicts
+        top_lp = logprobs_obj[0].get("top_logprobs") or [] if isinstance(logprobs_obj[0], dict) else []
+
+    if top_lp:
+        lp_map: dict[str, float] = {}
+        for entry in top_lp:
+            if isinstance(entry, dict):
+                lp_map[entry.get("token", "")] = float(entry.get("logprob", -999))
+
+        yes_lp: float | None = next((lp_map[t] for t in _YES_TOKENS if t in lp_map), None)
+        no_lp: float | None = next((lp_map[t] for t in _NO_TOKENS if t in lp_map), None)
+
+        if yes_lp is not None and no_lp is not None:
+            # Softmax по двум логитам → P(yes)
+            yes_p = 1.0 / (1.0 + math.exp(no_lp - yes_lp))
+            return yes_p
+        if yes_lp is not None:
+            # Только yes найден — нормализуем через sigmoid
+            return 1.0 / (1.0 + math.exp(-yes_lp))
+        if no_lp is not None:
+            return 1.0 - 1.0 / (1.0 + math.exp(-no_lp))
+
+    # -- путь 2: по тексту ответа --
+    response_text = (data.get("response") or "").strip().lower()
+    if response_text.startswith("yes"):
+        return 1.0
+    if response_text.startswith("no"):
+        return 0.0
+    return 0.5  # нейтральный fallback
+
+
+async def _rerank_single_ollama(
+    client: httpx.AsyncClient,
+    base_url: str,
+    model_id: str,
+    query: str,
+    document: str,
+    idx: int,
+) -> tuple[int, float]:
+    """
+    Один запрос к Ollama для одного документа.
+    Возвращает (idx, score) — индекс нужен для сборки результатов после asyncio.gather.
+    """
+    prompt = _OLLAMA_RERANK_PROMPT_TEMPLATE.format(
+        query=query,
+        document=document[:2000],  # обрезаем чтобы не превышать контекст
+    )
+    try:
+        response = await client.post(
+            f"{base_url.rstrip('/')}/api/generate",
+            json={
+                "model": model_id,
+                "prompt": prompt,
+                "stream": False,
+                "logprobs": True,
+                "top_logprobs": 5,
+            },
+        )
+        response.raise_for_status()
+        score = _logprob_score_from_response(response.json())
+    except Exception as exc:
+        logger.warning("RERANK_OLLAMA doc idx=%d failed: %s", idx, exc)
+        score = 0.0
+    return idx, score
+
+
+async def _rerank_hits_ollama(
+    query: str,
+    hits: list[SearchHit],
+    model: Any,  # RerankModel ORM-объект
+) -> list[SearchHit]:
+    """
+    Ollama-реранжирование: параллельные запросы /api/generate для каждого документа,
+    парсинг logprobs токена yes → relevance score.
+    """
+    documents = [h.text for h in hits]
+    base_url = model.base_url or ""
+    model_id = model.model_id
+    timeout = float(model.timeout_seconds)
+
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        tasks = [
+            _rerank_single_ollama(client, base_url, model_id, query, doc, idx)
+            for idx, doc in enumerate(documents)
+        ]
+        results: list[tuple[int, float]] = await asyncio.gather(*tasks)
+
+    results.sort(key=lambda x: x[1], reverse=True)
+    reranked = [hits[idx] for idx, _ in results]
+    logger.info(
+        "RERANK_OLLAMA done: model='%s' hits=%d top_scores=%s",
+        model_id,
+        len(reranked),
+        [round(s, 3) for _, s in sorted(results, key=lambda x: x[1], reverse=True)[:3]],
+    )
+    return reranked
+
+
 async def rerank_hits(
     query: str,
     hits: list[SearchHit],
@@ -447,6 +583,15 @@ async def rerank_hits(
         logger.info("RERANK_HITS skipped: empty hits list")
         return hits
 
+    # ── Ollama: генеративный режим ────────────────────────────────────────────
+    if model.provider == "ollama":
+        try:
+            return await _rerank_hits_ollama(query, hits, model)
+        except Exception:
+            logger.warning("RERANK_HITS ollama failed, returning original hits", exc_info=True)
+            return hits
+
+    # ── Стандартные провайдеры: openai_compatible / cohere / jina ─────────────
     documents = [h.text for h in hits]
     api_key = settings_service.decrypt_api_key(model.encrypted_api_key) if model.encrypted_api_key else ""
 

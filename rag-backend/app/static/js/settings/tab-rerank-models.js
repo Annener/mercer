@@ -102,15 +102,16 @@ const RerankModelsTabMixin = {
 
                 <div class="form-group">
                     <label>ID модели <span style="color:var(--color-error,#c00)">*</span></label>
-                    <input type="text" id="rerank-model-id" placeholder="bge-reranker-v2">
+                    <input type="text" id="rerank-model-id" placeholder="dengcao/Qwen3-Reranker-0.6B:Q8_0">
                     <small style="color:var(--color-text-muted,#888);margin-top:4px;display:block;">
-                        Slug-идентификатор, передаётся как <code>"model"</code> в API-запросе.
+                        Для Ollama — полное имя модели (например <code>dengcao/Qwen3-Reranker-0.6B:Q8_0</code>).
+                        Для других провайдеров — slug, передаётся как <code>"model"</code> в API-запросе.
                     </small>
                 </div>
 
                 <div class="form-group">
                     <label>Название (display name)</label>
-                    <input type="text" id="rerank-model-name" placeholder="BGE Reranker v2">
+                    <input type="text" id="rerank-model-name" placeholder="Qwen3 Reranker 0.6B">
                 </div>
 
                 <div class="form-group">
@@ -119,15 +120,16 @@ const RerankModelsTabMixin = {
                         <option value="openai_compatible">OpenAI Compatible</option>
                         <option value="cohere">Cohere</option>
                         <option value="jina">Jina</option>
+                        <option value="ollama">Ollama</option>
                     </select>
                 </div>
 
                 <div class="form-group">
                     <label>Base URL <span style="color:var(--color-error,#c00)">*</span></label>
-                    <input type="text" id="rerank-model-base-url" placeholder="http://localhost:8001">
+                    <input type="text" id="rerank-model-base-url" placeholder="http://localhost:11434">
                 </div>
 
-                <div class="form-group">
+                <div class="form-group" id="rerank-api-key-group">
                     <label>API Key</label>
                     <input type="password" id="rerank-model-api-key" placeholder="••••••••">
                     <small style="color:var(--color-text-muted,#888);margin-top:4px;display:block;">
@@ -156,6 +158,21 @@ const RerankModelsTabMixin = {
             if (e.target === modal) closeModal();
         });
 
+        // ── Ollama: скрыть API Key, обновить placeholder Base URL ──────────────
+        const providerSelect = modal.querySelector('#rerank-model-provider');
+        const apiKeyGroup = modal.querySelector('#rerank-api-key-group');
+        const baseUrlInput = modal.querySelector('#rerank-model-base-url');
+
+        const _onProviderChange = () => {
+            const isOllama = providerSelect.value === 'ollama';
+            apiKeyGroup.style.display = isOllama ? 'none' : '';
+            baseUrlInput.placeholder = isOllama
+                ? 'http://localhost:11434'
+                : 'http://localhost:8001';
+        };
+        providerSelect.addEventListener('change', _onProviderChange);
+        _onProviderChange(); // применить сразу при открытии
+
         modal.querySelector('#rerank-model-save-btn').addEventListener('click', async () => {
             const modelId = modal.querySelector('#rerank-model-id').value.trim();
             const baseUrl = modal.querySelector('#rerank-model-base-url').value.trim();
@@ -163,16 +180,21 @@ const RerankModelsTabMixin = {
             if (!modelId) { alert('Укажите ID модели'); return; }
             if (!baseUrl) { alert('Укажите Base URL'); return; }
 
+            const provider = modal.querySelector('#rerank-model-provider').value;
+
             const data = {
                 model_id: modelId,
                 display_name: modal.querySelector('#rerank-model-name').value.trim() || null,
-                provider: modal.querySelector('#rerank-model-provider').value,
+                provider,
                 base_url: baseUrl,
                 timeout_seconds: parseInt(modal.querySelector('#rerank-model-timeout').value, 10) || 30,
             };
 
-            const apiKey = modal.querySelector('#rerank-model-api-key').value;
-            if (apiKey) data.api_key = apiKey;
+            // API Key не нужен для Ollama
+            if (provider !== 'ollama') {
+                const apiKey = modal.querySelector('#rerank-model-api-key').value;
+                if (apiKey) data.api_key = apiKey;
+            }
 
             const saveBtn = modal.querySelector('#rerank-model-save-btn');
             saveBtn.disabled = true;
