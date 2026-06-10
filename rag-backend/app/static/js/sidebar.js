@@ -1,4 +1,25 @@
 // Логика sidebar
+
+// Safe localStorage wrapper — falls back to in-memory when access is denied
+const _storage = (() => {
+    try {
+        localStorage.setItem('__test__', '1');
+        localStorage.removeItem('__test__');
+        return {
+            getItem:    (k)    => localStorage.getItem(k),
+            setItem:    (k, v) => localStorage.setItem(k, v),
+            removeItem: (k)    => localStorage.removeItem(k),
+        };
+    } catch (_) {
+        const mem = {};
+        return {
+            getItem:    (k)    => (k in mem ? mem[k] : null),
+            setItem:    (k, v) => { mem[k] = String(v); },
+            removeItem: (k)    => { delete mem[k]; },
+        };
+    }
+})();
+
 class SidebarManager {
     constructor() {
         this.chatList = document.getElementById('chat-list');
@@ -16,10 +37,10 @@ class SidebarManager {
         this.currentRenameChatId = null;
         this.domains = [];
         this.domainCache = {};
-        this.currentDomain = localStorage.getItem('currentDomain') || null;
+        this.currentDomain = _storage.getItem('currentDomain') || null;
         // currentVaultId удалён — привязка через domain_id [iter2]
         // BUG FIX #3: используем null вместо пустой строки для безопасной передачи в createChat
-        const storedCampaignId = localStorage.getItem('currentCampaignId');
+        const storedCampaignId = _storage.getItem('currentCampaignId');
         this.currentCampaignId = storedCampaignId || null;
 
         this.initEventListeners();
@@ -42,9 +63,9 @@ class SidebarManager {
             // BUG FIX #3: сохраняем null вместо пустой строки при выборе «общего режима»
             this.currentCampaignId = e.target.value || null;
             if (this.currentCampaignId) {
-                localStorage.setItem('currentCampaignId', this.currentCampaignId);
+                _storage.setItem('currentCampaignId', this.currentCampaignId);
             } else {
-                localStorage.removeItem('currentCampaignId');
+                _storage.removeItem('currentCampaignId');
             }
         });
 
@@ -83,7 +104,7 @@ class SidebarManager {
             } else if (this.domains.length > 0) {
                 this.currentDomain = this.domains[0].domain_id;
                 if (this.domainSelector) this.domainSelector.value = this.currentDomain;
-                localStorage.setItem('currentDomain', this.currentDomain);
+                _storage.setItem('currentDomain', this.currentDomain);
             } else {
                 this.currentDomain = null;
             }
@@ -137,10 +158,10 @@ class SidebarManager {
     async switchDomain(domainId) {
         if (domainId === this.currentDomain) return;
         this.currentDomain = domainId;
-        localStorage.setItem('currentDomain', domainId);
+        _storage.setItem('currentDomain', domainId);
         // BUG FIX #3: сбрасываем в null, не в ''
         this.currentCampaignId = null;
-        localStorage.removeItem('currentCampaignId');
+        _storage.removeItem('currentCampaignId');
         // Снимаем блокировку селектора при смене домена
         this.unlockCampaign();
         if (window.chatManager) window.chatManager.reset();
@@ -240,7 +261,7 @@ class SidebarManager {
             await window.chatManager.loadChat(chatId);
             // Блокируем селектор кампании только если в чате есть сообщения И есть campaign_id.
             // Пустой чат (нет сообщений) — селектор остаётся разблокированным,
-            // даже если у чата уже прописан campaign_id.
+            // даже если у чата уже прописан campaign_id на бэкенде.
             const chat = window.chatManager.currentChat;
             const hasMessages = this._chatHasMessages();
             if (chat && chat.campaign_id && hasMessages) {
