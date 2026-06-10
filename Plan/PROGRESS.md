@@ -18,7 +18,7 @@
 | 4 | API роутер `rerank_models.py` + регистрация | [x] | — |
 | 5 | `_check_reranker_provider()` в `helpers.py` | [x] | — |
 | 6 | Логика rerankinga в `retrieval.py` | [x] | — |
-| 7 | Фронтенд: вкладка + `rerank_models.js` | [ ] | — |
+| 7 | Фронтенд: вкладка + `rerank_models.js` | [x] | — |
 | 8 | Удаление старых ключей `reranker.*` из platform_settings | [ ] | — |
 | 9 | Сквозное тестирование (manual QA) | [ ] | — |
 
@@ -35,6 +35,8 @@
 [Step 5] Добавлена функция `_check_reranker_provider(model: RerankModel)` в конец `helpers.py`. Добавлен импорт `RerankModel` в строку импортов. Существующие функции не тронуты. Поддерживаются openai_compatible / cohere / jina (единый формат POST /rerank).
 
 [Step 6] Добавлена функция `rerank_hits(query, hits, db)` в конец `retrieval.py`. Функция вызывает `settings_service.get_active_rerank_model(db)` — если модели нет или `enabled=False`, возвращает hits без изменений. Поддерживаются оба формата ответа провайдера: `relevance_score` и `score`. В `retrieve_multi_vault()` добавлен вызов `result = await rerank_hits(query, result, db)` сразу после `result = all_hits[:effective_top_k]`. Функция `retrieve()` не тронута. `httpx` был уже импортирован — новый импорт не добавлялся. Логирование: `RERANK_HITS start` и `RERANK_HITS done`.
+
+[Step 7] Создан `tab-rerank-models.js` (миксин по аналогии с emb/gen-моделями). Вкладка `rerank-models` добавлена в HTML (навешная панель и `<script>` тег). В `api.js` добавлены все rerank-методы (getRerankModels, createRerankModel, updateRerankModel, deleteRerankModel, activateRerankModel, deactivateRerankModel, checkRerankModel). В `settings.js` добавлены кейсы `rerank-models` в `loadTab()` и `_dispatch()` — без этого вкладка не рендерилась и кнопки не работали.
 
 ## Зависимости между шагами
 
