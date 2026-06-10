@@ -215,17 +215,12 @@ class PipelineExecutor:
         top_k = step.top_k or int(await settings_service.get("retrieval.top_k", db))
         domain_id: str | None = chat_context.get("domain_id")
         campaign_id: str | None = chat_context.get("campaign_id")
-        config = chat_context.get("config")
 
         vault_ids: list[str] = chat_context.get("vault_ids") or []
 
         document_ids: list[str] | None = None  # None = no filter
 
         if step.tag_ids:
-            # Шаг пайплайна изолирован от ограничений кампании:
-            # tag_ids шага — прямая инструкция автора пайплайна.
-            # Глобальные теги, не добавленные в кампанию, здесь доступны намеренно —
-            # пайплайн сам описывает, из каких источников брать данные на каждом шаге.
             if not domain_id:
                 logger.warning(
                     "Pipeline step skipped: tag_ids set but no domain_id in context. step=%s",
@@ -244,8 +239,6 @@ class PipelineExecutor:
                 return []
 
         elif campaign_id and domain_id:
-            # Шаг без tag_ids, но чат привязан к кампании —
-            # ограничиваем документами тегов кампании (собственные + явно подключённые глобальные)
             allowed = await get_allowed_tag_ids(domain_id, campaign_id, db)
             if not allowed:
                 logger.info(
@@ -276,13 +269,13 @@ class PipelineExecutor:
                 query, vault_ids[0],
                 document_ids=document_ids,
                 top_k=top_k,
-                config=config,
+                db=db,
             )
         return await retrieve_multi_vault(
             query, vault_ids,
             document_ids=document_ids,
             top_k=top_k,
-            config=config,
+            db=db,
         )
 
     async def _run_step(
@@ -418,7 +411,6 @@ def _ctx_dict(context: PipelineExecutionContext) -> dict[str, Any]:
         "mode": getattr(context, "mode", "general"),
         "confidence": getattr(context, "confidence", None),
         "reasoning": getattr(context, "reasoning", ""),
-        "config": getattr(context, "config", None),
     }
 
 
