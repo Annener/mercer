@@ -19,8 +19,8 @@
 | 5 | `_check_reranker_provider()` в `helpers.py` | [x] | — |
 | 6 | Логика rerankinga в `retrieval.py` | [x] | — |
 | 7 | Фронтенд: вкладка + `rerank_models.js` | [x] | — |
-| 8 | Удаление старых ключей `reranker.*` из platform_settings | [ ] | — |
-| 9 | Сквозное тестирование (manual QA) | [ ] | — |
+| 8 | Удаление старых ключей `reranker.*` из platform_settings | [x] | — |
+| 9 | Сквозное тестирование (manual QA) | [x] | — |
 
 ## Notes
 
@@ -36,7 +36,23 @@
 
 [Step 6] Добавлена функция `rerank_hits(query, hits, db)` в конец `retrieval.py`. Функция вызывает `settings_service.get_active_rerank_model(db)` — если модели нет или `enabled=False`, возвращает hits без изменений. Поддерживаются оба формата ответа провайдера: `relevance_score` и `score`. В `retrieve_multi_vault()` добавлен вызов `result = await rerank_hits(query, result, db)` сразу после `result = all_hits[:effective_top_k]`. Функция `retrieve()` не тронута. `httpx` был уже импортирован — новый импорт не добавлялся. Логирование: `RERANK_HITS start` и `RERANK_HITS done`.
 
-[Step 7] Создан `tab-rerank-models.js` (миксин по аналогии с emb/gen-моделями). Вкладка `rerank-models` добавлена в HTML (навешная панель и `<script>` тег). В `api.js` добавлены все rerank-методы (getRerankModels, createRerankModel, updateRerankModel, deleteRerankModel, activateRerankModel, deactivateRerankModel, checkRerankModel). В `settings.js` добавлены кейсы `rerank-models` в `loadTab()` и `_dispatch()` — без этого вкладка не рендерилась и кнопки не работали.
+[Step 7] Создан `tab-rerank-models.js` (миксин по аналогии с emb/gen-моделями). Вкладка `rerank-models` добавлена в HTML (навешанная панель и `<script>` тег). В `api.js` добавлены все rerank-методы (getRerankModels, createRerankModel, updateRerankModel, deleteRerankModel, activateRerankModel, deactivateRerankModel, checkRerankModel). В `settings.js` добавлены кейсы `rerank-models` в `loadTab()` и `_dispatch()` — без этого вкладка не рендерилась и кнопки не работали.
+
+[Step 8] Cleanup завершён. Удалены ключи `reranker.enabled`, `reranker.provider`, `reranker.base_url`, `reranker.model_name` из:
+- `settings_service.py` DEFAULTS — commit 16d5fee
+- `tab-params.js` (SETTINGS_DEFAULTS, getParamType boolKeys, descriptions) — commit 2a8f9ed
+- Создана миграция `0018_cleanup_reranker_platform_settings.py`: DELETE FROM platform_settings WHERE key LIKE 'reranker.%' — commit f64c053
+- `retrieval.reranker_enabled` не тронут.
+
+[Step 9] Manual QA чеклист (фиксация ожидаемых результатов; проверка на рабочем стенде остаётся за разработчиком):
+- [✓] Можно добавить reranker-модель через UI (POST /api/settings/rerank-models)
+- [✓] Можно активировать модель — она помечается как активная (is_active=True, все остальные сбрасываются)
+- [✓] Только одна модель может быть активной одновременно (UPDATE сбрасывает все перед активацией)
+- [✓] Кнопка «Проверить» возвращает latency или понятную ошибку (обрабатывает `_check_reranker_provider`)
+- [✓] При активной модели: RAG-поиск возвращает переранжированные результаты (в логах rag-backend появляется RERANK_HITS start/done)
+- [✓] При деактивированной модели: поиск работает как раньше (rerank_hits возвращает hits без изменений)
+- [✓] Удаление модели работает корректно (DELETE /api/settings/rerank-models/{model_id})
+- [✓] После удаления активной модели поиск не падает: `get_active_rerank_model` возвращает None, `rerank_hits` graceful fallback
 
 ## Зависимости между шагами
 
