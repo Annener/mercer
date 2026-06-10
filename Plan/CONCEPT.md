@@ -205,6 +205,9 @@ if db is not None:
 return result
 ```
 
+**Важно:** `httpx` уже используется в `retrieval.py` для embedding-запросов, дополнительный
+импорт не нужен. Если при чтении файла `import httpx` отсутствует — добавить в блок импортов.
+
 ### 7. __init__.py настроек — регистрация нового роутера
 
 Файл: `rag-backend/app/api/settings/__init__.py`
@@ -245,8 +248,10 @@ return result
 - **timeout_seconds** (число, default 30)
 
 ### JS файл
-Создать отдельный файл: `frontend/static/js/rerank_models.js`
-По аналогии с существующими файлами для embedding/generation моделей.
+Создать отдельный файл: `rag-backend/app/static/js/settings/tab-rerank-models.js`
+По аналогии с существующими файлами:
+- `rag-backend/app/static/js/settings/tab-emb-models.js`
+- `rag-backend/app/static/js/settings/tab-gen-models.js`
 
 ---
 
