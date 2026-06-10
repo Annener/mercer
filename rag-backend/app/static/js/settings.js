@@ -32,14 +32,15 @@ class SettingsManager {
         try {
             let html = '';
             switch (tab) {
-                case 'domains':    html = await this.renderDomainsTab(); break;
-                case 'params':     html = await this.renderParamsTab(); break;
-                case 'gen-models': html = await this.renderGenerationModelsTab(); break;
-                case 'emb-models': html = await this.renderEmbeddingModelsTab(); break;
-                case 'vaults':     html = await this.renderVaultsTab(); break;
-                case 'pipelines':  html = await this.renderPipelinesTab(); break;
-                case 'campaigns':  html = await this.renderCampaignsTab(); break;
-                case 'documents':  html = await this.renderDocumentsTab(); break;
+                case 'domains':       html = await this.renderDomainsTab(); break;
+                case 'params':        html = await this.renderParamsTab(); break;
+                case 'gen-models':    html = await this.renderGenerationModelsTab(); break;
+                case 'emb-models':    html = await this.renderEmbeddingModelsTab(); break;
+                case 'rerank-models': html = await this.renderRerankModelsTab(); break;
+                case 'vaults':        html = await this.renderVaultsTab(); break;
+                case 'pipelines':     html = await this.renderPipelinesTab(); break;
+                case 'campaigns':     html = await this.renderCampaignsTab(); break;
+                case 'documents':     html = await this.renderDocumentsTab(); break;
                 default: html = '<div>Вкладка не найдена</div>';
             }
             this._tabContent.innerHTML = html;
@@ -95,14 +96,15 @@ class SettingsManager {
 
     async _dispatch(tab, action, id, btn) {
         switch (tab) {
-            case 'domains':    await this.handleDomainsAction(action, id, btn); break;
-            case 'params':     await this.handleParamsAction(action, id, btn); break;
-            case 'gen-models': await this.handleGenModelsAction(action, id, btn); break;
-            case 'emb-models': await this.handleEmbModelsAction(action, id, btn); break;
-            case 'vaults':     await this.handleVaultsAction(action, id, btn); break;
-            case 'pipelines':  await this.handlePipelinesAction(action, id, btn); break;
-            case 'campaigns':  await this.handleCampaignsAction(action, id, btn); break;
-            case 'documents':  await this.handleDocumentsAction(action, btn); break;
+            case 'domains':       await this.handleDomainsAction(action, id, btn); break;
+            case 'params':        await this.handleParamsAction(action, id, btn); break;
+            case 'gen-models':    await this.handleGenModelsAction(action, id, btn); break;
+            case 'emb-models':    await this.handleEmbModelsAction(action, id, btn); break;
+            case 'rerank-models': await this.handleRerankModelsAction(action, id, btn); break;
+            case 'vaults':        await this.handleVaultsAction(action, id, btn); break;
+            case 'pipelines':     await this.handlePipelinesAction(action, id, btn); break;
+            case 'campaigns':     await this.handleCampaignsAction(action, id, btn); break;
+            case 'documents':     await this.handleDocumentsAction(action, btn); break;
         }
     }
 
