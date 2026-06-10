@@ -24,6 +24,10 @@ STORAGE_API_URL = os.getenv("STORAGE_API_URL", "http://db-api-server:8080")
 # приводит к таймаутам. Значение можно переопределить через env RERANK_OLLAMA_CONCURRENCY.
 _RERANK_OLLAMA_CONCURRENCY = int(os.getenv("RERANK_OLLAMA_CONCURRENCY", "1"))
 
+# Максимум токенов для ответа реранкера. Нужно только "yes"/"no" — хватит 32.
+# Без ограничения Qwen3-Reranker уходит в бесконечный <think>...</think> и зависает.
+_RERANK_OLLAMA_NUM_PREDICT = int(os.getenv("RERANK_OLLAMA_NUM_PREDICT", "32"))
+
 
 async def delete_document_chunks(document_id: str, vault_id: str) -> None:
     """
@@ -500,11 +504,11 @@ async def _rerank_single_ollama(
 
     semaphore ограничивает параллелизм: Ollama обрабатывает запросы последовательно,
     поэтому N параллельных запросов → каждый ждёт N*T секунд → таймаут.
-    По умолчанию concurrency=1 (строго последовательно). Можно увеличить через
-    переменную окружения RERANK_OLLAMA_CONCURRENCY если Ollama запущена с --parallel.
+    По умолчанию concurrency=1 (строго последовательно).
 
-    Примечание: Ollama /api/generate НЕ поддерживает параметры logprobs/top_logprobs
-    (это параметры OpenAI API). Оцениваем релевантность по тексту ответа.
+    num_predict ограничивает длину ответа: без него Qwen3-Reranker уходит в
+    бесконечный <think>...</think> блок и никогда не выдаёт финальный yes/no.
+    Достаточно 32 токенов — весь полезный ответ умещается в 1-3 токена.
     """
     prompt = _OLLAMA_RERANK_PROMPT_TEMPLATE.format(
         query=query,
@@ -518,6 +522,10 @@ async def _rerank_single_ollama(
                     "model": model_id,
                     "prompt": prompt,
                     "stream": False,
+                    "options": {
+                        "temperature": 0,
+                        "num_predict": _RERANK_OLLAMA_NUM_PREDICT,
+                    },
                 },
             )
             response.raise_for_status()
@@ -527,10 +535,10 @@ async def _rerank_single_ollama(
             response_text = data.get("response", "")
             score = _score_from_response_text(response_text)
             logger.debug(
-                "RERANK_OLLAMA idx=%d score=%.3f last_tokens=%r",
-                idx, score, response_text.strip()[-40:],
+                "RERANK_OLLAMA idx=%d score=%.3f response=%r",
+                idx, score, response_text.strip(),
             )
-        except Exception as exc:
+        except Exception:
             logger.warning("RERANK_OLLAMA doc idx=%d failed", idx, exc_info=True)
             score = 0.0
     return idx, score
@@ -549,8 +557,7 @@ async def _rerank_hits_ollama(
     (N-1) других и превышает timeout. Semaphore гарантирует не более
     RERANK_OLLAMA_CONCURRENCY одновременных HTTP-запросов.
 
-    timeout у httpx.AsyncClient должен покрывать время одного запроса (не всех N),
-    поэтому берём model.timeout_seconds как per-request timeout.
+    timeout у httpx.AsyncClient покрывает время одного запроса (не всех N).
     """
     documents = [h.text for h in hits]
     base_url = model.base_url or ""
@@ -633,5 +640,5 @@ async def rerank_hits(
 
     scored.sort(key=lambda x: x[0], reverse=True)
     reranked = [hit for _, hit in scored]
-    logger.info("RERANK_HITS done: reranked %d hits via model='%s'", len(reranked), model.model_id)
+    logger.info("RERANK_HITS done: reranked %d hits via model='%s'\n", len(reranked), model.model_id)
     return reranked
