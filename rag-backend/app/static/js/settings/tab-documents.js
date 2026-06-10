@@ -203,6 +203,20 @@ const DocumentsTabMixin = {
         return set;
     },
 
+    // ─── Рекурсивный сбор всех doc-объектов из поддерева ────────────────────
+
+    _collectDirDocs(node) {
+        const result = [];
+        for (const child of Object.values(node.children || {})) {
+            if (child._isDir) {
+                result.push(...this._collectDirDocs(child));
+            } else {
+                result.push(child.doc);
+            }
+        }
+        return result;
+    },
+
     _renderDocsTree(node, container, depth, openDirs) {
         const entries = Object.entries(node.children || {}).sort(([aName, aNode], [bName, bNode]) => {
             if (aNode._isDir !== bNode._isDir) return aNode._isDir ? -1 : 1;
@@ -223,9 +237,11 @@ const DocumentsTabMixin = {
                 dirRow.dataset.dirKey = dirKey;
                 dirRow.innerHTML = `
                     <td colspan="1" class="docs-dir-cell" style="padding-left:${8 + depth * 18}px;">
-                        <span class="docs-dir-toggle">${isOpen ? '▾' : '▸'}</span>
-                        <span class="docs-dir-icon">📁</span>
-                        <span class="docs-dir-name">${this.escapeHtml(name)}</span>
+                        <span class="docs-dir-toggle" title="Раскрыть / свернуть">${isOpen ? '▾' : '▸'}</span>
+                        <span class="docs-dir-label" title="Управление тегами каталога">
+                            <span class="docs-dir-icon">📁</span>
+                            <span class="docs-dir-name">${this.escapeHtml(name)}</span>
+                        </span>
                         <span class="docs-dir-count">(${countFiles(child)})</span>
                     </td>`;
                 container.appendChild(dirRow);
@@ -236,11 +252,19 @@ const DocumentsTabMixin = {
                 childGroup._pathPrefix = dirKey;
                 childGroup.style.display = isOpen ? '' : 'none';
 
-                dirRow.addEventListener('click', () => {
+                // Клик по стрелке — только раскрыть/свернуть
+                dirRow.querySelector('.docs-dir-toggle').addEventListener('click', (e) => {
+                    e.stopPropagation();
                     const nowOpen = childGroup.style.display !== 'none';
                     childGroup.style.display = nowOpen ? 'none' : '';
                     dirRow.querySelector('.docs-dir-toggle').textContent = nowOpen ? '▸' : '▾';
                     if (nowOpen) openDirs.delete(dirKey); else openDirs.add(dirKey);
+                });
+
+                // Клик по имени папки — открыть модалку тегов каталога
+                dirRow.querySelector('.docs-dir-label').addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    this._openDirModal(name, child);
                 });
 
                 dirRow.after(childGroup);
@@ -489,6 +513,224 @@ const DocumentsTabMixin = {
                 if (attempts > 20) { clearInterval(this._docsIndexPollTimer); this._docsIndexPollTimer = null; }
             }
         }, 3000);
+    },
+
+    // ─── Модальное окно каталога ─────────────────────────────────────────────
+
+    async _openDirModal(dirName, dirNode) {
+        const domainId = this._activeDomainId || await this._resolveDomainId();
+
+        // Собираем все файлы из поддерева
+        const allDocs = this._collectDirDocs(dirNode);
+
+        document.getElementById('docs-dir-modal-backdrop')?.remove();
+
+        const backdrop = document.createElement('div');
+        backdrop.id = 'docs-dir-modal-backdrop';
+        backdrop.className = 'docs-modal-backdrop';
+
+        backdrop.innerHTML = `
+        <div class="docs-modal docs-dir-modal" role="dialog" aria-modal="true" aria-label="Теги каталога">
+            <div class="docs-modal-header">
+                <div class="docs-modal-title">
+                    <span class="docs-modal-filename">📁 ${this.escapeHtml(dirName)}</span>
+                    <span class="docs-dir-modal-count">${allDocs.length} файл(ов)</span>
+                </div>
+                <button class="docs-modal-close" data-action="close-dir-modal" aria-label="Закрыть">✕</button>
+            </div>
+            <div class="docs-modal-body docs-dir-modal-body">
+                <div id="docs-dir-modal-inner">
+                    <div style="color:var(--color-text-muted);font-size:13px;">Загрузка тегов…</div>
+                </div>
+            </div>
+        </div>`;
+
+        document.body.appendChild(backdrop);
+        document.body.style.overflow = 'hidden';
+
+        const closeModal = () => {
+            backdrop.remove();
+            document.body.style.overflow = '';
+        };
+        backdrop.addEventListener('click', e => { if (e.target === backdrop) closeModal(); });
+        backdrop.querySelector('[data-action="close-dir-modal"]').addEventListener('click', closeModal);
+        const escHandler = e => { if (e.key === 'Escape') { closeModal(); document.removeEventListener('keydown', escHandler); } };
+        document.addEventListener('keydown', escHandler);
+
+        try {
+            const resp = domainId ? await this.api.getTags(domainId) : [];
+            const globalTags = Array.isArray(resp) ? resp : (resp.global_tags || []);
+            const byCampaign = resp?.by_campaign ? Object.values(resp.by_campaign).flat() : [];
+            const allTags = [...globalTags, ...byCampaign];
+
+            this._renderDirModalInner(
+                backdrop.querySelector('#docs-dir-modal-inner'),
+                allTags,
+                allDocs,
+                closeModal
+            );
+        } catch (e) {
+            const inner = backdrop.querySelector('#docs-dir-modal-inner');
+            if (inner) inner.innerHTML = `<div style="color:var(--color-error);">Ошибка загрузки тегов: ${this.escapeHtml(e.message)}</div>`;
+        }
+    },
+
+    _renderDirModalInner(container, allTags, allDocs, closeModal) {
+        // Для каждого тега: посчитать сколько файлов его имеют
+        const tagDocCount = {}; // tagId -> кол-во файлов с этим тегом
+        for (const doc of allDocs) {
+            for (const t of (doc.tags || [])) {
+                const tid = String(typeof t === 'object' ? t.id : t);
+                tagDocCount[tid] = (tagDocCount[tid] || 0) + 1;
+            }
+        }
+
+        // Уникальные теги присутствующие хотя бы у одного файла (для секции «Снять»)
+        const presentTagIds = Object.keys(tagDocCount);
+        const presentTags = presentTagIds
+            .map(tid => allTags.find(t => String(t.id) === tid))
+            .filter(Boolean);
+
+        // Рендер секции «Назначить»
+        const assignBadges = allTags.map(t => {
+            const tid = String(t.id);
+            const allHaveIt = tagDocCount[tid] === allDocs.length && allDocs.length > 0;
+            return `<span class="badge docs-dir-tag-assign ${allHaveIt ? 'is-disabled' : 'is-active'}"
+                data-tag-id="${tid}"
+                data-tag-color="${this.escapeHtml(t.color || '')}"
+                style="background:${allHaveIt ? 'var(--color-surface-offset)' : (t.color || 'var(--color-primary)')};
+                       color:${allHaveIt ? 'var(--color-text-faint)' : 'white'};
+                       border:1px solid ${allHaveIt ? 'var(--color-border)' : (t.color || 'var(--color-primary)')};
+                       cursor:${allHaveIt ? 'default' : 'pointer'};
+                       opacity:${allHaveIt ? '0.55' : '1'};
+                       margin:2px;"
+                title="${allHaveIt ? 'Все файлы уже имеют этот тег' : 'Назначить на все файлы каталога'}"
+            >${this.escapeHtml(t.name)}</span>`;
+        }).join('');
+
+        // Рендер секции «Снять»
+        const removeBadges = presentTags.length
+            ? presentTags.map(t => {
+                const tid = String(t.id);
+                return `<span class="badge docs-dir-tag-remove is-active"
+                    data-tag-id="${tid}"
+                    style="background:${t.color || 'var(--color-primary)'};
+                           color:white;
+                           border:1px solid ${t.color || 'var(--color-primary)'};
+                           cursor:pointer;margin:2px;"
+                    title="Снять со всех файлов каталога где он есть"
+                >${this.escapeHtml(t.name)}</span>`;
+            }).join('')
+            : '<span style="color:var(--color-text-faint);font-size:13px;">Нет тегов ни на одном файле</span>';
+
+        container.innerHTML = `
+            <div class="docs-dir-modal-section">
+                <div class="docs-modal-section-title">Назначить тег на все файлы каталога</div>
+                <div class="docs-dir-tag-list" id="docs-dir-assign-list">
+                    ${allTags.length ? assignBadges : '<span style="color:var(--color-text-faint);font-size:13px;">Тегов нет</span>'}
+                </div>
+                <div id="docs-dir-assign-status" class="docs-dir-modal-status" style="display:none;"></div>
+            </div>
+            <div class="docs-dir-modal-divider"></div>
+            <div class="docs-dir-modal-section">
+                <div class="docs-modal-section-title">Снять тег со всех файлов каталога</div>
+                <div class="docs-dir-tag-list" id="docs-dir-remove-list">
+                    ${removeBadges}
+                </div>
+                <div id="docs-dir-remove-status" class="docs-dir-modal-status" style="display:none;"></div>
+            </div>`;
+
+        // ── Обработчики: назначить ──
+        container.querySelectorAll('.docs-dir-tag-assign.is-active').forEach(badge => {
+            badge.addEventListener('click', async () => {
+                const tagId = badge.dataset.tagId;
+                const tagColor = badge.dataset.tagColor;
+                const statusEl = container.querySelector('#docs-dir-assign-status');
+                await this._applyDirTagOp({
+                    docs: allDocs,
+                    tagId,
+                    mode: 'assign',
+                    statusEl,
+                    container,
+                    closeModal,
+                    allTags,
+                });
+            });
+        });
+
+        // ── Обработчики: снять ──
+        container.querySelectorAll('.docs-dir-tag-remove.is-active').forEach(badge => {
+            badge.addEventListener('click', async () => {
+                const tagId = badge.dataset.tagId;
+                const statusEl = container.querySelector('#docs-dir-remove-status');
+                await this._applyDirTagOp({
+                    docs: allDocs,
+                    tagId,
+                    mode: 'remove',
+                    statusEl,
+                    container,
+                    closeModal,
+                    allTags,
+                });
+            });
+        });
+    },
+
+    async _applyDirTagOp({ docs, tagId, mode, statusEl, container, closeModal, allTags }) {
+        // Блокируем все badge на время операции
+        container.querySelectorAll('.docs-dir-tag-assign, .docs-dir-tag-remove').forEach(b => {
+            b.style.pointerEvents = 'none';
+            b.style.opacity = '0.5';
+        });
+
+        if (statusEl) {
+            statusEl.style.display = 'block';
+            statusEl.className = 'docs-dir-modal-status docs-dir-modal-status--loading';
+            statusEl.textContent = '⏳ Обрабатывается…';
+        }
+
+        const errors = [];
+
+        for (const doc of docs) {
+            const currentTagIds = (doc.tags || []).map(t => String(typeof t === 'object' ? t.id : t));
+            const hasTag = currentTagIds.includes(tagId);
+
+            let newTagIds;
+            if (mode === 'assign') {
+                if (hasTag) continue; // уже есть — пропускаем
+                newTagIds = [...currentTagIds, tagId];
+            } else {
+                if (!hasTag) continue; // нет — пропускаем
+                newTagIds = currentTagIds.filter(id => id !== tagId);
+            }
+
+            try {
+                await this.api.updateDocumentLabels(String(doc.id), newTagIds);
+            } catch (e) {
+                errors.push(doc.source_path || doc.path || String(doc.id));
+            }
+        }
+
+        // Разблокируем badges
+        container.querySelectorAll('.docs-dir-tag-assign, .docs-dir-tag-remove').forEach(b => {
+            b.style.pointerEvents = '';
+            b.style.opacity = '';
+        });
+
+        if (statusEl) {
+            if (errors.length) {
+                statusEl.className = 'docs-dir-modal-status docs-dir-modal-status--error';
+                statusEl.innerHTML = `⚠️ Не удалось обновить ${errors.length} файл(ов):<br>
+                    <span style="font-size:11px;color:var(--color-text-muted);">${errors.map(p => this.escapeHtml(p)).join('<br>')}</span>`;
+            } else {
+                statusEl.className = 'docs-dir-modal-status docs-dir-modal-status--ok';
+                statusEl.textContent = '✅ Готово';
+                setTimeout(() => { statusEl.style.display = 'none'; }, 2000);
+            }
+        }
+
+        // Обновляем дерево документов в фоне
+        await this.loadDocumentsData();
     },
 
     // ─── Модальное окно документа ───────────────────────────────────────────
