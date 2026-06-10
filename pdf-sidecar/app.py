@@ -1,10 +1,10 @@
 """
-pdf-sidecar — FastAPI HTTP-сервер для парсинга PDF через unstructured (hi_res).
-
-Принимает PDF-файл по HTTP multipart POST /parse или /parse/stream.
+pdf-sidecar — FastAPI HTTP-сервер для парсинга PDF через unstructured (hi_res)
+и реранжирования через CrossEncoder.
 
 /parse         — синхронный, возвращает JSON после полного завершения
 /parse/stream  — NDJSON-поток с прогресс-событиями по страницам и финальным результатом
+/rerank        — реранжирование документов через CrossEncoder (BAAI/bge-reranker-v2-m3)
 
 FIX v3:
   - Логирование через dictConfig (нет дублей)
@@ -25,7 +25,10 @@ FIX v3.2:
     exc_info=True читает sys.exc_info() из текущего контекста, но вне блока
     except переменная exc не определена → UnboundLocalError:
     "cannot access local variable 'exc' where it is not associated with a value".
-    Передача объекта напрямую позволяет logging извлечь трейсбек из него.
+    Передача объекта напрямую позволяет logging извлечь трейбек из него.
+
+v4.0:
+  - Добавлен эндпоинт POST /rerank и прогрев CrossEncoder в lifespan.
 """
 from __future__ import annotations
 
@@ -42,9 +45,11 @@ from typing import Any
 import uvicorn
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel
 
 from parser import parse_pdf_unstructured, warmup_models
 from preprocessor import preprocess
+from reranker import load_reranker, rerank, is_loaded
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 PORT = int(os.getenv("PDF_SIDECAR_PORT", "8765"))
@@ -76,9 +81,6 @@ logging.config.dictConfig({
         },
     },
     "loggers": {
-        # propagate=True → сообщения идут в root (console + file).
-        # handlers=[] → НЕ добавляем своих хендлеров, иначе uvicorn
-        # при log_config=None добавит ещё один и будет дубль.
         "uvicorn": {"handlers": [], "propagate": True},
         "uvicorn.error": {"handlers": [], "propagate": True},
         "uvicorn.access": {"handlers": [], "propagate": True},
@@ -99,16 +101,27 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("=== PDF Sidecar starting up — warming up models ===")
+
+    # Прогрев PDF-парсера
     try:
         await asyncio.to_thread(warmup_models)
-        logger.info("=== Warmup complete — ready to accept requests ===")
+        logger.info("PDF parser warmup complete")
     except Exception as exc:
-        logger.warning("Warmup failed (non-fatal): %s", exc)
+        logger.warning("PDF parser warmup failed (non-fatal): %s", exc)
+
+    # Прогрев reranker — загрузка CrossEncoder один раз при старте
+    try:
+        await asyncio.to_thread(load_reranker)
+        logger.info("Reranker warmup complete")
+    except Exception as exc:
+        logger.warning("Reranker warmup failed (non-fatal): %s", exc)
+
+    logger.info("=== Warmup complete — ready to accept requests ===")
     yield
     logger.info("=== PDF Sidecar shutting down ===")
 
 
-app = FastAPI(title="PDF Sidecar", version="3.2.0", lifespan=lifespan)
+app = FastAPI(title="PDF Sidecar", version="4.0.0", lifespan=lifespan)
 
 
 # ---------------------------------------------------------------------------
@@ -117,7 +130,11 @@ app = FastAPI(title="PDF Sidecar", version="3.2.0", lifespan=lifespan)
 
 @app.get("/health")
 async def health() -> dict[str, str]:
-    return {"status": "ok", "service": "pdf-sidecar"}
+    return {
+        "status": "ok",
+        "service": "pdf-sidecar",
+        "reranker_loaded": str(is_loaded()),
+    }
 
 
 @app.post("/parse")
@@ -164,19 +181,6 @@ async def parse_pdf_stream(file: UploadFile = File(...)) -> StreamingResponse:
       {"type":"progress","page":N,"total":M,"elapsed":X,"elements":K,"has_table":bool}
       {"type":"result", ...полный результат...}
       {"type":"error",  "detail":"..."}
-
-    Прогресс-события генерируются:
-      - В single-pass режиме (маленькие PDF): по одной после каждой страницы
-      - В параллельном режиме: пачками после завершения каждого батча
-
-    Таймаут клиента: применяется только к каждому read-chunk,
-    а не ко всему запросу. Heartbeat держит соединение живым.
-
-    ВАЖНО: используем asyncio.Queue (не queue.SimpleQueue + run_in_executor).
-    Схема с SimpleQueue приводила к утечке потоков при TimeoutError — каждый
-    истёкший wait_for оставлял поток висеть на progress_q.get(). Один из них
-    перехватывал sentinel None, и основной цикл никогда не получал сигнал
-    завершения → бесконечное зависание.
     """
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are accepted.")
@@ -195,23 +199,11 @@ async def parse_pdf_stream(file: UploadFile = File(...)) -> StreamingResponse:
             tmp.write(pdf_bytes)
             tmp_path = tmp.name
 
-        # asyncio.Queue — единственный безопасный способ передавать события
-        # из потока (run_in_executor) в async-генератор без утечки потоков.
-        #
-        # Почему НЕ queue.SimpleQueue + run_in_executor:
-        #   При TimeoutError wait_for отменяет future-обёртку, но НЕ сам поток
-        #   заблокированный на SimpleQueue.get(). Эти потоки накапливаются и
-        #   могут перехватить sentinel None раньше основного цикла.
-        #
-        # asyncio.Queue.get() — корутина, отменяется cleanly при TimeoutError,
-        # никаких лишних потоков не создаётся.
         progress_q: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
         loop = asyncio.get_event_loop()
         t_start = time.monotonic()
 
         def _on_progress(page_num: int, total_pages: int, n_elements: int, has_table: bool):
-            # Вызывается из потока executor — кладём событие в asyncio.Queue
-            # через thread-safe call_soon_threadsafe.
             loop.call_soon_threadsafe(
                 progress_q.put_nowait,
                 {
@@ -238,41 +230,29 @@ async def parse_pdf_stream(file: UploadFile = File(...)) -> StreamingResponse:
             except Exception as exc:
                 error_holder.append(exc)
             finally:
-                # Sentinel — сигнал завершения парсинга.
-                # call_soon_threadsafe гарантирует порядок: sentinel встанет
-                # в очередь ПОСЛЕ всех progress-событий.
                 loop.call_soon_threadsafe(progress_q.put_nowait, None)
 
         parse_task = asyncio.ensure_future(
             asyncio.to_thread(_run_parse)
         )
 
-        # Читаем очередь и стримим прогресс клиенту.
-        # asyncio.Queue.get() — корутина, отменяется без утечки потоков.
         try:
             while True:
                 try:
                     event = await asyncio.wait_for(progress_q.get(), timeout=5.0)
                 except asyncio.TimeoutError:
-                    # Парсинг ещё идёт, очередь пуста — keepalive пустая строка
                     yield "\n"
                     continue
 
                 if event is None:
-                    # Sentinel — парсинг завершён
                     break
 
                 yield json.dumps(event, ensure_ascii=False) + "\n"
         finally:
-            # Дожидаемся завершения потока парсинга в любом случае
             await parse_task
             Path(tmp_path).unlink(missing_ok=True)
 
         if error_holder:
-            # FIX v3.2: передаём объект исключения напрямую в exc_info=,
-            # а не exc_info=True. exc_info=True читает sys.exc_info() из
-            # текущего контекста, но здесь мы вне блока except — переменная
-            # exc не определена в этой области видимости → UnboundLocalError.
             parse_exc = error_holder[0]
             logger.error("Parsing failed for %s: %s", filename, parse_exc, exc_info=parse_exc)
             yield json.dumps(
@@ -283,8 +263,6 @@ async def parse_pdf_stream(file: UploadFile = File(...)) -> StreamingResponse:
 
         result = result_holder[0]
 
-        # Препроцессинг — выносим в to_thread чтобы не блокировать event loop
-        # на больших документах
         def _preprocess_pages(pages: list[dict]) -> list[dict]:
             for page in pages:
                 source_hint = f"{filename}:page_{page.get('page_number', '?')}"
@@ -306,6 +284,43 @@ async def parse_pdf_stream(file: UploadFile = File(...)) -> StreamingResponse:
         media_type="application/x-ndjson",
         headers={"X-Content-Type-Options": "nosniff"},
     )
+
+
+class RerankRequest(BaseModel):
+    model: str = "BAAI/bge-reranker-v2-m3"
+    query: str
+    documents: list[str]
+
+
+@app.post("/rerank")
+async def rerank_documents(req: RerankRequest) -> JSONResponse:
+    """
+    Реранжирует документы относительно запроса через CrossEncoder.
+
+    Формат ответа совместим с openai_compatible /rerank провайдерами:
+      {"results": [{"index": 0, "relevance_score": 0.92}, ...]}
+    """
+    if not is_loaded():
+        raise HTTPException(status_code=503, detail="Reranker model is not loaded yet.")
+    if not req.documents:
+        return JSONResponse(content={"results": []})
+
+    logger.info(
+        "RERANK query='%s' documents=%d",
+        req.query[:80], len(req.documents),
+    )
+
+    try:
+        results = await asyncio.to_thread(rerank, req.query, req.documents)
+    except Exception as exc:
+        logger.error("Rerank failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Rerank error: {exc}") from exc
+
+    logger.info(
+        "RERANK done: top_score=%.3f",
+        results[0]["relevance_score"] if results else 0.0,
+    )
+    return JSONResponse(content={"results": results})
 
 
 if __name__ == "__main__":
