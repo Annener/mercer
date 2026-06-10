@@ -12,7 +12,7 @@ from sqlalchemy import or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import AppConfig, EmbeddingModelConfig
 from app.services.settings_service import settings_service
-from app.db.models import Tag, Document, DocumentLabel, Vault
+from app.db.models import Tag, Document, DocumentLabel, Vault, campaign_tags
 from shared_contracts.models import SearchHit, SearchRequest, SearchResponse
 
 logger = logging.getLogger(__name__)
@@ -49,27 +49,43 @@ async def get_allowed_tag_ids(
     Возвращает множество tag_id доступных в данном контексте.
 
     Теги принадлежат домену (не Vault):
-    - campaign_id задан → теги этой кампании + глобальные теги домена (campaign_id IS NULL)
-    - campaign_id = None → только глобальные теги домена
+    - campaign_id задан →
+        1. Собственные теги кампании (Tag.campaign_id == campaign_id)
+        2. Глобальные теги домена (campaign_id IS NULL), явно подключённые
+           к кампании через таблицу campaign_tags
+      Глобальные теги домена, НЕ добавленные в кампанию, недоступны.
+    - campaign_id = None → только глобальные теги домена (campaign_id IS NULL)
 
     Инвариант: пустое множество = кампания существует, но тегов нет →
     вызывающий код должен вернуть document_ids=[] (не None), т.е. не расширяться на весь домен.
     """
     if campaign_id:
-        stmt = select(Tag.id).where(
+        camp_uuid = uuid.UUID(campaign_id)
+        # 1. Собственные теги кампании
+        own_stmt = select(Tag.id).where(
             Tag.domain_id == domain_id,
-            or_(
+            Tag.campaign_id == camp_uuid,
+        )
+        # 2. Глобальные теги домена, явно подключённые через campaign_tags
+        linked_stmt = (
+            select(Tag.id)
+            .join(campaign_tags, campaign_tags.c.tag_id == Tag.id)
+            .where(
+                Tag.domain_id == domain_id,
                 Tag.campaign_id.is_(None),
-                Tag.campaign_id == uuid.UUID(campaign_id),
+                campaign_tags.c.campaign_id == camp_uuid,
             )
         )
+        own = (await db.execute(own_stmt)).scalars().all()
+        linked = (await db.execute(linked_stmt)).scalars().all()
+        return {str(t) for t in own} | {str(t) for t in linked}
     else:
         stmt = select(Tag.id).where(
             Tag.domain_id == domain_id,
             Tag.campaign_id.is_(None),
         )
-    result = await db.execute(stmt)
-    return {str(row) for row in result.scalars().all()}
+        result = await db.execute(stmt)
+        return {str(row) for row in result.scalars().all()}
 
 
 async def get_document_ids_by_tags(
