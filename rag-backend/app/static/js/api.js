@@ -660,6 +660,66 @@ class ChatAPI {
         return response.json();
     }
 
+    // === Settings: Rerank Models CRUD ===
+
+    async getRerankModels() {
+        const response = await fetch(`${this.baseUrl}/api/settings/models/rerank`);
+        if (!response.ok) throw new Error(`Failed to get rerank models: ${response.statusText}`);
+        return response.json();
+    }
+
+    async createRerankModel(data) {
+        const response = await fetch(`${this.baseUrl}/api/settings/models/rerank`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data),
+        });
+        if (!response.ok) throw new Error(`Failed to create rerank model: ${response.statusText}`);
+        return response.json();
+    }
+
+    async updateRerankModel(modelId, data) {
+        const response = await fetch(`${this.baseUrl}/api/settings/models/rerank/${encodeURIComponent(modelId)}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data),
+        });
+        if (!response.ok) throw new Error(`Failed to update rerank model: ${response.statusText}`);
+        return response.json();
+    }
+
+    async deleteRerankModel(modelId) {
+        const response = await fetch(`${this.baseUrl}/api/settings/models/rerank/${encodeURIComponent(modelId)}`, {
+            method: 'DELETE',
+        });
+        if (!response.ok) throw new Error(`Failed to delete rerank model: ${response.statusText}`);
+        // 204 No Content
+    }
+
+    async activateRerankModel(modelId) {
+        const response = await fetch(`${this.baseUrl}/api/settings/models/rerank/${encodeURIComponent(modelId)}/activate`, {
+            method: 'POST',
+        });
+        if (!response.ok) throw new Error(`Failed to activate rerank model: ${response.statusText}`);
+        return response.json();
+    }
+
+    async deactivateRerankModel(modelId) {
+        const response = await fetch(`${this.baseUrl}/api/settings/models/rerank/${encodeURIComponent(modelId)}/deactivate`, {
+            method: 'POST',
+        });
+        if (!response.ok) throw new Error(`Failed to deactivate rerank model: ${response.statusText}`);
+        return response.json();
+    }
+
+    async checkRerankModel(modelId) {
+        const response = await fetch(`${this.baseUrl}/api/settings/models/rerank/${encodeURIComponent(modelId)}/check`, {
+            method: 'POST',
+        });
+        if (!response.ok) throw new Error(`Failed to check rerank model: ${response.statusText}`);
+        return response.json();
+    }
+
     // === Settings: Documents ===
 
     // S40-B fix: бэк: GET /api/settings/documents?vault_id=|domain_id=&status=&tag_id=
