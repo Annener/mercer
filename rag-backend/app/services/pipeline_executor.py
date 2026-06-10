@@ -216,6 +216,7 @@ class PipelineExecutor:
         document_ids: list[str] | None = None  # None = no filter
 
         if step.tag_ids:
+            # Шаг имеет явные tag_ids — фильтруем строго по ним
             if not domain_id:
                 logger.warning(
                     "Pipeline step skipped: tag_ids set but no domain_id in context. step=%s",
@@ -240,6 +241,25 @@ class PipelineExecutor:
                 logger.info(
                     "Pipeline step skipped: no indexed documents for tags. step=%s domain_id=%s",
                     step.name, domain_id,
+                )
+                return []
+
+        elif campaign_id and domain_id:
+            # Шаг без tag_ids, но чат привязан к кампании —
+            # ограничиваем документами тегов кампании (собственные + явно подключённые глобальные)
+            allowed = await get_allowed_tag_ids(domain_id, campaign_id, db)
+            if not allowed:
+                logger.info(
+                    "Pipeline step skipped: campaign has no tags at all. step=%s campaign_id=%s",
+                    step.name, campaign_id,
+                )
+                return []
+            document_ids = await get_document_ids_by_tags(list(allowed), domain_id, db)
+            if document_ids == []:
+                logger.info(
+                    "Pipeline step skipped: no indexed documents for campaign tags. "
+                    "step=%s campaign_id=%s",
+                    step.name, campaign_id,
                 )
                 return []
 
