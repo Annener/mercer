@@ -37,6 +37,8 @@ class SidebarManager {
         });
 
         this.campaignSelect?.addEventListener('change', (e) => {
+            // Игнорируем изменения если селектор заблокирован (чат уже привязан к кампании)
+            if (this.campaignSelect.disabled) return;
             // BUG FIX #3: сохраняем null вместо пустой строки при выборе «общего режима»
             this.currentCampaignId = e.target.value || null;
             if (this.currentCampaignId) {
@@ -139,6 +141,8 @@ class SidebarManager {
         // BUG FIX #3: сбрасываем в null, не в ''
         this.currentCampaignId = null;
         localStorage.removeItem('currentCampaignId');
+        // Снимаем блокировку селектора при смене домена
+        this.unlockCampaign();
         if (window.chatManager) window.chatManager.reset();
         this.closeAllDropdowns();
         await this.loadChats();
@@ -232,7 +236,17 @@ class SidebarManager {
         this.chatList.querySelectorAll('.chat-item').forEach(item => item.classList.remove('active'));
         const chatItem = this.chatList.querySelector(`[data-chat-id="${chatId}"]`);
         if (chatItem) chatItem.classList.add('active');
-        if (window.chatManager) await window.chatManager.loadChat(chatId);
+        if (window.chatManager) {
+            await window.chatManager.loadChat(chatId);
+            // После загрузки чата — применяем блокировку селектора кампании
+            // на основе campaign_id из загруженного чата
+            const chat = window.chatManager.currentChat;
+            if (chat && chat.campaign_id) {
+                this.lockCampaignToChat(String(chat.campaign_id));
+            } else {
+                this.unlockCampaign();
+            }
+        }
     }
 
     async createChatForCurrentDomain() {
@@ -247,6 +261,9 @@ class SidebarManager {
                 this.currentCampaignId || null
             );
             await this.loadChats();
+            // Новый чат без сообщений — разблокируем селектор
+            // (блокировка произойдёт после первого ответа через lockCampaignToChat)
+            this.unlockCampaign();
             await this.selectChat(response.chat_id);
         } catch (error) {
             console.error('Failed to create chat:', error);
@@ -301,6 +318,44 @@ class SidebarManager {
         }
     }
 
+    /**
+     * Блокирует селектор кампании, отображая кампанию привязанную к текущему чату.
+     * Вызывается при открытии чата у которого есть campaign_id,
+     * а также после первого ответа в новом чате с кампанией.
+     */
+    lockCampaignToChat(campaignId) {
+        const select = this.campaignSelect;
+        if (!select) return;
+        // Устанавливаем значение на кампанию чата
+        if (select.querySelector(`option[value="${campaignId}"]`)) {
+            select.value = campaignId;
+        }
+        this.applyLockStyle(true);
+    }
+
+    /**
+     * Снимает блокировку селектора кампании.
+     * Вызывается при создании нового чата или смене домена.
+     */
+    unlockCampaign() {
+        this.applyLockStyle(false);
+    }
+
+    /**
+     * Применяет/снимает визуальную блокировку селектора кампании.
+     * locked=true  → disabled + пониженная прозрачность + title с подсказкой
+     * locked=false → enabled + полная прозрачность
+     */
+    applyLockStyle(locked) {
+        const select = this.campaignSelect;
+        if (!select) return;
+        select.disabled = locked;
+        select.style.opacity = locked ? '0.6' : '';
+        select.title = locked
+            ? 'Кампания закреплена за чатом и не может быть изменена'
+            : '';
+    }
+
     showRenameModal(chatId, currentTitle) {
         if (!this.renameModal || !this.renameInput) return;
         this.currentRenameChatId = chatId;
@@ -339,6 +394,8 @@ class SidebarManager {
             await this.loadChats();
             if (window.chatManager && window.chatManager.currentChatId === chatId) {
                 window.chatManager.reset();
+                // При удалении активного чата снимаем блокировку
+                this.unlockCampaign();
             }
         } catch (error) {
             console.error('Failed to delete chat:', error);

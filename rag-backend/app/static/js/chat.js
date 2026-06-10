@@ -297,7 +297,14 @@ class ChatManager {
             await window.sidebarManager.loadChats();
             try {
                 const chatData = await chatAPI.getChat(this.currentChatId);
+                this.currentChat = chatData.chat;
                 this.chatTitle.textContent = chatData.chat.title;
+                // После первого ответа фиксируем кампанию если она есть у чата
+                // (актуально для новых чатов: campaign_id появляется только после
+                // первого обращения к бэкенду который сохраняет его в БД)
+                if (chatData.chat.campaign_id && window.sidebarManager) {
+                    window.sidebarManager.lockCampaignToChat(String(chatData.chat.campaign_id));
+                }
             } catch (e) { /* ignore */ }
         }
     }
@@ -377,7 +384,7 @@ class ChatManager {
 
     /**
      * Перезаписывает innerHTML элемента сохраняя pipeline-баджи
-     * И восстанавливая блок источников если он был доб��влен ранее.
+     * И восстанавливая блок источников если он был добавлен ранее.
      */
     renderAssistantMarkdown(element, text) {
         // Сохраняем блок источников перед перезаписью
