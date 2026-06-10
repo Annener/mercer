@@ -929,9 +929,26 @@
     font-size: 13px;
 }
 
-.docs-row td:first-child {
-    max-width: 320px;
+/* ─── File row: name + inline tags ───────────────────────────────────────── */
+
+.docs-file-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-width: 0;
+}
+
+.docs-file-name {
+    white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    white-space: nowrap;
+    flex-shrink: 0;
+    max-width: 320px;
+}
+
+.docs-file-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    align-items: center;
 }

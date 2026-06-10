@@ -31,11 +31,8 @@ const DocumentsTabMixin = {
         <div class="docs-layout">
             <div class="docs-table-wrap">
                 <table class="data-table" id="docs-table">
-                    <thead><tr>
-                        <th>Файл</th><th>Теги</th>
-                    </tr></thead>
                     <tbody id="docs-tbody">
-                        <tr><td colspan="3" class="empty-state">Загрузка...</td></tr>
+                        <tr><td colspan="1" class="empty-state">Загрузка...</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -59,7 +56,7 @@ const DocumentsTabMixin = {
         const tbody = document.getElementById('docs-tbody');
 
         if (!vaultId && !domainId) {
-            if (tbody) tbody.innerHTML = '<tr><td colspan="3" class="empty-state">Vault не найден. Добавьте vault в настройках.</td></tr>';
+            if (tbody) tbody.innerHTML = '<tr><td colspan="1" class="empty-state">Vault не найден. Добавьте vault в настройках.</td></tr>';
             return;
         }
 
@@ -88,7 +85,7 @@ const DocumentsTabMixin = {
                 await this._refreshTagsPanel(domainId);
             }
         } catch (e) {
-            if (tbody) tbody.innerHTML = `<tr><td colspan="3" class="empty-state" style="color:var(--color-error)">Ошибка: ${this.escapeHtml(e.message)}</td></tr>`;
+            if (tbody) tbody.innerHTML = `<tr><td colspan="1" class="empty-state" style="color:var(--color-error)">Ошибка: ${this.escapeHtml(e.message)}</td></tr>`;
         }
     },
 
@@ -225,7 +222,7 @@ const DocumentsTabMixin = {
                 dirRow.className = 'docs-dir-row';
                 dirRow.dataset.dirKey = dirKey;
                 dirRow.innerHTML = `
-                    <td colspan="3" class="docs-dir-cell" style="padding-left:${8 + depth * 18}px;">
+                    <td colspan="1" class="docs-dir-cell" style="padding-left:${8 + depth * 18}px;">
                         <span class="docs-dir-toggle">${isOpen ? '▾' : '▸'}</span>
                         <span class="docs-dir-icon">📁</span>
                         <span class="docs-dir-name">${this.escapeHtml(name)}</span>
@@ -252,7 +249,7 @@ const DocumentsTabMixin = {
             } else {
                 const doc = child.doc;
                 const tags = (doc.tags || []).map(t =>
-                    `<span class="badge" style="background:${t.color || 'var(--color-primary-highlight)'};color:var(--color-text);margin-right:2px;">${this.escapeHtml(t.name)}</span>`
+                    `<span class="badge" style="background:${t.color || 'var(--color-primary-highlight)'};color:var(--color-text);">${this.escapeHtml(t.name)}</span>`
                 ).join('');
 
                 const row = document.createElement('tr');
@@ -263,9 +260,15 @@ const DocumentsTabMixin = {
                 row.title = 'Нажмите для редактирования тегов';
                 row.innerHTML = `
                     <td style="padding-left:${8 + depth * 18}px;" title="${this.escapeHtml(doc.source_path || String(doc.id))}">
-                        <span class="docs-file-icon">📄</span>${this.escapeHtml(name)}
-                    </td>
-                    <td>${tags || '<span style="color:var(--color-text-faint)">—</span>'}</td>`;
+                        <div class="docs-file-row">
+                            <span class="docs-file-name">
+                                <span class="docs-file-icon">📄</span>${this.escapeHtml(name)}
+                            </span>
+                            <span class="docs-file-tags">
+                                ${tags || '<span style="color:var(--color-text-faint)">—</span>'}
+                            </span>
+                        </div>
+                    </td>`;
 
                 row.addEventListener('click', () => {
                     this._openDocModal(doc);
@@ -283,7 +286,7 @@ const DocumentsTabMixin = {
 
         if (!docs || !docs.length) {
             const empty = document.createElement('tbody');
-            empty.innerHTML = '<tr><td colspan="3" class="empty-state">Документов нет</td></tr>';
+            empty.innerHTML = '<tr><td colspan="1" class="empty-state">Документов нет</td></tr>';
             tableEl.appendChild(empty);
             return;
         }
