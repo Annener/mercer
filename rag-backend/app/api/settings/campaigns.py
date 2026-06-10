@@ -3,11 +3,11 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, insert, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.settings.schemas import CampaignTagCreateRequest
-from app.db.models import Campaign, Tag
+from app.db.models import Campaign, Tag, campaign_tags
 from app.db.session import get_db
 from shared_contracts.models import CampaignCreate, CampaignRead, CampaignUpdate, TagRead
 
@@ -96,7 +96,7 @@ async def delete_campaign(campaign_id: str, db: AsyncSession = Depends(get_db)) 
     await db.commit()
 
 
-# --- Теги кампании ---
+# --- Теги кампании (собственные) ---
 
 @router.get("/{campaign_id}/tags", response_model=list[TagRead])
 async def get_campaign_tags(
@@ -131,17 +131,80 @@ async def create_campaign_tag(
     return TagRead.model_validate(tag, from_attributes=True)
 
 
-# --- Вспомогательные ---
+# --- Глобальные теги домена, подключённые к кампании ---
 
-async def _campaign_with_tags(campaign: Campaign, db: AsyncSession) -> CampaignRead:
-    """Используется для одиночных объектов (get/create/update). Для списка — batch в list_campaigns."""
-    stmt = select(Tag).where(Tag.campaign_id == campaign.id)
+@router.get("/{campaign_id}/global-tags", response_model=list[TagRead])
+async def get_campaign_global_tags(
+    campaign_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> list[TagRead]:
+    """Вернуть глобальные теги домена, явно подключённые к этой кампании."""
+    camp_uuid = uuid.UUID(campaign_id)
+    stmt = (
+        select(Tag)
+        .join(campaign_tags, campaign_tags.c.tag_id == Tag.id)
+        .where(
+            campaign_tags.c.campaign_id == camp_uuid,
+            Tag.campaign_id.is_(None),
+        )
+    )
     result = await db.execute(stmt)
-    tags = [TagRead.model_validate(t, from_attributes=True) for t in result.scalars().all()]
-    return _campaign_read(campaign, tags)
+    return [TagRead.model_validate(t, from_attributes=True) for t in result.scalars().all()]
 
 
-def _campaign_read(campaign: Campaign, tags: list[TagRead]) -> CampaignRead:
-    data = CampaignRead.model_validate(campaign, from_attributes=True)
-    data.tags = tags
-    return data
+@router.post("/{campaign_id}/global-tags/{tag_id}", response_model=TagRead, status_code=201)
+async def link_global_tag(
+    campaign_id: str,
+    tag_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> TagRead:
+    """Подключить глобальный тег домена к кампании."""
+    camp_uuid = uuid.UUID(campaign_id)
+    tag_uuid = uuid.UUID(tag_id)
+
+    campaign = await db.get(Campaign, camp_uuid)
+    if not campaign:
+        raise HTTPException(404, "Campaign not found")
+
+    tag = await db.get(Tag, tag_uuid)
+    if not tag:
+        raise HTTPException(404, "Tag not found")
+    if tag.campaign_id is not None:
+        raise HTTPException(400, "Tag is not a global domain tag (has campaign_id set)")
+    if tag.domain_id != campaign.domain_id:
+        raise HTTPException(400, "Tag does not belong to the same domain as campaign")
+
+    # Проверяем что связь ещё не существует
+    existing = await db.execute(
+        select(campaign_tags).where(
+            campaign_tags.c.campaign_id == camp_uuid,
+            campaign_tags.c.tag_id == tag_uuid,
+        )
+    )
+    if existing.first() is not None:
+        # Уже подключён — idempotent, возвращаем 200
+        return TagRead.model_validate(tag, from_attributes=True)
+
+    await db.execute(
+        insert(campaign_tags).values(campaign_id=camp_uuid, tag_id=tag_uuid)
+    )
+    await db.commit()
+    return TagRead.model_validate(tag, from_attributes=True)
+
+
+@router.delete("/{campaign_id}/global-tags/{tag_id}", status_code=204)
+async def unlink_global_tag(
+    campaign_id: str,
+    tag_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """Отключить глобальный тег от кампании (тег не удаляется, только связь)."""
+    camp_uuid = uuid.UUID(campaign_id)
+    tag_uuid = uuid.UUID(tag_id)
+    await db.execute(
+        delete(campaign_tags).where(
+            campaign_tags.c.campaign_id == camp_uuid,
+            campaign_tags.c.tag_id == tag_uuid,
+        )
+    )
+    await db.commit()
