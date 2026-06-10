@@ -614,9 +614,15 @@ async def rerank_hits(
     documents = [h.text for h in hits]
     api_key = settings_service.decrypt_api_key(model.encrypted_api_key) if model.encrypted_api_key else ""
 
+    # Не добавляем заголовок Authorization если api_key пустой —
+    # httpx бросает LocalProtocolError на значении b'Bearer '
+    headers: dict[str, str] = {}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
     async with httpx.AsyncClient(
         timeout=model.timeout_seconds,
-        headers={"Authorization": f"Bearer {api_key}"},
+        headers=headers,
     ) as client:
         response = await client.post(
             f"{model.base_url.rstrip('/')}/rerank",
