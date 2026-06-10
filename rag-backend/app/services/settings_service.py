@@ -12,7 +12,7 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import EmbeddingModelConfig, GenerationModelConfig
-from app.db.models import EmbeddingModel, GenerationModel, PlatformSetting, Vault
+from app.db.models import EmbeddingModel, GenerationModel, PlatformSetting, RerankModel, Vault
 from app.providers.generation.base import GenerationProvider
 from app.providers.generation.openai_compatible import OpenAICompatibleProvider
 
@@ -312,11 +312,84 @@ class SettingsService:
             await db.delete(model)
 
     # ------------------------------------------------------------------
+    # RerankModel CRUD
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    async def _get_rerank_model(model_id: str, db: AsyncSession) -> RerankModel | None:
+        result = await db.execute(
+            select(RerankModel).where(RerankModel.model_id == model_id)
+        )
+        return result.scalar_one_or_none()
+
+    async def list_rerank_models(self, db: AsyncSession) -> list[dict[str, Any]]:
+        result = await db.execute(
+            select(RerankModel).order_by(RerankModel.created_at.desc())
+        )
+        return [self._rerank_model_dict(model) for model in result.scalars().all()]
+
+    async def create_rerank_model(self, data: dict[str, Any], db: AsyncSession) -> dict[str, Any]:
+        payload = dict(data)
+        api_key = payload.pop("api_key", None)
+        if api_key:
+            payload["encrypted_api_key"] = self.encrypt_api_key(str(api_key))
+        model = RerankModel(**payload)
+        async with self._transaction(db):
+            db.add(model)
+        await db.refresh(model)
+        return self._rerank_model_dict(model)
+
+    async def update_rerank_model(
+        self, model_id: str, data: dict[str, Any], db: AsyncSession
+    ) -> dict[str, Any]:
+        model = await self._get_rerank_model(model_id, db)
+        if model is None:
+            raise KeyError(model_id)
+        payload = dict(data)
+        api_key_marker = object()
+        api_key = payload.pop("api_key", api_key_marker)
+        async with self._transaction(db):
+            for key, value in payload.items():
+                if value is not None and hasattr(model, key):
+                    setattr(model, key, value)
+            if api_key is not api_key_marker:
+                model.encrypted_api_key = (
+                    self.encrypt_api_key(str(api_key)) if api_key else None
+                )
+        await db.refresh(model)
+        return self._rerank_model_dict(model)
+
+    async def delete_rerank_model(self, model_id: str, db: AsyncSession) -> None:
+        model = await self._get_rerank_model(model_id, db)
+        if model is None:
+            raise KeyError(model_id)
+        async with self._transaction(db):
+            await db.delete(model)
+
+    async def activate_rerank_model(self, model_id: str, db: AsyncSession) -> dict[str, Any]:
+        model = await self._get_rerank_model(model_id, db)
+        if model is None or not model.enabled:
+            raise KeyError(model_id)
+        async with self._transaction(db):
+            await db.execute(update(RerankModel).values(is_active=False))
+            model.is_active = True
+        await db.refresh(model)
+        return self._rerank_model_dict(model)
+
+    async def get_active_rerank_model(self, db: AsyncSession) -> RerankModel | None:
+        result = await db.execute(
+            select(RerankModel).where(
+                RerankModel.is_active == True, RerankModel.enabled == True
+            )
+        )
+        return result.scalar_one_or_none()
+
+    # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
 
     def _build_embedding_config(self, model: EmbeddingModel) -> EmbeddingModelConfig:
-        """Convert ORM EmbeddingModel → EmbeddingModelConfig.
+        """Bonvert ORM EmbeddingModel → EmbeddingModelConfig.
 
         Для openai_compatible: расшифрованный ключ прокидывается
         через sentinel env-переменную, которую читает _embed_openai_compatible.
@@ -443,6 +516,20 @@ class SettingsService:
             "dimensions": model.dimensions,
             "timeout_seconds": model.timeout_seconds,
             "max_retries": model.max_retries,
+            "enabled": model.enabled,
+            "has_api_key": bool(model.encrypted_api_key),
+            "created_at": model.created_at,
+            "updated_at": model.updated_at,
+        }
+
+    def _rerank_model_dict(self, model: RerankModel) -> dict[str, Any]:
+        return {
+            "model_id": model.model_id,
+            "provider": model.provider,
+            "display_name": model.display_name,
+            "base_url": model.base_url,
+            "timeout_seconds": model.timeout_seconds,
+            "is_active": model.is_active,
             "enabled": model.enabled,
             "has_api_key": bool(model.encrypted_api_key),
             "created_at": model.created_at,
