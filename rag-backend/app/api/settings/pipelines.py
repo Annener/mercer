@@ -76,6 +76,7 @@ async def update_pipeline(
     new_pipeline = Pipeline(
         pipeline_id=pipeline.pipeline_id,
         domain_id=payload.get("domain_id", pipeline.domain_id),
+        campaign_id=pipeline.campaign_id,
         version=new_version,
         name=payload.get("name", pipeline.name),
         description=payload.get("description", pipeline.description),
