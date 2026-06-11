@@ -109,28 +109,17 @@ async def _get_campaign(campaign_id: str, db: AsyncSession) -> Campaign:
     return result
 
 
-async def _get_pipeline_by_uuid(pipeline_id: str, db: AsyncSession) -> Pipeline:
-    """Получить активный пайплайн по business-key (pipeline_id slug).
+async def _get_pipeline_by_uuid(pipeline_uuid: str, db: AsyncSession) -> Pipeline:
+    """Получить пайплайн по внутреннему UUID PK (поле id).
 
-    Параметр намеренно остался pipeline_id вместо UUID PK —
-    UI и API используют slug (например "planescape"), не внутренний UUID.
-    Возвращает активную версию; если нет активной — последнюю по version.
+    Фронтенд передаёт pipeline.id — внутренний UUID первичного ключа,
+    а не pipeline_id (slug). Ищем именно по PK через db.get().
     """
-    result = await db.execute(
-        select(Pipeline)
-        .where(Pipeline.pipeline_id == pipeline_id, Pipeline.is_active.is_(True))
-        .limit(1)
-    )
-    pipeline = result.scalar_one_or_none()
-    if pipeline is None:
-        # fallback: любая версия с таким pipeline_id
-        result = await db.execute(
-            select(Pipeline)
-            .where(Pipeline.pipeline_id == pipeline_id)
-            .order_by(Pipeline.version.desc())
-            .limit(1)
-        )
-        pipeline = result.scalar_one_or_none()
+    try:
+        parsed = uuid.UUID(pipeline_uuid)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Invalid pipeline UUID")
+    pipeline = await db.get(Pipeline, parsed)
     if pipeline is None:
         raise HTTPException(status_code=404, detail="Pipeline not found")
     return pipeline
