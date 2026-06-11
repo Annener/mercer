@@ -203,38 +203,55 @@ const DocumentsTabMixin = {
         return set;
     },
 
-    // ─── Рекурсивный сбор всех doc-объектов из поддерева ────────────────────
+    _filterDocsTable(query) {
+        const q = query.trim().toLowerCase();
+        const filtered = q
+            ? this._docsAllDocs.filter(d => {
+                const name = (d.title || d.source_path || '').toLowerCase();
+                const tagMatch = (d.tags || []).some(t => t.name.toLowerCase().includes(q));
+                return name.includes(q) || tagMatch;
+              })
+            : this._docsAllDocs;
+        this._renderDocsRows(filtered);
+    },
 
-    _collectDirDocs(node) {
-        const result = [];
-        for (const child of Object.values(node.children || {})) {
-            if (child._isDir) {
-                result.push(...this._collectDirDocs(child));
-            } else {
-                result.push(child.doc);
-            }
+    _renderDocsRows(docs) {
+        const table = document.getElementById('docs-table');
+        if (!table) return;
+
+        // Удаляем все tbody кроме первого (он — заглушка)
+        while (table.tBodies.length > 1) table.removeChild(table.tBodies[table.tBodies.length - 1]);
+        const stubBody = table.tBodies[0];
+
+        if (!docs || docs.length === 0) {
+            stubBody.innerHTML = '<tr><td colspan="1" class="empty-state">Документов нет</td></tr>';
+            return;
         }
-        return result;
+        stubBody.innerHTML = '';
+
+        const openDirs = this._docsOpenDirs || new Set();
+        const tree = this._buildDocsTree(docs);
+        this._renderDocsTree(tree, table, 0, openDirs);
     },
 
     _renderDocsTree(node, container, depth, openDirs) {
-        const entries = Object.entries(node.children || {}).sort(([aName, aNode], [bName, bNode]) => {
-            if (aNode._isDir !== bNode._isDir) return aNode._isDir ? -1 : 1;
-            return aName.localeCompare(bName, 'ru');
+        const sortedKeys = Object.keys(node.children).sort((a, b) => {
+            const aIsDir = node.children[a]._isDir;
+            const bIsDir = node.children[b]._isDir;
+            if (aIsDir && !bIsDir) return -1;
+            if (!aIsDir && bIsDir) return 1;
+            return a.localeCompare(b);
         });
 
-        for (const [name, child] of entries) {
+        for (const name of sortedKeys) {
+            const child = node.children[name];
+
             if (child._isDir) {
-                const parentPrefix = container._pathPrefix || '';
-                const dirKey = parentPrefix ? parentPrefix + '/' + name : name;
-                const isOpen = openDirs.has(dirKey);
+                const isOpen = openDirs.has(name);
 
-                const countFiles = (n) => Object.values(n.children || {})
-                    .reduce((s, c) => s + (c._isDir ? countFiles(c) : 1), 0);
-
+                const dirBody = document.createElement('tbody');
                 const dirRow = document.createElement('tr');
                 dirRow.className = 'docs-dir-row';
-                dirRow.dataset.dirKey = dirKey;
                 dirRow.innerHTML = `
                     <td colspan="1" class="docs-dir-cell" style="padding-left:${8 + depth * 18}px;">
                         <span class="docs-dir-toggle" title="Раскрыть / свернуть">${isOpen ? '▾' : '▸'}</span>
@@ -244,36 +261,31 @@ const DocumentsTabMixin = {
                         </span>
                         <span class="docs-dir-count">(${countFiles(child)})</span>
                     </td>`;
-                container.appendChild(dirRow);
+                dirBody.appendChild(dirRow);
+                container.appendChild(dirBody);
 
                 const childGroup = document.createElement('tbody');
-                childGroup.className = 'docs-dir-children';
-                childGroup.dataset.parent = dirKey;
-                childGroup._pathPrefix = dirKey;
                 childGroup.style.display = isOpen ? '' : 'none';
+                this._renderDocsTree(child, childGroup, depth + 1, openDirs);
+                container.appendChild(childGroup);
 
-                // Клик по стрелке — только раскрыть/свернуть
-                dirRow.querySelector('.docs-dir-toggle').addEventListener('click', (e) => {
-                    e.stopPropagation();
+                dirRow.addEventListener('click', (e) => {
+                    if (e.target.closest('.docs-dir-label')) {
+                        this._openDirModal(name, child);
+                        return;
+                    }
                     const nowOpen = childGroup.style.display !== 'none';
                     childGroup.style.display = nowOpen ? 'none' : '';
                     dirRow.querySelector('.docs-dir-toggle').textContent = nowOpen ? '▸' : '▾';
-                    if (nowOpen) openDirs.delete(dirKey); else openDirs.add(dirKey);
+                    if (nowOpen) openDirs.delete(name); else openDirs.add(name);
+                    this._docsOpenDirs = openDirs;
                 });
-
-                // Клик по имени папки — открыть модалку тегов каталога
-                dirRow.querySelector('.docs-dir-label').addEventListener('click', (e) => {
-                    e.stopPropagation();
-                    this._openDirModal(name, child);
-                });
-
                 dirRow.after(childGroup);
-                this._renderDocsTree(child, childGroup, depth + 1, openDirs);
 
             } else {
                 const doc = child.doc;
                 const tags = (doc.tags || []).map(t =>
-                    `<span class="badge" style="background:${t.color || 'var(--color-primary-highlight)'};color:var(--color-text);">${this.escapeHtml(t.name)}</span>`
+                    `<span class="badge" style="background:${t.color || 'var(--color-primary-highlight)'};color:${this._getContrastColor(t.color)};">${this.escapeHtml(t.name)}</span>`
                 ).join('');
 
                 const row = document.createElement('tr');
@@ -283,7 +295,7 @@ const DocumentsTabMixin = {
                 row.style.cursor = 'pointer';
                 row.title = 'Нажмите для редактирования тегов';
                 row.innerHTML = `
-                    <td style="padding-left:${8 + depth * 18}px;" title="${this.escapeHtml(doc.source_path || String(doc.id))}">
+                    <td class="docs-file-cell" style="padding-left:${8 + depth * 18}px;">
                         <div class="docs-file-row">
                             <span class="docs-file-name">
                                 <span class="docs-file-icon">📄</span>${this.escapeHtml(name)}
@@ -292,42 +304,21 @@ const DocumentsTabMixin = {
                                 ${tags || '<span style="color:var(--color-text-faint)">—</span>'}
                             </span>
                         </div>
+                        <div class="docs-file-meta">
+                            ${this._renderDocStatus(doc.status)}
+                        </div>
                     </td>`;
 
-                row.addEventListener('click', () => {
-                    this._openDocModal(doc);
-                });
-                container.appendChild(row);
+                row.addEventListener('click', () => this._openDocModal(doc));
+
+                const fileBody = document.createElement('tbody');
+                fileBody.appendChild(row);
+                container.appendChild(fileBody);
             }
         }
     },
 
-    _renderDocsRows(docs) {
-        const tableEl = document.getElementById('docs-table');
-        if (!tableEl) return;
-
-        tableEl.querySelectorAll('tbody').forEach(b => b.remove());
-
-        if (!docs || !docs.length) {
-            const empty = document.createElement('tbody');
-            empty.innerHTML = '<tr><td colspan="1" class="empty-state">Документов нет</td></tr>';
-            tableEl.appendChild(empty);
-            return;
-        }
-
-        const tree = this._buildDocsTree(docs);
-
-        const isFiltered = docs !== this._docsAllDocs;
-        if (!this._docsOpenDirs) this._docsOpenDirs = new Set();
-        const openDirs = isFiltered ? this._matchedAncestors(docs) : this._docsOpenDirs;
-
-        const rootBody = document.createElement('tbody');
-        rootBody._pathPrefix = '';
-        tableEl.appendChild(rootBody);
-        this._renderDocsTree(tree, rootBody, 0, openDirs);
-    },
-
-    _docStatusBadge(status) {
+    _renderDocStatus(status) {
         const map = {
             indexed: { bg: '#e6f5ee', color: '#206a43', label: 'indexed' },
             pending: { bg: '#fff7e0', color: '#7a5700', label: 'pending' },
@@ -338,576 +329,344 @@ const DocumentsTabMixin = {
         return `<span class="doc-status-badge" style="background:${s.bg};color:${s.color};">${this.escapeHtml(s.label)}</span>`;
     },
 
-    _filterDocsTable(query) {
-        const q = (query || '').toLowerCase();
-        const filtered = q
-            ? (this._docsAllDocs || []).filter(d => (d.source_path || d.path || '').toLowerCase().includes(q))
-            : this._docsAllDocs;
-        this._renderDocsRows(filtered);
-    },
-
-    // ─── Вспомогательная: разбор списка файлов из TaskStateResponse ──────────
-
-    _parseTaskStateFiles(resp) {
-        const s = resp?.state || resp || {};
-        const filesInState = s.files || {};
-        const fileList = Array.isArray(filesInState)
-            ? filesInState
-            : Object.entries(filesInState).map(([path, info]) => ({ path, ...info }));
-        const files = {};
-        let doneCount = 0;
-        for (const f of fileList) {
-            const path = f.path || f.file_path || '';
-            if (!path) continue;
-            files[path] = {
-                status:       f.status || 'pending',
-                chunks_done:  f.chunks_sent || f.chunks_done || 0,
-                chunks_total: f.chunks_total || 0,
-                name:         path.split('/').pop(),
-            };
-            if (f.status === 'indexed' || f.status === 'done') doneCount++;
-        }
-        return { files, total: fileList.length, done: doneCount, status: s.status };
-    },
-
-    // ─── Прогресс-панель индексации ──────────────────────────────────────────
-
-    _renderIndexProgress(state) {
-        const panel = document.getElementById('docs-index-progress-panel');
-        if (!panel) return;
-        if (!state) { panel.style.display = 'none'; return; }
-
-        panel.style.display = 'block';
-
-        const total = state.total || 0;
-        const done  = state.done  || 0;
-        const pct   = total > 0 ? Math.round((done / total) * 100) : 0;
-        const isActive = state.status === 'running' || state.status === 'queued';
-
-        const statusLabel = {
-            running:   '⚙️ Индексация…',
-            queued:    '⏳ Очередь…',
-            completed: '✅ Готово',
-            failed:    '❌ Ошибка',
-            cancelled: '⛔ Отменено',
-        }[state.status] || state.status;
-
-        const filesHtml = Object.entries(state.files || {}).map(([path, f]) => {
-            const name = f.name || path.split('/').pop();
-            const ct = f.chunks_total || 0;
-            const cd = f.chunks_done  || 0;
-            const fp = ct > 0 ? Math.round((cd / ct) * 100) : 0;
-            const fIsActive = f.status === 'indexing';
-            return `
-            <div class="idx-file-row">
-                <div class="idx-file-header">
-                    <span class="idx-file-name" title="${this.escapeHtml(path)}">${this.escapeHtml(name)}</span>
-                    ${this._docStatusBadge(f.status)}
-                    ${ct > 0 ? `<span class="idx-file-chunks">${cd}/${ct} чанков</span>` : ''}
-                </div>
-                ${(fIsActive || ct > 0) ? `
-                <div class="idx-file-bar-wrap">
-                    <div class="idx-bar idx-bar-file ${fIsActive ? 'idx-bar-anim' : ''}" style="width:${fp}%;"></div>
-                </div>` : ''}
-            </div>`;
-        }).join('');
-
-        panel.innerHTML = `
-        <div class="idx-panel-inner">
-            <div class="idx-global-header">
-                <span class="idx-status-label">${statusLabel}</span>
-                ${total > 0 ? `<span class="idx-global-count">${done} / ${total} файлов</span>` : ''}
-                ${total > 0 ? `<span class="idx-pct">${pct}%</span>` : ''}
-                ${isActive ? `<button class="btn btn-sm idx-cancel-btn" data-action="cancel-indexer" style="margin-left:auto;">✕ Отмена</button>` : ''}
-            </div>
-            ${total > 0 ? `
-            <div class="idx-global-bar-wrap">
-                <div class="idx-bar ${isActive ? 'idx-bar-anim' : ''}" style="width:${pct}%;"></div>
-            </div>` : ''}
-            ${filesHtml ? `<div class="idx-files-list">${filesHtml}</div>` : ''}
-            ${state.error ? `<div style="color:var(--color-error);font-size:var(--text-xs);margin-top:8px;">${this.escapeHtml(state.error)}</div>` : ''}
-        </div>`;
-
-        const cancelBtn = panel.querySelector('[data-action="cancel-indexer"]');
-        if (cancelBtn) {
-            cancelBtn.addEventListener('click', async () => {
-                try {
-                    if (this._docsIndexTaskId) await this.api.cancelIndexTask(this._docsIndexTaskId);
-                    if (this._docsIndexWs) { this._docsIndexWs.close(); this._docsIndexWs = null; }
-                    if (this._docsIndexPollTimer) { clearInterval(this._docsIndexPollTimer); this._docsIndexPollTimer = null; }
-                    this._renderIndexProgress({ status: 'cancelled', total, done, files: state.files || {} });
-                } catch (e) { alert('Ошибка отмены: ' + e.message); }
-            });
-        }
-    },
-
-    // ─── WebSocket + polling для индексатора ────────────────────────────────
-
-    _startIndexerWs(taskId) {
-        const state = { status: 'running', total: 0, done: 0, files: {} };
-        this._renderIndexProgress(state);
-
-        const wsProto = location.protocol === 'https:' ? 'wss' : 'ws';
-        const wsUrl   = `${wsProto}://${location.host}/api/v1/indexer/tasks/${taskId}/ws`;
-
-        let ws;
-        try { ws = new WebSocket(wsUrl); } catch (_) { this._pollIndexerStatus(taskId, state); return; }
-        this._docsIndexWs = ws;
-
-        ws.onmessage = (evt) => {
-            try {
-                const msg = JSON.parse(evt.data);
-                const parsed = this._parseTaskStateFiles(msg);
-                if (parsed.total > 0) {
-                    state.files = parsed.files;
-                    state.total = parsed.total;
-                    state.done  = parsed.done;
-                    state.status = parsed.status || state.status;
-                } else {
-                    state.status = msg?.status || msg?.state?.status || state.status;
-                }
-            } catch (_) {}
-            this._renderIndexProgress(state);
-        };
-
-        ws.onerror = () => {
-            this._docsIndexWs = null;
-            this._pollIndexerStatus(taskId, state);
-        };
-
-        ws.onclose = () => {
-            this._docsIndexWs = null;
-            if (state.status !== 'completed' && state.status !== 'failed' && state.status !== 'cancelled') {
-                this.loadDocumentsData();
-            }
-        };
-    },
-
-    _pollIndexerStatus(taskId, state) {
-        if (this._docsIndexPollTimer) clearInterval(this._docsIndexPollTimer);
-        let attempts = 0;
-        this._docsIndexPollTimer = setInterval(async () => {
-            attempts++;
-            try {
-                const resp = await this.api.getIndexTaskState(taskId);
-                const parsed = this._parseTaskStateFiles(resp);
-                if (parsed.total > 0) {
-                    if (state) {
-                        state.files = parsed.files;
-                        state.total = parsed.total;
-                        state.done  = parsed.done;
-                        state.status = parsed.status || state.status;
-                    }
-                } else if (state) {
-                    const st = resp?.status || resp?.state?.status || 'unknown';
-                    state.status = st;
-                }
-                if (state) this._renderIndexProgress(state);
-                const st = state?.status || 'unknown';
-                if (['completed', 'failed', 'cancelled', 'done', 'error', 'SUCCESS', 'FAILURE'].includes(st) || attempts > 120) {
-                    clearInterval(this._docsIndexPollTimer);
-                    this._docsIndexPollTimer = null;
-                    await this.loadDocumentsData();
-                }
-            } catch (_) {
-                if (attempts > 20) { clearInterval(this._docsIndexPollTimer); this._docsIndexPollTimer = null; }
-            }
-        }, 3000);
-    },
-
-    // ─── Модальное окно каталога ─────────────────────────────────────────────
-
-    async _openDirModal(dirName, dirNode) {
-        const domainId = this._activeDomainId || await this._resolveDomainId();
-
-        // Собираем все файлы из поддерева
-        const allDocs = this._collectDirDocs(dirNode);
-
-        document.getElementById('docs-dir-modal-backdrop')?.remove();
-
-        const backdrop = document.createElement('div');
-        backdrop.id = 'docs-dir-modal-backdrop';
-        backdrop.className = 'docs-modal-backdrop';
-
-        backdrop.innerHTML = `
-        <div class="docs-modal docs-dir-modal" role="dialog" aria-modal="true" aria-label="Теги каталога">
-            <div class="docs-modal-header">
-                <div class="docs-modal-title">
-                    <span class="docs-modal-filename">📁 ${this.escapeHtml(dirName)}</span>
-                    <span class="docs-dir-modal-count">${allDocs.length} файл(ов)</span>
-                </div>
-                <button class="docs-modal-close" data-action="close-dir-modal" aria-label="Закрыть">✕</button>
-            </div>
-            <div class="docs-modal-body docs-dir-modal-body">
-                <div id="docs-dir-modal-inner">
-                    <div style="color:var(--color-text-muted);font-size:13px;">Загрузка тегов…</div>
-                </div>
-            </div>
-        </div>`;
-
-        document.body.appendChild(backdrop);
-        document.body.style.overflow = 'hidden';
-
-        const closeModal = () => {
-            backdrop.remove();
-            document.body.style.overflow = '';
-        };
-        backdrop.addEventListener('click', e => { if (e.target === backdrop) closeModal(); });
-        backdrop.querySelector('[data-action="close-dir-modal"]').addEventListener('click', closeModal);
-        const escHandler = e => { if (e.key === 'Escape') { closeModal(); document.removeEventListener('keydown', escHandler); } };
-        document.addEventListener('keydown', escHandler);
-
-        try {
-            const resp = domainId ? await this.api.getTags(domainId) : [];
-            const globalTags = Array.isArray(resp) ? resp : (resp.global_tags || []);
-            const byCampaign = resp?.by_campaign ? Object.values(resp.by_campaign).flat() : [];
-            const allTags = [...globalTags, ...byCampaign];
-
-            this._renderDirModalInner(
-                backdrop.querySelector('#docs-dir-modal-inner'),
-                allTags,
-                allDocs,
-                closeModal
-            );
-        } catch (e) {
-            const inner = backdrop.querySelector('#docs-dir-modal-inner');
-            if (inner) inner.innerHTML = `<div style="color:var(--color-error);">Ошибка загрузки тегов: ${this.escapeHtml(e.message)}</div>`;
-        }
-    },
-
-    _renderDirModalInner(container, allTags, allDocs, closeModal) {
-        // Для каждого тега: посчитать сколько файлов его имеют
-        const tagDocCount = {}; // tagId -> кол-во файлов с этим тегом
-        for (const doc of allDocs) {
-            for (const t of (doc.tags || [])) {
-                const tid = String(typeof t === 'object' ? t.id : t);
-                tagDocCount[tid] = (tagDocCount[tid] || 0) + 1;
-            }
-        }
-
-        // Уникальные теги присутствующие хотя бы у одного файла (для секции «Снять»)
-        const presentTagIds = Object.keys(tagDocCount);
-        const presentTags = presentTagIds
-            .map(tid => allTags.find(t => String(t.id) === tid))
-            .filter(Boolean);
-
-        // Рендер секции «Назначить»
-        const assignBadges = allTags.map(t => {
-            const tid = String(t.id);
-            const allHaveIt = tagDocCount[tid] === allDocs.length && allDocs.length > 0;
-            return `<span class="badge docs-dir-tag-assign ${allHaveIt ? 'is-disabled' : 'is-active'}"
-                data-tag-id="${tid}"
-                data-tag-color="${this.escapeHtml(t.color || '')}"
-                style="background:${allHaveIt ? 'var(--color-surface-offset)' : (t.color || 'var(--color-primary)')};
-                       color:${allHaveIt ? 'var(--color-text-faint)' : 'white'};
-                       border:1px solid ${allHaveIt ? 'var(--color-border)' : (t.color || 'var(--color-primary)')};
-                       cursor:${allHaveIt ? 'default' : 'pointer'};
-                       opacity:${allHaveIt ? '0.55' : '1'};
-                       margin:2px;"
-                title="${allHaveIt ? 'Все файлы уже имеют этот тег' : 'Назначить на все файлы каталога'}"
-            >${this.escapeHtml(t.name)}</span>`;
-        }).join('');
-
-        // Рендер секции «Снять»
-        const removeBadges = presentTags.length
-            ? presentTags.map(t => {
-                const tid = String(t.id);
-                return `<span class="badge docs-dir-tag-remove is-active"
-                    data-tag-id="${tid}"
-                    style="background:${t.color || 'var(--color-primary)'};
-                           color:white;
-                           border:1px solid ${t.color || 'var(--color-primary)'};
-                           cursor:pointer;margin:2px;"
-                    title="Снять со всех файлов каталога где он есть"
-                >${this.escapeHtml(t.name)}</span>`;
-            }).join('')
-            : '<span style="color:var(--color-text-faint);font-size:13px;">Нет тегов ни на одном файле</span>';
-
-        container.innerHTML = `
-            <div class="docs-dir-modal-section">
-                <div class="docs-modal-section-title">Назначить тег на все файлы каталога</div>
-                <div class="docs-dir-tag-list" id="docs-dir-assign-list">
-                    ${allTags.length ? assignBadges : '<span style="color:var(--color-text-faint);font-size:13px;">Тегов нет</span>'}
-                </div>
-                <div id="docs-dir-assign-status" class="docs-dir-modal-status" style="display:none;"></div>
-            </div>
-            <div class="docs-dir-modal-divider"></div>
-            <div class="docs-dir-modal-section">
-                <div class="docs-modal-section-title">Снять тег со всех файлов каталога</div>
-                <div class="docs-dir-tag-list" id="docs-dir-remove-list">
-                    ${removeBadges}
-                </div>
-                <div id="docs-dir-remove-status" class="docs-dir-modal-status" style="display:none;"></div>
-            </div>`;
-
-        // ── Обработчики: назначить ──
-        container.querySelectorAll('.docs-dir-tag-assign.is-active').forEach(badge => {
-            badge.addEventListener('click', async () => {
-                const tagId = badge.dataset.tagId;
-                const tagColor = badge.dataset.tagColor;
-                const statusEl = container.querySelector('#docs-dir-assign-status');
-                await this._applyDirTagOp({
-                    docs: allDocs,
-                    tagId,
-                    mode: 'assign',
-                    statusEl,
-                    container,
-                    closeModal,
-                    allTags,
-                });
-            });
-        });
-
-        // ── Обработчики: снять ──
-        container.querySelectorAll('.docs-dir-tag-remove.is-active').forEach(badge => {
-            badge.addEventListener('click', async () => {
-                const tagId = badge.dataset.tagId;
-                const statusEl = container.querySelector('#docs-dir-remove-status');
-                await this._applyDirTagOp({
-                    docs: allDocs,
-                    tagId,
-                    mode: 'remove',
-                    statusEl,
-                    container,
-                    closeModal,
-                    allTags,
-                });
-            });
-        });
-    },
-
-    async _applyDirTagOp({ docs, tagId, mode, statusEl, container, closeModal, allTags }) {
-        // Блокируем все badge на время операции
-        container.querySelectorAll('.docs-dir-tag-assign, .docs-dir-tag-remove').forEach(b => {
-            b.style.pointerEvents = 'none';
-            b.style.opacity = '0.5';
-        });
-
-        if (statusEl) {
-            statusEl.style.display = 'block';
-            statusEl.className = 'docs-dir-modal-status docs-dir-modal-status--loading';
-            statusEl.textContent = '⏳ Обрабатывается…';
-        }
-
-        const errors = [];
-
-        for (const doc of docs) {
-            const currentTagIds = (doc.tags || []).map(t => String(typeof t === 'object' ? t.id : t));
-            const hasTag = currentTagIds.includes(tagId);
-
-            let newTagIds;
-            if (mode === 'assign') {
-                if (hasTag) continue; // уже есть — пропускаем
-                newTagIds = [...currentTagIds, tagId];
-            } else {
-                if (!hasTag) continue; // нет — пропускаем
-                newTagIds = currentTagIds.filter(id => id !== tagId);
-            }
-
-            try {
-                await this.api.updateDocumentLabels(String(doc.id), newTagIds);
-            } catch (e) {
-                errors.push(doc.source_path || doc.path || String(doc.id));
-            }
-        }
-
-        // Разблокируем badges
-        container.querySelectorAll('.docs-dir-tag-assign, .docs-dir-tag-remove').forEach(b => {
-            b.style.pointerEvents = '';
-            b.style.opacity = '';
-        });
-
-        if (statusEl) {
-            if (errors.length) {
-                statusEl.className = 'docs-dir-modal-status docs-dir-modal-status--error';
-                statusEl.innerHTML = `⚠️ Не удалось обновить ${errors.length} файл(ов):<br>
-                    <span style="font-size:11px;color:var(--color-text-muted);">${errors.map(p => this.escapeHtml(p)).join('<br>')}</span>`;
-            } else {
-                statusEl.className = 'docs-dir-modal-status docs-dir-modal-status--ok';
-                statusEl.textContent = '✅ Готово';
-                setTimeout(() => { statusEl.style.display = 'none'; }, 2000);
-            }
-        }
-
-        // Обновляем дерево документов в фоне
-        await this.loadDocumentsData();
-    },
-
-    // ─── Модальное окно документа ───────────────────────────────────────────
+    // ─── Модальное окно файла ───────────────────────────────────────────────
 
     async _openDocModal(doc) {
         this._docsCurrentDoc = doc;
         const domainId = this._activeDomainId || await this._resolveDomainId();
 
-        document.getElementById('docs-modal-backdrop')?.remove();
-
         const backdrop = document.createElement('div');
-        backdrop.id = 'docs-modal-backdrop';
-        backdrop.className = 'docs-modal-backdrop';
+        backdrop.className = 'modal-backdrop';
 
-        const fileName = (doc.source_path || doc.path || String(doc.id)).split('/').pop();
-        const fullPath = doc.source_path || doc.path || '—';
+        let allTags = [];
+        try {
+            const resp = await this.api.getTags(domainId);
+            allTags = [
+                ...(Array.isArray(resp) ? resp : (resp.global_tags || [])),
+                ...Object.values((resp && resp.by_campaign) || {}).flat(),
+            ];
+        } catch (_) {}
 
-        const metaRows = [
-            ['ID',          doc.id           || '—'],
-            ['Vault',       doc.vault_id     || '—'],
-            ['Путь',       fullPath],
-            ['Статус',     doc.status       || '—'],
-            ['Мим-тип',   doc.mime_type    || '—'],
-            ['Размер',     doc.file_size != null ? `${(doc.file_size / 1024).toFixed(1)} KB` : '—'],
-            ['Страниц',  doc.page_count   != null ? doc.page_count : '—'],
-            ['Чанков',   doc.chunk_count  != null ? doc.chunk_count : '—'],
-            ['Добавлен', doc.created_at ? new Date(doc.created_at).toLocaleString('ru') : '—'],
-            ['Изменён',  doc.updated_at ? new Date(doc.updated_at).toLocaleString('ru') : '—'],
-        ].filter(([, v]) => v && v !== '—');
+        const currentTagIds = new Set((doc.tags || []).map(t => String(t.id)));
+
+        const renderBadges = () => allTags.map(t => {
+            const active = currentTagIds.has(String(t.id));
+            const bg = active ? (t.color || 'var(--color-primary)') : 'var(--color-surface-offset)';
+            const allHaveIt = false;
+            return `<span class="badge docs-modal-tag-badge"
+                       data-tag-id="${String(t.id)}"
+                       style="background:${bg};
+                       color:${active ? this._getContrastColor(t.color) : 'var(--color-text-muted)'};
+                       cursor:pointer;
+                       opacity:${allHaveIt ? 0.5 : 1};
+                       border: 1px solid ${active ? 'transparent' : 'var(--color-border)'};"
+                       title="${active ? 'Снять тег' : 'Назначить тег'}">${this.escapeHtml(t.name)}</span>`;
+        }).join('');
 
         backdrop.innerHTML = `
-        <div class="docs-modal" role="dialog" aria-modal="true" aria-label="Информация о документе">
-            <div class="docs-modal-header">
-                <div class="docs-modal-title">
-                    <span class="docs-modal-filename">${this.escapeHtml(fileName)}</span>
+            <div class="modal docs-modal">
+                <div class="modal-header">
+                    <span class="docs-modal-filename">📄 ${this.escapeHtml(doc.title || doc.source_path || String(doc.id))}</span>
+                    <button class="modal-close" data-action="close-modal">✕</button>
                 </div>
-                <button class="docs-modal-close" data-action="close-modal" aria-label="Закрыть">✕</button>
-            </div>
-            <div class="docs-modal-body">
-                <div class="docs-modal-left">
-                    <div class="docs-modal-section-title">Информация</div>
-                    <table class="docs-modal-meta">
-                        ${metaRows.map(([k, v]) => `<tr><td class="docs-modal-meta-key">${this.escapeHtml(String(k))}</td><td class="docs-modal-meta-val">${this.escapeHtml(String(v))}</td></tr>`).join('')}
-                    </table>
-                </div>
-                <div class="docs-modal-right">
-                    <div class="docs-modal-section-title">Теги</div>
-                    <div id="docs-modal-tags-loading" style="color:var(--color-text-muted);font-size:13px;">Загрузка...</div>
-                    <div id="docs-modal-tags-wrap" style="display:none;">
-                        <div id="docs-modal-tag-badges" class="docs-modal-tag-badges"></div>
-                        <div class="docs-modal-footer-btns">
-                            <button class="btn btn-primary docs-modal-save-btn" data-action="save-doc-tags">Сохранить теги</button>
-                            <button class="btn docs-modal-delete-btn" data-action="delete-doc-modal"
-                                data-id="${this.escapeHtml(String(doc.id))}"
-                                data-vault="${this.escapeHtml(doc.vault_id || '')}"
-                                data-path="${this.escapeHtml(doc.source_path || String(doc.id))}">🗑 Удалить</button>
+                <div class="modal-body docs-modal-body">
+                    <div class="docs-modal-tags-wrap">
+                        <div class="docs-modal-tags-label">Теги</div>
+                        <div class="docs-modal-tag-badges" id="docs-modal-tag-badges">
+                            ${allTags.length ? renderBadges() : '<div id="docs-modal-tags-loading" style="color:var(--color-text-muted);font-size:13px;">Загрузка...</div>'}
                         </div>
                     </div>
                 </div>
-            </div>
-        </div>`;
+                <div class="modal-footer docs-modal-footer-btns">
+                    <button class="btn btn-primary docs-modal-save-btn" data-action="save-doc-tags">Сохранить теги</button>
+                    <button class="btn docs-modal-delete-btn" data-action="delete-doc">🗑 Удалить</button>
+                </div>
+            </div>`;
+
+        backdrop.addEventListener('click', async (e) => {
+            const action = e.target.closest('[data-action]')?.dataset?.action;
+            if (action === 'close-modal' || e.target === backdrop) {
+                backdrop.remove();
+                return;
+            }
+            if (action === 'save-doc-tags') {
+                try {
+                    await this.api.updateDocumentTags(String(doc.id), [...currentTagIds]);
+                    backdrop.remove();
+                    await this.loadDocumentsData();
+                } catch (err) { alert('Ошибка сохранения: ' + err.message); }
+                return;
+            }
+            if (action === 'delete-doc') {
+                if (!confirm(`Удалить документ «${doc.title || doc.source_path}»?`)) return;
+                try {
+                    await this.api.deleteDocument(String(doc.id));
+                    backdrop.remove();
+                    await this.loadDocumentsData();
+                } catch (err) { alert('Ошибка удаления: ' + err.message); }
+                return;
+            }
+            const badge = e.target.closest('.docs-modal-tag-badge');
+            if (badge) {
+                const tid = badge.dataset.tagId;
+                if (currentTagIds.has(tid)) currentTagIds.delete(tid);
+                else currentTagIds.add(tid);
+                const container = document.getElementById('docs-modal-tag-badges');
+                if (container) container.innerHTML = renderBadges();
+            }
+        });
 
         document.body.appendChild(backdrop);
-        document.body.style.overflow = 'hidden';
-
-        const closeModal = () => {
-            backdrop.remove();
-            document.body.style.overflow = '';
-        };
-        backdrop.addEventListener('click', e => { if (e.target === backdrop) closeModal(); });
-        backdrop.querySelector('[data-action="close-modal"]').addEventListener('click', closeModal);
-        const deleteModalBtn = backdrop.querySelector('[data-action="delete-doc-modal"]');
-        if (deleteModalBtn) {
-            deleteModalBtn.addEventListener('click', async () => {
-                const docId   = deleteModalBtn.dataset.id;
-                const vaultId = deleteModalBtn.dataset.vault;
-                const path    = deleteModalBtn.dataset.path;
-                if (!confirm(`Удалить документ «${path || docId}»?`)) return;
-                try {
-                    await this.api.deleteDocumentById(docId, vaultId || null);
-                    closeModal();
-                    await this.loadDocumentsData();
-                } catch (e) { alert('Ошибка удаления: ' + e.message); }
-            });
-        }
-        const escHandler = e => { if (e.key === 'Escape') { closeModal(); document.removeEventListener('keydown', escHandler); } };
-        document.addEventListener('keydown', escHandler);
-
-        try {
-            const resp = domainId ? await this.api.getTags(domainId) : [];
-            const globalTags = Array.isArray(resp) ? resp : (resp.global_tags || []);
-            const byCampaign = (resp?.by_campaign) ? Object.values(resp.by_campaign).flat() : [];
-            this._docsAllTags = [...globalTags, ...byCampaign];
-            this._docsCurrentTags = (doc.tags || []).map(t => String(typeof t === 'object' ? t.id : t));
-
-            document.getElementById('docs-modal-tags-loading').style.display = 'none';
-            const wrap = document.getElementById('docs-modal-tags-wrap');
-            wrap.style.display = 'block';
-
-            const badgesEl = document.getElementById('docs-modal-tag-badges');
-            this._renderModalTagBadges(badgesEl);
-
-            wrap.querySelector('[data-action="save-doc-tags"]').addEventListener('click', async () => {
-                try {
-                    await this.api.updateDocumentLabels(String(doc.id), this._docsCurrentTags);
-                    await this.loadDocumentsData();
-                    closeModal();
-                } catch (err) {
-                    alert('Ошибка сохранения тегов: ' + err.message);
-                }
-            });
-        } catch (e) {
-            const loadEl = document.getElementById('docs-modal-tags-loading');
-            if (loadEl) loadEl.textContent = 'Ошибка загрузки тегов: ' + e.message;
-        }
     },
 
-    _renderModalTagBadges(container) {
-        if (!container) return;
-        if (!this._docsAllTags.length) {
-            container.innerHTML = '<span style="color:var(--color-text-faint);font-size:13px;">Тегов нет. Создайте тег в панели справа.</span>';
-            return;
+    // ─── Модальное окно каталога ────────────────────────────────────────────
+
+    async _openDirModal(dirName, dirNode) {
+        const allDocs = this._collectDirDocs(dirNode);
+        const domainId = this._activeDomainId || await this._resolveDomainId();
+
+        const backdrop = document.createElement('div');
+        backdrop.className = 'modal-backdrop';
+        backdrop.innerHTML = `
+            <div class="modal docs-dir-modal">
+                <div class="modal-header">
+                    <span class="docs-modal-filename">📁 ${this.escapeHtml(dirName)}</span>
+                    <span class="docs-dir-modal-count">${allDocs.length} файл(ов)</span>
+                    <button class="modal-close" data-action="close-modal">✕</button>
+                </div>
+                <div class="docs-dir-modal-body">
+                    <div class="docs-dir-modal-section">
+                        <div style="color:var(--color-text-muted);font-size:13px;">Загрузка тегов…</div>
+                    </div>
+                </div>
+            </div>`;
+
+        backdrop.addEventListener('click', e => {
+            if (e.target.closest('[data-action="close-modal"]') || e.target === backdrop)
+                backdrop.remove();
+        });
+        document.body.appendChild(backdrop);
+
+        let allTags = [];
+        try {
+            const resp = await this.api.getTags(domainId);
+            allTags = [
+                ...(Array.isArray(resp) ? resp : (resp.global_tags || [])),
+                ...Object.values((resp && resp.by_campaign) || {}).flat(),
+            ];
+        } catch (_) {}
+
+        const docTagCounts = {};
+        for (const doc of allDocs) {
+            for (const t of (doc.tags || [])) {
+                docTagCounts[String(t.id)] = (docTagCounts[String(t.id)] || 0) + 1;
+            }
         }
-        container.innerHTML = this._docsAllTags.map(t => {
+
+        const selectedTagIds = new Set();
+        const removedTagIds  = new Set();
+
+        const renderAssignBadges = () => allTags.map(t => {
             const tid = String(t.id);
-            const on  = this._docsCurrentTags.includes(tid);
-            return `<span class="badge docs-modal-tag-toggle ${on ? 'is-active' : ''}" data-tag-id="${tid}"
-                style="background:${on ? (t.color || 'var(--color-primary)') : 'var(--color-surface-offset)'};
-                       color:${on ? 'white' : 'var(--color-text)'};
-                       border:1px solid ${on ? (t.color || 'var(--color-primary)') : 'var(--color-border)'};
-                       cursor:pointer;margin:2px;"
-                data-color="${t.color || ''}"
-            >${this.escapeHtml(t.name)}</span>`;
+            const count = docTagCounts[tid] || 0;
+            const allHaveIt = count === allDocs.length;
+            const active = selectedTagIds.has(tid);
+            const removing = removedTagIds.has(tid);
+            let bg, color, border;
+            if (removing) {
+                bg = '#fdecea'; color = '#a12c7b'; border = '#f5c6cb';
+            } else if (active) {
+                bg = t.color || 'var(--color-primary)';
+                color = this._getContrastColor(t.color);
+                border = 'transparent';
+            } else {
+                bg = allHaveIt
+                    ? (t.color || 'var(--color-primary)')
+                    : 'var(--color-surface-offset)';
+                color = allHaveIt
+                    ? this._getContrastColor(t.color)
+                    : 'var(--color-text-muted)';
+                border = allHaveIt ? 'transparent' : 'var(--color-border)';
+            }
+            const countLabel = count > 0 ? ` (${count}/${allDocs.length})` : '';
+            return `<span class="badge docs-dir-tag-badge"
+                       data-tag-id="${tid}"
+                       style="background:${bg};color:${color};cursor:pointer;border:1px solid ${border};"
+                       title="${allHaveIt ? 'Все файлы имеют этот тег' : `${count} из ${allDocs.length} файлов`}">
+                       ${this.escapeHtml(t.name)}${countLabel}
+                    </span>`;
         }).join('');
 
-        container.querySelectorAll('.docs-modal-tag-toggle').forEach(el => {
-            el.addEventListener('click', () => {
-                const tid = String(el.dataset.tagId);
-                const on  = this._docsCurrentTags.includes(tid);
-                if (on) {
-                    this._docsCurrentTags = this._docsCurrentTags.filter(x => x !== tid);
-                    el.style.background = 'var(--color-surface-offset)';
-                    el.style.color      = 'var(--color-text)';
-                    el.style.border     = '1px solid var(--color-border)';
+        const assignBadges = renderAssignBadges();
+        const body = backdrop.querySelector('.docs-dir-modal-body');
+        body.innerHTML = `
+            <div class="docs-dir-modal-section">
+                <div style="font-size:12px;color:var(--color-text-muted);margin-bottom:6px;">Назначить / снять теги для всех файлов каталога:</div>
+                <div class="docs-dir-tag-list" id="dir-tag-assign-list">
+                    ${allTags.length ? assignBadges : '<span style="color:var(--color-text-faint);font-size:13px;">Нет тегов ни на одном файле</span>'}
+                </div>
+            </div>
+            <div class="docs-dir-modal-divider"></div>
+            <div class="docs-modal-footer-btns">
+                <button class="btn btn-primary docs-modal-save-btn" data-action="save-dir-tags">Применить</button>
+            </div>
+            <div id="dir-op-status"></div>`;
+
+        const listEl = document.getElementById('dir-tag-assign-list');
+        if (listEl) {
+            listEl.addEventListener('click', e => {
+                const badge = e.target.closest('.docs-dir-tag-badge');
+                if (!badge) return;
+                const tid = badge.dataset.tagId;
+                if (removedTagIds.has(tid)) {
+                    removedTagIds.delete(tid);
+                } else if (selectedTagIds.has(tid)) {
+                    selectedTagIds.delete(tid);
+                    removedTagIds.add(tid);
                 } else {
-                    this._docsCurrentTags.push(tid);
-                    const color = el.dataset.color || 'var(--color-primary)';
-                    el.style.background = color;
-                    el.style.color      = 'white';
-                    el.style.border     = `1px solid ${color}`;
+                    selectedTagIds.add(tid);
                 }
+                listEl.innerHTML = renderAssignBadges();
             });
-        });
+        }
+
+        const saveBtn = backdrop.querySelector('[data-action="save-dir-tags"]');
+        if (saveBtn) {
+            saveBtn.addEventListener('click', async () => {
+                const statusEl = document.getElementById('dir-op-status');
+                if (!selectedTagIds.size && !removedTagIds.size) {
+                    backdrop.remove();
+                    return;
+                }
+                saveBtn.disabled = true;
+                let done = 0, errors = [];
+                for (const doc of allDocs) {
+                    try {
+                        const currentIds = new Set((doc.tags || []).map(t => String(t.id)));
+                        selectedTagIds.forEach(tid => currentIds.add(tid));
+                        removedTagIds.forEach(tid => currentIds.delete(tid));
+                        await this.api.updateDocumentTags(String(doc.id), [...currentIds]);
+                        done++;
+                        if (statusEl) {
+                            statusEl.className = 'docs-dir-modal-status docs-dir-modal-status--loading';
+                            statusEl.textContent = `Обновлено ${done} / ${allDocs.length}…`;
+                        }
+                    } catch (err) {
+                        errors.push(doc.source_path || String(doc.id));
+                    }
+                }
+                if (statusEl) {
+                    if (errors.length) {
+                        statusEl.className = 'docs-dir-modal-status';
+                        statusEl.style.background = '#fdecea';
+                        statusEl.style.color = '#a12c7b';
+                        statusEl.innerHTML = `Ошибки (${errors.length}):<br>
+                    <span style="font-size:11px;color:var(--color-text-muted);">${errors.map(p => this.escapeHtml(p)).join('<br>')}</span>`;
+                    } else {
+                        statusEl.className = 'docs-dir-modal-status';
+                        statusEl.style.background = '#e6f5ee';
+                        statusEl.style.color = '#206a43';
+                        statusEl.textContent = `✓ Обновлено ${done} файлов`;
+                    }
+                }
+                saveBtn.disabled = false;
+                await this.loadDocumentsData();
+            });
+        }
     },
 
-    // ─── Actions ─────────────────────────────────────────────────────────
+    _collectDirDocs(node) {
+        const result = [];
+        const walk = (n) => {
+            for (const child of Object.values(n.children)) {
+                if (child._isDir) walk(child);
+                else result.push(child.doc);
+            }
+        };
+        walk(node);
+        return result;
+    },
 
-    async handleDocumentsAction(action, btn) {
-        if (action === 'run-indexer') {
-            const runBtn = document.querySelector('[data-action="run-indexer"]');
-            if (runBtn) { runBtn.disabled = true; runBtn.textContent = '⏳ Запуск…'; }
+    // ─── Прогресс индексации ────────────────────────────────────────────────
+
+    async _startIndexer() {
+        const vaultId = await this._resolveVaultId();
+        if (!vaultId) { alert('Vault не найден'); return; }
+        try {
+            await this.api.runIndexer(vaultId);
+            this._startIndexPoll(vaultId);
+        } catch (e) {
+            alert('Ошибка запуска индексатора: ' + e.message);
+        }
+    },
+
+    _startIndexPoll(vaultId) {
+        if (this._docsIndexPollTimer) clearInterval(this._docsIndexPollTimer);
+        const panel = document.getElementById('docs-index-progress-panel');
+        if (panel) panel.style.display = '';
+
+        const poll = async () => {
             try {
-                const result = await this.api.runIndexer();
-                const taskId = result?.task_id || result?.id || null;
-                this._docsIndexTaskId = taskId;
-                if (runBtn) { runBtn.disabled = false; runBtn.textContent = '▶ Запустить индексацию'; }
-                if (taskId) {
-                    this._startIndexerWs(taskId);
-                } else {
-                    this._renderIndexProgress({ status: 'completed', total: 0, done: 0, files: {} });
+                const state = await this.api.getIndexerStatus(vaultId);
+                this._renderIndexProgress(state);
+                if (['idle', 'done', 'error', 'cancelled'].includes(state.status)) {
+                    clearInterval(this._docsIndexPollTimer);
+                    this._docsIndexPollTimer = null;
                     await this.loadDocumentsData();
                 }
-            } catch (e) {
-                if (runBtn) { runBtn.disabled = false; runBtn.textContent = '▶ Запустить индексацию'; }
-                this._renderIndexProgress({ status: 'failed', total: 0, done: 0, files: {}, error: e.message });
-            }
-            return;
+            } catch (_) {}
+        };
+        poll();
+        this._docsIndexPollTimer = setInterval(poll, 2000);
+    },
+
+    _renderIndexProgress(state) {
+        const panel = document.getElementById('docs-index-progress-panel');
+        if (!panel) return;
+        const statusMap = {
+            idle: 'Ожидание', running: 'Индексация', done: 'Завершено',
+            error: 'Ошибка', cancelled: 'Отменено',
+        };
+        const statusLabel = statusMap[state.status] || state.status;
+        const total = state.total_files || 0;
+        const done  = state.indexed_files || 0;
+        const pct   = total > 0 ? Math.round((done / total) * 100) : 0;
+
+        panel.innerHTML = `
+            <div class="docs-index-progress-header">
+                <span class="idx-status-label">${statusLabel}</span>
+                ${total > 0 ? `<span class="idx-global-count">${done} / ${total} файлов</span>` : ''}
+                ${total > 0 ? `<span class="idx-pct">${pct}%</span>` : ''}
+            </div>
+            ${total > 0 ? `<div class="idx-progress-bar"><div class="idx-progress-fill" style="width:${pct}%"></div></div>` : ''}
+            <div class="idx-files-list" id="idx-files-list"></div>
+            ${state.error ? `<div style="color:var(--color-error);font-size:var(--text-xs);margin-top:8px;">${this.escapeHtml(state.error)}</div>` : ''}`;
+
+        const filesList = document.getElementById('idx-files-list');
+        if (filesList && state.files) {
+            filesList.innerHTML = state.files.map(f => {
+                const name = f.path.split('/').pop();
+                const stageMap = {
+                    parsing: { bg: '#fff3cd', color: '#856404' },
+                    chunking: { bg: '#e8d5f5', color: '#5a1e8c' },
+                    indexing: { bg: '#d1ecf1', color: '#0c5460' },
+                    done: { bg: '#d4edda', color: '#155724' },
+                    error: { bg: '#f8d7da', color: '#721c24' },
+                };
+                const st = stageMap[f.stage] || { bg: '#f8f9fa', color: '#6a737d' };
+                return `
+                    <div class="file-row2">
+                        <div class="file-row2-top">
+                            <span class="file-row2-name" title="${this.escapeHtml(f.path)}">${this.escapeHtml(name)}</span>
+                            <span class="file-row2-chunks">${f.chunks_done ?? 0}/${f.chunks_total ?? 0} чанков</span>
+                        </div>
+                        <span class="file-row2-stage"
+                              style="display:inline-block;padding:1px 7px;border-radius:9px;
+                                     background:${st.bg};color:${st.color};font-size:10px;">
+                            ${this.escapeHtml(f.stage || '—')}
+                        </span>
+                    </div>`;
+            }).join('');
         }
     },
 
@@ -930,6 +689,18 @@ const DocumentsTabMixin = {
             return first ? (first.domain_id || first.id || null) : null;
         } catch (_) { return null; }
     },
+
+    _getContrastColor(hex) {
+        if (!hex || hex.startsWith('var(')) return '#111111';
+        const h = hex.replace('#', '');
+        const r = parseInt(h.substring(0, 2), 16);
+        const g = parseInt(h.substring(2, 4), 16);
+        const b = parseInt(h.substring(4, 6), 16);
+        // Perceived luminance (WCAG formula)
+        const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+        return luminance > 0.55 ? '#111111' : '#ffffff';
+    },
+
 };
 
 Object.assign(SettingsManager.prototype, DocumentsTabMixin);
