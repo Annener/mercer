@@ -5,9 +5,12 @@ reranker.py — CrossEncoder-реранкер для pdf-sidecar.
 и держит её в памяти. Вызывается из lifespan-хука app.py.
 
 Device-автоопределение:
-  - Apple Silicon (MPS) → torch.backends.mps.is_available()
-  - CUDA              → torch.cuda.is_available()
-  - Фоллбэк         → cpu
+  - RERANKER_FORCE_CPU=1  → всегда cpu (рекомендуется для macOS — MPS даёт
+                            тихий fallback на CPU для большинства ops в bge-reranker,
+                            что хуже чистого CPU из-за оверхеда передачи данных)
+  - Apple Silicon (MPS)   → torch.backends.mps.is_available()
+  - CUDA                  → torch.cuda.is_available()
+  - Фоллбэк              → cpu
 
 Переопределение модели через env RERANKER_MODEL_ID без перезапуска.
 """
@@ -27,14 +30,29 @@ _loaded_model_id: str | None = None
 
 
 def _detect_device() -> str:
+    # Явный оверрайд — рекомендуется на macOS где MPS даёт тихий CPU-fallback
+    if os.getenv("RERANKER_FORCE_CPU", "0") == "1":
+        logger.info("Device selected: CPU (forced via RERANKER_FORCE_CPU=1)")
+        return "cpu"
+
     try:
         import torch
         if torch.backends.mps.is_available():
+            logger.info(
+                "Device selected: MPS (Apple Silicon) — "
+                "note: bge-reranker ops may silently fall back to CPU. "
+                "Set RERANKER_FORCE_CPU=1 if system freezes occur."
+            )
             return "mps"
         if torch.cuda.is_available():
+            name = torch.cuda.get_device_name(0)
+            mem_gb = torch.cuda.get_device_properties(0).total_memory // 1024 ** 3
+            logger.info("Device selected: CUDA — %s (%d GB VRAM)", name, mem_gb)
             return "cuda"
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("Device detection failed: %s", e)
+
+    logger.warning("⚠️  Reranker running on CPU — no GPU device available or detected")
     return "cpu"
 
 
@@ -51,12 +69,25 @@ def load_reranker(model_id: str | None = None) -> None:
         return
 
     device = _detect_device()
+
+    # Для MPS включаем явный фоллбэк чтобы неподдерживаемые ops не падали с ошибкой
+    if device == "mps":
+        os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
+        logger.info("PYTORCH_ENABLE_MPS_FALLBACK=1 set for MPS device")
+
     logger.info("Loading reranker model '%s' on device='%s'", target_id, device)
 
     from sentence_transformers import CrossEncoder
-    _model = CrossEncoder(target_id, device=device)
+    _model = CrossEncoder(target_id, device=device, max_length=512)
     _loaded_model_id = target_id
-    logger.info("Reranker model loaded: %s", target_id)
+
+    # Верифицируем реальное устройство параметров модели
+    try:
+        import torch  # noqa: F401 — уже импортирован выше, но на случай cpu-only окружения
+        actual_device = next(_model.model.parameters()).device
+        logger.info("Reranker model loaded: %s | parameters confirmed on device: %s", target_id, actual_device)
+    except Exception:
+        logger.info("Reranker model loaded: %s", target_id)
 
 
 def rerank(query: str, documents: list[str]) -> list[dict]:
@@ -76,7 +107,9 @@ def rerank(query: str, documents: list[str]) -> list[dict]:
         return []
 
     pairs = [[query, doc] for doc in documents]
-    scores = _model.predict(pairs)
+
+    # batch_size=8 снижает пиковое потребление памяти и оверхед на MPS/CPU
+    scores = _model.predict(pairs, batch_size=8, show_progress_bar=False)
 
     results = [
         {"index": i, "relevance_score": float(scores[i])}

@@ -3,8 +3,12 @@
 # Использование: ./start.sh [порт]
 #
 # Переменные окружения:
-#   PDF_SIDECAR_PORT  — порт HTTP-сервера (по умолчанию: 8765)
-#   LOG_LEVEL         — уровень логирования (по умолчанию: INFO)
+#   PDF_SIDECAR_PORT    — порт HTTP-сервера (по умолчанию: 8765)
+#   LOG_LEVEL           — уровень логирования (по умолчанию: INFO)
+#   RERANKER_FORCE_CPU  — принудительно использовать CPU для реранкера.
+#                         По умолчанию: 1 на macOS (MPS даёт тихий fallback на CPU
+#                         для bge-reranker и вешает систему через Metal/UI конкуренцию).
+#                         Установите в 0 чтобы попробовать MPS вручную.
 
 set -euo pipefail
 
@@ -16,6 +20,17 @@ APP_MODULE="app:app"
 
 export PDF_SIDECAR_PORT="${1:-${PDF_SIDECAR_PORT:-8765}}"
 export LOG_LEVEL="${LOG_LEVEL:-INFO}"
+
+# На macOS MPS не даёт реального ускорения для bge-reranker (тихий CPU-fallback)
+# и вызывает зависания системы из-за конкуренции с Metal UI-рендерингом.
+# Принудительно используем CPU если явно не переопределено.
+if [[ "$(uname -s)" == "Darwin" ]]; then
+    export RERANKER_FORCE_CPU="${RERANKER_FORCE_CPU:-1}"
+    if [[ "${RERANKER_FORCE_CPU}" == "1" ]]; then
+        echo "[sidecar] macOS detected: reranker will use CPU (RERANKER_FORCE_CPU=1)"
+        echo "[sidecar] To use MPS: RERANKER_FORCE_CPU=0 ./start.sh"
+    fi
+fi
 
 # --- Проверки ---
 if [[ ! -d "${VENV_DIR}" ]]; then
