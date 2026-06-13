@@ -2,7 +2,6 @@ asyncpg>=0.29.0
 cryptography>=41.0.0
 fastapi
 httpx
-numpy
 pydantic-settings
 pyyaml
 pdfminer.six

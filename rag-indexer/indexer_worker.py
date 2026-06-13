@@ -11,7 +11,6 @@ from typing import Any
 from app.db_client import IndexerDBClient
 from config import EmbeddingModelConfig
 from embedding.base_provider import EmbeddingProvider
-from embedding.cache import get_cached, save_cache
 from embedding.ollama_provider import OllamaEmbeddingProvider
 from embedding.openai_provider import OpenAICompatibleProvider
 from parser.chunking.embedding_enricher import (
@@ -557,109 +556,70 @@ async def _embed_chunks(
     broadcast: BroadcastCallable | None = None,
     is_cancelled: CancelCallable | None = None,
 ) -> list[list[float]]:
-    vectors: list[list[float] | None] = []
-    missing_texts: list[str] = []
-    missing_indices: list[int] = []
+    vectors: list[list[float]] = []
+
+    logger.info(
+        "Embedding start: file=%s total_chunks=%d model=%s",
+        file_path or "?", len(chunks), embedding_model.model_id,
+    )
+    embed_start_time = asyncio.get_event_loop().time()
 
     for index, chunk in enumerate(chunks):
+        if is_cancelled is not None and task_id is not None and is_cancelled(task_id):
+            raise asyncio.CancelledError
+
         embedding_text = chunk.metadata.get("embedding_text", chunk.text)
-        cached = await asyncio.to_thread(
-            get_cached, embedding_text, embedding_model.model_id, provider.dimensions
-        )
-        if cached is None:
-            vectors.append(None)
-            missing_texts.append(embedding_text)
-            missing_indices.append(index)
-        else:
-            vectors.append(cached)
 
-    cached_count = len(chunks) - len(missing_texts)
-
-    if missing_texts:
-        logger.info(
-            "Embedding start: file=%s total_chunks=%d cached=%d to_embed=%d model=%s",
-            file_path or "?", len(chunks), cached_count, len(missing_texts), embedding_model.model_id,
-        )
-        embed_start_time = asyncio.get_event_loop().time()
-
-        for offset, embedding_text in enumerate(missing_texts):
-            if is_cancelled is not None and task_id is not None and is_cancelled(task_id):
-                raise asyncio.CancelledError
-
-            # W01 fix: provider.embed() может вернуть пустой список или список с пустым вектором
-            # (dimension mismatch, network error после retry, etc.).
-            # В обоих случаях молча возвращался [] -> vectors[chunk_index] оставался None ->
-            # финальный list-comprehension отфильтровывал None -> len(vectors) != len(chunks) ->
-            # ValueError с невнятным сообщением "Embedding failed for chunk index N".
-            # Теперь пробрасываем явную ошибку сразу, пока offset известен.
-            result = await provider.embed([embedding_text])
-            vector = result[0] if result else []
-            if not vector:
-                chunk_index = missing_indices[offset]
-                logger.error(
-                    "Embedding provider returned empty vector: file=%s chunk_index=%d model=%s",
-                    file_path or "?", chunk_index, embedding_model.model_id,
-                )
-                raise ValueError(
-                    f"Embedding provider returned empty vector for chunk {chunk_index} "
-                    f"(file={file_path!r}, model={embedding_model.model_id!r}). "
-                    "Check model availability, dimension settings, and provider logs."
-                )
-
-            chunk_index = missing_indices[offset]
-            vectors[chunk_index] = vector
-
-            await asyncio.to_thread(
-                save_cache,
-                embedding_text,
-                embedding_model.model_id,
-                provider.dimensions,
-                vector,
+        # W01 fix: provider.embed() может вернуть пустой список или список с пустым вектором
+        # (dimension mismatch, network error после retry, etc.).
+        result = await provider.embed([embedding_text])
+        vector = result[0] if result else []
+        if not vector:
+            logger.error(
+                "Embedding provider returned empty vector: file=%s chunk_index=%d model=%s",
+                file_path or "?", index, embedding_model.model_id,
             )
-
-            processed_count = cached_count + offset + 1
-
-            if processed_count % CHUNK_PROGRESS_REPORT_INTERVAL == 0 or processed_count == len(chunks):
-                elapsed = asyncio.get_event_loop().time() - embed_start_time
-                rate = (offset + 1) / elapsed if elapsed > 0 else 0
-                eta = (len(missing_texts) - offset - 1) / rate if rate > 0 else 0
-                logger.info(
-                    "Embedding progress: file=%s %d/%d chunks (%.1f c/s, ETA ~%.0fs)",
-                    file_path or "?", processed_count, len(chunks), rate, eta,
-                )
-
-            if (
-                broadcast is not None
-                and task_id is not None
-                and file_path is not None
-                and (
-                    processed_count % CHUNK_PROGRESS_REPORT_INTERVAL == 0
-                    or processed_count == len(chunks)
-                )
-            ):
-                await _broadcast_chunk_progress(
-                    task_id, file_path, "indexing",
-                    chunks_total=len(chunks),
-                    chunks_processed=processed_count,
-                    broadcast=broadcast,
-                )
-
-        logger.info(
-            "Embedding complete: file=%s %d chunks embedded in %.1fs",
-            file_path or "?", len(missing_texts),
-            asyncio.get_event_loop().time() - embed_start_time,
-        )
-
-    # Все векторы должны быть заполнены — None остаться не должно
-    result_vectors: list[list[float]] = []
-    for i, v in enumerate(vectors):
-        if v is None:
             raise ValueError(
-                f"Vector for chunk {i} is None after embedding "
-                f"(file={file_path!r}). This is a bug — please report."
+                f"Embedding provider returned empty vector for chunk {index} "
+                f"(file={file_path!r}, model={embedding_model.model_id!r}). "
+                "Check model availability, dimension settings, and provider logs."
             )
-        result_vectors.append(v)
-    return result_vectors
+
+        vectors.append(vector)
+
+        processed_count = index + 1
+        if processed_count % CHUNK_PROGRESS_REPORT_INTERVAL == 0 or processed_count == len(chunks):
+            elapsed = asyncio.get_event_loop().time() - embed_start_time
+            rate = processed_count / elapsed if elapsed > 0 else 0
+            eta = (len(chunks) - processed_count) / rate if rate > 0 else 0
+            logger.info(
+                "Embedding progress: file=%s %d/%d chunks (%.1f c/s, ETA ~%.0fs)",
+                file_path or "?", processed_count, len(chunks), rate, eta,
+            )
+
+        if (
+            broadcast is not None
+            and task_id is not None
+            and file_path is not None
+            and (
+                processed_count % CHUNK_PROGRESS_REPORT_INTERVAL == 0
+                or processed_count == len(chunks)
+            )
+        ):
+            await _broadcast_chunk_progress(
+                task_id, file_path, "indexing",
+                chunks_total=len(chunks),
+                chunks_processed=processed_count,
+                broadcast=broadcast,
+            )
+
+    logger.info(
+        "Embedding complete: file=%s %d chunks embedded in %.1fs",
+        file_path or "?", len(chunks),
+        asyncio.get_event_loop().time() - embed_start_time,
+    )
+
+    return vectors
 
 
 def _embedding_model_config(model: dict[str, Any]) -> EmbeddingModelConfig:
