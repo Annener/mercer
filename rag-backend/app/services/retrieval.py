@@ -127,13 +127,97 @@ async def get_document_ids_by_tags(
     return [str(row) for row in result.scalars().all()]
 
 
+# ---------------------------------------------------------------------------
+# Hybrid search helpers
+# ---------------------------------------------------------------------------
+
+async def _vector_search(
+    vault_id: str,
+    vector: list[float],
+    top_k: int,
+    filter_expr: dict[str, Any] | None,
+) -> list[SearchHit]:
+    async with httpx.AsyncClient(base_url=STORAGE_API_URL, timeout=15) as client:
+        response = await client.post(
+            "/index/search",
+            json=SearchRequest(
+                vault_id=vault_id,
+                vector=vector,
+                top_k=top_k,
+                filter=filter_expr,
+            ).model_dump(),
+        )
+        response.raise_for_status()
+    return SearchResponse.model_validate(response.json()).results
+
+
+async def _text_search(
+    vault_id: str,
+    query_text: str,
+    limit: int,
+    filter_expr: dict[str, Any] | None,
+) -> list[SearchHit]:
+    async with httpx.AsyncClient(base_url=STORAGE_API_URL, timeout=15) as client:
+        response = await client.post(
+            "/index/search/text",
+            json={"vault_id": vault_id, "query_text": query_text, "limit": limit},
+        )
+        response.raise_for_status()
+    hits = [SearchHit(**h) for h in response.json().get("results", [])]
+    # Применяем document_ids фильтр вручную (text endpoint его не поддерживает)
+    if filter_expr and "$in" in filter_expr.get("document_id", {}):
+        doc_set = set(filter_expr["document_id"]["$in"])
+        hits = [h for h in hits if h.document_id in doc_set]
+    return hits
+
+
+def _rrf_merge(
+    vector_hits: list[SearchHit],
+    text_hits: list[SearchHit],
+    *,
+    k: int = 60,
+    top_k: int,
+) -> list[SearchHit]:
+    """
+    Объединяет результаты vector и text поиска через Reciprocal Rank Fusion.
+    Итоговый score = 1/(k+rank_vector) + 1/(k+rank_text).
+    chunk_id используется как ключ дедупликации.
+    """
+    scores: dict[str, float] = {}
+    by_id: dict[str, SearchHit] = {}
+
+    for rank, hit in enumerate(vector_hits):
+        scores[hit.chunk_id] = scores.get(hit.chunk_id, 0.0) + 1.0 / (k + rank + 1)
+        by_id[hit.chunk_id] = hit
+
+    for rank, hit in enumerate(text_hits):
+        scores[hit.chunk_id] = scores.get(hit.chunk_id, 0.0) + 1.0 / (k + rank + 1)
+        by_id.setdefault(hit.chunk_id, hit)  # vector-версия хита имеет приоритет
+
+    sorted_ids = sorted(scores, key=lambda cid: scores[cid], reverse=True)
+    return [
+        SearchHit(
+            chunk_id=cid,
+            document_id=by_id[cid].document_id,
+            text=by_id[cid].text,
+            metadata=by_id[cid].metadata,
+            score=scores[cid],
+        )
+        for cid in sorted_ids[:top_k]
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Public retrieval API
+# ---------------------------------------------------------------------------
+
 async def retrieve(
     query: str,
     vault_id: str | None,
     *,
     document_ids: list[str] | None = None,
     top_k: int | None = None,
-    strategy: str = "semantic",
+    strategy: str = "hybrid",
     config: AppConfig | None = None,
     db: AsyncSession | None = None,
     _embedding_model: EmbeddingModelConfig | None = None,
@@ -147,13 +231,18 @@ async def retrieve(
       1. _embedding_model  — прямая передача (retrieve_multi_vault раз решает)
       2. config            — AppConfig из pipeline-пути
       3. db                — подтягивает из БД через settings_service (фаллбэк-путь)
+
+    Стратегии:
+      "hybrid"   — vector + FTS → RRF merge (дефолт)
+      "semantic" — только vector search
+      "none"     — пропустить retrieval
     """
     if document_ids is not None and len(document_ids) == 0:
         return []
 
     logger.info(
-        "RETRIEVE query='%s' vault_id=%s top_k=%s doc_ids=%s",
-        query, vault_id, top_k, document_ids,
+        "RETRIEVE query='%s' vault_id=%s top_k=%s doc_ids=%s strategy=%s",
+        query, vault_id, top_k, document_ids, strategy,
     )
     if not vault_id or strategy == "none":
         logger.warning(
@@ -162,8 +251,8 @@ async def retrieve(
         )
         return []
     effective_top_k = top_k or await _default_top_k()
-    if strategy != "semantic":
-        logger.info("Retrieval strategy is not implemented yet: %s", strategy)
+    if strategy not in ("semantic", "hybrid"):
+        logger.info("Retrieval strategy is not implemented: %s", strategy)
         return []
     try:
         embedding_model = await _resolve_embedding_model(
@@ -185,20 +274,24 @@ async def retrieve(
         else:
             search_top_k = effective_top_k
 
-        async with httpx.AsyncClient(base_url=STORAGE_API_URL, timeout=15) as client:
-            response = await client.post(
-                "/index/search",
-                json=SearchRequest(
-                    vault_id=vault_id,
-                    vector=vector,
-                    top_k=search_top_k,
-                    filter=filter_expr,
-                ).model_dump(),
-            )
-            response.raise_for_status()
-        search_response = SearchResponse.model_validate(response.json())
+        vector_hits = await _vector_search(vault_id, vector, search_top_k, filter_expr)
 
-        raw_hits = search_response.results
+        if strategy == "hybrid":
+            try:
+                text_hits = await _text_search(vault_id, query, search_top_k, filter_expr)
+            except Exception:
+                logger.warning(
+                    "RETRIEVE text_search failed for vault '%s', falling back to vector-only",
+                    vault_id, exc_info=True,
+                )
+                text_hits = []
+            if text_hits:
+                raw_hits = _rrf_merge(vector_hits, text_hits, top_k=effective_top_k)
+            else:
+                raw_hits = vector_hits
+        else:
+            raw_hits = vector_hits
+
         logger.info(
             "RETRIEVE raw_hits=%d filter_expr=%s sample_doc_ids=%s",
             len(raw_hits),
@@ -243,7 +336,7 @@ async def retrieve_multi_vault(
     *,
     document_ids: list[str] | None = None,
     top_k: int | None = None,
-    strategy: str = "semantic",
+    strategy: str = "hybrid",
     config: AppConfig | None = None,
     db: AsyncSession | None = None,
 ) -> list[SearchHit]:
