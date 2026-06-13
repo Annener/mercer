@@ -24,6 +24,28 @@ class LanceDBStore:
         self.data_path.mkdir(parents=True, exist_ok=True)
         self.db = lancedb.connect(str(self.data_path))
         logger.info("Connected to LanceDB at %s", self.data_path)
+        self.build_fts_indexes()
+
+    def build_fts_indexes(self) -> None:
+        """
+        Однократно создаёт/пересоздаёт FTS-индекс на колонке 'text'
+        для всех существующих таблиц vault_*.
+        Вызывается один раз при старте сервиса из connect().
+        Ошибка для отдельной таблицы не прерывает обход остальных.
+        """
+        db = self._db()
+        table_names = [t for t in db.table_names() if t.startswith("vault_")]
+        if not table_names:
+            logger.info("FTS index build: no vault tables found, skipping")
+            return
+        logger.info("FTS index build: found %d tables: %s", len(table_names), table_names)
+        for name in table_names:
+            try:
+                table = db.open_table(name)
+                table.create_fts_index("text", replace=True)
+                logger.info("FTS index built for table '%s'", name)
+            except Exception:
+                logger.warning("FTS index build failed for table '%s'", name, exc_info=True)
 
     def upsert(self, req: UpsertRequest) -> UpsertResponse:
         if not req.chunks:
@@ -196,24 +218,30 @@ class LanceDBStore:
     def text_search(self, vault_id: str, query_text: str, limit: int = 20) -> list[SearchHit]:
         if not self._table_exists(vault_id):
             return []
-        needle = query_text.lower()
-        hits: list[SearchHit] = []
-        for row in self._all_rows(vault_id):
-            text = str(row.get("text") or "")
-            if needle not in text.lower():
-                continue
-            hits.append(
-                SearchHit(
-                    chunk_id=str(row["chunk_id"]),
-                    document_id=str(row["document_id"]),
-                    text=text,
-                    metadata=_decode_metadata(row.get("metadata")),
-                    score=1.0,
-                )
+        table = self._open_table(vault_id)
+        try:
+            rows = table.search(query_text, query_type="fts").limit(limit).to_list()
+        except Exception:
+            # Фаллбэк: FTS-индекс ещё не построен — substring match
+            logger.warning(
+                "FTS search failed for vault '%s', falling back to substring match", vault_id,
+                exc_info=True,
             )
-            if len(hits) >= limit:
-                break
-        return hits
+            needle = query_text.lower()
+            rows = [
+                r for r in self._all_rows(vault_id)
+                if needle in str(r.get("text") or "").lower()
+            ][:limit]
+        return [
+            SearchHit(
+                chunk_id=str(row["chunk_id"]),
+                document_id=str(row["document_id"]),
+                text=str(row.get("text") or ""),
+                metadata=_decode_metadata(row.get("metadata")),
+                score=1.0,
+            )
+            for row in rows
+        ]
 
     def delete_vault(self, vault_id: str) -> int:
         if not self._table_exists(vault_id):
@@ -227,7 +255,13 @@ class LanceDBStore:
     def _get_or_create_table(self, vault_id: str, rows: list[dict[str, Any]]) -> Any:
         if self._table_exists(vault_id):
             return self._open_table(vault_id)
-        return self._db().create_table(_table_name(vault_id), data=rows)
+        table = self._db().create_table(_table_name(vault_id), data=rows)
+        try:
+            table.create_fts_index("text", replace=True)
+            logger.info("FTS index built for new table '%s'", _table_name(vault_id))
+        except Exception:
+            logger.warning("FTS index build failed for new table '%s'", _table_name(vault_id), exc_info=True)
+        return table
 
     def _replace_rows(self, table: Any, rows: list[dict[str, Any]]) -> None:
         if not rows:
