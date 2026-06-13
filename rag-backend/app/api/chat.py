@@ -237,7 +237,7 @@ async def send_message(
     ] if domain_id else []
 
     retrieval_strategy = (
-        "semantic" if chat.vault_id and await settings_service.get("retrieval.enabled", db)
+        "hybrid" if chat.vault_id and await settings_service.get("retrieval.enabled", db)
         else "none"
     )
 
@@ -353,7 +353,7 @@ async def send_message_stream(
     ] if domain_id else []
 
     retrieval_strategy = (
-        "semantic" if chat.vault_id and await settings_service.get("retrieval.enabled", db)
+        "hybrid" if chat.vault_id and await settings_service.get("retrieval.enabled", db)
         else "none"
     )
 
@@ -620,7 +620,7 @@ async def _fallback_retrieve(
         vault_ids,
         document_ids=document_ids,
         top_k=top_k,
-        strategy="semantic",
+        strategy="hybrid",
         config=None,
         db=db,
     )
