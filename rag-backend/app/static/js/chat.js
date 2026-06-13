@@ -346,8 +346,20 @@ class ChatManager {
 
     async togglePipelineLock() {
         if (!this.currentChatId || !this.pipelineSelect) return;
-        const locked = Boolean(this.currentChat?.locked_pipeline_id);
-        const pipelineId = locked ? null : (this.pipelineSelect.value || null);
+
+        const currentlyLocked = Boolean(this.currentChat?.locked_pipeline_id);
+
+        // Читаем значение селектора СИНХРОННО до любых await —
+        // после setupContextBar DOM будет перестроен и значение потеряется
+        const selectedPipelineId = this.pipelineSelect.value || null;
+
+        if (!currentlyLocked && !selectedPipelineId) {
+            // Нечего фиксировать — пользователь не выбрал пайплайн
+            return;
+        }
+
+        const pipelineId = currentlyLocked ? null : selectedPipelineId;
+
         await chatAPI.lockPipeline(this.currentChatId, pipelineId);
         const data = await chatAPI.getChat(this.currentChatId);
         this.currentChat = data.chat;
