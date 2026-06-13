@@ -548,6 +548,7 @@ class PipelineExecutionContext(BaseModel):
     chat_id: str
     message_id: str
     query: str
+    original_query: str | None = None  # оригинал до переформулировки QueryRewriter-ом
     domain_id: str | None = None
     campaign_id: str | None = None
     vault_ids: list[str] = Field(default_factory=list)

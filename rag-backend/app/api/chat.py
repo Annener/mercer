@@ -18,6 +18,7 @@ from app.db.session import get_db
 from app.services.domain_service import domain_service
 from app.services.pipeline_executor import PipelineExecutor
 from app.services.pipeline_router import PipelineRouter
+from app.services.query_rewriter import query_rewriter
 from app.services.retrieval import (
     format_context,
     get_allowed_tag_ids,
@@ -244,6 +245,7 @@ async def send_message(
         chat_id=str(chat.id),
         message_id=str(user_msg.id),
         query=req.content,
+        original_query=req.content,  # сохраняем оригинал до переформулировки
         domain_id=domain_id,
         campaign_id=str(chat.campaign_id) if chat.campaign_id else None,
         vault_id=chat.vault_id,
@@ -251,6 +253,7 @@ async def send_message(
         retrieval_strategy=retrieval_strategy,
     )
 
+    # Шаг 8: загружаем историю ДО rewriting, чтобы rewriter мог её использовать
     history_stmt = select(Message).where(Message.chat_id == chat.id).order_by(Message.created_at).limit(20)
     history_result = await db.execute(history_stmt)
     context.history = [
@@ -263,6 +266,24 @@ async def send_message(
         )
         for m in history_result.scalars().all()
     ]
+
+    # ★ QUERY REWRITING — переформулируем запрос перед retrieval
+    provider = settings_service.get_active_provider()
+    if provider:
+        from app.db.models import Domain as DomainModel
+        domain_obj = await db.get(DomainModel, context.domain_id) if context.domain_id else None
+        domain_description = (
+            domain_obj.description
+            if domain_obj and domain_obj.description
+            else None
+        )
+        context.query = await query_rewriter.rewrite(
+            original_query=context.query,
+            history=context.history,
+            provider=provider,
+            domain_description=domain_description,
+        )
+    # ★ КОНЕЦ QUERY REWRITING
 
     pipeline_router = PipelineRouter(db)
     pipeline = await pipeline_router.select(
@@ -279,7 +300,7 @@ async def send_message(
         db.add(assistant_msg)
         await db.commit()
         if chat.title == "New Chat":
-            chat.title = _auto_title(req.content)
+            chat.title = _auto_title(context.original_query or req.content)
             await db.commit()
         return MessageResponse(content=answer, message_id=str(assistant_msg.id))
 
@@ -301,7 +322,7 @@ async def send_message(
     await db.commit()
 
     if chat.title == "New Chat":
-        chat.title = _auto_title(req.content)
+        chat.title = _auto_title(context.original_query or req.content)
         await db.commit()
 
     return MessageResponse(content=result.final_answer, message_id=str(assistant_msg.id))
@@ -340,6 +361,7 @@ async def send_message_stream(
         chat_id=str(chat.id),
         message_id=str(user_msg.id),
         query=req.content,
+        original_query=req.content,  # сохраняем оригинал до переформулировки
         domain_id=domain_id,
         campaign_id=str(chat.campaign_id) if chat.campaign_id else None,
         vault_ids=vault_ids,
@@ -347,6 +369,7 @@ async def send_message_stream(
         retrieval_strategy=retrieval_strategy,
     )
 
+    # Шаг 8: загружаем историю ДО rewriting, чтобы rewriter мог её использовать
     history_stmt = select(Message).where(Message.chat_id == chat.id).order_by(Message.created_at).limit(20)
     history_result = await db.execute(history_stmt)
     context.history = [
@@ -359,6 +382,24 @@ async def send_message_stream(
         )
         for m in history_result.scalars().all()
     ]
+
+    # ★ QUERY REWRITING — переформулируем запрос перед retrieval
+    provider = settings_service.get_active_provider()
+    if provider:
+        from app.db.models import Domain as DomainModel
+        domain_obj = await db.get(DomainModel, context.domain_id) if context.domain_id else None
+        domain_description = (
+            domain_obj.description
+            if domain_obj and domain_obj.description
+            else None
+        )
+        context.query = await query_rewriter.rewrite(
+            original_query=context.query,
+            history=context.history,
+            provider=provider,
+            domain_description=domain_description,
+        )
+    # ★ КОНЕЦ QUERY REWRITING
 
     pipeline_router = PipelineRouter(db)
     pipeline = await pipeline_router.select(
@@ -382,7 +423,7 @@ async def send_message_stream(
             system_prompt = await _resolve_system_prompt(context.campaign_id, domain_id, db)
 
             hits: list[SearchHit] = await _fallback_retrieve(
-                query=req.content,
+                query=context.query,  # используем переформулированный запрос для retrieval
                 vault_ids=vault_ids,
                 domain_id=domain_id,
                 campaign_id=context.campaign_id,
@@ -410,7 +451,7 @@ async def send_message_stream(
                 db.add(assistant_msg)
                 await db.commit()
                 if chat.title == "New Chat":
-                    chat.title = _auto_title(req.content)
+                    chat.title = _auto_title(context.original_query or req.content)
                     await db.commit()
 
             if hits:
@@ -458,7 +499,7 @@ async def send_message_stream(
             db.add(assistant_msg)
             await db.commit()
             if chat.title == "New Chat":
-                chat.title = _auto_title(req.content)
+                chat.title = _auto_title(context.original_query or req.content)
                 await db.commit()
 
         yield "data: [DONE]\n\n"
@@ -617,7 +658,7 @@ async def _plain_llm_reply(
 
     vault_ids: list[str] = getattr(context, "vault_ids", []) or []
     hits: list[SearchHit] = await _fallback_retrieve(
-        query=query,
+        query=context.query,  # используем переформулированный запрос для retrieval
         vault_ids=vault_ids,
         domain_id=domain_id,
         campaign_id=context.campaign_id,
