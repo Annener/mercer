@@ -329,11 +329,41 @@ class ChatManager {
             option.textContent = pipeline.name;
             this.pipelineSelect.appendChild(option);
         }
+
         const lockedId = chat.locked_pipeline_id || '';
-        const lockedExists = !lockedId || Boolean(this.pipelineSelect.querySelector(`option[value="${lockedId}"]`));
-        const effectiveLocked = lockedExists ? lockedId : '';
+
+        // FIX: Проверяем наличие опции безопасно (pipeline_id может содержать
+        // спецсимволы CSS, которые сломают querySelector).
+        let lockedOptionExists = false;
+        if (lockedId) {
+            for (const opt of this.pipelineSelect.options) {
+                if (opt.value === lockedId) {
+                    lockedOptionExists = true;
+                    break;
+                }
+            }
+        }
+
+        // FIX: Если залоченный пайплайн не попал в список активных (например
+        // стал неактивным), добавляем скрытую опцию — иначе select.value
+        // не установится и будет сброшен на "Авто".
+        if (lockedId && !lockedOptionExists) {
+            const hiddenOpt = document.createElement('option');
+            hiddenOpt.value = lockedId;
+            hiddenOpt.textContent = lockedId; // нет имени — покажем id
+            hiddenOpt.dataset.inactive = 'true';
+            this.pipelineSelect.appendChild(hiddenOpt);
+            lockedOptionExists = true;
+        }
+
+        const effectiveLocked = lockedId && lockedOptionExists ? lockedId : '';
+
+        // Сохраняем выбранный pipeline_id в data-атрибуте ДО установки disabled,
+        // чтобы togglePipelineLock мог надёжно его прочитать.
+        this.pipelineSelect.dataset.selectedPipelineId = effectiveLocked;
         this.pipelineSelect.value = effectiveLocked;
         this.pipelineSelect.disabled = Boolean(effectiveLocked);
+
         if (this.lockPipelineBtn) {
             this.lockPipelineBtn.classList.toggle('is-locked', Boolean(effectiveLocked));
             this.lockPipelineBtn.setAttribute('aria-label', effectiveLocked ? 'Разблокировать пайплайн' : 'Зафиксировать пайплайн');
@@ -349,9 +379,13 @@ class ChatManager {
 
         const currentlyLocked = Boolean(this.currentChat?.locked_pipeline_id);
 
-        // Читаем значение селектора СИНХРОННО до любых await —
-        // после setupContextBar DOM будет перестроен и значение потеряется
-        const selectedPipelineId = this.pipelineSelect.value || null;
+        // FIX: Читаем pipeline_id из data-атрибута (установленного до disabled),
+        // а не из .value — некоторые браузеры могут возвращать '' у disabled select
+        // при определённых условиях. Фолбек на .value для обратной совместимости.
+        const selectedPipelineId =
+            this.pipelineSelect.dataset.selectedPipelineId ||
+            this.pipelineSelect.value ||
+            null;
 
         if (!currentlyLocked && !selectedPipelineId) {
             // Нечего фиксировать — пользователь не выбрал пайплайн
