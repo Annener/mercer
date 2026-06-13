@@ -313,3 +313,43 @@
     content: '↩';
     font-size: 14px;
 }
+
+/* === Pipeline lock button === */
+#lock-pipeline-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 10px;
+    border: 1px solid #aab8c7;
+    border-radius: 5px;
+    background: transparent;
+    color: #526579;
+    font-size: 12px;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+    white-space: nowrap;
+    line-height: 1;
+}
+
+#lock-pipeline-btn svg {
+    flex-shrink: 0;
+}
+
+#lock-pipeline-btn:hover {
+    background: #e8f0f7;
+    border-color: #3498db;
+    color: #1a5f8f;
+}
+
+/* Заблокированное состояние — визуально отличается */
+#lock-pipeline-btn.is-locked {
+    background: #fff3cd;
+    border-color: #e0a800;
+    color: #7a5800;
+}
+
+#lock-pipeline-btn.is-locked:hover {
+    background: #ffe8a1;
+    border-color: #c98a00;
+    color: #5a4000;
+}

@@ -125,6 +125,10 @@ function renderGroupedSources(stepGroups, answerText) {
     return `<div class="sources-block"><div class="sources-label">Источники</div><div class="sources-list">${rows}</div></div>`;
 }
 
+// SVG иконки для кнопки блокировки пайплайна
+const LOCK_ICON_CLOSED = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>`;
+const LOCK_ICON_OPEN = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/></svg>`;
+
 // === Chat Manager ===
 class ChatManager {
     constructor() {
@@ -330,7 +334,14 @@ class ChatManager {
         const effectiveLocked = lockedExists ? lockedId : '';
         this.pipelineSelect.value = effectiveLocked;
         this.pipelineSelect.disabled = Boolean(effectiveLocked);
-        if (this.lockPipelineBtn) this.lockPipelineBtn.textContent = effectiveLocked ? '🔒' : '🔓';
+        if (this.lockPipelineBtn) {
+            this.lockPipelineBtn.classList.toggle('is-locked', Boolean(effectiveLocked));
+            this.lockPipelineBtn.setAttribute('aria-label', effectiveLocked ? 'Разблокировать пайплайн' : 'Зафиксировать пайплайн');
+            this.lockPipelineBtn.setAttribute('title', effectiveLocked ? 'Пайплайн зафиксирован. Нажмите, чтобы отменить.' : 'Нажмите, чтобы зафиксировать выбранный пайплайн');
+            this.lockPipelineBtn.innerHTML = effectiveLocked
+                ? `${LOCK_ICON_CLOSED}<span>Авто: выкл</span>`
+                : `${LOCK_ICON_OPEN}<span>Авто</span>`;
+        }
     }
 
     async togglePipelineLock() {
