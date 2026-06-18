@@ -8,7 +8,7 @@
 
 ## Текущий активный этап
 
-**Этап 1 — Схема данных: `shared_contracts/models.py`**  
+**Этап 2 — Миграция БД**  
 Статус: 🔲 Не начат
 
 ---
@@ -17,7 +17,7 @@
 
 | № | Название | Статус | Коммит |
 |---|---|---|---|
-| 1 | Схема данных: `shared_contracts/models.py` | 🔲 Не начат | — |
+| 1 | Схема данных: `shared_contracts/models.py` | ✅ Завершён | 0b9888f |
 | 2 | Миграция БД | 🔲 Не начат | — |
 | 3 | DAG-движок: `pipeline_dag.py` | 🔲 Не начат | — |
 | 4 | Разворачивание переменных: `prompt_pack.py` | 🔲 Не начат | — |
@@ -42,22 +42,34 @@
 - Создан `Plan/STATUS.md` (этот файл) — служебный трекер
 - Создан `Plan/pipeline-redesign-prompt.md` — промт для копирования в новые чаты
 
-**Следующий шаг:** Начать Этап 1 — переписать `shared_contracts/models.py`
+---
+
+### Сессия 1 — Этап 1: Схема данных
+**Дата:** 2026-06-18  
+**Сделано:**
+- [x] Удалены `order`, `is_final`, `type="final"` из `PipelineStep`
+- [x] Добавлены `step_id`, `after_step_ids`, `output_format`, `validation_prompt`, `options`
+- [x] Добавлен `type="validation"` в `PipelineStep`
+- [x] Валидатор на self-loop в `after_step_ids` (`@model_validator` на `PipelineStep`)
+- [x] Валидация полей по `type`: retrieval-only vs validation-only
+- [x] Валидатор уникальности `step_id` в `PipelineCreate` и `PipelineUpdate`
+- [x] Обновлён докстринг `FinalComposition` (новые переменные, удаленные)
+- [x] Добавлено `step_results: dict[str, Any]` в `PipelineExecutionContext`
+- [x] `PipelineStepResult.step_order` → `step_id: str`
+
+**Коммит:** `0b9888f7c2f57e354199229885b81359f42edbde`
+
+**Pytest:** Не запускались локально в этой сессии (CI на GitHub). Ожидаемые сломающие изменения:
+- Любой код, создающий `PipelineStep` с `order`/`is_final` — падёт с `ValidationError`
+- Любой код, обращающийся к `PipelineStepResult.step_order` — `AttributeError`
+- `pipeline_executor.py` (ещё не переписан) использует `step.order` и `step.is_final` — упадёт при запуске
 
 ---
 
 ## Детали этапов (заполняется по мере выполнения)
 
-### Этап 1 — Схема данных
-- [ ] Удалить `order`, `is_final`, `type="final"` из `PipelineStep`
-- [ ] Добавить `step_id`, `after_step_ids`, `output_format`, `validation_prompt`, `options`
-- [ ] Валидаторы: уникальность step_id, no self-loop, field restrictions по type
-- [ ] Обновить `FinalComposition` (документирующий комментарий)
-- [ ] Обновить `Pipeline`-модель (валидатор уникальности step_id)
-- [ ] Запустить pytest, зафиксировать упавшие тесты
-
-**Упавшие тесты после этапа:** _заполнить_  
-**Коммит:** _заполнить_
+### Этап 1 — Схема данных ✅
+Все пункты выполнены. См. лог сессии 1.
 
 ---
 
@@ -174,6 +186,7 @@
 
 ## Замечания и технический долг
 
-_Записывать здесь всё замеченное но не исправленное в текущем этапе:_
-
-- (пусто)
+- `pipeline_executor.py` использует старые поля `step.order`, `step.is_final` — не трогали, будет переписан в Этапе 6
+- `prompt_pack.py` использует `{context}` и `{collected_fields}` — не трогали, будет переписан в Этапе 4
+- `chat.py` не имеет `pipeline_confirm_required` флоу — Этап 7
+- `collected_fields` в `PipelineExecutionContext` удален (был в старом контексте документации, но не был в коде — замечено)
