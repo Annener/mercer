@@ -14,7 +14,9 @@ from .helpers import _get_pipeline_by_uuid, _validate_pipeline_json, _increment_
 from .schemas import PipelineCreateRequest, PipelineUpdateRequest
 
 router = APIRouter()
-SLUG_RE = re.compile(r"^[a-z0-9-]{3,64}$")
+# fix: добавлен underscore в допустимые символы — auto-generated id вида
+# pipeline_1750000000000 содержит _, без него роутер возвращал 422
+SLUG_RE = re.compile(r"^[a-z0-9_-]{3,64}$")
 
 
 @router.get("/pipelines")
@@ -48,7 +50,7 @@ async def list_pipelines(
 @router.post("/pipelines", status_code=status.HTTP_201_CREATED)
 async def create_pipeline(req: PipelineCreateRequest, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
     if SLUG_RE.fullmatch(req.pipeline_id) is None:
-        raise HTTPException(status_code=422, detail="pipeline_id must be a slug with 3-64 characters")
+        raise HTTPException(status_code=422, detail="pipeline_id must be a slug: 3-64 chars, a-z 0-9 _ -")
     if await db.get(Domain, req.domain_id) is None:
         raise HTTPException(status_code=404, detail="Domain not found")
     _validate_pipeline_json(req.steps, req.final_composition)

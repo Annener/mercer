@@ -157,7 +157,7 @@ const PipelineBuilder = (() => {
           <div class="pb-header-meta">
             <input id="pb-name"   class="input pb-input-inline" placeholder="Название pipeline"
               value="${_esc(_pipeline?.name || '')}">
-            ${!_pipeline ? `<input id="pb-id" class="input pb-input-inline" placeholder="ID (slug)" value="">` : ''}
+            ${!_pipeline ? `<input id="pb-id" class="input pb-input-inline" placeholder="ID (slug, напр. my-pipeline)" value="">` : ''}
             <select id="pb-domain" class="input pb-input-inline">
               <option value="">— домен —</option>
               ${_domains.map(d => `<option value="${_esc(d.domain_id)}" ${d.domain_id === (_pipeline?.domain_id||'') ? 'selected' : ''}>${_esc(d.display_name)}</option>`).join('')}
@@ -439,7 +439,7 @@ const PipelineBuilder = (() => {
       <div class="form-group">
         <label>ID шага (slug)</label>
         <input id="pbs-step-id" class="input" value="${_esc(step.step_id)}"
-          placeholder="analyze" pattern="[a-z0-9_]+">
+          placeholder="analyze" pattern="[a-z0-9_-]+">
       </div>
       <div class="form-group">
         <label>Название</label>
@@ -754,7 +754,7 @@ const PipelineBuilder = (() => {
   // ── сохранение ────────────────────────────────────────────────────────────────
 
   async function _save() {
-    // Синхронизировать открытую форму бокового панели
+    // Синхронизировать открытую форму боковой панели
     if (_selectedId && _selectedId !== '__start__' && _selectedId !== '__final__') {
       const step = _steps.find(s => s.step_id === _selectedId);
       if (step) _syncStepFromSidebar(step);
@@ -806,9 +806,16 @@ const PipelineBuilder = (() => {
         };
         await _api.updatePipeline(_pipeline.pipeline_id, payload);
       } else {
-        // fix: pipeline_id собирается ДО вызова createPipeline — иначе поле
-        // отсутствовало в теле запроса и Pydantic возвращал 422
-        const pipelineId = _modal?.querySelector('#pb-id')?.value?.trim() || `pipeline_${Date.now()}`;
+        // fix: pipeline_id собирается ДО вызова createPipeline.
+        // fix: используем дефис вместо underscore в авто-генерируемом id —
+        //      SLUG_RE на бэке принимает [a-z0-9_-], оба варианта теперь валидны.
+        const rawId = _modal?.querySelector('#pb-id')?.value?.trim();
+        const pipelineId = rawId || `pipeline-${Date.now()}`;
+        // Клиентская проверка slug до отправки — даём понятную ошибку
+        if (!/^[a-z0-9_-]{3,64}$/.test(pipelineId)) {
+          if (btn) { btn.disabled = false; btn.textContent = '💾 Сохранить'; }
+          return _showError('ID pipeline: только a-z, 0-9, дефис, underscore, 3–64 символа');
+        }
         const payload = {
           pipeline_id:       pipelineId,
           name,
