@@ -1,4 +1,5 @@
-"""Unit-тесты для resolve_step_vars() из prompt_pack.py.
+"""Unit-тесты для resolve_step_vars() из prompt_pack.py
+и метода PipelineExecutionContext.resolve().
 
 Без зависимостей от БД и HTTP — чистая логика.
 """
@@ -155,3 +156,88 @@ class TestResolveStepVarsComplex:
             {"confirm": "да, продолжай"},
         )
         assert result == "Пользователь ответил: да, продолжай"
+
+
+# ---------------------------------------------------------------------------
+# PipelineExecutionContext.resolve() — интеграция {query} + {STEP_ID.*}
+# ---------------------------------------------------------------------------
+
+class TestPipelineExecutionContextResolve:
+    """Тесты метода ctx.resolve() — интеграция query-замены и resolve_step_vars."""
+
+    def _make_ctx(self, query: str, step_results: dict | None = None):
+        """Создать PipelineExecutionContext с минимальными полями для тестирования."""
+        from shared_contracts.models import PipelineExecutionContext
+        return PipelineExecutionContext(
+            chat_id="chat-test",
+            message_id="msg-test",
+            query=query,
+            step_results=step_results or {},
+        )
+
+    def test_query_substituted(self):
+        ctx = self._make_ctx(query="что такое RAG?")
+        result = ctx.resolve("Вопрос: {query}")
+        assert result == "Вопрос: что такое RAG?"
+
+    def test_step_result_substituted(self):
+        ctx = self._make_ctx(query="q", step_results={"analyze": "результат шага"})
+        result = ctx.resolve("Контекст: {analyze.result}")
+        assert result == "Контекст: результат шага"
+
+    def test_query_and_step_result_together(self):
+        ctx = self._make_ctx(
+            query="расскажи о продукте",
+            step_results={"search": "найдено 3 документа"},
+        )
+        result = ctx.resolve("Запрос: {query}\nДанные: {search.result}")
+        assert result == "Запрос: расскажи о продукте\nДанные: найдено 3 документа"
+
+    def test_query_with_curly_braces_not_conflicting(self):
+        """query содержит фигурные скобки — они не должны ломать resolve_step_vars."""
+        ctx = self._make_ctx(query="{не переменная}", step_results={"s": "val"})
+        # {query} заменяется на строку с фигурными скобками;
+        # resolve_step_vars после этого не должен их интерпретировать как переменные
+        # (они не соответствуют паттерну STEP_ID.accessor)
+        result = ctx.resolve("Q={query} S={s.result}")
+        assert "{не переменная}" in result
+        assert "val" in result
+
+    def test_dict_step_result_key_access(self):
+        ctx = self._make_ctx(
+            query="test",
+            step_results={"classify": {"category": "финансы", "confidence": 0.95}},
+        )
+        result = ctx.resolve("Категория: {classify.category}")
+        assert result == "Категория: финансы"
+
+    def test_missing_step_keeps_placeholder(self):
+        ctx = self._make_ctx(query="q")
+        result = ctx.resolve("Данные: {nonexistent.result}")
+        assert result == "Данные: {nonexistent.result}"
+
+    def test_empty_step_results_query_only(self):
+        ctx = self._make_ctx(query="простой вопрос")
+        result = ctx.resolve("Ответь на {query}")
+        assert result == "Ответь на простой вопрос"
+
+    def test_validation_feedback_in_context(self):
+        """Ответ пользователя из validation-шага доступен через ctx.resolve()."""
+        ctx = self._make_ctx(
+            query="анализ",
+            step_results={"user_confirm": "продолжай, всё верно"},
+        )
+        result = ctx.resolve("Пользователь: {user_confirm.result}. Запрос: {query}")
+        assert result == "Пользователь: продолжай, всё верно. Запрос: анализ"
+
+    def test_parallel_steps_both_available(self):
+        """После параллельного выполнения оба результата доступны через ctx.resolve()."""
+        ctx = self._make_ctx(
+            query="комплексный запрос",
+            step_results={
+                "branch_a": "результат ветки A",
+                "branch_b": "результат ветки B",
+            },
+        )
+        result = ctx.resolve("{branch_a.result} + {branch_b.result}")
+        assert result == "результат ветки A + результат ветки B"
