@@ -371,6 +371,11 @@ class TestResumeFromValidation:
 
     @pytest.mark.asyncio
     async def test_resume_emits_pipeline_selected(self):
+        """resume_from_validation() эмитирует pipeline_selected (не pipeline_resumed).
+
+        pipeline_resumed эмитируется только endpoint'ом pipeline_resume.py,
+        а не самим executor'ом. Executor всегда начинает с pipeline_selected.
+        """
         steps = [
             _make_validation_step("v1"),
             _make_retrieval_step("r1", after=["v1"]),
@@ -382,4 +387,5 @@ class TestResumeFromValidation:
             mock_svc.get_active_provider.return_value = self._mock_provider()
             chunks = await _collect(executor.resume_from_validation(ctx, "v1"))
         types = [c["type"] for c in chunks]
-        assert "pipeline_resumed" in types
+        # executor эмитирует pipeline_selected, endpoint поверх добавит pipeline_resumed
+        assert "pipeline_selected" in types

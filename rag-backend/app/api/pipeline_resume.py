@@ -24,11 +24,11 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Chat, Message
 from app.db.session import get_db
+from app.services.pipeline_executor import PipelineExecutor
 from app.services.settings_service import settings_service
 from shared_contracts.models import (
     ChatMessage,
@@ -128,8 +128,6 @@ async def pipeline_confirm(
     ctx = _restore_context(context_snapshot, chat_id)
 
     async def confirmed_stream() -> AsyncIterator[str]:
-        from app.services.pipeline_executor import PipelineExecutor
-
         executor = PipelineExecutor(db)
         full_answer = ""
 
@@ -232,8 +230,6 @@ async def pipeline_resume(
     ctx.step_results = step_results
 
     async def resume_stream() -> AsyncIterator[str]:
-        from app.services.pipeline_executor import PipelineExecutor
-
         # Уведомляем фронтенд о возобновлении
         resumed_chunk = json.dumps(
             {
