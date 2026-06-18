@@ -50,6 +50,7 @@ def _make_pending_confirm(
         "query": "Тестовый запрос",
         "context_snapshot": {
             "chat_id": TEST_CHAT_ID,
+            "message_id": str(uuid.uuid4()),
             "query": "Тестовый запрос",
             "original_query": "Тестовый запрос",
             "domain_id": "test-domain",
@@ -74,6 +75,7 @@ def _make_pause_state(
         "query": "Тестовый запрос",
         "context_snapshot": {
             "chat_id": TEST_CHAT_ID,
+            "message_id": str(uuid.uuid4()),
             "query": "Тестовый запрос",
             "original_query": "Тестовый запрос",
             "domain_id": "test-domain",
@@ -160,18 +162,18 @@ class TestPipelineConfirm:
             )
         assert resp.status_code == 410
 
-    def test_confirm_false_returns_sse_cancelled(self, app_client: TestClient):
-        """confirmed=false → SSE с pipeline_cancelled chunk."""
+    def test_confirm_false_returns_sse_cancelled(
+        self, app_client: TestClient
+    ):
+        """confirmed=false → SSE с pipeline_cancelled chunk.
+
+        endpoint сам эмитит pipeline_cancelled перед ответом,
+        не нужно мокать _plain_rag_stream.
+        """
         pending = _make_pending_confirm(pipeline_name="my-pipeline")
         chat = _make_mock_chat(pending_confirm=pending)
 
-        async def empty_gen(*_a, **_kw):
-            return
-            yield  # noqa: unreachable
-
-        with patch("app.api.pipeline_resume._get_chat_or_404", new_callable=AsyncMock, return_value=chat), \
-             patch("app.api.pipeline_resume._plain_rag_stream") as mock_rag:
-            mock_rag.return_value = empty_gen()
+        with patch("app.api.pipeline_resume._get_chat_or_404", new_callable=AsyncMock, return_value=chat):
             resp = app_client.post(
                 f"/chat/{TEST_CHAT_ID}/pipeline_confirm",
                 json={"confirm_token": TEST_CONFIRM_TOKEN, "confirmed": False},
@@ -242,8 +244,8 @@ class TestPipelineResume:
     ):
         """cancelled=false + user_feedback → SSE с pipeline_resumed chunk.
 
-        ВАЖНО: PipelineExecutor импортируется внутри функции (lazy import),
-        поэтому патчим по месту реального определения класса, а не по атрибуту модуля.
+        Патчим PipelineExecutor по месту его использования в pipeline_resume.py
+        (lazy import находится внутри эндпойнта, не в services).
         """
         pause = _make_pause_state(step_id="check_data")
         chat = _make_mock_chat(pause_state=pause)
@@ -252,7 +254,7 @@ class TestPipelineResume:
             yield {"type": "token", "content": "answer"}
 
         with patch("app.api.pipeline_resume._get_chat_or_404", new_callable=AsyncMock, return_value=chat), \
-             patch("app.services.pipeline_executor.PipelineExecutor", autospec=True) as MockExecutor:
+             patch("app.api.pipeline_resume.PipelineExecutor", autospec=True) as MockExecutor:
             instance = MockExecutor.return_value
             instance.resume_from_validation = mock_executor_stream
             resp = app_client.post(
@@ -268,7 +270,8 @@ class TestPipelineResume:
     def test_resume_feedback_none_stores_empty_string(self, app_client: TestClient):
         """если user_feedback=null — в step_results записывается пустая строка.
 
-        ВАЖНО: патчим по месту реального определения класса (lazy import).
+        Патчим PipelineExecutor по месту его использования в pipeline_resume.py
+        (lazy import находится внутри эндпойнта, не в services).
         """
         pause = _make_pause_state(step_id="qa_check")
         chat = _make_mock_chat(pause_state=pause)
@@ -279,7 +282,7 @@ class TestPipelineResume:
             yield {"type": "token", "content": ""}
 
         with patch("app.api.pipeline_resume._get_chat_or_404", new_callable=AsyncMock, return_value=chat), \
-             patch("app.services.pipeline_executor.PipelineExecutor", autospec=True) as MockExecutor:
+             patch("app.api.pipeline_resume.PipelineExecutor", autospec=True) as MockExecutor:
             instance = MockExecutor.return_value
             instance.resume_from_validation = capturing_executor_stream
             app_client.post(
@@ -299,18 +302,29 @@ class TestRestoreContext:
 
     def test_restore_injects_chat_id(self):
         from app.api.pipeline_resume import _restore_context
-        snapshot = {"chat_id": "old-id", "query": "запрос", "domain_id": "test"}
+        snapshot = {
+            "chat_id": "old-id",
+            "message_id": str(uuid.uuid4()),
+            "query": "запрос",
+            "domain_id": "test",
+        }
         ctx = _restore_context(snapshot, TEST_CHAT_ID)
         assert ctx.chat_id == TEST_CHAT_ID
 
     def test_restore_preserves_query(self):
         from app.api.pipeline_resume import _restore_context
-        snapshot = {"query": "оригинальный запрос", "domain_id": "test"}
+        snapshot = {
+            "message_id": str(uuid.uuid4()),
+            "query": "оригинальный запрос",
+            "domain_id": "test",
+        }
         ctx = _restore_context(snapshot, TEST_CHAT_ID)
         assert ctx.query == "оригинальный запрос"
 
     def test_restore_empty_snapshot(self):
         """minimal snapshot — не должно падать."""
         from app.api.pipeline_resume import _restore_context
+        # Пустой снэпшот: _restore_context должен подставить
+        # message_id и query из внешних параметров или дефолтов
         ctx = _restore_context({}, TEST_CHAT_ID)
         assert ctx.chat_id == TEST_CHAT_ID
