@@ -356,18 +356,73 @@ class CampaignUpdate(BaseModel):
     system_prompt: str | None = None
 
 
+# ---------------------------------------------------------------------------
+# Pipeline contracts — DAG-based execution model
+# ---------------------------------------------------------------------------
+
 class PipelineStep(BaseModel):
-    order: int
-    type: Literal["retrieval", "final"]
-    name: str
-    system_prompt: str
+    """Шаг пайплайна в DAG-модели.
+
+    Правила:
+    - step_id уникален в рамках одного пайплайна (проверяется в Pipeline-валидаторе)
+    - after_step_ids не может содержать собственный step_id (self-loop)
+    - Поля top_k, tag_ids, role, output_format — только для type=retrieval
+    - Поля validation_prompt, options — только для type=validation
+    """
+    step_id: str                                           # user-defined slug, e.g. "analyze"
+    type: Literal["retrieval", "validation"]
+    name: str                                              # отображаемое название
+    system_prompt: str                                     # поддерживает {STEP_ID.result}, {STEP_ID.key}, {query}
+    after_step_ids: list[str] = Field(default_factory=list)  # [] = стартовый шаг
+
+    # --- только для type=retrieval ---
     top_k: int | None = None
-    tag_ids: list[str] = []   # только для type="retrieval"; фильтруется бэкендом по domain_id
-    is_final: bool = False    # ровно один True обязателен в пайплайне
-    role: str | None = None   # опциональная метка для UI
+    tag_ids: list[str] = Field(default_factory=list)
+    role: str | None = None
+    output_format: Literal["text", "json"] = "text"
+
+    # --- только для type=validation ---
+    validation_prompt: str | None = None                   # поддерживает {STEP_ID.result}
+    options: list[str] | None = None                       # варианты выбора (опционально)
+
+    @model_validator(mode='after')
+    def _validate_step(self) -> 'PipelineStep':
+        # self-loop
+        if self.step_id in self.after_step_ids:
+            raise ValueError(
+                f"Step '{self.step_id}' cannot reference itself in after_step_ids"
+            )
+        # поля только для retrieval
+        if self.type == "validation":
+            if self.top_k is not None:
+                raise ValueError("top_k is only valid for type=retrieval")
+            if self.tag_ids:
+                raise ValueError("tag_ids is only valid for type=retrieval")
+            if self.role is not None:
+                raise ValueError("role is only valid for type=retrieval")
+            if self.output_format != "text":
+                raise ValueError("output_format is only valid for type=retrieval")
+        # поля только для validation
+        if self.type == "retrieval":
+            if self.validation_prompt is not None:
+                raise ValueError("validation_prompt is only valid for type=validation")
+            if self.options is not None:
+                raise ValueError("options is only valid for type=validation")
+        return self
 
 
 class FinalComposition(BaseModel):
+    """Финальная LLM-композиция после всех шагов пайплайна.
+
+    Поддерживаемые переменные в system_prompt:
+      {STEP_ID.result}   — полный текстовый результат шага
+      {STEP_ID.key}      — ключ из JSON-результата шага (output_format=json)
+      {query}            — запрос пользователя
+
+    УДАЛЕНЫ (ломающее изменение, применяется миграционным скриптом в Этапе 2):
+      {context}          — заменить на явные {STEP_ID.result}
+      {collected_fields} — если нужны — передать через validation-шаг
+    """
     system_prompt: str
 
 
@@ -388,11 +443,19 @@ class PipelineRead(ORMModel):
 class PipelineCreate(BaseModel):
     pipeline_id: str
     domain_id: str
-    campaign_id: str | None = None  # None = общий пайплайн домена
+    campaign_id: str | None = None
     name: str
     description: str | None = None
     steps: list[PipelineStep]
     final_composition: FinalComposition
+
+    @model_validator(mode='after')
+    def _validate_unique_step_ids(self) -> 'PipelineCreate':
+        ids = [s.step_id for s in self.steps]
+        if len(ids) != len(set(ids)):
+            duplicates = [sid for sid in ids if ids.count(sid) > 1]
+            raise ValueError(f"Duplicate step_ids in pipeline: {list(set(duplicates))}")
+        return self
 
 
 class PipelineUpdate(BaseModel):
@@ -401,6 +464,15 @@ class PipelineUpdate(BaseModel):
     steps: list[PipelineStep] | None = None
     final_composition: FinalComposition | None = None
     is_active: bool | None = None
+
+    @model_validator(mode='after')
+    def _validate_unique_step_ids(self) -> 'PipelineUpdate':
+        if self.steps is not None:
+            ids = [s.step_id for s in self.steps]
+            if len(ids) != len(set(ids)):
+                duplicates = [sid for sid in ids if ids.count(sid) > 1]
+                raise ValueError(f"Duplicate step_ids in pipeline: {list(set(duplicates))}")
+        return self
 
 
 class RetrievalContext(BaseModel):
@@ -544,6 +616,11 @@ class PipelineExecutionContext(BaseModel):
     pipeline_id, pipeline_version, steps, final_composition — Optional:
     объект создаётся до pipeline_router.select(), затем поля дописываются.
     PipelineExecutor обязан проверять что поля заполнены перед запуском.
+
+    step_results — накапливается в процессе выполнения DAG:
+      output_format=text  → step_results[step_id] = "строка"
+      output_format=json  → step_results[step_id] = dict (при ошибке парсинга — строка)
+      type=validation     → step_results[step_id] = ответ пользователя (строка)
     """
     chat_id: str
     message_id: str
@@ -565,10 +642,12 @@ class PipelineExecutionContext(BaseModel):
     confidence: float | None = None
     reasoning: str | None = None
     mode: str | None = None
+    # Накапливается в процессе DAG-выполнения
+    step_results: dict[str, Any] = Field(default_factory=dict)
 
 
 class PipelineStepResult(BaseModel):
-    step_order: int
+    step_id: str                                           # slug шага (новое поле)
     step_name: str
     retrieval_results: list[RetrievalResult] = Field(default_factory=list)
     llm_output: str | None = None
