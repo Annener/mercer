@@ -138,6 +138,60 @@ class ChatAPI {
         return response.json();
     }
 
+    // === Pipeline confirm / resume (Этап 10) ===
+
+    /**
+     * POST /chat/{chatId}/pipeline_confirm
+     * action: 'confirm' | 'cancel'
+     * confirmToken: строка из SSE-чанка pipeline_confirm_required
+     */
+    async pipelineConfirm(chatId, confirmToken, action) {
+        const response = await fetch(`${this.baseUrl}/chat/${chatId}/pipeline_confirm`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ confirm_token: confirmToken, action }),
+        });
+        if (!response.ok) {
+            let errMsg = response.statusText;
+            try {
+                const errData = await response.json();
+                errMsg = errData.detail || errData.message || errMsg;
+            } catch (_) { /* ignore */ }
+            throw new Error(errMsg);
+        }
+        // Ответ может быть StreamingResponse (SSE) или JSON в зависимости от бэка
+        const ct = response.headers.get('content-type') || '';
+        if (ct.includes('text/event-stream')) return response.body;
+        return response.json();
+    }
+
+    /**
+     * POST /chat/{chatId}/pipeline_resume
+     * action: 'resume' | 'cancel'
+     * resumeToken: строка из SSE-чанка validation_required
+     * feedback: выбранная пользователем опция (только для action='resume')
+     */
+    async pipelineResume(chatId, resumeToken, action, feedback = null) {
+        const body = { resume_token: resumeToken, action };
+        if (feedback !== null) body.feedback = feedback;
+        const response = await fetch(`${this.baseUrl}/chat/${chatId}/pipeline_resume`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        if (!response.ok) {
+            let errMsg = response.statusText;
+            try {
+                const errData = await response.json();
+                errMsg = errData.detail || errData.message || errMsg;
+            } catch (_) { /* ignore */ }
+            throw new Error(errMsg);
+        }
+        const ct = response.headers.get('content-type') || '';
+        if (ct.includes('text/event-stream')) return response.body;
+        return response.json();
+    }
+
     // === Domain / Campaign / Pipeline API ===
 
     async getDomains() {

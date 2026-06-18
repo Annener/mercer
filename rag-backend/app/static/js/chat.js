@@ -129,6 +129,187 @@ function renderGroupedSources(stepGroups, answerText) {
 const LOCK_ICON_CLOSED = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>`;
 const LOCK_ICON_OPEN = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/></svg>`;
 
+// ============================================================
+// Pipeline inline-карточки (Этап 10)
+// ============================================================
+
+/**
+ * Рендерит карточку подтверждения запуска пайплайна.
+ * Вставляется в ленту чата при получении SSE-чанка type=pipeline_confirm_required.
+ *
+ * @param {string} chatId
+ * @param {string} pipelineName
+ * @param {string} reasoning   — объяснение от роутера почему выбран пайплайн
+ * @param {string} confirmToken
+ * @param {Function} onStream  — (ReadableStream) => Promise<void> — обработчик ответного стрима
+ * @returns {HTMLElement}
+ */
+function createConfirmCard(chatId, pipelineName, reasoning, confirmToken, onStream) {
+    const card = document.createElement('div');
+    card.className = 'pipeline-card pipeline-card--confirm';
+    card.dataset.confirmToken = confirmToken;
+
+    card.innerHTML = `
+        <div class="pipeline-card__header">
+            <span class="pipeline-card__icon" aria-hidden="true">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+                </svg>
+            </span>
+            <span class="pipeline-card__title">Запустить пайплайн</span>
+            <span class="pipeline-card__name">${escapeHtml(pipelineName)}</span>
+        </div>
+        ${reasoning ? `<div class="pipeline-card__reasoning">${escapeHtml(reasoning)}</div>` : ''}
+        <div class="pipeline-card__actions">
+            <button class="pipeline-card__btn pipeline-card__btn--confirm" type="button">Запустить</button>
+            <button class="pipeline-card__btn pipeline-card__btn--cancel" type="button">Отмена</button>
+        </div>
+    `;
+
+    const setDone = (label, mod) => {
+        card.querySelector('.pipeline-card__actions').innerHTML =
+            `<span class="pipeline-card__status pipeline-card__status--${mod}">${escapeHtml(label)}</span>`;
+        card.classList.add('pipeline-card--done');
+    };
+
+    card.querySelector('.pipeline-card__btn--confirm').addEventListener('click', async () => {
+        setDone('Запускается…', 'running');
+        try {
+            const result = await chatAPI.pipelineConfirm(chatId, confirmToken, 'confirm');
+            if (result instanceof ReadableStream) {
+                setDone('Выполняется', 'running');
+                await onStream(result);
+            } else {
+                setDone('Запущен', 'ok');
+            }
+        } catch (e) {
+            setDone(`Ошибка: ${e.message}`, 'error');
+        }
+    });
+
+    card.querySelector('.pipeline-card__btn--cancel').addEventListener('click', async () => {
+        setDone('Отменён', 'cancelled');
+        try {
+            await chatAPI.pipelineConfirm(chatId, confirmToken, 'cancel');
+        } catch (_) { /* Игнорируем ошибки отмены */ }
+    });
+
+    return card;
+}
+
+/**
+ * Рендерит карточку validation (human-in-the-loop пауза).
+ * Вставляется при получении SSE-чанка type=validation_required.
+ *
+ * @param {string} chatId
+ * @param {string} stepName    — имя validation-шага
+ * @param {string} content     — validation_prompt для отображения пользователю
+ * @param {string[]} options   — список вариантов ответа
+ * @param {string} resumeToken
+ * @param {Function} onStream  — (ReadableStream) => Promise<void>
+ * @returns {HTMLElement}
+ */
+function createValidationCard(chatId, stepName, content, options, resumeToken, onStream) {
+    const card = document.createElement('div');
+    card.className = 'pipeline-card pipeline-card--validation';
+    card.dataset.resumeToken = resumeToken;
+
+    const optionsHtml = (options && options.length > 0)
+        ? options.map(opt =>
+            `<button class="pipeline-card__option" type="button" data-value="${escapeHtml(opt)}">${escapeHtml(opt)}</button>`
+          ).join('')
+        : '';
+
+    card.innerHTML = `
+        <div class="pipeline-card__header">
+            <span class="pipeline-card__icon pipeline-card__icon--validation" aria-hidden="true">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="12" cy="12" r="10"/>
+                    <line x1="12" y1="8" x2="12" y2="12"/>
+                    <line x1="12" y1="16" x2="12.01" y2="16"/>
+                </svg>
+            </span>
+            <span class="pipeline-card__title">Требуется подтверждение</span>
+            <span class="pipeline-card__step-name">${escapeHtml(stepName || '')}</span>
+        </div>
+        ${content ? `<div class="pipeline-card__content">${renderMarkdown(content)}</div>` : ''}
+        ${optionsHtml ? `<div class="pipeline-card__options">${optionsHtml}</div>` : ''}
+        <div class="pipeline-card__actions">
+            ${!optionsHtml ? `<button class="pipeline-card__btn pipeline-card__btn--confirm" type="button">Продолжить</button>` : ''}
+            <button class="pipeline-card__btn pipeline-card__btn--cancel" type="button">Отменить пайплайн</button>
+        </div>
+    `;
+
+    const setDone = (label, mod) => {
+        card.querySelector('.pipeline-card__actions').innerHTML =
+            `<span class="pipeline-card__status pipeline-card__status--${mod}">${escapeHtml(label)}</span>`;
+        // Блокируем опции
+        card.querySelectorAll('.pipeline-card__option').forEach(btn => {
+            btn.disabled = true;
+            btn.classList.add('is-disabled');
+        });
+        card.classList.add('pipeline-card--done');
+    };
+
+    const doResume = async (feedback) => {
+        const preview = feedback ? feedback.slice(0, 40) : 'Продолжить';
+        setDone(`✓ ${preview}`, 'ok');
+        try {
+            const result = await chatAPI.pipelineResume(chatId, resumeToken, 'resume', feedback);
+            if (result instanceof ReadableStream) {
+                await onStream(result);
+            }
+        } catch (e) {
+            // Обновляем статус на ошибку, но карточка уже «done» — добавляем подпись
+            const actionsEl = card.querySelector('.pipeline-card__actions');
+            if (actionsEl) {
+                actionsEl.innerHTML = `<span class="pipeline-card__status pipeline-card__status--error">Ошибка: ${escapeHtml(e.message)}</span>`;
+            }
+        }
+    };
+
+    // Клик по варианту ответа
+    card.querySelectorAll('.pipeline-card__option').forEach(btn => {
+        btn.addEventListener('click', () => {
+            // Отмечаем выбранный
+            card.querySelectorAll('.pipeline-card__option').forEach(b => b.classList.remove('is-selected'));
+            btn.classList.add('is-selected');
+            doResume(btn.dataset.value);
+        });
+    });
+
+    // Кнопка «Продолжить» (без вариантов)
+    card.querySelector('.pipeline-card__btn--confirm')?.addEventListener('click', () => {
+        doResume(null);
+    });
+
+    // Кнопка отмены
+    card.querySelector('.pipeline-card__btn--cancel').addEventListener('click', async () => {
+        setDone('Пайплайн отменён', 'cancelled');
+        try {
+            await chatAPI.pipelineResume(chatId, resumeToken, 'cancel');
+        } catch (_) { /* ignore */ }
+    });
+
+    return card;
+}
+
+/**
+ * Вставляет статусную строку (pipeline_resumed / pipeline_cancelled).
+ */
+function createPipelineStatusLine(type, data) {
+    const el = document.createElement('div');
+    if (type === 'pipeline_resumed') {
+        const preview = data.user_feedback_preview ? ` — «${escapeHtml(data.user_feedback_preview)}»` : '';
+        el.className = 'pipeline-status-line pipeline-status-line--resumed';
+        el.textContent = `▶ Пайплайн продолжен${preview}`;
+    } else {
+        el.className = 'pipeline-status-line pipeline-status-line--cancelled';
+        el.textContent = `✕ Пайплайн отменён${data.step_name ? ` на шаге «${escapeHtml(data.step_name)}»` : ''}`;
+    }
+    return el;
+}
+
 // === Chat Manager ===
 class ChatManager {
     constructor() {
@@ -217,6 +398,14 @@ class ChatManager {
         }
     }
 
+    /**
+     * Обработчик SSE-стрима.
+     * Дополнен обработкой чанков:
+     *   pipeline_confirm_required → createConfirmCard()
+     *   validation_required       → createValidationCard()
+     *   pipeline_resumed          → createPipelineStatusLine('pipeline_resumed', ...)
+     *   pipeline_cancelled        → createPipelineStatusLine('pipeline_cancelled', ...)
+     */
     async handleStreamResponse(stream) {
         const reader = stream.getReader();
         const decoder = new TextDecoder();
@@ -227,6 +416,17 @@ class ChatManager {
         let pendingGroupedSources = null;
         let streamDone = false;
         this._streamingDone = false;
+
+        // Замыкание для передачи в inline-карточки:
+        // после confirm/resume бэк может вернуть новый SSE-стрим — обрабатываем рекурсивно.
+        const handleNestedStream = async (nestedStream) => {
+            this.isStreaming = true;
+            try {
+                await this.handleStreamResponse(nestedStream);
+            } finally {
+                this.isStreaming = false;
+            }
+        };
 
         try {
             while (!streamDone) {
@@ -244,8 +444,50 @@ class ChatManager {
                     try {
                         const parsed = JSON.parse(data);
                         if (parsed.type) {
-                            if (!assistantMessage) assistantMessage = this.addMessage('assistant', '');
-                            if (parsed.type === 'pipeline_selected') this.showPipelineBadge(assistantMessage, parsed);
+                            // Создаём assistantMessage только для типов с контентом,
+                            // НЕ для карточек (они идут как самостоятельные элементы).
+                            const needsAssistant = !['pipeline_confirm_required', 'validation_required',
+                                                     'pipeline_resumed', 'pipeline_cancelled'].includes(parsed.type);
+                            if (needsAssistant && !assistantMessage) {
+                                assistantMessage = this.addMessage('assistant', '');
+                            }
+
+                            if (parsed.type === 'pipeline_selected') {
+                                if (!assistantMessage) assistantMessage = this.addMessage('assistant', '');
+                                this.showPipelineBadge(assistantMessage, parsed);
+                            }
+
+                            if (parsed.type === 'pipeline_confirm_required') {
+                                const card = createConfirmCard(
+                                    this.currentChatId,
+                                    parsed.pipeline_name || '',
+                                    parsed.reasoning || '',
+                                    parsed.confirm_token,
+                                    handleNestedStream
+                                );
+                                this.messagesContainer.appendChild(card);
+                                this.scrollToBottom();
+                            }
+
+                            if (parsed.type === 'validation_required') {
+                                const card = createValidationCard(
+                                    this.currentChatId,
+                                    parsed.step_name || '',
+                                    parsed.content || '',
+                                    parsed.options || [],
+                                    parsed.resume_token,
+                                    handleNestedStream
+                                );
+                                this.messagesContainer.appendChild(card);
+                                this.scrollToBottom();
+                            }
+
+                            if (parsed.type === 'pipeline_resumed' || parsed.type === 'pipeline_cancelled') {
+                                const statusLine = createPipelineStatusLine(parsed.type, parsed);
+                                this.messagesContainer.appendChild(statusLine);
+                                this.scrollToBottom();
+                            }
+
                             if (parsed.type === 'progress') this.updateProgressBar(assistantMessage, parsed.step, parsed.total, parsed.step_name);
                             if (parsed.type === 'step_done') this.markStepDone(assistantMessage, parsed.step);
                             if (parsed.type === 'token') {
@@ -286,7 +528,6 @@ class ChatManager {
         }
 
         // Добавляем блок источников после финального рендера
-        // _streamingDone=true гарантирует что RAF больше не вызовет renderAssistantMarkdown
         if (assistantMessage && pendingGroupedSources) {
             const sourcesHtml = renderGroupedSources(pendingGroupedSources, fullContent);
             if (sourcesHtml) assistantMessage.insertAdjacentHTML('beforeend', sourcesHtml);
@@ -303,9 +544,6 @@ class ChatManager {
                 const chatData = await chatAPI.getChat(this.currentChatId);
                 this.currentChat = chatData.chat;
                 this.chatTitle.textContent = chatData.chat.title;
-                // После первого ответа фиксируем кампанию если она есть у чата
-                // (актуально для новых чатов: campaign_id появляется только после
-                // первого обращения к бэкенду который сохраняет его в БД)
                 if (chatData.chat.campaign_id && window.sidebarManager) {
                     window.sidebarManager.lockCampaignToChat(String(chatData.chat.campaign_id));
                 }
@@ -332,8 +570,6 @@ class ChatManager {
 
         const lockedId = chat.locked_pipeline_id || '';
 
-        // FIX: Проверяем наличие опции безопасно (pipeline_id может содержать
-        // спецсимволы CSS, которые сломают querySelector).
         let lockedOptionExists = false;
         if (lockedId) {
             for (const opt of this.pipelineSelect.options) {
@@ -344,13 +580,10 @@ class ChatManager {
             }
         }
 
-        // FIX: Если залоченный пайплайн не попал в список активных (например
-        // стал неактивным), добавляем скрытую опцию — иначе select.value
-        // не установится и будет сброшен на "Авто".
         if (lockedId && !lockedOptionExists) {
             const hiddenOpt = document.createElement('option');
             hiddenOpt.value = lockedId;
-            hiddenOpt.textContent = lockedId; // нет имени — покажем id
+            hiddenOpt.textContent = lockedId;
             hiddenOpt.dataset.inactive = 'true';
             this.pipelineSelect.appendChild(hiddenOpt);
             lockedOptionExists = true;
@@ -358,8 +591,6 @@ class ChatManager {
 
         const effectiveLocked = lockedId && lockedOptionExists ? lockedId : '';
 
-        // Сохраняем выбранный pipeline_id в data-атрибуте ДО установки disabled,
-        // чтобы togglePipelineLock мог надёжно его прочитать.
         this.pipelineSelect.dataset.selectedPipelineId = effectiveLocked;
         this.pipelineSelect.value = effectiveLocked;
         this.pipelineSelect.disabled = Boolean(effectiveLocked);
@@ -379,18 +610,12 @@ class ChatManager {
 
         const currentlyLocked = Boolean(this.currentChat?.locked_pipeline_id);
 
-        // FIX: Читаем pipeline_id из data-атрибута (установленного до disabled),
-        // а не из .value — некоторые браузеры могут возвращать '' у disabled select
-        // при определённых условиях. Фолбек на .value для обратной совместимости.
         const selectedPipelineId =
             this.pipelineSelect.dataset.selectedPipelineId ||
             this.pipelineSelect.value ||
             null;
 
-        if (!currentlyLocked && !selectedPipelineId) {
-            // Нечего фиксировать — пользователь не выбрал пайплайн
-            return;
-        }
+        if (!currentlyLocked && !selectedPipelineId) return;
 
         const pipelineId = currentlyLocked ? null : selectedPipelineId;
 
@@ -422,15 +647,13 @@ class ChatManager {
 
     /**
      * Debounced markdown-рендер во время стриминга (через RAF, ~60fps).
-     * После завершения стрима (_streamingDone=true) новые RAF не запускаются,
-     * чтобы не стереть источники добавленные после финального рендера.
      */
     scheduleMarkdownRender(element, contentGetter) {
         if (this._renderScheduled || this._streamingDone) return;
         this._renderScheduled = true;
         requestAnimationFrame(() => {
             this._renderScheduled = false;
-            if (this._streamingDone) return; // ещё один стоп
+            if (this._streamingDone) return;
             const text = contentGetter();
             if (text) {
                 this.renderAssistantMarkdown(element, text);
@@ -441,17 +664,14 @@ class ChatManager {
 
     /**
      * Перезаписывает innerHTML элемента сохраняя pipeline-баджи
-     * И восстанавливая блок источников если он был добавлен ранее.
+     * и восстанавливая блок источников если он был добавлен ранее.
      */
     renderAssistantMarkdown(element, text) {
-        // Сохраняем блок источников перед перезаписью
         const existingSources = element.querySelector('.sources-block');
         const sourcesHtml = existingSources ? existingSources.outerHTML : '';
-        // Сохраняем pipeline-баджи и progress-бар
         const prefix = Array.from(element.querySelectorAll('.pipeline-badge, .pipeline-progress'))
             .map(node => node.outerHTML).join('');
         element.innerHTML = prefix + renderMarkdown(text);
-        // Восстанавливаем источники если были
         if (sourcesHtml) element.insertAdjacentHTML('beforeend', sourcesHtml);
     }
 
@@ -503,7 +723,7 @@ class ChatManager {
     }
 
     clearMessages() {
-        this.messagesContainer.querySelectorAll('.message, .typing-indicator').forEach(msg => msg.remove());
+        this.messagesContainer.querySelectorAll('.message, .typing-indicator, .pipeline-card, .pipeline-status-line').forEach(msg => msg.remove());
     }
 
     scrollToBottom() {
