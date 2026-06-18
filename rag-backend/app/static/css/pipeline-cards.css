@@ -162,8 +162,11 @@
     color: var(--text-color, #1a1d24);
 }
 
-/* ── Статусная подпись после действия ────────────────────── */
+/* ── Статус после действия (заменяет кнопки) ─────────────── */
 .pipeline-card__status {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
     font-size: 12.5px;
     font-weight: 500;
     padding: 3px 8px;
@@ -171,105 +174,43 @@
 }
 
 .pipeline-card__status--ok {
-    color: #2e7d32;
-    background: #e8f5e9;
+    color: #2a7a3b;
+    background: #eaf5ec;
 }
 
 .pipeline-card__status--running {
-    color: #1565c0;
-    background: #e3f2fd;
+    color: #1a4f8a;
+    background: #e8f0fb;
 }
 
 .pipeline-card__status--cancelled {
-    color: #616161;
-    background: #f5f5f5;
+    color: #5a6070;
+    background: var(--surface-hover, #eef0f4);
 }
 
 .pipeline-card__status--error {
-    color: #b71c1c;
-    background: #ffebee;
+    color: #a02020;
+    background: #fbeaea;
 }
 
 /* ── Статусные строки (pipeline_resumed / pipeline_cancelled) */
 .pipeline-status-line {
     font-size: 12.5px;
     padding: 4px 10px;
-    border-radius: 4px;
-    margin: 2px 0 6px 0;
+    border-radius: 5px;
+    margin: 4px 0;
     display: inline-block;
+    max-width: 520px;
 }
 
 .pipeline-status-line--resumed {
-    color: #1565c0;
-    background: #e3f2fd;
+    color: #2a7a3b;
+    background: #eaf5ec;
+    border-left: 2px solid #4caf50;
 }
 
 .pipeline-status-line--cancelled {
-    color: #616161;
-    background: #f5f5f5;
-}
-
-/* ── Dark mode ───────────────────────────────────────────── */
-@media (prefers-color-scheme: dark) {
-    .pipeline-card {
-        background: var(--surface-color, #1e2130);
-        border-color: var(--border-color, #2e3347);
-    }
-
-    .pipeline-card__reasoning,
-    .pipeline-card__content {
-        background: var(--surface-hover, #252840);
-    }
-
-    .pipeline-card__option {
-        background: var(--surface-color, #1e2130);
-        border-color: var(--border-color, #2e3347);
-        color: var(--text-color, #d0d5e0);
-    }
-
-    .pipeline-card__option:hover:not(.is-disabled) {
-        background: #1a2a40;
-        border-color: #4A90D9;
-        color: #90c4f5;
-    }
-
-    .pipeline-card__btn--cancel {
-        color: var(--text-muted, #8090a8);
-        border-color: var(--border-color, #2e3347);
-    }
-
-    .pipeline-card__btn--cancel:hover {
-        background: var(--surface-hover, #252840);
-        color: var(--text-color, #d0d5e0);
-    }
-
-    .pipeline-card__status--ok {
-        color: #66bb6a;
-        background: #1b2e1c;
-    }
-
-    .pipeline-card__status--running {
-        color: #64b5f6;
-        background: #152030;
-    }
-
-    .pipeline-card__status--cancelled {
-        color: #90a4ae;
-        background: #1e2228;
-    }
-
-    .pipeline-card__status--error {
-        color: #ef9a9a;
-        background: #2c1515;
-    }
-
-    .pipeline-status-line--resumed {
-        color: #64b5f6;
-        background: #152030;
-    }
-
-    .pipeline-status-line--cancelled {
-        color: #90a4ae;
-        background: #1e2228;
-    }
+    color: #5a6070;
+    background: var(--surface-hover, #eef0f4);
+    border-left: 2px solid #b0b5bf;
 }

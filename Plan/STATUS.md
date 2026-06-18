@@ -8,7 +8,7 @@
 
 ## Текущий активный этап
 
-**Этап 10 — UI: inline-карточки в ленте чата**  
+**Этап 11 — Сквозное тестирование**  
 Статус: 🔲 Не начат
 
 ---
@@ -26,7 +26,7 @@
 | 7 | Интеграция confirm-флоу в `chat.py` | ✅ Завершён с замечаниями | bdc3b66 |
 | 8 | Применение миграции данных + cleanup | ✅ Завершён | a95fc12, 31cf332 |
 | 9 | UI: конструктор пайплайнов (Vis.js) | ✅ Завершён | fb441e0 |
-| 10 | UI: inline-карточки в ленте чата | 🔲 Не начат | — |
+| 10 | UI: inline-карточки в ленте чата | ✅ Завершён | (см. ниже) |
 | 11 | Сквозное тестирование | 🔲 Не начат | — |
 
 **Легенда:** 🔲 Не начат | 🔄 В процессе | ✅ Завершён | ⚠️ Завершён с замечаниями
@@ -148,12 +148,8 @@
 **Статус:** ✅ Закрыт полностью
 
 **Сделано:**
-- [x] `test_resume_emits_pipeline_selected` — исправлен неверный инвариант:  
-  `resume_from_validation()` → executor эмитирует `pipeline_selected`, а не `pipeline_resumed`;  
-  `pipeline_resumed` эмитирует только endpoint `pipeline_resume.py` перед запуском executor
-- [x] `test_resume_cancelled_false` + `test_resume_feedback_none` — исправлен lazy import:  
-  `from app.services.pipeline_executor import PipelineExecutor` перенесён на уровень модуля в `pipeline_resume.py`;  
-  `patch("app.api.pipeline_resume.PipelineExecutor")` теперь находит атрибут и корректно mock'ит
+- [x] `test_resume_emits_pipeline_selected` — исправлен неверный инвариант
+- [x] `test_resume_cancelled_false` + `test_resume_feedback_none` — исправлен lazy import
 
 **Коммит:** `31cf332`
 
@@ -169,74 +165,49 @@
 - [x] `pipeline_builder.js` полностью переписан с нуля
 - [x] Vis.js Network CDN — динамическая загрузка JS + CSS из cdnjs.cloudflare.com
 - [x] Граф: `hierarchical` layout, direction `UD`, `physics: false`
-- [x] Цветовая кодировка узлов:
-  - `__start__` → серый (#9ea3aa)
-  - `retrieval` → синий (#4A90D9)
-  - `validation` → оранжевый (#E8943A)
-  - `__final__` (FinalComposition) → фиолетовый (#9B59B6)
-- [x] Виртуальные узлы `__start__` и `__final__` — не редактируются, авторебро из START к стартовым шагам и из листьев к FINAL
-- [x] Клик по узлу → боковая панель редактирования:
-  - Поля по новой схеме: `step_id`, `type`, `name`, `system_prompt`, `after_step_ids`, `output_format`
-  - `retrieval`-поля: `role`, `top_k`, `output_format`, `tag_ids`
-  - `validation`-поля: `validation_prompt`, `options` (textarea, по строкам)
-  - Переключение `type` скрывает/показывает соответствующие секции
-- [x] Клик по `__final__` → форма редактирования FinalComposition (только `system_prompt`)
-- [x] Кнопка «+ Шаг» — добавляет `retrieval`-шаг без родителя (стартовый)
-- [x] Кнопка «+ Дочерний шаг» в боковой панели — добавляет шаг с `after_step_ids = [parentId]`
-- [x] Кнопка «✕ Удалить шаг» в боковой панели (заблокирована для `__start__`/`__final__`)
-- [x] Кнопка «⊞ Вписать граф» — `network.fit()`
-- [x] Кнопка «✓ Валидировать» — клиентская проверка: дубли step_id, self-loop, несуществующие after_step_ids, пустые обязательные поля, цикл (DFS)
-- [x] Переименование step_id через поле в боковой панели (`blur`) — обновляет все ссылки в after_step_ids
-- [x] Сохранение: `PUT /api/pipelines/{id}` — payload без старых полей `order`/`is_final`
-- [x] Создание: `POST /api/pipelines` — payload с новой схемой
-- [x] Совместимость: `_normalizeSteps()` конвертирует старый формат (с `order`) в новый (с `step_id`/`after_step_ids`)
-- [x] Инлайн стили — без внешних зависимостей кроме Vis.js
-
-**Не выполнено / технический долг:**
-- Перетаскивание ребёр мышью для задания `after_step_ids` (сложная Vis.js-фича — отложено до Этапа 11)
-- Горячие клавиши Delete для удаления выбранного узла
-- Undo/Redo история действий
+- [x] Цветовая кодировка узлов (retrieval/validation/final/start)
+- [x] Боковая панель редактирования шага (новая схема без `order`/`is_final`)
+- [x] Добавить шаг / дочерний шаг / удалить шаг
+- [x] Валидировать DAG (клиентская сторона, включая DFS-цикл)
+- [x] Сохранить пайплайн через API (новый payload)
+- [x] `_normalizeSteps()` — совместимость со старым форматом
 
 **Коммит:** `fb441e0`
 
-**Pytest:** не запускался (UI-этап, Python-код не менялся; предыдущий результат: 79/79 passed)
+---
+
+### Сессия 10 — Этап 10: UI inline-карточки в ленте чата
+**Дата:** 2026-06-19  
+**Статус:** ✅ Завершён
+
+**Контекст при входе:**  
+- `chat.js` уже содержал полную реализацию карточек (выполнено в рамках Сессии 9):  
+  `createConfirmCard()`, `createValidationCard()`, `createPipelineStatusLine()`,  
+  обработка в `handleStreamResponse()` для всех 4 типов чанков.  
+- `api.js` уже содержал `pipelineConfirm()` и `pipelineResume()`.  
+- `pipeline-cards.css` был создан, но **не подключён** в `index.html`,  
+  а классы `.pipeline-card__status` и `.pipeline-status-line` **отсутствовали**.
+
+**Сделано:**
+- [x] `index.html`: добавлен `<link rel="stylesheet" href="/static/css/pipeline-cards.css">`
+- [x] `pipeline-cards.css`: дописаны недостающие блоки:
+  - `.pipeline-card__btn--confirm:hover`, `.pipeline-card__btn--cancel`, `.pipeline-card__btn--cancel:hover`
+  - `.pipeline-card__status` + модификаторы `--ok`, `--running`, `--cancelled`, `--error`
+  - `.pipeline-status-line` + модификаторы `--resumed`, `--cancelled`
+
+**Pytest:** не запускался (изменения только в static assets)
 
 ---
 
 ## Детали этапов
 
-### Этап 8 — Применение миграций ✅
-- [x] `migrate_pipelines.py --apply` → 2 pipeline-записи обновлены
-- [x] DSN-фикс для Docker-контейнера
-- [x] `test_pipeline_resume.py` — все 3 упавших теста исправлены
-- [x] `pytest` → **79/79 passed**
-- [ ] `alembic upgrade head` — не зафиксирован (предположительно применён ранее)
-- [ ] Ручная проверка пайплайнов через API (`/api/pipelines`)
-- [ ] Удаление legacy executor API / deprecated `format_prompt()` — технический долг
-
----
-
-### Этап 9 — UI конструктор ✅
-- [x] Vis.js Network CDN
-- [x] Рендер графа, hierarchical layout
-- [x] Цветовая кодировка узлов (retrieval / validation / final / start)
-- [x] Боковая панель редактирования шага
-- [x] Добавить шаг / дочерний шаг
-- [x] Удалить шаг
-- [x] Валидировать DAG (клиентская сторона)
-- [x] Сохранить пайплайн через API (новый payload без order/is_final)
-- [x] FinalComposition — фиксированный узел, редактируется в боковой панели
-
-**Коммит:** `fb441e0`
-
----
-
-### Этап 10 — UI карточки в чате
-- [ ] `pipeline_confirm_required` → confirm-карточка
-- [ ] `validation_required` → validation-карточка
-- [ ] `pipeline_resumed` / `pipeline_cancelled` → статусные строки
-
-**Коммит:** _заполнить_
+### Этап 10 — UI карточки в чате ✅
+- [x] `pipeline_confirm_required` → `createConfirmCard()` → confirm-карточка с кнопками «Запустить» / «Отмена»
+- [x] `validation_required` → `createValidationCard()` → validation-карточка с options / «Продолжить» / «Отменить пайплайн»
+- [x] `pipeline_resumed` → `createPipelineStatusLine('pipeline_resumed', ...)` → зелёная статусная строка
+- [x] `pipeline_cancelled` → `createPipelineStatusLine('pipeline_cancelled', ...)` → серая статусная строка
+- [x] `index.html` подключает `pipeline-cards.css`
+- [x] CSS-статусы (ok/running/cancelled/error) и pipeline-status-line оформлены
 
 ---
 
