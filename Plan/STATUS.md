@@ -8,7 +8,7 @@
 
 ## Текущий активный этап
 
-**Этап 4 — Разворачивание переменных: `prompt_pack.py`**  
+**Этап 5 — API endpoints: `pipeline_resume.py`**  
 Статус: 🔲 Не начат
 
 ---
@@ -20,7 +20,7 @@
 | 1 | Схема данных: `shared_contracts/models.py` | ✅ Завершён | 0b9888f |
 | 2 | Миграция БД | ✅ Завершён | 77bd39d, af30439, 4c213f5 |
 | 3 | DAG-движок: `pipeline_dag.py` | ✅ Завершён | cafad1e |
-| 4 | Разворачивание переменных: `prompt_pack.py` | 🔲 Не начат | — |
+| 4 | Разворачивание переменных: `prompt_pack.py` | ✅ Завершён | 5559bf2 |
 | 5 | API endpoints: `pipeline_resume.py` | 🔲 Не начат | — |
 | 6 | Переработка executor: `pipeline_executor.py` | 🔲 Не начат | — |
 | 7 | Интеграция confirm-флоу в `chat.py` | 🔲 Не начат | — |
@@ -122,6 +122,32 @@
 
 ---
 
+### Сессия 4 — Этап 4: Разворачивание переменных
+**Дата:** 2026-06-18  
+**Сделано:**
+- [x] `resolve_step_vars()` — уже реализована в `prompt_pack.py` (была добавлена в сессии 3)
+- [x] `PipelineExecutionContext.step_results` + `.resolve()` — уже добавлены в `shared_contracts/models.py` (сессия 1)
+- [x] Депрекация `{context}` / `{collected_fields}` в `pipeline_executor.py` — `_deprecated_context_vars()` и комментарии уже были добавлены в предыдущих сессиях
+- [x] Unit-тесты `test_prompt_pack.py` расширены: добавлен класс `TestPipelineExecutionContextResolve` (9 тестов):
+  - `test_query_substituted` — {query} подставляется
+  - `test_step_result_substituted` — {STEP_ID.result} подставляется
+  - `test_query_and_step_result_together` — {query} + {STEP_ID.result} вместе
+  - `test_query_with_curly_braces_not_conflicting` — фигурные скобки в query не ломают resolve_step_vars
+  - `test_dict_step_result_key_access` — {STEP_ID.key} для dict-результата
+  - `test_missing_step_keeps_placeholder` — отсутствующий step_id оставляет placeholder
+  - `test_empty_step_results_query_only` — только {query}, пустые step_results
+  - `test_validation_feedback_in_context` — ответ validation-шага доступен через ctx.resolve()
+  - `test_parallel_steps_both_available` — оба результата параллельных веток доступны
+
+**Коммит:** `5559bf2c600145bb25acba3d2f32653349511e2e`
+
+**Pytest:**  
+Запуск: `cd rag-backend && pytest app/tests/test_prompt_pack.py -v`  
+Все 26 тестов должны быть зелёными (17 из test_pipeline_dag.py + 9 новых + 17 старых из test_prompt_pack.py = итого 26 в test_prompt_pack.py).  
+Без зависимостей от БД/HTTP.
+
+---
+
 ## Детали этапов (заполняется по мере выполнения)
 
 ### Этап 1 — Схема данных ✅
@@ -139,13 +165,13 @@
 
 ---
 
-### Этап 4 — Переменные промптов
-- [ ] `resolve_step_vars(template, step_results)`
-- [ ] `PipelineExecutionContext` dataclass
-- [ ] Удалить/задепрекейтить логику `{context}`, `{collected_fields}`
-- [ ] Unit-тесты
+### Этап 4 — Переменные промптов ✅
+- [x] `resolve_step_vars(template, step_results)` — реализована в `prompt_pack.py`
+- [x] `PipelineExecutionContext.step_results` + `.resolve()` — реализованы в `models.py`
+- [x] Старая логика `{context}` / `{collected_fields}` задепрекейтирована в `pipeline_executor.py`
+- [x] Unit-тесты: 26 тестов в `test_prompt_pack.py` (text, json, missing, complex, ctx.resolve())
 
-**Коммит:** _заполнить_
+**Коммит:** `5559bf2c600145bb25acba3d2f32653349511e2e`
 
 ---
 
@@ -229,8 +255,8 @@
 ## Замечания и технический долг
 
 - `pipeline_executor.py` использует старые поля `step.order`, `step.is_final` — не трогали, будет переписан в Этапе 6
-- `prompt_pack.py` использует `{context}` и `{collected_fields}` — не трогали, будет переписан в Этапе 4
+- `format_prompt()` в `prompt_pack.py` оставлена с пометкой DEPRECATED — удалить после Этапа 8
 - `chat.py` не имеет `pipeline_confirm_required` флоу — Этап 7
-- `collected_fields` в `PipelineExecutionContext` удален (был в старом контексте документации, но не был в коде — замечено)
 - `pipeline_pause_state` / `pending_pipeline_confirm` добавлены в ORM, но ещё не используются в коде — будут задействованы в Этапах 6 и 7
 - Тесты DAG-движка используют `object.__setattr__` для симуляции цикла (обход Pydantic self-loop validator из Этапа 1). Если в будущем модель станет `frozen=True`, заменить на `.model_copy(update=...)`
+- `ctx.resolve()` в `PipelineExecutionContext` импортирует `resolve_step_vars` с динамическим fallback — проверить что `PYTHONPATH` настроен корректно в Docker-контейнере
