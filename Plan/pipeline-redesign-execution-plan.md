@@ -102,11 +102,15 @@
    - `{STEP_ID.result}` + dict → `json.dumps(dict)`.
    - `{STEP_ID.key}` + dict → `dict[key]`, если ключ не найден — оставить placeholder, warning в лог.
    - Не найден STEP_ID — оставить как есть, warning в лог.
-2. Добавить `PipelineExecutionContext` dataclass: `step_results: dict[str, Any]`, `query: str`, метод `resolve(template: str) -> str`.
-3. Удалить (или задепрекейтить с raise) старые функции формирования `{context}` и `{collected_fields}`.
+2. Расширить существующий `PipelineExecutionContext(BaseModel)` в `shared_contracts/models.py`:
+   - Добавить поле `step_results: dict[str, Any] = Field(default_factory=dict)`.
+   - Добавить метод `resolve(self, template: str) -> str` — делегирует в `resolve_step_vars(template, self.step_results)`.
+   - **Не создавать новый класс** — `PipelineExecutionContext` уже существует как Pydantic BaseModel с полями `chat_id`, `query`, `pipeline_id` и др. Расширяем его.
+   - Важно: выполнять этот шаг **после** Этапа 1, чтобы `model_dump()` / `model_validate()` работали с актуальной схемой `PipelineStep`.
+3. Удалить (или задепрекейтить с raise) старые функции формирования `{context}` и `{collected_fields}` в `pipeline_executor.py` (не в `prompt_pack.py` — там этой логики нет).
 4. Написать unit-тесты: text-результат, json-результат по ключу, отсутствующий step_id, отсутствующий ключ, `{query}`.
 
-**Результат:** Обновлённый `prompt_pack.py` + тесты.
+**Результат:** Обновлённый `prompt_pack.py` + расширенный `PipelineExecutionContext` в `models.py` + тесты.
 
 ---
 
@@ -142,20 +146,20 @@
 **Цель:** Заменить линейный executor на DAG-based с поддержкой параллельности и validation-пауз. Самый сложный этап.
 
 **Задачи:**
-1. Импортировать `get_execution_levels()` из `pipeline_dag.py` и `PipelineExecutionContext` из `prompt_pack.py`.
+1. Импортировать `get_execution_levels()` из `pipeline_dag.py` и `PipelineExecutionContext` из `shared_contracts/models.py`.
 2. Переписать основной цикл: итерировать по уровням из `get_execution_levels()`.
 3. Для уровня с несколькими шагами — `asyncio.gather()`, каждый шаг получает независимую `async_sessionmaker`-сессию.
 4. Для одного шага — обычный `await`.
 5. При встрече `type=validation`:
-   - Вычислить `validation_prompt` через `resolve_step_vars()`.
-   - Сохранить `pipeline_pause_state` в БД (JSONB).
+   - Вычислить `validation_prompt` через `ctx.resolve()`.
+   - Сохранить `pipeline_pause_state` в БД (JSONB): `ctx.model_dump()` → JSONB.
    - Отправить SSE-чанк `{ "type": "validation_required", ... }`.
    - Завершить текущий стрим.
 6. Метод `resume_from_validation(chat_id, resume_token, user_feedback)`:
-   - Восстановить `step_results` из `pipeline_pause_state`.
+   - Восстановить контекст: `PipelineExecutionContext.model_validate(pipeline_pause_state)`.
    - Продолжить с уровня после validation.
 7. Убрать все ссылки на `order`, `is_final`, `type="final"`.
-8. Убрать старую логику сборки `{context}` — использовать `PipelineExecutionContext.resolve()`.
+8. Убрать старую логику сборки `{context}` и `{collected_fields}` — использовать `ctx.resolve()`.
 
 **Результат:** Переписанный `pipeline_executor.py`.
 
