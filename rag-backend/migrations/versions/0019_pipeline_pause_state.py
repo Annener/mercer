@@ -1,7 +1,7 @@
 """Add pipeline_pause_state and pending_pipeline_confirm to chats.
 
 Revision ID: 0019
-Revises: 0018
+Revises: 0018_cleanup_reranker_platform_settings
 Create Date: 2026-06-18
 
 pipeline_pause_state  — персистентное состояние паузы при validation-шаге.
@@ -36,7 +36,7 @@ from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
 revision = "0019"
-down_revision = "0018"
+down_revision = "0018_cleanup_reranker_platform_settings"
 branch_labels = None
 depends_on = None
 
