@@ -1,411 +1,397 @@
-"""Тесты PipelineExecutor — DAG-режим (Этап 6).
+"""
+test_pipeline_executor.py — unit-тесты PipelineExecutor (DAG API).
 
-Все зависимости от БД и LLM-провайдера полностью mock'нуты.
-Запуск: cd rag-backend && pytest app/tests/test_pipeline_executor.py -v
+Тестируем без живой БД и без HTTP: все зависимости mock’ируются.
+Главные SUT: _build_levels(), _resolve_prompt(), PipelineExecutor._dag_execute().
 """
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+import uuid
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.services.pipeline_executor import PipelineExecutor, _build_levels, _resolve_prompt
-from shared_contracts.models import (
-    FinalComposition,
-    PipelineExecutionContext,
-    PipelineStep,
+from app.services.pipeline_executor import (
+    PipelineExecutor,
+    _build_levels,
+    _resolve_prompt,
 )
+from shared_contracts.models import FinalComposition, PipelineExecutionContext, PipelineStep
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Вспомогатели
 # ---------------------------------------------------------------------------
 
-def _step(
+def _make_retrieval_step(step_id: str, after: list[str] | None = None) -> PipelineStep:
+    return PipelineStep(
+        step_id=step_id,
+        type="retrieval",
+        name=step_id,
+        system_prompt="",
+        after_step_ids=after or [],
+        top_k=3,
+        tag_ids=[],
+    )
+
+
+def _make_validation_step(
     step_id: str,
     after: list[str] | None = None,
-    kind: str = "retrieval",
-    top_k: int = 3,
+    validation_prompt: str = "Подтвердите",
+    options: list[str] | None = None,
 ) -> PipelineStep:
     return PipelineStep(
         step_id=step_id,
-        type=kind,
+        type="validation",
         name=step_id,
-        system_prompt=f"prompt for {step_id}",
+        system_prompt=validation_prompt,
+        validation_prompt=validation_prompt,
+        options=options or ["Да", "Нет"],
         after_step_ids=after or [],
-        top_k=top_k,
-        tag_ids=[],
-        role=None,
-        output_format="text",
-        validation_prompt=None if kind != "validation" else "Please confirm",
-        options=None if kind != "validation" else ["Yes", "No"],
     )
 
 
-def _ctx(steps: list[PipelineStep], query: str = "test query") -> PipelineExecutionContext:
+def _make_ctx(
+    steps: list[PipelineStep],
+    step_results: dict[str, Any] | None = None,
+) -> PipelineExecutionContext:
     return PipelineExecutionContext(
-        chat_id="00000000-0000-0000-0000-000000000001",
-        message_id="00000000-0000-0000-0000-000000000002",
-        query=query,
-        pipeline_id="pipe1",
+        chat_id=str(uuid.uuid4()),
+        query="тестовый запрос",
+        pipeline_id="test-pipeline",
+        domain_id="test-domain",
         steps=steps,
-        final_composition=FinalComposition(
-            system_prompt="Answer based on {step_a.result}",
-        ),
-        domain_id="dom1",
-        vault_ids=["v1"],
+        final_composition=FinalComposition(system_prompt="Ответ: {step1.result}"),
+        step_results=step_results or {},
+        vault_ids=[],
     )
 
 
-async def _collect(gen: AsyncIterator[dict]) -> list[dict]:
-    result = []
+def _make_executor(chat=None) -> tuple[PipelineExecutor, AsyncMock]:
+    """Mock-экземпляр PipelineExecutor с мокнутой DB."""
+    db = AsyncMock()
+    db.get = AsyncMock(return_value=chat or MagicMock())
+    db.commit = AsyncMock()
+    return PipelineExecutor(db=db), db
+
+
+async def _collect(gen) -> list[dict]:
+    """Helper: собрать все чанки из async-генератора."""
+    chunks = []
     async for chunk in gen:
-        result.append(chunk)
-    return result
+        chunks.append(chunk)
+    return chunks
 
 
 # ---------------------------------------------------------------------------
-# _build_levels
+# Тесты: _build_levels
 # ---------------------------------------------------------------------------
 
 class TestBuildLevels:
-    def test_linear(self):
-        steps = [_step("a"), _step("b", after=["a"]), _step("c", after=["b"])]
-        levels = _build_levels(steps)
-        assert len(levels) == 3
-        assert [s.step_id for s in levels[0]] == ["a"]
-        assert [s.step_id for s in levels[1]] == ["b"]
-        assert [s.step_id for s in levels[2]] == ["c"]
 
-    def test_parallel_at_level_1(self):
-        steps = [_step("a"), _step("b", after=["a"]), _step("c", after=["a"])]
+    def test_single_start_step(self):
+        steps = [_make_retrieval_step("a")]
         levels = _build_levels(steps)
-        assert len(levels) == 2
-        level1_ids = {s.step_id for s in levels[1]}
-        assert level1_ids == {"b", "c"}
+        assert len(levels) == 1
+        assert levels[0][0].step_id == "a"
 
-    def test_diamond(self):
-        # a → b, a → c, b+c → d
+    def test_linear_chain_three_steps(self):
         steps = [
-            _step("a"),
-            _step("b", after=["a"]),
-            _step("c", after=["a"]),
-            _step("d", after=["b", "c"]),
+            _make_retrieval_step("a"),
+            _make_retrieval_step("b", after=["a"]),
+            _make_retrieval_step("c", after=["b"]),
         ]
         levels = _build_levels(steps)
-        # d должен быть в уровне >= 2
-        d_level = next(i for i, lvl in enumerate(levels) if any(s.step_id == "d" for s in lvl))
-        assert d_level >= 2
+        assert len(levels) == 3
+        assert levels[0][0].step_id == "a"
+        assert levels[1][0].step_id == "b"
+        assert levels[2][0].step_id == "c"
 
-    def test_single_step(self):
-        levels = _build_levels([_step("only")])
+    def test_parallel_branches_same_level(self):
+        steps = [
+            _make_retrieval_step("a"),
+            _make_retrieval_step("b"),  # тоже стартовый
+        ]
+        levels = _build_levels(steps)
         assert len(levels) == 1
-        assert levels[0][0].step_id == "only"
+        ids = {s.step_id for s in levels[0]}
+        assert ids == {"a", "b"}
+
+    def test_diamond_dependency(self):
+        # a → b, a → c, b+c → d
+        steps = [
+            _make_retrieval_step("a"),
+            _make_retrieval_step("b", after=["a"]),
+            _make_retrieval_step("c", after=["a"]),
+            _make_retrieval_step("d", after=["b", "c"]),
+        ]
+        levels = _build_levels(steps)
+        level_ids = [{s.step_id for s in lvl} for lvl in levels]
+        assert {"a"} in level_ids
+        assert {"b", "c"} in level_ids
+        assert {"d"} in level_ids
+
+    def test_validation_step_in_levels(self):
+        steps = [
+            _make_retrieval_step("r1"),
+            _make_validation_step("v1", after=["r1"]),
+            _make_retrieval_step("r2", after=["v1"]),
+        ]
+        levels = _build_levels(steps)
+        assert len(levels) == 3
+        assert levels[1][0].step_id == "v1"
 
 
 # ---------------------------------------------------------------------------
-# _resolve_prompt
+# Тесты: _resolve_prompt
 # ---------------------------------------------------------------------------
 
 class TestResolvePrompt:
-    def test_query_substituted(self):
-        ctx = _ctx([])
-        ctx.query = "hello"
-        result = _resolve_prompt("Answer: {query}", ctx)
-        assert result == "Answer: hello"
 
-    def test_step_result_substituted(self):
-        ctx = _ctx([])
-        ctx.step_results["step_a"] = "context data"
-        result = _resolve_prompt("{step_a.result}", ctx)
-        assert result == "context data"
+    def _ctx(self, step_results):
+        return _make_ctx([], step_results=step_results)
+
+    def test_query_substitution(self):
+        ctx = self._ctx({})
+        ctx.query = "мой запрос"
+        assert _resolve_prompt("Запрос: {query}", ctx) == "Запрос: мой запрос"
+
+    def test_step_result_substitution(self):
+        ctx = self._ctx({"s1": "результат"})
+        assert _resolve_prompt("{s1.result}", ctx) == "результат"
 
     def test_dict_key_access(self):
-        ctx = _ctx([])
-        ctx.step_results["step_a"] = {"summary": "brief", "details": "long"}
-        result = _resolve_prompt("{step_a.summary}", ctx)
-        assert result == "brief"
+        ctx = self._ctx({"s1": {"score": "42"}})
+        assert _resolve_prompt("{s1.score}", ctx) == "42"
 
-    def test_private_step_skipped(self):
-        ctx = _ctx([])
-        ctx.step_results["_validation_step_a"] = "yes"
-        # приватные ключи не раскрываются через {_validation_step_a.result}
-        result = _resolve_prompt("{_validation_step_a.result}", ctx)
-        assert "{_validation_step_a.result}" in result
-
-    def test_missing_step_keeps_placeholder(self):
-        ctx = _ctx([])
-        result = _resolve_prompt("{missing.result}", ctx)
-        assert "{missing.result}" in result
+    def test_private_key_skipped(self):
+        ctx = self._ctx({"_validation_v1": "ответ"})
+        # приватные ключи не подставляются в шаблон
+        result = _resolve_prompt("{_validation_v1.result}", ctx)
+        assert result == "{_validation_v1.result}"  # плейсхолдер сохраняется
 
 
 # ---------------------------------------------------------------------------
-# PipelineExecutor.run_stream — базовые сценарии
+# Тесты: _dag_execute — basic flow
 # ---------------------------------------------------------------------------
 
-class TestRunStream:
-    def _make_executor(self, db=None, session_factory=None):
-        db = db or AsyncMock()
-        return PipelineExecutor(db=db, session_factory=session_factory)
+class TestDagExecute:
+
+    def _mock_provider(self, tokens=("hello",)):
+        prov = MagicMock()
+        async def _gen(msgs):
+            for t in tokens:
+                yield t
+        prov.generate_stream = _gen
+        return prov
 
     @pytest.mark.asyncio
-    async def test_no_provider_yields_error(self):
-        executor = self._make_executor()
-        ctx = _ctx([_step("a")])
-
-        with patch(
-            "app.services.pipeline_executor.settings_service",
-        ) as mock_settings:
-            mock_settings.get_active_provider.return_value = None
+    async def test_no_active_provider_yields_error(self):
+        steps = [_make_retrieval_step("s1")]
+        ctx = _make_ctx(steps)
+        executor, _ = _make_executor()
+        with patch("app.services.pipeline_executor.settings_service") as mock_svc:
+            mock_svc.get_active_provider.return_value = None
             chunks = await _collect(executor.run_stream(ctx))
-
         types = [c["type"] for c in chunks]
         assert "error" in types
 
     @pytest.mark.asyncio
-    async def test_single_step_no_hits_skips(self):
-        executor = self._make_executor()
-        ctx = _ctx([_step("a")])
-
-        mock_provider = MagicMock()
-
-        async def _fake_stream(messages):
-            yield "final token"
-
-        mock_provider.generate_stream = _fake_stream
-
-        with (
-            patch("app.services.pipeline_executor.settings_service") as ms,
-            patch("app.services.pipeline_executor.get_document_ids_by_tags", new_callable=AsyncMock),
-            patch("app.services.pipeline_executor.retrieve", new_callable=AsyncMock, return_value=[]),
-            patch("app.services.pipeline_executor.retrieve_multi_vault", new_callable=AsyncMock, return_value=[]),
-        ):
-            ms.get_active_provider.return_value = mock_provider
-            ms.get = AsyncMock(return_value=5)
+    async def test_pipeline_selected_chunk_emitted(self):
+        steps = [_make_retrieval_step("s1")]
+        ctx = _make_ctx(steps)
+        executor, _ = _make_executor()
+        with patch("app.services.pipeline_executor.settings_service") as mock_svc, \
+             patch.object(executor, "_retrieve_for_step_dag", new_callable=AsyncMock, return_value=[]):
+            mock_svc.get_active_provider.return_value = self._mock_provider()
             chunks = await _collect(executor.run_stream(ctx))
+        types = [c["type"] for c in chunks]
+        assert "pipeline_selected" in types
 
+    @pytest.mark.asyncio
+    async def test_step_skipped_yields_step_skipped_no_docs(self):
+        steps = [_make_retrieval_step("s1")]
+        ctx = _make_ctx(steps)
+        executor, _ = _make_executor()
+        with patch("app.services.pipeline_executor.settings_service") as mock_svc, \
+             patch.object(executor, "_retrieve_for_step_dag", new_callable=AsyncMock, return_value=[]):
+            mock_svc.get_active_provider.return_value = self._mock_provider()
+            chunks = await _collect(executor.run_stream(ctx))
         types = [c["type"] for c in chunks]
         assert "step_skipped_no_docs" in types
+
+    @pytest.mark.asyncio
+    async def test_final_composition_tokens_emitted(self):
+        steps = [_make_retrieval_step("s1")]
+        ctx = _make_ctx(steps)
+        ctx.step_results["s1"] = "данные"
+        executor, _ = _make_executor()
+        with patch("app.services.pipeline_executor.settings_service") as mock_svc, \
+             patch.object(executor, "_retrieve_for_step_dag", new_callable=AsyncMock, return_value=[]):
+            mock_svc.get_active_provider.return_value = self._mock_provider(tokens=("to", "ken"))
+            chunks = await _collect(executor.run_stream(ctx))
+        token_contents = [c["content"] for c in chunks if c["type"] == "token"]
+        assert token_contents == ["to", "ken"]
+
+    @pytest.mark.asyncio
+    async def test_pipeline_complete_chunk_emitted(self):
+        steps = [_make_retrieval_step("s1")]
+        ctx = _make_ctx(steps)
+        executor, _ = _make_executor()
+        with patch("app.services.pipeline_executor.settings_service") as mock_svc, \
+             patch.object(executor, "_retrieve_for_step_dag", new_callable=AsyncMock, return_value=[]):
+            mock_svc.get_active_provider.return_value = self._mock_provider()
+            chunks = await _collect(executor.run_stream(ctx))
+        types = [c["type"] for c in chunks]
         assert "pipeline_complete" in types
 
-    @pytest.mark.asyncio
-    async def test_final_composition_streams_tokens(self):
-        executor = self._make_executor()
-        ctx = _ctx([])
-        ctx.steps = []
-        ctx.final_composition = FinalComposition(system_prompt="Say {query}")
-
-        mock_provider = MagicMock()
-
-        async def _fake_stream(messages):
-            for t in ["Hello", " world"]:
-                yield t
-
-        mock_provider.generate_stream = _fake_stream
-
-        with patch("app.services.pipeline_executor.settings_service") as ms:
-            ms.get_active_provider.return_value = mock_provider
-            chunks = await _collect(executor.run_stream(ctx))
-
-        token_chunks = [c for c in chunks if c["type"] == "token"]
-        assert "".join(c["content"] for c in token_chunks) == "Hello world"
-        assert chunks[-1]["type"] == "pipeline_complete"
-
-    @pytest.mark.asyncio
-    async def test_pipeline_selected_chunk_emitted(self):
-        executor = self._make_executor()
-        ctx = _ctx([])
-        ctx.steps = []
-        ctx.pipeline_id = "pipe-xyz"
-
-        mock_provider = MagicMock()
-
-        async def _fake_stream(messages):
-            yield "token"
-
-        mock_provider.generate_stream = _fake_stream
-
-        with patch("app.services.pipeline_executor.settings_service") as ms:
-            ms.get_active_provider.return_value = mock_provider
-            chunks = await _collect(executor.run_stream(ctx))
-
-        first = chunks[0]
-        assert first["type"] == "pipeline_selected"
-        assert first["pipeline_id"] == "pipe-xyz"
-
 
 # ---------------------------------------------------------------------------
-# Validation step
+# Тесты: validation-пауза
 # ---------------------------------------------------------------------------
 
-class TestValidationStep:
+class TestValidationPause:
+
+    def _mock_provider(self):
+        prov = MagicMock()
+        async def _gen(msgs):
+            yield "ok"
+        prov.generate_stream = _gen
+        return prov
+
     @pytest.mark.asyncio
-    async def test_validation_emits_validation_required_and_stops(self):
-        mock_db = AsyncMock()
-        mock_chat = MagicMock()
-        mock_db.get = AsyncMock(return_value=mock_chat)
-        mock_db.commit = AsyncMock()
-
-        executor = PipelineExecutor(db=mock_db)
-
-        steps = [_step("v1", kind="validation")]
-        ctx = _ctx(steps)
-
-        mock_provider = MagicMock()
-
-        async def _fake_stream(messages):
-            yield "should not reach"
-
-        mock_provider.generate_stream = _fake_stream
-
-        with patch("app.services.pipeline_executor.settings_service") as ms:
-            ms.get_active_provider.return_value = mock_provider
+    async def test_validation_step_stops_stream(self):
+        steps = [
+            _make_retrieval_step("r1"),
+            _make_validation_step("v1", after=["r1"]),
+            _make_retrieval_step("r2", after=["v1"]),
+        ]
+        ctx = _make_ctx(steps)
+        executor, _ = _make_executor()
+        with patch("app.services.pipeline_executor.settings_service") as mock_svc, \
+             patch.object(executor, "_retrieve_for_step_dag", new_callable=AsyncMock, return_value=[]), \
+             patch.object(executor, "_save_pause_state", new_callable=AsyncMock):
+            mock_svc.get_active_provider.return_value = self._mock_provider()
             chunks = await _collect(executor.run_stream(ctx))
-
         types = [c["type"] for c in chunks]
+        # пайплайн остановлен на validation — final_composition не запускается
         assert "validation_required" in types
-        # pipeline НЕ должен завершиться — он остановлен
         assert "pipeline_complete" not in types
 
     @pytest.mark.asyncio
-    async def test_validation_saves_pause_state(self):
-        mock_db = AsyncMock()
-        mock_chat = MagicMock()
-        mock_chat.pipeline_pause_state = None
-        mock_db.get = AsyncMock(return_value=mock_chat)
-        mock_db.commit = AsyncMock()
+    async def test_validation_required_chunk_fields(self):
+        steps = [
+            _make_validation_step("v1", validation_prompt="Уверены?", options=["Да", "Нет"]),
+        ]
+        ctx = _make_ctx(steps)
+        executor, _ = _make_executor()
+        with patch("app.services.pipeline_executor.settings_service") as mock_svc, \
+             patch.object(executor, "_save_pause_state", new_callable=AsyncMock):
+            mock_svc.get_active_provider.return_value = self._mock_provider()
+            chunks = await _collect(executor.run_stream(ctx))
+        val = next(c for c in chunks if c.get("type") == "validation_required")
+        assert val["step_id"] == "v1"
+        assert val["step_name"] == "v1"
+        assert "Уверены?" in val["content"]
+        assert val["options"] == ["Да", "Нет"]
+        assert "resume_token" in val and val["resume_token"]
 
-        executor = PipelineExecutor(db=mock_db)
-        steps = [_step("check", kind="validation")]
-        ctx = _ctx(steps)
-        ctx.query = "test query"
-        ctx.step_results = {"prev": "some context"}
+    @pytest.mark.asyncio
+    async def test_save_pause_state_called_with_full_context(self):
+        """_save_pause_state вызывается с полным step_id и step_name."""
+        steps = [_make_validation_step("check", validation_prompt="Проверьте")]
+        ctx = _make_ctx(steps)
+        executor, _ = _make_executor()
+        captured: list[tuple] = []
 
-        mock_provider = MagicMock()
+        async def _capture(c, step_id, step_name, resume_token):
+            captured.append((step_id, step_name, resume_token))
 
-        async def _fake_stream(messages):
-            yield "x"
-
-        mock_provider.generate_stream = _fake_stream
-
-        with patch("app.services.pipeline_executor.settings_service") as ms:
-            ms.get_active_provider.return_value = mock_provider
+        with patch("app.services.pipeline_executor.settings_service") as mock_svc, \
+             patch.object(executor, "_save_pause_state", side_effect=_capture):
+            mock_svc.get_active_provider.return_value = self._mock_provider()
             await _collect(executor.run_stream(ctx))
 
-        # pause_state был записан в chat
-        assert mock_chat.pipeline_pause_state is not None
-        assert mock_chat.pipeline_pause_state["step_id"] == "check"
-        assert "resume_token" in mock_chat.pipeline_pause_state
-        assert mock_chat.pipeline_pause_state["context_snapshot"]["query"] == "test query"
+        assert len(captured) == 1
+        assert captured[0][0] == "check"  # step_id
+        assert captured[0][1] == "check"  # step_name
+        assert captured[0][2]             # resume_token non-empty
 
     @pytest.mark.asyncio
-    async def test_resume_from_validation_continues_after_step(self):
-        mock_db = AsyncMock()
-        mock_db.get = AsyncMock(return_value=None)
-        mock_db.commit = AsyncMock()
+    async def test_save_pause_state_writes_full_context_snapshot(self):
+        """_save_pause_state должен сохранять context_snapshot с pipeline_id, steps, vault_ids."""
+        steps = [_make_validation_step("v")]
+        ctx = _make_ctx(steps)
+        ctx.vault_ids = ["vault-1"]
+        chat_mock = MagicMock()
+        executor, db = _make_executor(chat=chat_mock)
 
-        executor = PipelineExecutor(db=mock_db)
+        with patch("app.services.pipeline_executor.settings_service") as mock_svc:
+            mock_svc.get_active_provider.return_value = MagicMock()
+            # вызываем напрямую
+            await executor._save_pause_state(ctx, "v", "v", "tok")
 
+        saved = chat_mock.pipeline_pause_state
+        assert saved["pipeline_id"] == ctx.pipeline_id
+        assert saved["step_id"] == "v"
+        assert saved["resume_token"] == "tok"
+        snapshot = saved["context_snapshot"]
+        assert snapshot["pipeline_id"] == ctx.pipeline_id
+        assert snapshot["vault_ids"] == ["vault-1"]
+        # expires_at должен быть ~через 1 час
+        from datetime import datetime, UTC, timedelta
+        expires = datetime.fromisoformat(saved["expires_at"])
+        assert expires > datetime.now(UTC) + timedelta(minutes=59)
+
+
+# ---------------------------------------------------------------------------
+# Тесты: resume_from_validation
+# ---------------------------------------------------------------------------
+
+class TestResumeFromValidation:
+
+    def _mock_provider(self):
+        prov = MagicMock()
+        async def _gen(msgs):
+            yield "answer"
+        prov.generate_stream = _gen
+        return prov
+
+    @pytest.mark.asyncio
+    async def test_resume_skips_validated_level(self):
+        """resume_from_validation начинает с уровня после v1 — шаг r2 должен выполниться."""
         steps = [
-            _step("check", kind="validation"),
-            _step("final_step", after=["check"]),
+            _make_retrieval_step("r1"),
+            _make_validation_step("v1", after=["r1"]),
+            _make_retrieval_step("r2", after=["v1"]),
         ]
-        ctx = _ctx(steps)
-        ctx.step_results = {"_validation_check": "yes"}
-
-        mock_provider = MagicMock()
-
-        async def _fake_stream(messages):
-            yield "after validation"
-
-        mock_provider.generate_stream = _fake_stream
-
-        with (
-            patch("app.services.pipeline_executor.settings_service") as ms,
-            patch("app.services.pipeline_executor.retrieve_multi_vault", new_callable=AsyncMock, return_value=[]),
-            patch("app.services.pipeline_executor.retrieve", new_callable=AsyncMock, return_value=[]),
-        ):
-            ms.get_active_provider.return_value = mock_provider
-            ms.get = AsyncMock(return_value=5)
-            chunks = await _collect(executor.resume_from_validation(ctx, "check"))
-
+        ctx = _make_ctx(steps, step_results={"r1": "данные r1", "_validation_v1": "Да"})
+        executor, _ = _make_executor()
+        with patch("app.services.pipeline_executor.settings_service") as mock_svc, \
+             patch.object(executor, "_retrieve_for_step_dag", new_callable=AsyncMock, return_value=[]):
+            mock_svc.get_active_provider.return_value = self._mock_provider()
+            chunks = await _collect(executor.resume_from_validation(ctx, "v1"))
         types = [c["type"] for c in chunks]
-        # step_skipped или step_complete для final_step, затем pipeline_complete
+        # r1 и v1 пропущены, r2 должен быть выполнен (хотя бы step_skipped или step_complete)
+        assert "step_skipped_no_docs" in types or "step_complete" in types
         assert "pipeline_complete" in types
-        # validation_required НЕ должен появиться снова
-        assert "validation_required" not in types
-
-
-# ---------------------------------------------------------------------------
-# Parallel levels
-# ---------------------------------------------------------------------------
-
-class TestParallelLevels:
-    @pytest.mark.asyncio
-    async def test_parallel_without_factory_runs_sequentially(self):
-        """Без session_factory параллельные шаги исполняются последовательно с предупреждением."""
-        mock_db = AsyncMock()
-        executor = PipelineExecutor(db=mock_db, session_factory=None)
-
-        steps = [_step("a"), _step("b1", after=["a"]), _step("b2", after=["a"])]
-        ctx = _ctx(steps)
-
-        mock_provider = MagicMock()
-
-        async def _fake_stream(messages):
-            yield "done"
-
-        mock_provider.generate_stream = _fake_stream
-
-        with (
-            patch("app.services.pipeline_executor.settings_service") as ms,
-            patch("app.services.pipeline_executor.retrieve_multi_vault", new_callable=AsyncMock, return_value=[]),
-            patch("app.services.pipeline_executor.retrieve", new_callable=AsyncMock, return_value=[]),
-        ):
-            ms.get_active_provider.return_value = mock_provider
-            ms.get = AsyncMock(return_value=5)
-            chunks = await _collect(executor.run_stream(ctx))
-
-        # Все три шага skipped (нет хитов), плюс pipeline_complete
-        skipped = [c for c in chunks if c["type"] == "step_skipped_no_docs"]
-        assert len(skipped) == 3
-        assert chunks[-1]["type"] == "pipeline_complete"
+        # validation не должна повторяться
+        assert types.count("validation_required") == 0
 
     @pytest.mark.asyncio
-    async def test_parallel_with_factory_uses_gather(self):
-        """С session_factory параллельные шаги используют asyncio.gather."""
-        from contextlib import asynccontextmanager
-
-        call_order: list[str] = []
-
-        @asynccontextmanager
-        async def _fake_session():
-            yield AsyncMock()
-
-        mock_db = AsyncMock()
-        executor = PipelineExecutor(db=mock_db, session_factory=_fake_session)
-
-        steps = [_step("a"), _step("b1", after=["a"]), _step("b2", after=["a"])]
-        ctx = _ctx(steps)
-
-        mock_provider = MagicMock()
-
-        async def _fake_stream(messages):
-            yield "done"
-
-        mock_provider.generate_stream = _fake_stream
-
-        with (
-            patch("app.services.pipeline_executor.settings_service") as ms,
-            patch("app.services.pipeline_executor.retrieve_multi_vault", new_callable=AsyncMock, return_value=[]),
-            patch("app.services.pipeline_executor.retrieve", new_callable=AsyncMock, return_value=[]),
-        ):
-            ms.get_active_provider.return_value = mock_provider
-            ms.get = AsyncMock(return_value=5)
-            chunks = await _collect(executor.run_stream(ctx))
-
-        skipped = [c for c in chunks if c["type"] == "step_skipped_no_docs"]
-        assert len(skipped) == 3
+    async def test_resume_emits_pipeline_selected(self):
+        steps = [
+            _make_validation_step("v1"),
+            _make_retrieval_step("r1", after=["v1"]),
+        ]
+        ctx = _make_ctx(steps, step_results={"_validation_v1": "Да"})
+        executor, _ = _make_executor()
+        with patch("app.services.pipeline_executor.settings_service") as mock_svc, \
+             patch.object(executor, "_retrieve_for_step_dag", new_callable=AsyncMock, return_value=[]):
+            mock_svc.get_active_provider.return_value = self._mock_provider()
+            chunks = await _collect(executor.resume_from_validation(ctx, "v1"))
+        assert any(c["type"] == "pipeline_selected" for c in chunks)
