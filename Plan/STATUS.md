@@ -8,7 +8,7 @@
 
 ## Текущий активный этап
 
-**Этап 2 — Миграция БД**  
+**Этап 3 — DAG-движок: `pipeline_dag.py`**  
 Статус: 🔲 Не начат
 
 ---
@@ -18,7 +18,7 @@
 | № | Название | Статус | Коммит |
 |---|---|---|---|
 | 1 | Схема данных: `shared_contracts/models.py` | ✅ Завершён | 0b9888f |
-| 2 | Миграция БД | 🔲 Не начат | — |
+| 2 | Миграция БД | ✅ Завершён | 77bd39d, af30439, 4c213f5 |
 | 3 | DAG-движок: `pipeline_dag.py` | 🔲 Не начат | — |
 | 4 | Разворачивание переменных: `prompt_pack.py` | 🔲 Не начат | — |
 | 5 | API endpoints: `pipeline_resume.py` | 🔲 Не начат | — |
@@ -53,7 +53,7 @@
 - [x] Валидатор на self-loop в `after_step_ids` (`@model_validator` на `PipelineStep`)
 - [x] Валидация полей по `type`: retrieval-only vs validation-only
 - [x] Валидатор уникальности `step_id` в `PipelineCreate` и `PipelineUpdate`
-- [x] Обновлён докстринг `FinalComposition` (новые переменные, удаленные)
+- [x] Обновлён докстринг `FinalComposition` (новые переменные, удалённые)
 - [x] Добавлено `step_results: dict[str, Any]` в `PipelineExecutionContext`
 - [x] `PipelineStepResult.step_order` → `step_id: str`
 
@@ -66,6 +66,33 @@
 
 ---
 
+### Сессия 2 — Этап 2: Миграция БД
+**Дата:** 2026-06-18  
+**Сделано:**
+- [x] Alembic-миграция `0019_pipeline_pause_state.py`:
+  - Добавлена колонка `pipeline_pause_state JSONB NULL` в `chats`
+  - Добавлена колонка `pending_pipeline_confirm JSONB NULL` в `chats`
+  - `down_revision = "0018"`, `revision = "0019"`
+  - `downgrade()` через `drop_column`
+- [x] ORM `Chat` в `db/models.py`: добавлены два `Mapped[dict | None]` поля с комментариями по структуре JSONB
+- [x] `tools/migrate_pipelines.py`:
+  - `--dry-run` — печатает diff без записи, exit 1 если есть что мигрировать
+  - `--apply` — применяет изменения в БД
+  - `--domain-id` — фильтр по домену
+  - Миграция: `order`-сортировка шагов, генерация `step_id = "step_N"`, построение `after_step_ids` цепочкой
+  - Шаг `type=="final"` извлекается из `steps[]` и переносится в `final_composition.system_prompt`
+
+**Коммиты:**
+- `77bd39d` — Alembic-миграция 0019
+- `af30439` — ORM Chat (два новых JSONB-поля)
+- `4c213f5` — `tools/migrate_pipelines.py`
+
+**Pytest / dry-run:**
+- `alembic upgrade head` и `migrate_pipelines.py --dry-run` запускаются вручную на Этапе 8
+- Pytest: не запускались в этой сессии (требуется живой БД)
+
+---
+
 ## Детали этапов (заполняется по мере выполнения)
 
 ### Этап 1 — Схема данных ✅
@@ -73,14 +100,8 @@
 
 ---
 
-### Этап 2 — Миграция БД
-- [ ] Alembic-миграция: `pipeline_pause_state JSONB NULL` в `chats`
-- [ ] Alembic-миграция: `pending_pipeline_confirm JSONB NULL` в `chats`
-- [ ] Обновить ORM `Chat` в `db/models.py`
-- [ ] Написать `tools/migrate_pipelines.py` (dry-run + --apply)
-- [ ] Запустить dry-run, зафиксировать вывод
-
-**Коммит:** _заполнить_
+### Этап 2 — Миграция БД ✅
+Все пункты выполнены. См. лог сессии 2.
 
 ---
 
@@ -190,3 +211,4 @@
 - `prompt_pack.py` использует `{context}` и `{collected_fields}` — не трогали, будет переписан в Этапе 4
 - `chat.py` не имеет `pipeline_confirm_required` флоу — Этап 7
 - `collected_fields` в `PipelineExecutionContext` удален (был в старом контексте документации, но не был в коде — замечено)
+- `pipeline_pause_state` / `pending_pipeline_confirm` добавлены в ORM, но ещё не используются в коде — будут задействованы в Этапах 6 и 7
