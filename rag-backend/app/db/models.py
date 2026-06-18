@@ -254,6 +254,15 @@ class Chat(Base):
     pipeline_versions: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True, default=None)
     # A03: locked_pipeline_id
     locked_pipeline_id: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
+    # Stage 2: pipeline DAG state fields
+    # pipeline_pause_state — snapshot DAG-контекста при паузе на validation-шаге.
+    # Структура: {pipeline_id, step_id, resume_token, step_results, query, expires_at}
+    # NULL = нет активной паузы.
+    pipeline_pause_state: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True, default=None)
+    # pending_pipeline_confirm — данные ожидающего подтверждения запуска пайплайна.
+    # Структура: {pipeline_id, pipeline_name, reasoning, confirm_token, query, expires_at}
+    # NULL = нет ожидающего подтверждения.
+    pending_pipeline_confirm: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
