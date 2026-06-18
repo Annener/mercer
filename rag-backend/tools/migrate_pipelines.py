@@ -42,6 +42,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from typing import Any
 
@@ -54,7 +55,21 @@ import psycopg2.extras
 # ---------------------------------------------------------------------------
 
 def _get_dsn() -> str:
-    """Build DSN from env vars (same as rag-backend uses)."""
+    """
+    Build psycopg2 DSN.
+
+    Priority:
+    1. DATABASE_URL env var (postgresql+asyncpg://user:pass@host:port/db)
+       — strips the +asyncpg driver suffix so psycopg2 can use it directly.
+    2. Individual POSTGRES_* env vars (fallback for local runs outside Docker).
+    """
+    database_url = os.environ.get("DATABASE_URL", "")
+    if database_url:
+        # Strip SQLAlchemy driver suffix: postgresql+asyncpg:// -> postgresql://
+        dsn = re.sub(r"^postgresql\+\w+://", "postgresql://", database_url)
+        return dsn
+
+    # Fallback: individual vars
     return (
         f"host={os.environ.get('POSTGRES_HOST', 'localhost')} "
         f"port={os.environ.get('POSTGRES_PORT', '5432')} "
@@ -138,6 +153,7 @@ def main() -> int:
         conn = psycopg2.connect(dsn)
     except Exception as exc:
         print(f"[ERROR] Cannot connect to DB: {exc}", file=sys.stderr)
+        print(f"[DEBUG] DSN used: {dsn}", file=sys.stderr)
         return 2
 
     conn.autocommit = False
