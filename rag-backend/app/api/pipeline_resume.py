@@ -294,10 +294,17 @@ async def _get_chat_or_404(chat_id: str, db: AsyncSession) -> Chat:
 def _restore_context(snapshot: dict[str, Any], chat_id: str) -> PipelineExecutionContext:
     """Восстанавливает PipelineExecutionContext из JSONB-снапшота.
 
-    Гарантирует chat_id — на случай если снапшот не содержит его
-    (старые версии или неполный snapshot).
+    Гарантирует chat_id — на случай если снапшот не содержит его.
+    Генерирует дефолтный message_id если снапшот не содержит его
+    (старые записи до Этапа 1 или неполные снапшоты).
+    Генерирует дефолтный query="" если снапшот не содержит его.
     """
-    ctx_data = {**snapshot, "chat_id": chat_id}
+    ctx_data = {
+        "query": "",  # дефолт, если отсутствует в снапшоте
+        "message_id": str(uuid.uuid4()),  # дефолт, если отсутствует в снапшоте
+        **snapshot,
+        "chat_id": chat_id,  # всегда перезаписываем из chat_id URL-параметра
+    }
     return PipelineExecutionContext.model_validate(ctx_data)
 
 
