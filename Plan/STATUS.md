@@ -8,7 +8,7 @@
 
 ## Текущий активный этап
 
-**Этап 5 — API endpoints: `pipeline_resume.py`**  
+**Этап 6 — Переработка executor: `pipeline_executor.py`**  
 Статус: 🔲 Не начат
 
 ---
@@ -21,7 +21,7 @@
 | 2 | Миграция БД | ✅ Завершён | 77bd39d, af30439, 4c213f5 |
 | 3 | DAG-движок: `pipeline_dag.py` | ✅ Завершён | cafad1e |
 | 4 | Разворачивание переменных: `prompt_pack.py` | ✅ Завершён | 5559bf2 |
-| 5 | API endpoints: `pipeline_resume.py` | 🔲 Не начат | — |
+| 5 | API endpoints: `pipeline_resume.py` | ✅ Завершён | d95d436, dcc3ef9, faa39c6 |
 | 6 | Переработка executor: `pipeline_executor.py` | 🔲 Не начат | — |
 | 7 | Интеграция confirm-флоу в `chat.py` | 🔲 Не начат | — |
 | 8 | Применение миграции данных | 🔲 Не начат | — |
@@ -148,6 +148,50 @@
 
 ---
 
+### Сессия 5 — Этап 5: API endpoints
+**Дата:** 2026-06-18  
+**Сделано:**
+- [x] Создан `rag-backend/app/api/pipeline_resume.py`:
+  - `POST /chat/{chat_id}/pipeline_confirm`:
+    - Body: `{ confirm_token: str, confirmed: bool }`
+    - `confirmed=true`: проверка токена + `expires_at`, восстановка контекста, запуск `executor.run_stream()` → SSE
+    - `confirmed=false`: очистка `pending_pipeline_confirm`, SSE `pipeline_cancelled` + plain RAG fallback
+    - Просроченный токен → `410 Gone`
+    - wrong token → `403 Forbidden`
+    - нет pending → `404 Not Found`
+  - `POST /chat/{chat_id}/pipeline_resume`:
+    - Body: `{ resume_token: str, user_feedback: str | null, cancelled: bool }`
+    - `cancelled=true`: очистка `pipeline_pause_state`, SSE-чанк `pipeline_cancelled`
+    - `cancelled=false`: восстановка контекста, `step_results["_validation_{step_id}"] = user_feedback`, `executor.resume_from_validation()` → SSE
+    - SSE-чанк `pipeline_resumed` перед стримом
+    - Просроченный токен → `410 Gone`
+    - wrong token → `403 Forbidden`
+    - нет pause state → `404 Not Found`
+  - Вспомогатель `_restore_context()`: восстанавливает `PipelineExecutionContext` из JSONB-снапшота
+  - Вспомогатель `_plain_rag_stream()`: fallback RAG для отменьи confirm, делегирует в `chat._fallback_retrieve` + `_resolve_system_prompt`
+  - Автоматическое обновление `chat.title` после assistant_msg для обоих endpoint'ов
+- [x] `rag-backend/app/main.py` обновлён: зарегистрирован `pipeline_resume_router`
+- [x] Тесты `rag-backend/app/tests/test_pipeline_resume.py`:
+  - `TestPipelineConfirm`: 5 тестов (404 no-pending, 403 wrong-token, 410 expired, SSE cancelled, 422 invalid uuid)
+  - `TestPipelineResume`: 5 тестов (404 no-state, 403 wrong-token, 410 expired, SSE cancelled, SSE resumed + feedback key, null feedback → "")
+  - `TestRestoreContext`: 3 unit-теста (inject chat_id, preserve query, empty snapshot)
+
+**Коммиты:**
+- `d95d436` — `pipeline_resume.py`
+- `dcc3ef9` — `main.py` (регистрация роутера)
+- `faa39c6` — `test_pipeline_resume.py`
+
+**Pytest:**  
+Запуск: `cd rag-backend && pytest app/tests/test_pipeline_resume.py -v`  
+Тесты не требуют живой БД — все зависимости mock'нуты.
+
+**Замечено, не трогали:**
+- `executor.resume_from_validation()` — метод ещё не существует в `PipelineExecutor` (будет реализован в Этапе 6). В тестах полностью mock'нут.
+- `context_snapshot` в JSONB наполняется в Этапе 6 (при сохранении `pipeline_pause_state`) и Этапе 7 (`pending_pipeline_confirm`).
+- Реальное заполнение `context_snapshot` произойдёт через `ctx.model_dump()` перед сохранением в БД.
+
+---
+
 ## Детали этапов (заполняется по мере выполнения)
 
 ### Этап 1 — Схема данных ✅
@@ -169,19 +213,19 @@
 - [x] `resolve_step_vars(template, step_results)` — реализована в `prompt_pack.py`
 - [x] `PipelineExecutionContext.step_results` + `.resolve()` — реализованы в `models.py`
 - [x] Старая логика `{context}` / `{collected_fields}` задепрекейтирована в `pipeline_executor.py`
-- [x] Unit-тесты: 26 тестов в `test_prompt_pack.py` (text, json, missing, complex, ctx.resolve())
+- [x] Unit-тесты: 26 тестов в `test_prompt_pack.py`
 
 **Коммит:** `5559bf2c600145bb25acba3d2f32653349511e2e`
 
 ---
 
-### Этап 5 — API endpoints
-- [ ] `POST /pipeline_confirm`
-- [ ] `POST /pipeline_resume`
-- [ ] Регистрация роутера в `main.py`
-- [ ] Интеграционные тесты
+### Этап 5 — API endpoints ✅
+- [x] `POST /pipeline_confirm` — реализован
+- [x] `POST /pipeline_resume` — реализован
+- [x] Регистрация роутера в `main.py`
+- [x] Тесты (mock DB): 13 тестов
 
-**Коммит:** _заполнить_
+**Коммиты:** `d95d436`, `dcc3ef9`, `faa39c6`
 
 ---
 
@@ -242,8 +286,8 @@
 
 ### Этап 11 — Сквозное тестирование
 - [ ] Интеграционный тест: параллельные шаги + validation + FinalComposition
-- [ ] Сценарий отмены на confirm-этапе
-- [ ] Сценарий отмены на validation-этапе
+- [ ] Сценарий отмены на confirm-этапе → plain RAG
+- [ ] Сценарий отмены на validation-этапе → `pipeline_cancelled`
 - [ ] Тест таймаута validation
 - [ ] Мигрированные пайплайны работают корректно
 - [ ] `pytest` — все зелёные
@@ -257,6 +301,7 @@
 - `pipeline_executor.py` использует старые поля `step.order`, `step.is_final` — не трогали, будет переписан в Этапе 6
 - `format_prompt()` в `prompt_pack.py` оставлена с пометкой DEPRECATED — удалить после Этапа 8
 - `chat.py` не имеет `pipeline_confirm_required` флоу — Этап 7
-- `pipeline_pause_state` / `pending_pipeline_confirm` добавлены в ORM, но ещё не используются в коде — будут задействованы в Этапах 6 и 7
+- `pipeline_pause_state` / `pending_pipeline_confirm` добавлены в ORM, но ещё не используются в коде (executor пишет в Etap 6, chat.py читает в Etap 7)
+- `executor.resume_from_validation()` ещё не существует — API endpoint полностью mock'ит его в тестах
 - Тесты DAG-движка используют `object.__setattr__` для симуляции цикла (обход Pydantic self-loop validator из Этапа 1). Если в будущем модель станет `frozen=True`, заменить на `.model_copy(update=...)`
 - `ctx.resolve()` в `PipelineExecutionContext` импортирует `resolve_step_vars` с динамическим fallback — проверить что `PYTHONPATH` настроен корректно в Docker-контейнере
