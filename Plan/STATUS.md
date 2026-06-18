@@ -8,7 +8,7 @@
 
 ## Текущий активный этап
 
-**Этап 6 — Переработка executor: `pipeline_executor.py`**  
+**Этап 7 — Интеграция confirm-флоу в `chat.py`**  
 Статус: 🔲 Не начат
 
 ---
@@ -22,7 +22,7 @@
 | 3 | DAG-движок: `pipeline_dag.py` | ✅ Завершён | cafad1e |
 | 4 | Разворачивание переменных: `prompt_pack.py` | ✅ Завершён | 5559bf2 |
 | 5 | API endpoints: `pipeline_resume.py` | ✅ Завершён | d95d436, dcc3ef9, faa39c6 |
-| 6 | Переработка executor: `pipeline_executor.py` | 🔲 Не начат | — |
+| 6 | Переработка executor: `pipeline_executor.py` | ✅ Завершён | (см. ниже) |
 | 7 | Интеграция confirm-флоу в `chat.py` | 🔲 Не начат | — |
 | 8 | Применение миграции данных | 🔲 Не начат | — |
 | 9 | UI: конструктор пайплайнов (Vis.js) | 🔲 Не начат | — |
@@ -168,7 +168,7 @@
     - wrong token → `403 Forbidden`
     - нет pause state → `404 Not Found`
   - Вспомогатель `_restore_context()`: восстанавливает `PipelineExecutionContext` из JSONB-снапшота
-  - Вспомогатель `_plain_rag_stream()`: fallback RAG для отменьи confirm, делегирует в `chat._fallback_retrieve` + `_resolve_system_prompt`
+  - Вспомогатель `_plain_rag_stream()`: fallback RAG для отмены confirm, делегирует в `chat._fallback_retrieve` + `_resolve_system_prompt`
   - Автоматическое обновление `chat.title` после assistant_msg для обоих endpoint'ов
 - [x] `rag-backend/app/main.py` обновлён: зарегистрирован `pipeline_resume_router`
 - [x] Тесты `rag-backend/app/tests/test_pipeline_resume.py`:
@@ -189,6 +189,34 @@
 - `executor.resume_from_validation()` — метод ещё не существует в `PipelineExecutor` (будет реализован в Этапе 6). В тестах полностью mock'нут.
 - `context_snapshot` в JSONB наполняется в Этапе 6 (при сохранении `pipeline_pause_state`) и Этапе 7 (`pending_pipeline_confirm`).
 - Реальное заполнение `context_snapshot` произойдёт через `ctx.model_dump()` перед сохранением в БД.
+
+---
+
+### Сессия 6 — Этап 6: Executor (верификация)
+**Дата:** 2026-06-18  
+**Статус:** ✅ Завершён — реализация обнаружена в файле, STATUS.md скорректирован
+
+**Что обнаружено в `pipeline_executor.py`:**
+- [x] `PipelineExecutionContext` из `shared_contracts.models` — импортирован
+- [x] `_build_levels(steps)` — внутренняя топологическая сортировка по уровням (аналог `get_execution_levels` из `pipeline_dag.py`, реализована локально в executor'е)
+- [x] `_resolve_prompt(template, ctx)` — подставляет `{query}`, `{STEP_ID.result}`, `{STEP_ID.key}` через `ctx.step_results`
+- [x] `run_stream(ctx)` — публичный API: запуск DAG с уровня 0
+- [x] `resume_from_validation(ctx, validated_step_id)` — публичный API: продолжение после validation-паузы
+- [x] `_dag_execute(ctx, start_after_step)` — core async generator: итерация по уровням, `start_level` при resume
+- [x] `_run_dag_step(step, ctx, provider)` — выполнение одного шага (retrieval или validation)
+- [x] `_run_validation_step(step, ctx)` — сохраняет `pipeline_pause_state`, эмитит SSE `validation_required` со `__stop__` сигналом
+- [x] `_run_parallel_level(steps, ctx, provider)` — `asyncio.gather()` с независимыми `async_sessionmaker`-сессиями через `_step_with_session()`
+- [x] `_run_final_composition(ctx, provider)` — стриминг через `ctx.final_composition.system_prompt` + `_resolve_prompt()`
+- [x] `_retrieve_for_step_dag(step, ctx)` — retrieval через `ctx.vault_ids` + `step.tag_ids`
+- [x] `_save_pause_state(ctx, step_id, step_name, resume_token)` — сохраняет полный `ctx.model_dump()` в `chat.pipeline_pause_state` (JSONB)
+- [x] `{context}` / `{collected_fields}` — убраны из нового API, используется только в legacy `_execute()` с пометкой DEPRECATED
+- [x] Legacy API (`run()`, `_execute()`, `_run_step()`) сохранён до Этапа 8
+
+**Замечание (не блокирует):**  
+Executor использует собственную `_build_levels()` вместо `get_execution_levels()` из `pipeline_dag.py`. Логика идентична. Рефакторинг (унификация через `pipeline_dag.get_execution_levels`) можно отложить до Этапа 11 или оставить как есть — дублирование минимальное, оба модуля независимо тестируемы.
+
+**Pytest:**  
+Тесты executor'а отсутствуют (new API не покрыт unit-тестами). Покрытие `_dag_execute`, `_run_parallel_level`, `_run_validation_step` желательно добавить в Этапе 11 (сквозное тестирование) или отдельным шагом перед Этапом 7.
 
 ---
 
@@ -229,22 +257,23 @@
 
 ---
 
-### Этап 6 — Executor
-- [ ] Импорт DAG-движка и ExecutionContext
-- [ ] DAG-based основной цикл с уровнями
-- [ ] `asyncio.gather()` для параллельных шагов
-- [ ] Validation-пауза: сохранение `pipeline_pause_state`, SSE-чанк
-- [ ] `resume_from_validation()`
-- [ ] Удалить `order`, `is_final`, `{context}`
+### Этап 6 — Executor ✅
+- [x] Импорт `PipelineExecutionContext` из `shared_contracts.models`
+- [x] DAG-based основной цикл `_dag_execute()` с уровнями
+- [x] `asyncio.gather()` для параллельных шагов (`_run_parallel_level`)
+- [x] Validation-пауза: сохранение `pipeline_pause_state` (`_save_pause_state`), SSE-чанк `validation_required`
+- [x] `resume_from_validation(ctx, validated_step_id)`
+- [x] `order`, `is_final` удалены из нового API; `{context}`/`{collected_fields}` — только в legacy
 
-**Коммит:** _заполнить_
+**Замечено:** `_build_levels()` дублирует `pipeline_dag.get_execution_levels()` — не блокирует, рефакторинг по желанию в Этапе 11.
 
 ---
 
 ### Этап 7 — chat.py confirm-флоу
 - [ ] После `PipelineRouter.select()` → сохранить `pending_pipeline_confirm`
 - [ ] Отправить SSE `pipeline_confirm_required`
-- [ ] Проверить plain RAG fallback
+- [ ] Завершить стрим — ждать `/pipeline_confirm`
+- [ ] Проверить plain RAG fallback при `confirmed=false`
 - [ ] Проверить locked-pipeline режим
 
 **Коммит:** _заполнить_
@@ -298,10 +327,11 @@
 
 ## Замечания и технический долг
 
-- `pipeline_executor.py` использует старые поля `step.order`, `step.is_final` — не трогали, будет переписан в Этапе 6
+- `_build_levels()` в `pipeline_executor.py` дублирует `get_execution_levels()` из `pipeline_dag.py` — логика идентична, рефакторинг откладывается до Этапа 11
 - `format_prompt()` в `prompt_pack.py` оставлена с пометкой DEPRECATED — удалить после Этапа 8
 - `chat.py` не имеет `pipeline_confirm_required` флоу — Этап 7
-- `pipeline_pause_state` / `pending_pipeline_confirm` добавлены в ORM, но ещё не используются в коде (executor пишет в Etap 6, chat.py читает в Etap 7)
-- `executor.resume_from_validation()` ещё не существует — API endpoint полностью mock'ит его в тестах
+- `pipeline_pause_state` / `pending_pipeline_confirm` добавлены в ORM и используются в executor (`_save_pause_state`) и API (Этап 5); `pending_pipeline_confirm` заполняется в Этапе 7 (`chat.py`)
+- New API executor'а (`run_stream`, `resume_from_validation`, `_dag_execute`) не покрыт unit-тестами — добавить в Этапе 11
 - Тесты DAG-движка используют `object.__setattr__` для симуляции цикла (обход Pydantic self-loop validator из Этапа 1). Если в будущем модель станет `frozen=True`, заменить на `.model_copy(update=...)`
 - `ctx.resolve()` в `PipelineExecutionContext` импортирует `resolve_step_vars` с динамическим fallback — проверить что `PYTHONPATH` настроен корректно в Docker-контейнере
+- Legacy API (`run()`, `_execute()`, `_run_step()`, `_deprecated_context_vars()`) в `pipeline_executor.py` — удалить в Этапе 8 после применения миграции
