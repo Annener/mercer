@@ -213,7 +213,10 @@ class PipelineExecutor:
 
         hits = await self._retrieve_for_step_dag(step, ctx)
         if not hits:
-            ctx.step_results[step.step_id] = ""
+            # Не перезаписываем результат, если он уже установлен
+            # (например, передан через context_snapshot при resume или в тесте).
+            if step.step_id not in ctx.step_results:
+                ctx.step_results[step.step_id] = ""
             yield {"type": "step_skipped_no_docs", "step_id": step.step_id, "step_name": step.name}
             return
 
