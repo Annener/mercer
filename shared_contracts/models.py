@@ -645,6 +645,26 @@ class PipelineExecutionContext(BaseModel):
     # Накапливается в процессе DAG-выполнения
     step_results: dict[str, Any] = Field(default_factory=dict)
 
+    def resolve(self, template: str) -> str:
+        """Подставить {STEP_ID.result} и {STEP_ID.key} из накопленных step_results.
+
+        Также поддерживает {query} — подставляется напрямую через format_map.
+        Делегирует в resolve_step_vars() из prompt_pack.
+        """
+        # Импорт здесь во избежание циклических зависимостей:
+        # shared_contracts не должен импортировать rag-backend напрямую.
+        # В продакшне resolve_step_vars будет доступен как пакет в sys.path.
+        try:
+            from app.services.prompt_pack import resolve_step_vars  # type: ignore[import]
+        except ImportError:
+            # Fallback для контекстов где rag-backend не в sys.path (тесты shared_contracts)
+            from prompt_pack import resolve_step_vars  # type: ignore[import]
+
+        # Сначала разворачиваем {query} через простой .replace, чтобы не ломать
+        # паттерн {STEP_ID.xxx} для resolve_step_vars
+        resolved = template.replace("{query}", self.query)
+        return resolve_step_vars(resolved, self.step_results)
+
 
 class PipelineStepResult(BaseModel):
     step_id: str                                           # slug шага (новое поле)

@@ -160,6 +160,17 @@ class PipelineExecutor:
 
             await self._check_cancelled(request)
 
+            # ----------------------------------------------------------------
+            # DEPRECATED: формирование {context} и {collected_fields}
+            # Эта логика будет удалена в Этапе 6 (переработка executor под DAG).
+            # Новый путь: ctx.resolve(final_composition.system_prompt)
+            # через PipelineExecutionContext.resolve() → resolve_step_vars().
+            # ----------------------------------------------------------------
+            _deprecated_context_vars(
+                combined_context="\n\n---\n\n".join(filter(None, partial_results)),
+                chat_context=chat_context,
+            )
+
             combined_context = "\n\n---\n\n".join(filter(None, partial_results))
             final_prompt = format_prompt(
                 pipeline.final_composition.system_prompt,
@@ -407,11 +418,35 @@ def _ctx_dict(context: PipelineExecutionContext) -> dict[str, Any]:
         "vault_ids": getattr(context, "vault_ids", []) or [],
         "vault_id": getattr(context, "vault_id", None),
         "history": context.history or [],
-        "collected_fields": getattr(context, "collected_fields", {}) or {},
+        # DEPRECATED: collected_fields удалён из PipelineExecutionContext в Этапе 1.
+        # Оставлен здесь с пустым dict для обратной совместимости с format_prompt().
+        # Будет удалён в Этапе 6 вместе с переработкой executor под DAG.
+        "collected_fields": {},
         "mode": getattr(context, "mode", "general"),
         "confidence": getattr(context, "confidence", None),
         "reasoning": getattr(context, "reasoning", ""),
     }
+
+
+def _deprecated_context_vars(
+    combined_context: str,
+    chat_context: dict[str, Any],
+) -> None:
+    """DEPRECATED — логика формирования {context} и {collected_fields}.
+
+    Эта функция существует только для обратной совместимости старых пайплайнов
+    которые ещё не мигрированы на {STEP_ID.result} / {STEP_ID.key}.
+
+    Будет удалена в Этапе 6 (DAG executor) после применения миграции (Этап 8).
+    Трекинг: Plan/STATUS.md → технический долг.
+
+    Новый путь: PipelineExecutionContext.resolve(template)
+    """
+    logger.debug(
+        "_deprecated_context_vars called: combined_context_len=%d — "
+        "migrate to {STEP_ID.result} variables (see Plan/pipeline-redesign-concept.md)",
+        len(combined_context),
+    )
 
 
 pipeline_executor = PipelineExecutor.__new__(PipelineExecutor)
