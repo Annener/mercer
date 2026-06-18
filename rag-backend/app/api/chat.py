@@ -3,9 +3,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import secrets
 import uuid
 from collections.abc import AsyncIterator
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -43,6 +44,9 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 config_for_vault = VaultConfigService()
+
+# Срок действия confirm-токена (концепт: 1 час)
+_CONFIRM_TTL = timedelta(hours=1)
 
 
 class CreateChatRequest(BaseModel):
@@ -407,6 +411,9 @@ async def send_message_stream(
         locked_pipeline_id=chat.locked_pipeline_id,
     )
 
+    # ─────────────────────────────────────────────────────────────────────────
+    # FALLBACK: пайплайн не найден → plain RAG stream, без confirm-карточки
+    # ─────────────────────────────────────────────────────────────────────────
     if pipeline is None:
         logger.info(
             "No pipeline found for domain_id=%s — falling back to plain LLM stream", domain_id
@@ -469,42 +476,49 @@ async def send_message_stream(
 
         return StreamingResponse(plain_stream(), media_type="text/event-stream")
 
+    # ─────────────────────────────────────────────────────────────────────────
+    # PIPELINE FOUND — сохраняем pending_pipeline_confirm, просим подтверждения
+    # Реальное выполнение произойдёт в POST /pipeline_confirm (Этап 5)
+    # ─────────────────────────────────────────────────────────────────────────
     context.pipeline_id = pipeline.pipeline_id
     context.pipeline_version = pipeline.version
     context.steps = pipeline.steps
     context.final_composition = pipeline.final_composition
 
-    async def event_stream() -> AsyncIterator[str]:
-        executor = PipelineExecutor(db)
-        full_answer = ""
-        assistant_msg_id: str | None = None
+    confirm_token = secrets.token_urlsafe(32)
+    expires_at = datetime.now(UTC) + _CONFIRM_TTL
 
-        async for chunk in executor.run_stream(context):
-            if chunk.get("type") == "delta":
-                chunk = {**chunk, "type": "token"}
-            data = json.dumps(chunk, ensure_ascii=False)
-            yield f"data: {data}\n\n"
-            if chunk.get("type") == "token":
-                full_answer += chunk.get("content", "")
-            elif chunk.get("type") == "done":
-                assistant_msg_id = chunk.get("message_id")
+    # pipeline_name — берём из объекта пайплайна (атрибут name, если есть, иначе pipeline_id)
+    pipeline_name: str = getattr(pipeline, "name", None) or pipeline.pipeline_id
 
-        if full_answer:
-            assistant_msg = Message(
-                chat_id=chat.id,
-                role="assistant",
-                content=full_answer,
-                pipeline_id=pipeline.pipeline_id,
-            )
-            db.add(assistant_msg)
-            await db.commit()
-            if chat.title == "New Chat":
-                chat.title = _auto_title(context.original_query or req.content)
-                await db.commit()
+    chat.pending_pipeline_confirm = _build_confirm_payload(
+        confirm_token=confirm_token,
+        pipeline_id=pipeline.pipeline_id,
+        pipeline_name=pipeline_name,
+        context=context,
+        expires_at=expires_at,
+    )
+    await db.commit()
 
+    logger.info(
+        "Pipeline confirm required: chat_id=%s pipeline_id=%s token=%s…",
+        chat.id, pipeline.pipeline_id, confirm_token[:8],
+    )
+
+    async def confirm_required_stream() -> AsyncIterator[str]:
+        chunk = json.dumps(
+            {
+                "type": "pipeline_confirm_required",
+                "pipeline_name": pipeline_name,
+                "reasoning": f"Выбран пайплайн «{pipeline_name}». Запустить?",
+                "confirm_token": confirm_token,
+            },
+            ensure_ascii=False,
+        )
+        yield f"data: {chunk}\n\n"
         yield "data: [DONE]\n\n"
 
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
+    return StreamingResponse(confirm_required_stream(), media_type="text/event-stream")
 
 
 @router.post("/{chat_id}/clarify", response_model=ClarificationResponse)
@@ -522,6 +536,24 @@ async def submit_clarification(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _build_confirm_payload(
+    confirm_token: str,
+    pipeline_id: str,
+    pipeline_name: str,
+    context: PipelineExecutionContext,
+    expires_at: datetime,
+) -> dict[str, Any]:
+    """Сериализуем всё необходимое для последующего запуска в JSONB-снапшот."""
+    return {
+        "confirm_token": confirm_token,
+        "pipeline_id": pipeline_id,
+        "pipeline_name": pipeline_name,
+        "expires_at": expires_at.isoformat(),
+        # Полный снапшот контекста — восстанавливается в pipeline_resume._restore_context()
+        "context_snapshot": context.model_dump(mode="json"),
+    }
+
 
 async def _get_chat_or_404(chat_id: str, db: AsyncSession) -> Chat:
     chat = await db.get(Chat, uuid.UUID(chat_id))
