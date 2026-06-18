@@ -17,7 +17,8 @@ const PipelineBuilder = (() => {
 
   // ── константы ────────────────────────────────────────────────────────────────
 
-  const VIS_CSS_CDN  = 'https://cdnjs.cloudflare.com/ajax/libs/vis-network/9.1.9/dist/dist/vis-network.min.css';
+  // fix: убран двойной dist/dist в пути CSS (был 404 → vis не применял стили)
+  const VIS_CSS_CDN  = 'https://cdnjs.cloudflare.com/ajax/libs/vis-network/9.1.9/dist/vis-network.min.css';
   const VIS_JS_CDN   = 'https://cdnjs.cloudflare.com/ajax/libs/vis-network/9.1.9/dist/vis-network.min.js';
 
   const NODE_COLORS = {
@@ -197,8 +198,8 @@ const PipelineBuilder = (() => {
     `;
     document.body.appendChild(_modal);
     _bindModalEvents();
-    // Небольшая задержка чтобы DOM отрисовался
-    requestAnimationFrame(() => _initGraph());
+    // fix: двойной rAF гарантирует что flex-layout посчитан до инициализации vis.Network
+    requestAnimationFrame(() => requestAnimationFrame(() => _initGraph()));
   }
 
   // ── события modal ─────────────────────────────────────────────────────────────
@@ -885,8 +886,9 @@ const PipelineBuilder = (() => {
         flex: 1; display: flex; min-height: 0; overflow: hidden;
       }
       /* graph panel */
+      /* fix: добавлен min-height: 0 — без него flex-column не передаёт высоту дочерним элементам */
       .pb-graph-panel {
-        flex: 1; display: flex; flex-direction: column; min-width: 0; overflow: hidden;
+        flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden;
         border-right: 1px solid var(--color-border,#ddd);
       }
       .pb-toolbar {
@@ -895,8 +897,10 @@ const PipelineBuilder = (() => {
         border-bottom: 1px solid var(--color-border,#ddd);
         flex-shrink: 0;
       }
+      /* fix: добавлен min-height: 0 и position: relative — vis.js требует оба для корректного canvas */
       .pb-graph-container {
-        flex: 1; background: var(--color-surface-offset, #f8f8f8);
+        flex: 1; min-height: 0; position: relative;
+        background: var(--color-surface-offset, #f8f8f8);
       }
       .pb-validate-msg {
         padding: 0.5rem 0.75rem; font-size: 0.82rem;
