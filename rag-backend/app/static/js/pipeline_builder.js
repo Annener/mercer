@@ -353,10 +353,11 @@ const PipelineBuilder = (() => {
       _edges.add({ from: '__start__', to: '__final__', id: '__start__->__final__' });
     }
 
-    // Перестроить hierarchical layout
+    // fix: не вызывать setOptions(hierarchical) повторно — это пересоздаёт layout-движок
+    // и оставляет phantom-узлы в canvas. Достаточно redraw() + отложенный fit().
     if (_network) {
-      _network.setOptions({ layout: { hierarchical: { enabled: true } } });
-      setTimeout(() => _network.fit({ animation: { duration: 400, easingFunction: 'easeInOutQuad' } }), 100);
+      _network.redraw();
+      setTimeout(() => _network?.fit({ animation: { duration: 400, easingFunction: 'easeInOutQuad' } }), 100);
     }
   }
 
@@ -666,11 +667,9 @@ const PipelineBuilder = (() => {
     _steps.forEach(s => {
       s.after_step_ids = (s.after_step_ids || []).map(id => id === oldId ? newId : id);
     });
-    _nodes?.update({ id: oldId, id: newId, title: `ID: ${newId}` });
     // Vis не поддерживает переименование id в DataSet напрямую — пересоздаём узел
     const step = _steps.find(s => s.step_id === newId);
     if (step) {
-      const nodeData = _nodes?.get(oldId);
       _nodes?.remove(oldId);
       _addNodeForStep(step);
       _rebuildEdges();
@@ -793,22 +792,31 @@ const PipelineBuilder = (() => {
       return base;
     });
 
-    const payload = {
-      name,
-      domain_id:         domainId,
-      steps,
-      final_composition: { system_prompt: _finalPrompt.trim() },
-      is_active:         true,
-    };
-
     const btn = _modal?.querySelector('#pb-save-btn');
     if (btn) { btn.disabled = true; btn.textContent = 'Сохранение…'; }
 
     try {
       if (_pipeline) {
+        const payload = {
+          name,
+          domain_id:         domainId,
+          steps,
+          final_composition: { system_prompt: _finalPrompt.trim() },
+          is_active:         true,
+        };
         await _api.updatePipeline(_pipeline.pipeline_id, payload);
       } else {
-        payload.pipeline_id = _modal?.querySelector('#pb-id')?.value?.trim() || `pipeline_${Date.now()}`;
+        // fix: pipeline_id собирается ДО вызова createPipeline — иначе поле
+        // отсутствовало в теле запроса и Pydantic возвращал 422
+        const pipelineId = _modal?.querySelector('#pb-id')?.value?.trim() || `pipeline_${Date.now()}`;
+        const payload = {
+          pipeline_id:       pipelineId,
+          name,
+          domain_id:         domainId,
+          steps,
+          final_composition: { system_prompt: _finalPrompt.trim() },
+          is_active:         true,
+        };
         await _api.createPipeline(payload);
       }
       _close();
