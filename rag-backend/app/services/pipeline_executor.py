@@ -7,7 +7,7 @@ import secrets
 import uuid
 from collections import defaultdict
 from collections.abc import AsyncGenerator, AsyncIterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi import Request
@@ -35,13 +35,16 @@ logger = logging.getLogger(__name__)
 
 _SKIPPED = object()
 
+# Validation token живёт 1 час (по концепту)
+_VALIDATION_TTL = timedelta(hours=1)
+
 
 # =============================================================================
-# DAG helpers (Этап 6)
+# DAG helpers
 # =============================================================================
 
 def _build_levels(steps: list[PipelineStep]) -> list[list[PipelineStep]]:
-    """Топологическая сортировка шагов по уровням на основе after_step_ids.
+    """Топологическая сортировка по уровням на основе after_step_ids.
 
     Уровень 0 — шаги без зависимостей (стартовые).
     Уровень N — шаги, все зависимости которых находятся в уровнях 0..N-1.
@@ -107,7 +110,7 @@ class _ExecutionResult:
 
 
 class PipelineExecutor:
-    """Executes a pipeline against a PipelineExecutionContext.
+    """Выполняет пайплайн базируясь на DAG с поддержкой validation-пауз.
 
     New API (Этап 6, DAG):
         run_stream(ctx)                  -> AsyncIterator[dict]
@@ -126,7 +129,7 @@ class PipelineExecutor:
         self._session_factory = session_factory
 
     # -------------------------------------------------------------------------
-    # NEW API: DAG execution (Этап 6)
+    # NEW API: DAG execution
     # -------------------------------------------------------------------------
 
     async def run_stream(
@@ -224,15 +227,19 @@ class PipelineExecutor:
         ctx: PipelineExecutionContext,
     ) -> AsyncGenerator[dict[str, Any], None]:
         resume_token = secrets.token_urlsafe(32)
-        await self._save_pause_state(ctx, step.step_id, resume_token)
+        await self._save_pause_state(ctx, step.step_id, step.name, resume_token)
+        content = _resolve_prompt(
+            step.validation_prompt or step.system_prompt or "",
+            ctx,
+        )
         yield {
             "__stop__": True,
             "__payload__": {
                 "type": "validation_required",
                 "step_id": step.step_id,
                 "step_name": step.name,
-                "content": getattr(step, "validation_prompt", None) or step.system_prompt,
-                "options": getattr(step, "options", None) or [],
+                "content": content,
+                "options": step.options or [],
                 "resume_token": resume_token,
             },
         }
@@ -329,21 +336,28 @@ class PipelineExecutor:
         self,
         ctx: PipelineExecutionContext,
         step_id: str,
+        step_name: str,
         resume_token: str,
     ) -> None:
-        """Сохранить pipeline_pause_state в Chat."""
+        """Сохранить pipeline_pause_state в Chat.
+
+        context_snapshot — полный дамп контекста через model_dump(),
+        чтобы _restore_context() в pipeline_resume.py мог полностью восстановить
+        PipelineExecutionContext включая steps, final_composition, pipeline_id и все vault_ids.
+        """
         try:
             chat = await self.db.get(Chat, uuid.UUID(ctx.chat_id))
             if chat is None:
+                logger.warning("_save_pause_state: chat %s not found", ctx.chat_id)
                 return
             chat.pipeline_pause_state = {
+                "pipeline_id": ctx.pipeline_id,
                 "step_id": step_id,
+                "step_name": step_name,
                 "resume_token": resume_token,
-                "context_snapshot": {
-                    "step_results": dict(ctx.step_results),
-                    "query": ctx.query,
-                },
-                "expires_at": datetime.now(UTC).isoformat(),
+                "query": ctx.query,
+                "context_snapshot": ctx.model_dump(mode="json"),
+                "expires_at": (datetime.now(UTC) + _VALIDATION_TTL).isoformat(),
             }
             await self.db.commit()
         except Exception as exc:
