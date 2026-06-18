@@ -31,6 +31,7 @@ COPY rag-backend/app /app/app
 COPY rag-backend/alembic.ini /app/alembic.ini
 COPY rag-backend/migrations /app/migrations
 COPY rag-backend/pipelines /app/pipelines
+COPY rag-backend/tools /app/tools
 
 RUN find /usr/local/lib/python3.13/site-packages -type d \( -name __pycache__ -o -name tests \) -prune -exec rm -rf {} + \
     && find /usr/local/lib/python3.13/site-packages -type f -name "*.pyc" -delete \
