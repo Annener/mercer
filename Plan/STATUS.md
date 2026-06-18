@@ -8,8 +8,9 @@
 
 ## Текущий статус
 
-**✅ ВСЕ ЭТАПЫ ЗАВЕРШЕНЫ**  
-Дата финала: 2026-06-19
+**✅ ВСЕ ЭТАПЫ ЗАВЕРШЕНЫ + ТЕХДОЛГ ЗАКРЫТ**  
+Дата финала: 2026-06-19  
+**Pytest: ✅ `104 passed, 1 warning in 1.03s`**
 
 ---
 
@@ -22,7 +23,7 @@
 | 3 | DAG-движок: `pipeline_dag.py` | ✅ Завершён | cafad1e |
 | 4 | Разворачивание переменных: `prompt_pack.py` | ✅ Завершён | 5559bf2 |
 | 5 | API endpoints: `pipeline_resume.py` | ✅ Завершён | d95d436, dcc3ef9, faa39c6 |
-| 6 | Переработка executor: `pipeline_executor.py` | ✅ Завершён с замечаниями | (см. ниже) |
+| 6 | Переработка executor: `pipeline_executor.py` | ✅ Завершён | (cm. ниже) |
 | 7 | Интеграция confirm-флоу в `chat.py` | ✅ Завершён с замечаниями | bdc3b66 |
 | 8 | Применение миграции данных + cleanup | ✅ Завершён | a95fc12, 31cf332 |
 | 9 | UI: конструктор пайплайнов (Vis.js) | ✅ Завершён | fb441e0 |
@@ -106,8 +107,7 @@
 
 ### Сессия 6 — Этап 6: Executor (верификация)
 **Дата:** 2026-06-18  
-**Статус:** ✅ Завершён — реализация обнаружена в файле  
-**Замечание:** `_build_levels()` дублирует `get_execution_levels()` из `pipeline_dag.py` — технический долг.
+**Статус:** ✅ Завершён — реализация обнаружена в файле
 
 ---
 
@@ -133,7 +133,6 @@
 **Сделано:**
 - [x] DSN-фикс в `migrate_pipelines.py`
 - [x] `migrate_pipelines.py --apply` → 2 пайплайна мигрированы успешно
-- [x] Legacy API в `pipeline_executor.py` намечен к удалению
 
 **Коммит:** `a95fc12`
 
@@ -163,44 +162,30 @@
 
 ### Сессия 11 — Этап 11: Сквозное тестирование
 **Дата:** 2026-06-19  
-**Статус:** ✅ Завершён
-
-**Сделано:**
-- [x] `test_pipeline_executor_integration.py` — 22 теста покрывают все ключевые сценарии
-- [x] Параллельный DAG (diamond): все уровни выполняются, `pipeline_complete` приходит
-- [x] Два параллельных шага — оба emitting `step_skipped_no_docs`; нет гонки
-- [x] Один из параллельных шагов пропущен, другой завершён — поток продолжается
-- [x] Validation-пауза: стрим останавливается до FinalComposition, r2 не запускается
-- [x] `pipeline_pause_state` JSON-сериализуем, содержит все обязательные поля
-- [x] `resume_token` — непустая строка достаточной длины
-- [x] Resume: r2 и FinalComposition выполняются, `pipeline_complete` приходит
-- [x] `_resolve_prompt` корректно подставляет `{r1.result}` из ctx.step_results
-- [x] Параллельные шаги после resume (r2 || r3) — оба обрабатываются
-- [x] Таймаут: логика сравнения `expires_at` unit-протестирована (прошлое → expired, будущее → valid)
-- [x] Мигрированный линейный пайплайн (after_step_ids вместо order) — выполняется
-- [x] Мигрированный пайплайн с параллельными ветками — `_build_levels` корректен
-- [x] FinalComposition: `{STEP_ID.result}`, несколько переменных, dict-ключ, неизвестный placeholder, `{query}`
-- [x] Провайдер получает уже разрешённый промпт — `{r1.result}` заменён реальными данными
-- [x] `no_active_provider` → error-чанк, не исключение
-- [x] Отмена validation: `resume_from_validation` без `_validation_v1` в step_results работает корректно
-- [x] Двухфазный full-chain тест: run_stream → validation_required → resume_from_validation → pipeline_complete
-
+**Статус:** ✅ Завершён  
 **Коммит:** `503bca5`
-
-**Pytest последний известный результат:** ✅ `79 passed, 1 warning` (Сессия 8b).  
-Новые тесты добавлены (+22), локальный запуск не выполнялся (нет Docker-окружения).  
-Все тесты используют только mock-объекты без живой БД — должны проходить в CI.
 
 ---
 
-## Технический долг (после завершения всех этапов)
+### Сессия 12 — Багфикс + Рефакторинг техдолга
+**Дата:** 2026-06-19  
+**Статус:** ✅ Завершён  
+**Pytest:** ✅ `104 passed, 1 warning in 1.03s`
 
-- `_build_levels()` в `pipeline_executor.py` дублирует `get_execution_levels()` из `pipeline_dag.py` — рефакторинг
-- `format_prompt()` в `prompt_pack.py` — помечена DEPRECATED, удалить
-- Legacy API executor'а (`run()`, `_execute()`, `_run_step()`, `_deprecated_context_vars()`) — удалить
+**Сделано:**
+- [x] Баг: `_run_dag_step` перезаписывал `ctx.step_results` пустой строкой при отсутствии hits — исправлено гуардом `if step.step_id not in ctx.step_results` (commit `794ebd5`)
+- [x] Рефакторинг: удалён дублирующий `_build_levels()` — заменён вызовом `get_execution_levels()` из `pipeline_dag.py` (commit `eb50e5c`)
+- [x] Удалён весь legacy API executorа: `run()`, `_execute()`, `_run_step()`, `_retrieve_for_step()`, `_mark_started()`, `_mark_completed()`, `_gather_sources_for_step()`, `_check_cancelled()` — ~150 строк удалено
+- [x] Удалёны module-level хелперы: `_pipeline_from_context()`, `_ctx_dict()`, `_deprecated_context_vars()`, `_SKIPPED`
+- [x] Оставлен shim `_build_levels()` для обратной совместимости тестовых импортов
+
+---
+
+## Оставшийся технический долг (малоприоритетный)
+
+- `object.__setattr__` в DAG-тестах при `frozen=True` — заменить на `.model_copy(update=...)` (косметика)
+- `pipeline_builder.js`: перетаскивание рёбер мышью — отложено
+- `pipeline_builder.js`: горячие клавиши Del для удаления узла — отложено
 - confirm-флоу встроен только в `send_stream()`; non-stream `send()` остаётся legacy-путём
-- confirm-флоу chat.py не покрыт интеграционными тестами
-- `object.__setattr__` в DAG-тестах при `frozen=True` — заменить на `.model_copy(update=...)`
-- pipeline_builder.js: перетаскивание рёбер мышью — отложено
-- pipeline_builder.js: горячие клавиши Del для удаления узла — отложено
+- Интеграционные тесты confirm-флоу в `chat.py` — не написаны
 - Ручная API-проверка мигрированных пайплайнов (желательна)
