@@ -7,3 +7,6 @@ pydantic-settings
 pyyaml
 sqlalchemy[asyncio]>=2.0
 uvicorn[standard]
+psycopg2-binary
+pytest
+pytest-asyncio
