@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Domain, Pipeline, Tag
 from app.db.session import get_db
-from .helpers import _get_pipeline_by_uuid, _validate_pipeline_json, _increment_patch, pipeline_dict
+from .helpers import _get_pipeline_by_uuid, _increment_patch, pipeline_dict
 from .schemas import PipelineCreateRequest, PipelineUpdateRequest
 
 router = APIRouter()
@@ -53,11 +53,13 @@ async def create_pipeline(req: PipelineCreateRequest, db: AsyncSession = Depends
         raise HTTPException(status_code=422, detail="pipeline_id must be a slug: 3-64 chars, a-z 0-9 _ -")
     if await db.get(Domain, req.domain_id) is None:
         raise HTTPException(status_code=404, detail="Domain not found")
-    _validate_pipeline_json(req.steps, req.final_composition)
+    # Валидация шагов выполняется Pydantic (PipelineStep + FinalComposition из shared_contracts).
+    # _validate_pipeline_json удалён — он проверял старое поле 'order' (pre-DAG схема).
     duplicate = await db.execute(select(Pipeline).where(Pipeline.pipeline_id == req.pipeline_id, Pipeline.version == "1.0.0"))
     if duplicate.scalar_one_or_none() is not None:
         raise HTTPException(status_code=409, detail="Pipeline version already exists")
-    pipeline = Pipeline(**req.model_dump(), version="1.0.0")
+    payload = req.model_dump()
+    pipeline = Pipeline(**payload, version="1.0.0")
     db.add(pipeline)
     await db.commit()
     await db.refresh(pipeline)
@@ -72,7 +74,8 @@ async def update_pipeline(
     payload = req.model_dump(exclude_unset=True)
     steps = payload.get("steps", pipeline.steps)
     final_composition = payload.get("final_composition", pipeline.final_composition)
-    _validate_pipeline_json(steps, final_composition)
+    # Валидация шагов выполняется Pydantic (PipelineStep + FinalComposition из shared_contracts).
+    # _validate_pipeline_json удалён — он проверял старое поле 'order' (pre-DAG схема).
     new_version = _increment_patch(pipeline.version)
     await db.execute(update(Pipeline).where(Pipeline.pipeline_id == pipeline.pipeline_id).values(is_active=False))
     new_pipeline = Pipeline(

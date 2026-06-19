@@ -125,33 +125,6 @@ async def _get_pipeline_by_uuid(pipeline_uuid: str, db: AsyncSession) -> Pipelin
     return pipeline
 
 
-def _validate_pipeline_json(steps: list[dict[str, Any]], final_composition: dict[str, Any]) -> None:
-    if not isinstance(steps, list) or not steps:
-        raise HTTPException(status_code=422, detail="steps must be a non-empty list")
-
-    orders: set[int] = set()
-
-    for step in steps:
-        for key in ["order", "name", "system_prompt"]:
-            if key not in step:
-                raise HTTPException(status_code=422, detail=f"Pipeline step missing key: {key}")
-        if not isinstance(step["order"], int) or step["order"] in orders:
-            raise HTTPException(status_code=422, detail="Pipeline step order must be unique int")
-        orders.add(step["order"])
-
-        # Все шаги — retrieval. Поле type необязательно (backward compat),
-        # но если передано — должно быть 'retrieval'.
-        step_type = step.get("type", "retrieval")
-        if step_type not in ("retrieval", "final"):
-            raise HTTPException(
-                status_code=422,
-                detail=f"Invalid step type: {step_type!r}. Must be 'retrieval'",
-            )
-
-    if not isinstance(final_composition, dict) or not isinstance(final_composition.get("system_prompt"), str):
-        raise HTTPException(status_code=422, detail="final_composition.system_prompt is required")
-
-
 def _increment_patch(version: str) -> str:
     try:
         major, minor, patch = (int(part) for part in version.split("."))

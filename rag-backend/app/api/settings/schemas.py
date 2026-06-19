@@ -4,6 +4,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from shared_contracts.models import FinalComposition, PipelineStep
+
 
 class ParamUpdateRequest(BaseModel):
     value: Any = None
@@ -107,13 +109,16 @@ class CampaignTagCreateRequest(BaseModel):
     color: str | None = None
 
 
+# fix: steps и final_composition заменены на типизированные модели из shared_contracts.
+# Было: list[dict[str, Any]] — обходило всю валидацию PipelineStep и позволяло
+# _validate_pipeline_json (старая схема с 'order') выдавать 422 на новых DAG-пайлоадах.
 class PipelineCreateRequest(BaseModel):
     pipeline_id: str
     domain_id: str
     name: str
     description: str | None = None
-    steps: list[dict[str, Any]]
-    final_composition: dict[str, Any]
+    steps: list[PipelineStep]
+    final_composition: FinalComposition
     is_active: bool = True
 
 
@@ -121,8 +126,8 @@ class PipelineUpdateRequest(BaseModel):
     domain_id: str | None = None
     name: str | None = None
     description: str | None = None
-    steps: list[dict[str, Any]] | None = None
-    final_composition: dict[str, Any] | None = None
+    steps: list[PipelineStep] | None = None
+    final_composition: FinalComposition | None = None
     is_active: bool | None = None
 
 
