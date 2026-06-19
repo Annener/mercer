@@ -17,15 +17,14 @@ const PipelineBuilder = (() => {
 
   // ── константы ────────────────────────────────────────────────────────────────
 
-  // fix: убран двойной dist/dist в пути CSS (был 404 → vis не применял стили)
   const VIS_CSS_CDN  = 'https://cdnjs.cloudflare.com/ajax/libs/vis-network/9.1.9/dist/vis-network.min.css';
   const VIS_JS_CDN   = 'https://cdnjs.cloudflare.com/ajax/libs/vis-network/9.1.9/dist/vis-network.min.js';
 
   const NODE_COLORS = {
-    __start__:  { background: '#9ea3aa', border: '#6b7280', font: { color: '#fff' } },
-    retrieval:  { background: '#4A90D9', border: '#2563EB', font: { color: '#fff' } },
-    validation: { background: '#E8943A', border: '#C2691A', font: { color: '#fff' } },
-    __final__:  { background: '#9B59B6', border: '#7D3C98', font: { color: '#fff' } },
+    __start__:  { background: '#9ea3aa', border: '#6b7280', fontColor: '#fff' },
+    retrieval:  { background: '#4A90D9', border: '#2563EB', fontColor: '#fff' },
+    validation: { background: '#E8943A', border: '#C2691A', fontColor: '#fff' },
+    __final__:  { background: '#9B59B6', border: '#7D3C98', fontColor: '#fff' },
   };
 
   const STEP_ROLES = ['methodology','lore','campaign_context','character_sheet','session_log','rules'];
@@ -38,18 +37,18 @@ const PipelineBuilder = (() => {
 
   let _api        = null;
   let _modal      = null;
-  let _pipeline   = null;   // объект из API (или null при создании)
-  let _steps      = [];     // array of PipelineStep (новая схема)
+  let _pipeline   = null;
+  let _steps      = [];
   let _finalPrompt = '';
   let _domains    = [];
   let _vaults     = [];
   let _tags       = [];
   let _onSave     = null;
 
-  let _network    = null;   // экземпляр Vis.js Network
-  let _nodes      = null;   // Vis DataSet
-  let _edges      = null;   // Vis DataSet
-  let _selectedId = null;   // выбранный узел
+  let _network    = null;
+  let _nodes      = null;
+  let _edges      = null;
+  let _selectedId = null;
 
   let _visLoaded  = false;
 
@@ -77,13 +76,11 @@ const PipelineBuilder = (() => {
   function _ensureVis() {
     if (_visLoaded && window.vis) return Promise.resolve();
     return new Promise((resolve, reject) => {
-      // CSS
       if (!document.getElementById('vis-css')) {
         const link = document.createElement('link');
         link.id = 'vis-css'; link.rel = 'stylesheet'; link.href = VIS_CSS_CDN;
         document.head.appendChild(link);
       }
-      // JS
       if (window.vis) { _visLoaded = true; resolve(); return; }
       const script = document.createElement('script');
       script.src = VIS_JS_CDN;
@@ -96,12 +93,10 @@ const PipelineBuilder = (() => {
   // ── нормализация шагов старого формата ──────────────────────────────────────
 
   function _normalizeSteps(rawSteps) {
-    // Если шаги уже в новом формате (есть step_id) — используем как есть
     if (rawSteps.length === 0) return [];
     if (rawSteps[0].step_id !== undefined) {
       return rawSteps.map(s => ({ ...s }));
     }
-    // Старый формат: конвертируем order → after_step_ids
     const sorted = [...rawSteps].sort((a, b) => (a.order || 0) - (b.order || 0));
     return sorted.map((s, i) => ({
       step_id:         s.name ? _slugify(s.name) : `step_${i + 1}`,
@@ -118,7 +113,7 @@ const PipelineBuilder = (() => {
     }));
   }
 
-  // ── загрузка справочников ─────────────────────────────────────────────────────
+  // ── загрузка справочников ────────────────────────────────────────────────────
 
   async function _loadReferences(domainId = null, campaignId = null) {
     try {
@@ -167,7 +162,6 @@ const PipelineBuilder = (() => {
         </div>
 
         <div class="pb-body">
-          <!-- Граф -->
           <div class="pb-graph-panel">
             <div class="pb-toolbar">
               <button class="btn btn-sm btn-primary" id="pb-add-step-btn">+ Шаг</button>
@@ -179,7 +173,6 @@ const PipelineBuilder = (() => {
             <div id="pb-validate-msg" class="pb-validate-msg" style="display:none"></div>
           </div>
 
-          <!-- Боковая панель редактирования -->
           <div class="pb-sidebar" id="pb-sidebar" style="display:none">
             <div class="pb-sidebar-header">
               <span id="pb-sidebar-title">Редактирование шага</span>
@@ -198,11 +191,10 @@ const PipelineBuilder = (() => {
     `;
     document.body.appendChild(_modal);
     _bindModalEvents();
-    // fix: двойной rAF гарантирует что flex-layout посчитан до инициализации vis.Network
     requestAnimationFrame(() => requestAnimationFrame(() => _initGraph()));
   }
 
-  // ── события modal ─────────────────────────────────────────────────────────────
+  // ── события modal ────────────────────────────────────────────────────────────
 
   function _bindModalEvents() {
     const q = sel => _modal.querySelector(sel);
@@ -217,13 +209,12 @@ const PipelineBuilder = (() => {
       const newDomainId = e.target.value || null;
       if (newDomainId) { await _loadReferences(newDomainId); }
     });
-    // Закрыть по клику на overlay
     _modal.addEventListener('click', (e) => {
       if (e.target === _modal) _close();
     });
   }
 
-  // ── Vis.js граф ───────────────────────────────────────────────────────────────
+  // ── Vis.js граф ──────────────────────────────────────────────────────────────
 
   function _initGraph() {
     const container = _modal?.querySelector('#pb-graph');
@@ -232,26 +223,10 @@ const PipelineBuilder = (() => {
     _nodes = new vis.DataSet();
     _edges = new vis.DataSet();
 
-    // Виртуальный Start-узел
-    _nodes.add({
-      id: '__start__', label: '▶ START', title: 'Начало пайплайна',
-      ...NODE_COLORS.__start__,
-      shape: 'box', font: { color: '#fff', size: 13, face: 'monospace' },
-      fixed: false,
-    });
+    _nodes.add(_makeNodeData('__start__', '▶ START', '__start__'));
+    _nodes.add(_makeNodeData('__final__', '⚡ FINAL\nComposition', '__final__'));
 
-    // FinalComposition-узел
-    _nodes.add({
-      id: '__final__', label: '⚡ FINAL\nComposition',
-      title: 'FinalComposition — финальный ответ',
-      ...NODE_COLORS.__final__,
-      shape: 'box', font: { color: '#fff', size: 12 },
-    });
-
-    // Добавляем шаги
     _steps.forEach(s => _addNodeForStep(s));
-
-    // Рёбра: START → стартовые шаги
     _rebuildEdges();
 
     const options = {
@@ -265,8 +240,10 @@ const PipelineBuilder = (() => {
           treeSpacing: 200,
         },
       },
+      // fix: physics отключена глобально — при hierarchical layout она не нужна
+      // и вызывает дрейф узлов после каждого redraw() когда граф уже был отрисован.
       physics: { enabled: false },
-      interaction: { dragNodes: false, tooltipDelay: 200, hover: true },
+      interaction: { dragNodes: true, tooltipDelay: 200, hover: true },
       nodes: {
         shape: 'box',
         borderWidth: 2,
@@ -293,54 +270,60 @@ const PipelineBuilder = (() => {
       }
     });
 
-    // Fit после рендера
     _network.once('afterDrawing', () => {
       _network.fit({ animation: { duration: 400, easingFunction: 'easeInOutQuad' } });
     });
   }
 
+  // fix: вынесена фабрика данных узла — гарантирует что color.background/border/hover
+  // и font всегда передаются в правильной структуре vis.js, а не как flat-поля.
+  // Без этого vis игнорировал цвета при hit-testing после первого redraw.
+  function _makeNodeData(id, label, colorKey, title) {
+    const c = NODE_COLORS[colorKey] || NODE_COLORS.retrieval;
+    return {
+      id,
+      label,
+      title: title || id,
+      shape: 'box',
+      color: {
+        background: c.background,
+        border:     c.border,
+        hover:      { background: c.background, border: '#1d4ed8' },
+        highlight:  { background: c.background, border: '#1d4ed8' },
+      },
+      font: { color: c.fontColor, size: 13 },
+    };
+  }
+
   function _addNodeForStep(step) {
     if (!_nodes) return;
     const colorKey = step.type === 'validation' ? 'validation' : 'retrieval';
-    const colors = NODE_COLORS[colorKey];
-    const label = `${step.name || step.step_id}\n[${step.type}]`;
-    _nodes.add({
-      id: step.step_id,
-      label,
-      title: `ID: ${step.step_id}`,
-      background: colors.background,
-      border: colors.border,
-      color: { background: colors.background, border: colors.border, hover: { background: colors.background, border: '#1d4ed8' } },
-      font: { color: colors.font.color, size: 13 },
-      shape: 'box',
-    });
+    const label    = `${step.name || step.step_id}\n[${step.type}]`;
+    _nodes.add(_makeNodeData(step.step_id, label, colorKey, `ID: ${step.step_id}`));
   }
 
   function _rebuildEdges() {
     if (!_edges || !_nodes) return;
     _edges.clear();
 
-    const allIds = new Set(_steps.map(s => s.step_id));
+    const allIds   = new Set(_steps.map(s => s.step_id));
     const hasParent = new Set();
 
-    // Рёбра между шагами
     _steps.forEach(step => {
       (step.after_step_ids || []).forEach(parentId => {
         if (allIds.has(parentId) || parentId === '__start__') {
-          _edges.add({ from: parentId === '__start__' ? '__start__' : parentId, to: step.step_id, id: `${parentId}->${step.step_id}` });
+          _edges.add({ from: parentId, to: step.step_id, id: `${parentId}->${step.step_id}` });
           hasParent.add(step.step_id);
         }
       });
     });
 
-    // Стартовые шаги → START
     _steps.forEach(step => {
       if (!hasParent.has(step.step_id)) {
         _edges.add({ from: '__start__', to: step.step_id, id: `__start__->${step.step_id}` });
       }
     });
 
-    // Листья → FINAL (шаги без потомков)
     const hasChildren = new Set(_steps.flatMap(s => s.after_step_ids || []));
     _steps.forEach(step => {
       if (!hasChildren.has(step.step_id)) {
@@ -348,26 +331,26 @@ const PipelineBuilder = (() => {
       }
     });
 
-    // Если нет шагов → START → FINAL
     if (_steps.length === 0) {
       _edges.add({ from: '__start__', to: '__final__', id: '__start__->__final__' });
     }
 
-    // fix: не вызывать setOptions(hierarchical) повторно — это пересоздаёт layout-движок
-    // и оставляет phantom-узлы в canvas. Достаточно redraw() + отложенный fit().
+    // fix: вместо redraw()+fit() используем stabilize(0) — это заставляет vis
+    // пересчитать hierarchical layout ровно один раз без физического движка,
+    // после чего узлы встают на позиции и больше не дрейфуют.
     if (_network) {
-      _network.redraw();
-      setTimeout(() => _network?.fit({ animation: { duration: 400, easingFunction: 'easeInOutQuad' } }), 100);
+      _network.stabilize(0);
+      setTimeout(() => _network?.fit({ animation: { duration: 300, easingFunction: 'easeInOutQuad' } }), 50);
     }
   }
 
-  // ── выбор узла ────────────────────────────────────────────────────────────────
+  // ── выбор узла ───────────────────────────────────────────────────────────────
 
   function _selectNode(nodeId) {
     _selectedId = nodeId;
-    const sidebar  = _modal?.querySelector('#pb-sidebar');
-    const sbTitle  = _modal?.querySelector('#pb-sidebar-title');
-    const sbBody   = _modal?.querySelector('#pb-sidebar-body');
+    const sidebar = _modal?.querySelector('#pb-sidebar');
+    const sbTitle = _modal?.querySelector('#pb-sidebar-title');
+    const sbBody  = _modal?.querySelector('#pb-sidebar-body');
     if (!sidebar || !sbTitle || !sbBody) return;
 
     sidebar.style.display = 'flex';
@@ -399,7 +382,7 @@ const PipelineBuilder = (() => {
     _network?.unselectAll();
   }
 
-  // ── форма FinalComposition ────────────────────────────────────────────────────
+  // ── форма FinalComposition ───────────────────────────────────────────────────
 
   function _finalCompositionForm() {
     return `
@@ -420,7 +403,7 @@ const PipelineBuilder = (() => {
     });
   }
 
-  // ── форма шага ────────────────────────────────────────────────────────────────
+  // ── форма шага ───────────────────────────────────────────────────────────────
 
   function _stepForm(step) {
     const isValidation = step.type === 'validation';
@@ -439,7 +422,7 @@ const PipelineBuilder = (() => {
       <div class="form-group">
         <label>ID шага (slug)</label>
         <input id="pbs-step-id" class="input" value="${_esc(step.step_id)}"
-          placeholder="analyze" pattern="[a-z0-9_-]+">
+          placeholder="analyze" pattern="[a-z0-9_\\-]+">
       </div>
       <div class="form-group">
         <label>Название</label>
@@ -461,7 +444,6 @@ const PipelineBuilder = (() => {
         </select>
       </div>
 
-      <!-- retrieval fields -->
       <div id="pbs-retrieval-fields" ${isValidation ? 'style="display:none"' : ''}>
         <div class="form-group">
           <label>Роль</label>
@@ -491,7 +473,6 @@ const PipelineBuilder = (() => {
         </div>
       </div>
 
-      <!-- validation fields -->
       <div id="pbs-validation-fields" ${!isValidation ? 'style="display:none"' : ''}>
         <div class="form-group">
           <label>Validation prompt</label>
@@ -525,16 +506,14 @@ const PipelineBuilder = (() => {
   function _bindStepForm(step) {
     const q = sel => _modal?.querySelector(sel);
 
-    // type переключает секции
     q('#pbs-type')?.addEventListener('change', (e) => {
       const isVal = e.target.value === 'validation';
-      q('#pbs-retrieval-fields').style.display  = isVal ? 'none'  : '';
-      q('#pbs-validation-fields').style.display = isVal ? ''      : 'none';
+      q('#pbs-retrieval-fields').style.display  = isVal ? 'none' : '';
+      q('#pbs-validation-fields').style.display = isVal ? ''     : 'none';
       _syncStepFromSidebar(step);
       _refreshNodeColor(step);
     });
 
-    // Живое обновление имени в графе
     q('#pbs-name')?.addEventListener('input', () => {
       _syncStepFromSidebar(step);
       _nodes?.update({ id: step.step_id, label: `${step.name || step.step_id}\n[${step.type}]` });
@@ -542,7 +521,6 @@ const PipelineBuilder = (() => {
       if (sbTitle) sbTitle.textContent = `Шаг: ${step.name || step.step_id}`;
     });
 
-    // step_id изменение
     q('#pbs-step-id')?.addEventListener('blur', () => {
       const newId = (q('#pbs-step-id')?.value || '').trim().toLowerCase().replace(/\s+/g, '_');
       if (!newId || newId === step.step_id) return;
@@ -556,7 +534,6 @@ const PipelineBuilder = (() => {
       _selectedId  = newId;
     });
 
-    // Сохранить изменения при любом событии ввода
     ['#pbs-role','#pbs-topk','#pbs-outfmt','#pbs-after','#pbs-tags',
      '#pbs-prompt','#pbs-val-prompt','#pbs-options'].forEach(sel => {
       q(sel)?.addEventListener('change', () => _syncStepFromSidebar(step));
@@ -565,19 +542,16 @@ const PipelineBuilder = (() => {
       q(sel)?.addEventListener('input', () => _syncStepFromSidebar(step));
     });
 
-    // after_step_ids → rebuild edges
     q('#pbs-after')?.addEventListener('change', () => {
       _syncStepFromSidebar(step);
       _rebuildEdges();
     });
 
-    // + Дочерний шаг
     q('#pbs-add-child-btn')?.addEventListener('click', () => {
       _syncStepFromSidebar(step);
       _addChildStep(step.step_id);
     });
 
-    // Удалить
     q('#pbs-delete-btn')?.addEventListener('click', () => {
       _syncStepFromSidebar(step);
       _deleteStep(step.step_id);
@@ -593,15 +567,12 @@ const PipelineBuilder = (() => {
     const topk = parseInt(q('#pbs-topk')?.value);
     step.top_k         = isNaN(topk) ? null : topk;
     step.output_format = q('#pbs-outfmt')?.value || 'text';
-    // after_step_ids
     const afterSel = q('#pbs-after');
     step.after_step_ids = afterSel
       ? Array.from(afterSel.selectedOptions).map(o => o.value)
       : [];
-    // tag_ids
     const tagSel = q('#pbs-tags');
     step.tag_ids = tagSel ? Array.from(tagSel.selectedOptions).map(o => o.value) : [];
-    // validation fields
     step.validation_prompt = q('#pbs-val-prompt')?.value?.trim() || null;
     const optTxt = q('#pbs-options')?.value?.trim();
     step.options = optTxt ? optTxt.split('\n').map(s => s.trim()).filter(Boolean) : null;
@@ -609,16 +580,21 @@ const PipelineBuilder = (() => {
 
   function _refreshNodeColor(step) {
     const colorKey = step.type === 'validation' ? 'validation' : 'retrieval';
-    const colors   = NODE_COLORS[colorKey];
+    const c = NODE_COLORS[colorKey];
     _nodes?.update({
       id: step.step_id,
-      color: { background: colors.background, border: colors.border },
-      font: { color: colors.font.color },
+      color: {
+        background: c.background,
+        border:     c.border,
+        hover:      { background: c.background, border: '#1d4ed8' },
+        highlight:  { background: c.background, border: '#1d4ed8' },
+      },
+      font:  { color: c.fontColor, size: 13 },
       label: `${step.name || step.step_id}\n[${step.type}]`,
     });
   }
 
-  // ── управление шагами ─────────────────────────────────────────────────────────
+  // ── управление шагами ────────────────────────────────────────────────────────
 
   function _addStep() {
     const stepId = `step_${Date.now()}`;
@@ -653,7 +629,6 @@ const PipelineBuilder = (() => {
 
   function _deleteStep(stepId) {
     if (stepId === '__start__' || stepId === '__final__') return;
-    // Убрать ссылки из after_step_ids других шагов
     _steps.forEach(s => {
       s.after_step_ids = (s.after_step_ids || []).filter(id => id !== stepId);
     });
@@ -667,7 +642,6 @@ const PipelineBuilder = (() => {
     _steps.forEach(s => {
       s.after_step_ids = (s.after_step_ids || []).map(id => id === oldId ? newId : id);
     });
-    // Vis не поддерживает переименование id в DataSet напрямую — пересоздаём узел
     const step = _steps.find(s => s.step_id === newId);
     if (step) {
       _nodes?.remove(oldId);
@@ -682,37 +656,29 @@ const PipelineBuilder = (() => {
     const errors = [];
     const ids = new Set(_steps.map(s => s.step_id));
 
-    // Уникальность step_id
     const seen = new Set();
     _steps.forEach(s => {
       if (seen.has(s.step_id)) errors.push(`Дублирующийся step_id: "${s.step_id}"`);
       seen.add(s.step_id);
     });
 
-    // Self-loop
     _steps.forEach(s => {
       if ((s.after_step_ids||[]).includes(s.step_id))
         errors.push(`Шаг "${s.step_id}" ссылается сам на себя`);
     });
 
-    // Несуществующие after_step_ids
     _steps.forEach(s => {
       (s.after_step_ids||[]).forEach(dep => {
         if (!ids.has(dep)) errors.push(`Шаг "${s.step_id}": зависимость "${dep}" не существует`);
       });
     });
 
-    // Обязательные поля
     _steps.forEach(s => {
       if (!s.name) errors.push(`Шаг "${s.step_id}": не заполнено имя`);
       if (!s.system_prompt) errors.push(`Шаг "${s.step_id}": не заполнен system prompt`);
     });
 
-    // Цикл (упрощённый DFS)
-    const hasCycle = _detectCycle();
-    if (hasCycle) errors.push('Обнаружен цикл в графе!');
-
-    // FinalComposition
+    if (_detectCycle()) errors.push('Обнаружен цикл в графе!');
     if (!_finalPrompt.trim()) errors.push('FinalComposition: не заполнен system prompt');
 
     const msgEl = _modal?.querySelector('#pb-validate-msg');
@@ -751,10 +717,13 @@ const PipelineBuilder = (() => {
     return _steps.some(s => color[s.step_id] === WHITE && dfs(s.step_id));
   }
 
-  // ── сохранение ────────────────────────────────────────────────────────────────
+  // ── сохранение ───────────────────────────────────────────────────────────────
 
   async function _save() {
-    // Синхронизировать открытую форму боковой панели
+    // fix: синхронизируем боковую панель ТОЛЬКО если открыт шаг (не __final__ и не __start__).
+    // Раньше _syncStepFromSidebar вызывался безусловно — при открытом __final__
+    // он читал несуществующие #pbs-* поля и перезаписывал _selectedId мусором,
+    // из-за чего последующий клик по __final__ падал в ветку step.not_found.
     if (_selectedId && _selectedId !== '__start__' && _selectedId !== '__final__') {
       const step = _steps.find(s => s.step_id === _selectedId);
       if (step) _syncStepFromSidebar(step);
@@ -763,15 +732,14 @@ const PipelineBuilder = (() => {
     const name     = _modal?.querySelector('#pb-name')?.value?.trim();
     const domainId = _modal?.querySelector('#pb-domain')?.value;
 
-    if (!name)         return _showError('Введите название pipeline');
-    if (!domainId)     return _showError('Выберите домен');
-    if (!_finalPrompt.trim()) return _showError('Заполните system prompt FinalComposition');
-    if (_steps.length === 0) return _showError('Добавьте хотя бы один шаг');
+    if (!name)                    return _showError('Введите название pipeline');
+    if (!domainId)                return _showError('Выберите домен');
+    if (!_finalPrompt.trim())     return _showError('Заполните system prompt FinalComposition');
+    if (_steps.length === 0)      return _showError('Добавьте хотя бы один шаг');
 
     const valid = _validateDAG();
     if (valid === false) return _showError('Исправьте ошибки DAG перед сохранением');
 
-    // Финальные шаги — без старых полей order/is_final
     const steps = _steps.map(s => {
       const base = {
         step_id:        s.step_id,
@@ -779,12 +747,12 @@ const PipelineBuilder = (() => {
         name:           s.name,
         system_prompt:  s.system_prompt,
         after_step_ids: s.after_step_ids || [],
-        output_format:  s.output_format || 'text',
       };
       if (s.type === 'retrieval') {
-        base.top_k    = s.top_k   || null;
-        base.tag_ids  = s.tag_ids || [];
-        base.role     = s.role    || null;
+        base.top_k         = s.top_k   || null;
+        base.tag_ids       = s.tag_ids || [];
+        base.role          = s.role    || null;
+        base.output_format = s.output_format || 'text';
       } else {
         base.validation_prompt = s.validation_prompt || null;
         base.options           = s.options           || null;
@@ -797,34 +765,28 @@ const PipelineBuilder = (() => {
 
     try {
       if (_pipeline) {
-        const payload = {
+        await _api.updatePipeline(_pipeline.id, {
           name,
           domain_id:         domainId,
           steps,
           final_composition: { system_prompt: _finalPrompt.trim() },
           is_active:         true,
-        };
-        await _api.updatePipeline(_pipeline.pipeline_id, payload);
+        });
       } else {
-        // fix: pipeline_id собирается ДО вызова createPipeline.
-        // fix: используем дефис вместо underscore в авто-генерируемом id —
-        //      SLUG_RE на бэке принимает [a-z0-9_-], оба варианта теперь валидны.
-        const rawId = _modal?.querySelector('#pb-id')?.value?.trim();
+        const rawId    = _modal?.querySelector('#pb-id')?.value?.trim();
         const pipelineId = rawId || `pipeline-${Date.now()}`;
-        // Клиентская проверка slug до отправки — даём понятную ошибку
-        if (!/^[a-z0-9_-]{3,64}$/.test(pipelineId)) {
+        if (!/^[a-z0-9_\-]{3,64}$/.test(pipelineId)) {
           if (btn) { btn.disabled = false; btn.textContent = '💾 Сохранить'; }
           return _showError('ID pipeline: только a-z, 0-9, дефис, underscore, 3–64 символа');
         }
-        const payload = {
+        await _api.createPipeline({
           pipeline_id:       pipelineId,
           name,
           domain_id:         domainId,
           steps,
           final_composition: { system_prompt: _finalPrompt.trim() },
           is_active:         true,
-        };
-        await _api.createPipeline(payload);
+        });
       }
       _close();
       if (_onSave) await _onSave();
@@ -834,7 +796,7 @@ const PipelineBuilder = (() => {
     }
   }
 
-  // ── helpers ───────────────────────────────────────────────────────────────────
+  // ── helpers ──────────────────────────────────────────────────────────────────
 
   function _close() {
     if (_network) { _network.destroy(); _network = null; }
@@ -859,7 +821,7 @@ const PipelineBuilder = (() => {
     return str.toLowerCase().trim().replace(/\s+/g,'_').replace(/[^a-z0-9_]/g,'');
   }
 
-  // ── стили ─────────────────────────────────────────────────────────────────────
+  // ── стили ────────────────────────────────────────────────────────────────────
 
   function _injectStyles() {
     if (document.getElementById('pb-styles')) return;
@@ -880,7 +842,6 @@ const PipelineBuilder = (() => {
         box-shadow: 0 12px 48px rgba(0,0,0,0.32);
         overflow: hidden;
       }
-      /* header */
       .pb-header {
         display: flex; align-items: center; gap: 0.75rem;
         padding: 0.75rem 1.25rem;
@@ -896,12 +857,9 @@ const PipelineBuilder = (() => {
         border-radius: 6px; background: var(--color-surface,#fff);
         color: var(--color-text,#222); min-width: 0; flex: 1;
       }
-      /* body */
       .pb-body {
         flex: 1; display: flex; min-height: 0; overflow: hidden;
       }
-      /* graph panel */
-      /* fix: добавлен min-height: 0 — без него flex-column не передаёт высоту дочерним элементам */
       .pb-graph-panel {
         flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden;
         border-right: 1px solid var(--color-border,#ddd);
@@ -912,7 +870,6 @@ const PipelineBuilder = (() => {
         border-bottom: 1px solid var(--color-border,#ddd);
         flex-shrink: 0;
       }
-      /* fix: добавлен min-height: 0 и position: relative — vis.js требует оба для корректного canvas */
       .pb-graph-container {
         flex: 1; min-height: 0; position: relative;
         background: var(--color-surface-offset, #f8f8f8);
@@ -928,7 +885,6 @@ const PipelineBuilder = (() => {
       .pb-validate-err { color: var(--color-error, #a12c7b); font-weight: 600; }
       .pb-validate-msg ul { margin: 0.3rem 0 0 1rem; padding: 0; }
       .pb-validate-msg li { margin-bottom: 0.2rem; }
-      /* sidebar */
       .pb-sidebar {
         width: 320px; min-width: 280px; max-width: 360px;
         display: flex; flex-direction: column;
@@ -953,7 +909,6 @@ const PipelineBuilder = (() => {
         display: flex; gap: 0.5rem; margin-top: 0.5rem; padding-top: 0.5rem;
         border-top: 1px solid var(--color-border,#ddd);
       }
-      /* footer */
       .pb-footer {
         display: flex; align-items: center; justify-content: flex-end;
         gap: 0.5rem; padding: 0.75rem 1.25rem;
@@ -966,7 +921,6 @@ const PipelineBuilder = (() => {
         background: var(--color-error-highlight, #fdecea);
         border-radius: 6px; margin-right: auto;
       }
-      /* form helpers */
       .form-row { display: flex; gap: 0.6rem; flex-wrap: wrap; align-items: flex-start; }
       .form-group { display: flex; flex-direction: column; gap: 0.2rem; min-width: 80px; }
       .form-group label { font-size: 0.78rem; font-weight: 500; color: var(--color-text-muted,#888); }
