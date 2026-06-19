@@ -765,7 +765,14 @@ const PipelineBuilder = (() => {
 
     try {
       if (_pipeline) {
-        await _api.updatePipeline(_pipeline.id, {
+        // fix: бэкенд ожидает slug (pipeline_id), не числовой PK (id).
+        // Объект _pipeline содержит оба поля: .id (числовой PK из БД)
+        // и .pipeline_id (slug, например "story-generation").
+        // PUT /api/settings/pipelines/{pipeline_id} валидирует параметр как UUID/slug,
+        // поэтому передаём .pipeline_id; если по каким-то причинам его нет —
+        // fallback на .id (старый формат данных).
+        const updateId = _pipeline.pipeline_id || _pipeline.id;
+        await _api.updatePipeline(updateId, {
           name,
           domain_id:         domainId,
           steps,
