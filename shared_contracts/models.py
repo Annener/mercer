@@ -787,3 +787,22 @@ class WSTaskCompleteMessage(BaseModel):
     task_id: str
     files_total: int = 0
     files_indexed: int = 0
+
+
+# ---------------------------------------------------------------------------
+# Planner contracts
+# ---------------------------------------------------------------------------
+
+class PipelineInvocation(BaseModel):
+    """Пайплайн, запланированный Planner-ом к выполнению."""
+    pipeline_id: str
+    domain: str | None = None
+    priority: int = 0
+
+
+class PlannerDecision(BaseModel):
+    """Решение Planner.decide(): стратегия ретривала + нужна ли кларификация."""
+    retrieval_strategy: str  # "none" | "semantic" | ...
+    clarification_needed: bool = False
+    pipeline_invocations: list[PipelineInvocation] = Field(default_factory=list)
+    reasoning: str = ""
