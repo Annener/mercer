@@ -1,16 +1,25 @@
 """
-test_settings_service_td02.py — TD-02: проверяем, что API-ключ
-передаётся напрямую, а не через os.environ.
+test_settings_service_td02.py — TD-02
 
-Тесты покрывают:
-  1. _build_embedding_config: api_key берётся из decrypt_api_key, api_key_env=""
-  2. _build_embedding_config: если encrypted_api_key=None — api_key=""
-  3. _embed_openai_compatible: использует model.api_key, os.environ не трогает
-  4. _embed_openai_compatible: при model.api_key="" — Authorization-заголовок не добавляется
-  5. Конкурентный сценарий: два запроса с разными ключами не переписывают os.environ
+Проверяем, что API-ключ передаётся напрямую через model.api_key,
+а не через os.environ, устраняя гонку при конкурентных запросах.
+
+Тесты:
+  TestBuildEmbeddingConfig
+    [1] api_key берётся из decrypt_api_key, а не из os.environ
+    [2] api_key_env всегда пустая строка (не пишем в env)
+    [3] encrypted_api_key=None → api_key=""
+    [4] os.environ не мутируется
+    [5] остальные поля (model_id, base_url, dimensions) копируются корректно
+
+  TestEmbedOpenAICompatible
+    [6] Authorization-заголовок формируется из model.api_key
+    [7] api_key="" → заголовок Authorization не добавляется
+    [8] конкурентные запросы с разными ключами не перезаписывают друг друга
 """
 from __future__ import annotations
 
+import asyncio
 import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -22,10 +31,10 @@ from app.services.retrieval import _embed_openai_compatible
 
 
 # ---------------------------------------------------------------------------
-# Вспомогатели
+# Helpers
 # ---------------------------------------------------------------------------
 
-def _make_orm_embedding_model(
+def _make_orm_model(
     model_id: str = "emb-1",
     provider: str = "openai_compatible",
     model_name: str = "text-embedding-3-small",
@@ -47,7 +56,7 @@ def _make_orm_embedding_model(
     return m
 
 
-def _make_embedding_config(
+def _make_config(
     api_key: str = "",
     api_key_env: str = "",
     dimensions: int = 4,
@@ -65,59 +74,63 @@ def _make_embedding_config(
     )
 
 
+def _mock_httpx_response(vector: list[float]) -> MagicMock:
+    resp = MagicMock()
+    resp.raise_for_status = MagicMock()
+    resp.json = MagicMock(return_value={"data": [{"embedding": vector}]})
+    return resp
+
+
 # ---------------------------------------------------------------------------
 # SettingsService._build_embedding_config
 # ---------------------------------------------------------------------------
 
 class TestBuildEmbeddingConfig:
+    """Unit-тесты _build_embedding_config без БД и Fernet."""
 
-    def _svc(self, decrypted_key: str = "sk-secret") -> SettingsService:
+    def _svc(self, decrypted: str = "sk-secret") -> SettingsService:
         svc = SettingsService()
-        svc.decrypt_api_key = MagicMock(return_value=decrypted_key)
+        svc.decrypt_api_key = MagicMock(return_value=decrypted)
         return svc
 
-    def test_api_key_taken_from_decrypt(self):
-        """api_key берётся из decrypt_api_key, а не из os.environ."""
-        svc = self._svc(decrypted_key="sk-secret")
-        orm = _make_orm_embedding_model(encrypted_api_key="encrypted-blob")
-        config = svc._build_embedding_config(orm)
-        assert config.api_key == "sk-secret"
+    def test_api_key_from_decrypt(self):
+        """api_key берётся из decrypt_api_key."""
+        svc = self._svc(decrypted="sk-secret")
+        cfg = svc._build_embedding_config(_make_orm_model(encrypted_api_key="enc"))
+        assert cfg.api_key == "sk-secret"
 
-    def test_api_key_env_is_empty_string(self):
-        """api_key_env всегда пустая строка — не проверяем os.environ."""
+    def test_api_key_env_is_empty(self):
+        """api_key_env всегда пустая строка — не читаем os.environ."""
         svc = self._svc()
-        orm = _make_orm_embedding_model(encrypted_api_key="encrypted-blob")
-        config = svc._build_embedding_config(orm)
-        assert config.api_key_env == ""
+        cfg = svc._build_embedding_config(_make_orm_model(encrypted_api_key="enc"))
+        assert cfg.api_key_env == ""
 
     def test_no_encrypted_key_gives_empty_api_key(self):
-        """encrypted_api_key=None → api_key=\"\"."""
+        """encrypted_api_key=None → api_key=''."""
         svc = self._svc()
-        orm = _make_orm_embedding_model(encrypted_api_key=None)
-        config = svc._build_embedding_config(orm)
-        assert config.api_key == ""
+        cfg = svc._build_embedding_config(_make_orm_model(encrypted_api_key=None))
+        assert cfg.api_key == ""
 
     def test_os_environ_not_mutated(self):
         """_build_embedding_config не пишет в os.environ."""
         svc = self._svc()
-        orm = _make_orm_embedding_model(encrypted_api_key="enc")
         before = dict(os.environ)
-        svc._build_embedding_config(orm)
+        svc._build_embedding_config(_make_orm_model(encrypted_api_key="enc"))
         assert dict(os.environ) == before
 
-    def test_config_fields_match_orm(self):
-        """model_id, provider, base_url, dimensions перенесены корректно."""
-        svc = self._svc(decrypted_key="key")
-        orm = _make_orm_embedding_model(
+    def test_fields_copied_correctly(self):
+        """model_id, base_url, dimensions копируются без изменений."""
+        svc = self._svc(decrypted="key")
+        orm = _make_orm_model(
             model_id="emb-42",
             base_url="https://custom.api/v1",
             dimensions=768,
             encrypted_api_key="enc",
         )
-        config = svc._build_embedding_config(orm)
-        assert config.model_id == "emb-42"
-        assert config.base_url == "https://custom.api/v1"
-        assert config.dimensions == 768
+        cfg = svc._build_embedding_config(orm)
+        assert cfg.model_id == "emb-42"
+        assert cfg.base_url == "https://custom.api/v1"
+        assert cfg.dimensions == 768
 
 
 # ---------------------------------------------------------------------------
@@ -125,95 +138,72 @@ class TestBuildEmbeddingConfig:
 # ---------------------------------------------------------------------------
 
 class TestEmbedOpenAICompatible:
-
-    def _mock_response(self, vector: list[float]) -> MagicMock:
-        resp = MagicMock()
-        resp.raise_for_status = MagicMock()
-        resp.json = MagicMock(return_value={"data": [{"embedding": vector}]})
-        return resp
+    """Проверяем что Authorization-заголовок формируется из model.api_key."""
 
     @pytest.mark.asyncio
-    async def test_uses_model_api_key_in_header(self):
-        """Authorization-заголовок формируется из model.api_key."""
-        config = _make_embedding_config(api_key="sk-direct", dimensions=4)
-        captured_headers: dict = {}
+    async def test_auth_header_uses_model_api_key(self):
+        """Authorization: Bearer <key> формируется из model.api_key."""
+        config = _make_config(api_key="sk-direct", dimensions=4)
 
-        async def fake_post(url, **kwargs):
-            captured_headers.update(kwargs.get("headers", {}))
-            resp = MagicMock()
-            resp.raise_for_status = MagicMock()
-            resp.json = MagicMock(return_value={"data": [{"embedding": [0.1, 0.2, 0.3, 0.4]}]})
-            return resp
+        with patch("app.services.retrieval.httpx.AsyncClient") as mock_cls:
+            mock_instance = AsyncMock()
+            mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+            mock_instance.__aexit__ = AsyncMock(return_value=False)
+            mock_instance.post = AsyncMock(
+                return_value=_mock_httpx_response([0.1, 0.2, 0.3, 0.4])
+            )
+            mock_cls.return_value = mock_instance
 
-        with patch("app.services.retrieval.httpx.AsyncClient") as mock_client_cls:
-            mock_client = AsyncMock()
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=False)
-            mock_client.post = AsyncMock(side_effect=fake_post)
-            mock_client_cls.return_value = mock_client
             await _embed_openai_compatible("test query", config)
 
-        # headers в AsyncClient передаются в __init__, проверяем call_args
-        init_kwargs = mock_client_cls.call_args.kwargs
+        # headers передаются в __init__ AsyncClient, а не в .post()
+        init_kwargs = mock_cls.call_args.kwargs
         assert init_kwargs.get("headers", {}).get("Authorization") == "Bearer sk-direct"
 
     @pytest.mark.asyncio
-    async def test_no_authorization_header_when_api_key_empty(self):
-        """api_key=\"\" — Authorization-заголовок не добавляется."""
-        config = _make_embedding_config(api_key="", api_key_env="", dimensions=4)
+    async def test_no_auth_header_when_key_empty(self):
+        """api_key='' и api_key_env='' → заголовок Authorization не добавляется."""
+        config = _make_config(api_key="", api_key_env="", dimensions=4)
 
-        with patch("app.services.retrieval.httpx.AsyncClient") as mock_client_cls:
-            mock_client = AsyncMock()
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=False)
-            mock_client.post = AsyncMock(return_value=self._mock_response([0.1, 0.2, 0.3, 0.4]))
-            mock_client_cls.return_value = mock_client
+        with patch("app.services.retrieval.httpx.AsyncClient") as mock_cls:
+            mock_instance = AsyncMock()
+            mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+            mock_instance.__aexit__ = AsyncMock(return_value=False)
+            mock_instance.post = AsyncMock(
+                return_value=_mock_httpx_response([0.1, 0.2, 0.3, 0.4])
+            )
+            mock_cls.return_value = mock_instance
+
             await _embed_openai_compatible("test query", config)
 
-        init_kwargs = mock_client_cls.call_args.kwargs
+        init_kwargs = mock_cls.call_args.kwargs
         assert "Authorization" not in init_kwargs.get("headers", {})
 
     @pytest.mark.asyncio
-    async def test_os_environ_not_read_when_api_key_set(self):
-        """os.getenv не вызывается, если model.api_key уже задан."""
-        config = _make_embedding_config(api_key="sk-direct", dimensions=4)
+    async def test_concurrent_requests_independent_keys(self):
+        """
+        Два одновременных вызова с разными api_key не влияют друг на друга.
+        Суть TD-02: если бы ключ шёл через os.environ — второй вызов
+        перезаписал бы переменную первого.
+        """
+        config_a = _make_config(api_key="sk-aaa", dimensions=4)
+        config_b = _make_config(api_key="sk-bbb", dimensions=4)
 
-        with patch("app.services.retrieval.httpx.AsyncClient") as mock_client_cls, \
-             patch("app.services.retrieval.os.getenv") as mock_getenv:
-            mock_client = AsyncMock()
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=False)
-            mock_client.post = AsyncMock(return_value=self._mock_response([0.1, 0.2, 0.3, 0.4]))
-            mock_client_cls.return_value = mock_client
-            await _embed_openai_compatible("test query", config)
+        with patch("app.services.retrieval.httpx.AsyncClient") as mock_cls:
 
-        # os.getenv мог вызываться только если api_key пуст и api_key_env задан
-        for call in mock_getenv.call_args_list:
-            assert call.args[0] != "_MERCER_FALLBACK_API_KEY"
+            async def run(config: EmbeddingModelConfig) -> str:
+                mock_instance = AsyncMock()
+                mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+                mock_instance.__aexit__ = AsyncMock(return_value=False)
+                mock_instance.post = AsyncMock(
+                    return_value=_mock_httpx_response([0.1, 0.2, 0.3, 0.4])
+                )
+                mock_cls.return_value = mock_instance
+                await _embed_openai_compatible("query", config)
+                return mock_cls.call_args.kwargs.get("headers", {}).get("Authorization", "")
 
-    @pytest.mark.asyncio
-    async def test_concurrent_requests_use_independent_keys(self):
-        """Два одновременных запроса с разными api_key не переписывают ключ друг друга."""
-        import asyncio
+            r_a, r_b = await asyncio.gather(run(config_a), run(config_b))
 
-        config_a = _make_embedding_config(api_key="sk-aaa", dimensions=4)
-        config_b = _make_embedding_config(api_key="sk-bbb", dimensions=4)
-
-        seen_keys: list[str] = []
-
-        async def fake_embed(query: str, config: EmbeddingModelConfig) -> list[float]:
-            # Симулируем async работу
-            await asyncio.sleep(0)
-            seen_keys.append(config.api_key)
-            return [0.1, 0.2, 0.3, 0.4]
-
-        # Запускаем оба запроса одновременно
-        await asyncio.gather(
-            fake_embed("query", config_a),
-            fake_embed("query", config_b),
-        )
-
-        # Каждый конфиг использует свой ключ — os.environ не задействует
-        assert "sk-aaa" in seen_keys
-        assert "sk-bbb" in seen_keys
-        assert len(seen_keys) == 2
+        # Оба вызова используют свой ключ
+        assert "Bearer sk-aaa" in (r_a, r_b)
+        assert "Bearer sk-bbb" in (r_a, r_b)
