@@ -207,7 +207,8 @@ class SettingsManager {
         } else if (action === 'edit-emb') {
             await this.showEmbeddingModelModal(id);
         } else if (action === 'delete-emb') {
-            if (!confirm('Удалить embedding-модель?')) return;\n            try {
+            if (!confirm('Удалить embedding-модель?')) return;
+            try {
                 await this.api.deleteEmbeddingModel(id);
                 await this.loadTab('emb-models');
             } catch (e) { alert('Ошибка: ' + e.message); }
