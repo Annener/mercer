@@ -345,7 +345,9 @@ async def send_message_stream(
 
     user_msg = Message(chat_id=chat.id, role="user", content=req.content)
     db.add(user_msg)
-    await db.flush()
+    # FIX: коммитим user_msg ДО старта стрима — иначе при обрыве соединения
+    # транзакция откатывается и вопрос пользователя теряется из истории
+    await db.commit()
 
     domain_id = await _domain_id_for_chat(chat, db) or chat.domain_id
 
@@ -448,18 +450,22 @@ async def send_message_stream(
             messages.append({"role": "user", "content": req.content})
 
             full_answer = ""
-            async for token in provider.generate_stream(messages):
-                full_answer += token
-                chunk = json.dumps({"type": "token", "content": token}, ensure_ascii=False)
-                yield f"data: {chunk}\n\n"
-
-            if full_answer:
-                assistant_msg = Message(chat_id=chat.id, role="assistant", content=full_answer)
-                db.add(assistant_msg)
-                await db.commit()
-                if chat.title == "New Chat":
-                    chat.title = _auto_title(context.original_query or req.content)
+            # FIX: try/finally гарантирует сохранение частичного ответа при обрыве соединения.
+            # Если клиент нажал «стоп» в середине генерации — накопленный текст всё равно
+            # запишется в БД, и чат не будет выглядеть пустым.
+            try:
+                async for token in provider.generate_stream(messages):
+                    full_answer += token
+                    chunk = json.dumps({"type": "token", "content": token}, ensure_ascii=False)
+                    yield f"data: {chunk}\n\n"
+            finally:
+                if full_answer:
+                    assistant_msg = Message(chat_id=chat.id, role="assistant", content=full_answer)
+                    db.add(assistant_msg)
                     await db.commit()
+                    if chat.title == "New Chat":
+                        chat.title = _auto_title(context.original_query or req.content)
+                        await db.commit()
 
             if hits:
                 sources_chunk = json.dumps(
