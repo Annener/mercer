@@ -385,15 +385,12 @@ class SettingsService:
     # ------------------------------------------------------------------
 
     def _build_embedding_config(self, model: EmbeddingModel) -> EmbeddingModelConfig:
-        """Bonvert ORM EmbeddingModel → EmbeddingModelConfig.
+        """Convert ORM EmbeddingModel → EmbeddingModelConfig.
 
-        Для openai_compatible: расшифрованный ключ прокидывается
-        через sentinel env-переменную, которую читает _embed_openai_compatible.
+        TD-02: расшифрованный ключ передаётся напрямую через api_key,
+        а не через os.environ — устраняет гонку условий при
+        конкурентных запросах с разными ключами.
         """
-        api_key_env: str | None = None
-        if model.encrypted_api_key:
-            api_key_env = "_MERCER_FALLBACK_API_KEY"
-            os.environ[api_key_env] = self.decrypt_api_key(model.encrypted_api_key)
         return EmbeddingModelConfig(
             model_id=model.model_id,
             provider=model.provider,
@@ -403,7 +400,8 @@ class SettingsService:
             timeout_seconds=model.timeout_seconds,
             max_retries=model.max_retries,
             enabled=model.enabled,
-            api_key_env=api_key_env or "",
+            api_key=self.decrypt_api_key(model.encrypted_api_key) if model.encrypted_api_key else "",
+            api_key_env="",
         )
 
     def _build_generation_provider(self, model: GenerationModel) -> GenerationProvider:
