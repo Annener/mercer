@@ -26,6 +26,22 @@ REWRITE_PROMPT = """\
 Верни ТОЛЬКО переформулированный запрос, без объяснений.
 """
 
+RETRIEVAL_REWRITE_PROMPT = """\
+Ты — помощник для формирования поисковых запросов к базе знаний.
+
+Контекст задачи поиска (цель шага):
+{step_prompt}
+
+Запрос пользователя: "{query}"
+
+Задача: сформулируй короткий поисковый запрос (1-3 предложения) который наилучшим образом \
+найдёт релевантные документы в базе знаний для выполнения задачи из контекста.
+Учитывай ключевые сущности из запроса пользователя и цель шага поиска.
+Не отвечай на запрос — только сформулируй поисковый запрос.
+
+Верни ТОЛЬКО поисковый запрос, без объяснений.
+"""
+
 
 class QueryRewriter:
     async def rewrite(
@@ -63,6 +79,41 @@ class QueryRewriter:
             return original_query
         except Exception:
             logger.warning("QueryRewriter failed, using original query", exc_info=True)
+            return original_query  # fallback — не ломаем пайплайн
+
+    async def rewrite_for_retrieval(
+        self,
+        original_query: str,
+        step_prompt: str,
+        provider,  # активный GenerationProvider
+    ) -> str:
+        """Формирует поисковый запрос для retrieval-шага пайплайна.
+
+        Используется ТОЛЬКО в PipelineExecutor._retrieve_for_step_dag().
+        Для обычного чата без пайплайна используется rewrite() выше.
+
+        Комбинирует цель шага (step_prompt) и запрос пользователя в один
+        оптимальный запрос к векторной БД.
+        """
+        prompt = RETRIEVAL_REWRITE_PROMPT.format(
+            step_prompt=step_prompt[:500],  # не перегружаем контекст модели
+            query=original_query,
+        )
+        try:
+            rewritten = await provider.generate([
+                {"role": "user", "content": prompt}
+            ])
+            rewritten = rewritten.strip()
+            if rewritten:
+                logger.debug(
+                    "RetrievalRewrite step: '%s' → '%s'",
+                    original_query[:60],
+                    rewritten[:60],
+                )
+                return rewritten
+            return original_query
+        except Exception:
+            logger.warning("rewrite_for_retrieval failed, fallback to original query", exc_info=True)
             return original_query  # fallback — не ломаем пайплайн
 
 
