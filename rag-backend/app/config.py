@@ -21,6 +21,11 @@ class EmbeddingModelConfig(BaseModel):
     enabled: bool = True
     timeout_seconds: int = 30
     max_retries: int = 3
+    # TD-02: прямая передача расшифрованного ключа — приоритет над api_key_env.
+    # api_key_env оставлен для обратной совместимости с YAML-конфигом rag-indexer,
+    # где ключ задаётся оператором через env-переменную, а не хранится в БД.
+    api_key: str = ""
+    api_key_env: str = ""
 
 
 class GenerationModelConfig(BaseModel):
