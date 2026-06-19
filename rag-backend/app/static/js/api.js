@@ -144,12 +144,17 @@ class ChatAPI {
      * POST /chat/{chatId}/pipeline_confirm
      * action: 'confirm' | 'cancel'
      * confirmToken: строка из SSE-чанка pipeline_confirm_required
+     *
+     * fix: бэк ожидает {confirm_token, confirmed: bool}, не {confirm_token, action}
      */
     async pipelineConfirm(chatId, confirmToken, action) {
         const response = await fetch(`${this.baseUrl}/chat/${chatId}/pipeline_confirm`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ confirm_token: confirmToken, action }),
+            body: JSON.stringify({
+                confirm_token: confirmToken,
+                confirmed: action === 'confirm',
+            }),
         });
         if (!response.ok) {
             let errMsg = response.statusText;
@@ -170,14 +175,18 @@ class ChatAPI {
      * action: 'resume' | 'cancel'
      * resumeToken: строка из SSE-чанка validation_required
      * feedback: выбранная пользователем опция (только для action='resume')
+     *
+     * fix: бэк ожидает {resume_token, cancelled: bool, user_feedback}, не {resume_token, action, feedback}
      */
     async pipelineResume(chatId, resumeToken, action, feedback = null) {
-        const body = { resume_token: resumeToken, action };
-        if (feedback !== null) body.feedback = feedback;
         const response = await fetch(`${this.baseUrl}/chat/${chatId}/pipeline_resume`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body),
+            body: JSON.stringify({
+                resume_token: resumeToken,
+                cancelled: action === 'cancel',
+                user_feedback: feedback ?? null,
+            }),
         });
         if (!response.ok) {
             let errMsg = response.statusText;
