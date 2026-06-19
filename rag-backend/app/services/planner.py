@@ -6,7 +6,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import AppConfig
 from app.db.models import Vault
 from app.pipelines.registry import PipelineRegistry
-from app.providers.generation import get_generation_provider, GenerationProviderUnavailableError
 from app.services.domain_service import domain_service
 from app.services.settings_service import settings_service
 from shared_contracts.models import PipelineInvocation, PlannerDecision
@@ -112,40 +111,3 @@ class Planner:
         if not allowed:
             return []
         return [field for field in self._missing_fields(query) if field in allowed]
-
-
-class LLMRAGPlanner:
-    """
-    LLM-driven декомпозитор запросов. Разбивает сложный промпт на список оптимизированных подзапросов
-    для параллельного retrieval. Возвращает fallback на исходный запрос при ошибке LLM.
-    """
-    PROMPT_TEMPLATE = """Ты агент-координатор поиска в RAG-системе для домена "{domain_id}".
-Твоя задача: проанализировать запрос пользователя и разбить его на 1-3 конкретных подзапроса для семантического поиска по базе знаний.
-Возвращай ТОЛЬКО валидный JSON в формате: {{"queries": ["запрос1", "запрос2"]}}
-Правила:
-1. Разбивай сложный запрос на независимые смысловые аспекты, которые можно искать отдельно.
-2. Не меняй смысл запроса, только оптимизируй для векторного поиска.
-3. Если запрос уже конкретен и самодостаточен, верни его один раз без изменений.
-Пример: {{"queries": ["<ключевые термины из запроса 1>", "<ключевые термины из запроса 2>"]}}"""
-
-    def __init__(self, config: AppConfig):
-        self.config = config
-
-    async def decompose(self, query: str, domain_id: str, history: list[str] | None = None) -> list[str]:
-        try:
-            provider = get_generation_provider(self.config)
-            system_prompt = self.PROMPT_TEMPLATE.format(domain_id=domain_id or "general")
-            context_hint = f"Последние сообщения чата: {history[-2:]}" if history else ""
-            full_prompt = f"{system_prompt}\n\nКонтекст чата:\n{context_hint}\n\nЗапрос пользователя:\n{query}"
-            
-            result = await provider.generate_json(
-                messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": full_prompt}],
-                fallback={"queries": [query]}
-            )
-            queries = result.get("queries", [])
-            if isinstance(queries, list) and queries:
-                logger.info(f"LLM decomposed query into {len(queries)} sub-queries")
-                return [q.strip() for q in queries if q.strip()]
-        except (GenerationProviderUnavailableError, Exception) as e:
-            logger.warning(f"LLRAGPlanner decomposition failed: {e}")
-        return [query]
