@@ -365,6 +365,10 @@ class SidebarManager {
      * Блокирует селектор кампании, отображая кампанию привязанную к текущему чату.
      * Вызывается при открытии чата у которого есть campaign_id И есть сообщения,
      * а также после первого ответа в новом чате с кампанией.
+     *
+     * FIX: теперь синхронизирует this.currentCampaignId с campaignId чата,
+     * чтобы createChatForCurrentDomain() брал правильное значение при создании
+     * нового чата после просмотра заблокированного.
      */
     lockCampaignToChat(campaignId) {
         const select = this.campaignSelect;
@@ -373,6 +377,9 @@ class SidebarManager {
         if (select.querySelector(`option[value="${campaignId}"]`)) {
             select.value = campaignId;
         }
+        // Синхронизируем внутреннее состояние с кампанией чата
+        this.currentCampaignId = campaignId;
+        _storage.setItem('currentCampaignId', campaignId);
         this.applyLockStyle(true);
     }
 
