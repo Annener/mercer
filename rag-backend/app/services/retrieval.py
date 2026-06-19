@@ -340,10 +340,10 @@ async def retrieve_multi_vault(
     config: AppConfig | None = None,
     db: AsyncSession | None = None,
 ) -> list[SearchHit]:
-    """Ищет во всех указанных vault'ах, объединяет результаты, сортирует по score, возвращает top_k.
+    """\u0418\u0449\u0435\u0442 \u0432\u043e \u0432\u0441\u0435\u0445 \u0443\u043a\u0430\u0437\u0430\u043d\u043d\u044b\u0445 vault'\u0430\u0445, \u043e\u0431\u044a\u0435\u0434\u0438\u043d\u044f\u0435\u0442 \u0440\u0435\u0437\u0443\u043b\u044c\u0442\u0430\u0442\u044b, \u0441\u043e\u0440\u0442\u0438\u0440\u0443\u0435\u0442 \u043f\u043e score, \u0432\u043e\u0437\u0432\u0440\u0430\u0449\u0430\u0435\u0442 top_k.
 
-    Если vault'ы используют разные embedding-модели (напр. разные dimensions),
-    каждый vault решается отдельно.
+    \u0415\u0441\u043b\u0438 vault'\u044b \u0438\u0441\u043f\u043e\u043b\u044c\u0437\u0443\u044e\u0442 \u0440\u0430\u0437\u043d\u044b\u0435 embedding-\u043c\u043e\u0434\u0435\u043b\u0438 (\u043d\u0430\u043f\u0440. \u0440\u0430\u0437\u043d\u044b\u0435 dimensions),
+    \u043a\u0430\u0436\u0434\u044b\u0439 vault \u0440\u0435\u0448\u0430\u0435\u0442\u0441\u044f \u043e\u0442\u0434\u0435\u043b\u044c\u043d\u043e.
     """
     if not vault_ids:
         return []
@@ -501,9 +501,14 @@ async def _embed_ollama(query: str, model: EmbeddingModelConfig) -> list[float]:
 
 
 async def _embed_openai_compatible(query: str, model: EmbeddingModelConfig) -> list[float]:
+    """TD-02: ключ берётся напрямую из model.api_key, а не через os.getenv.
+    Это устраняет гонку условий при конкурентных запросах с разными api_key.
+    Фоллбэк на api_key_env оставлен для обратной совместимости с yaml-конфигами rag-indexer.
+    """
     last_error: Exception | None = None
-    api_key_env = getattr(model, "api_key_env", "OPENAI_API_KEY")
-    headers = {"Authorization": f"Bearer {os.getenv(api_key_env, '')}"}
+    # Приоритет: model.api_key (расшифрован из БД), фоллбэк: api_key_env (для yaml-пути)
+    api_key = model.api_key or os.getenv(model.api_key_env, "") if model.api_key_env else model.api_key
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
     for attempt in range(model.max_retries):
         try:
             async with httpx.AsyncClient(timeout=_timeout(model), headers=headers) as client:
@@ -595,17 +600,15 @@ async def _rerank_single_ollama(
     Один запрос к Ollama для одного документа.
     Возвращает (idx, score) — индекс нужен для сборки результатов после asyncio.gather.
 
-    semaphore ограничивает параллелизм: Ollama обрабатывает запросы последовательно,
-    поэтому N параллельных запросов → каждый ждёт N*T секунд → таймаут.
+    semaphore ограничивает параллелизм: Ollama обрабатывает запросы к одной модели последовательно.
     По умолчанию concurrency=1 (строго последовательно).
 
     num_predict ограничивает длину ответа: без него Qwen3-Reranker уходит в
-    бесконечный <think>...</think> блок и никогда не выдаёт финальный yes/no.
-    Достаточно 32 токенов — весь полезный ответ умещается в 1-3 токена.
+    бесконечный <think>...</think> блок.
     """
     prompt = _OLLAMA_RERANK_PROMPT_TEMPLATE.format(
         query=query,
-        document=document[:2000],  # обрезаем чтобы не превышать контекст
+        document=document[:2000],
     )
     async with semaphore:
         try:
@@ -640,17 +643,10 @@ async def _rerank_single_ollama(
 async def _rerank_hits_ollama(
     query: str,
     hits: list[SearchHit],
-    model: Any,  # RerankModel ORM-объект
+    model: Any,
 ) -> list[SearchHit]:
     """
     Ollama-реранжирование с ограниченным параллелизмом через asyncio.Semaphore.
-
-    Ollama обрабатывает запросы к одной модели последовательно — запуск N задач
-    через asyncio.gather без ограничения приводит к тому, что каждая задача ждёт
-    (N-1) других и превышает timeout. Semaphore гарантирует не более
-    RERANK_OLLAMA_CONCURRENCY одновременных HTTP-запросов.
-
-    timeout у httpx.AsyncClient покрывает время одного запроса (не всех N).
     """
     documents = [h.text for h in hits]
     base_url = model.base_url or ""
@@ -695,7 +691,7 @@ async def rerank_hits(
         logger.info("RERANK_HITS skipped: empty hits list")
         return hits
 
-    # ── Ollama: генеративный режим ────────────────────────────────────────────
+    # ── Ollama: генеративный режим ───────────────────────────────────────────
     if model.provider == "ollama":
         try:
             return await _rerank_hits_ollama(query, hits, model)
@@ -707,8 +703,6 @@ async def rerank_hits(
     documents = [h.text for h in hits]
     api_key = settings_service.decrypt_api_key(model.encrypted_api_key) if model.encrypted_api_key else ""
 
-    # Не добавляем заголовок Authorization если api_key пустой —
-    # httpx бросает LocalProtocolError на значении b'Bearer '
     headers: dict[str, str] = {}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
@@ -723,7 +717,6 @@ async def rerank_hits(
         )
         response.raise_for_status()
 
-    # Поддерживаем разные форматы ответа провайдеров
     data = response.json()
     results = data.get("results") or data.get("data") or []
     scored: list[tuple[float, SearchHit]] = []
