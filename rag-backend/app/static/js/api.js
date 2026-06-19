@@ -80,29 +80,6 @@ class ChatAPI {
     }
 
     /**
-     * Сохраняет частичный (прерванный) диалог в историю чата.
-     * Вызывается фронтом после abort(), если накоплен fullContent.
-     * @param {string} chatId
-     * @param {string} userContent   — текст вопроса пользователя
-     * @param {string} assistantContent — накопленный частичный ответ
-     */
-    async savePartialMessage(chatId, userContent, assistantContent) {
-        const response = await fetch(`${this.baseUrl}/chat/${chatId}/save_partial`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                user_content: userContent,
-                assistant_content: assistantContent,
-            }),
-        });
-        // Не бросаем исключение при ошибке — это best-effort сохранение
-        if (!response.ok) {
-            console.warn('savePartialMessage failed:', response.status, response.statusText);
-        }
-        return response.ok;
-    }
-
-    /**
      * @param {string} chatId
      * @param {string} content
      * @param {boolean} stream
