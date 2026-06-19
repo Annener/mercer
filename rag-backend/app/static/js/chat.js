@@ -129,6 +129,9 @@ function renderGroupedSources(stepGroups, answerText) {
 const LOCK_ICON_CLOSED = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>`;
 const LOCK_ICON_OPEN = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/></svg>`;
 
+// SVG иконка «стоп» для кнопки прерывания генерации
+const STOP_ICON = `<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>`;
+
 // ============================================================
 // Pipeline inline-карточки (Этап 10)
 // ============================================================
@@ -317,6 +320,7 @@ class ChatManager {
         this.isStreaming = false;
         this._renderScheduled = false;
         this._streamingDone = false; // флаг: стрим завершён, RAF не должен перезаписывать
+        this._abortController = null; // текущий AbortController для активной генерации
         this.messagesContainer = document.getElementById('messages-container');
         this.inputArea = document.getElementById('input-area');
         this.messageInput = document.getElementById('message-input');
@@ -332,8 +336,51 @@ class ChatManager {
         this.initEventListeners();
     }
 
+    // -------------------------------------------------------
+    // Stop / Send button toggle
+    // -------------------------------------------------------
+
+    /**
+     * Переключает кнопку в режим «Остановить».
+     * Создаёт новый AbortController и возвращает его signal.
+     * @returns {AbortSignal}
+     */
+    _setStopMode() {
+        this._abortController = new AbortController();
+        if (this.sendBtn) {
+            this.sendBtn.classList.add('btn-stop');
+            this.sendBtn.setAttribute('aria-label', 'Остановить генерацию');
+            this.sendBtn.title = 'Остановить генерацию';
+            this.sendBtn.innerHTML = `${STOP_ICON}<span>Стоп</span>`;
+            this.sendBtn.disabled = false;
+        }
+        return this._abortController.signal;
+    }
+
+    /**
+     * Возвращает кнопку в исходный режим «Отправить».
+     * Сбрасывает AbortController.
+     */
+    _resetToSendMode() {
+        this._abortController = null;
+        if (this.sendBtn) {
+            this.sendBtn.classList.remove('btn-stop');
+            this.sendBtn.removeAttribute('aria-label');
+            this.sendBtn.title = '';
+            this.sendBtn.innerHTML = 'Отправить';
+            this.sendBtn.disabled = false;
+        }
+    }
+
     initEventListeners() {
-        this.sendBtn?.addEventListener('click', () => this.sendMessage());
+        this.sendBtn?.addEventListener('click', () => {
+            // Если идёт генерация — прерываем, иначе — отправляем
+            if (this.isStreaming && this._abortController) {
+                this._abortController.abort();
+            } else {
+                this.sendMessage();
+            }
+        });
         this.messageInput?.addEventListener('keydown', (e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
@@ -376,25 +423,28 @@ class ChatManager {
         }
         this.addMessage('user', content);
         this._lastUserMessage = content;
-        this.sendBtn.disabled = true;
         this.isStreaming = true;
+        const signal = this._setStopMode();
         try {
-            const response = await chatAPI.sendMessage(this.currentChatId, content, true);
+            const response = await chatAPI.sendMessage(this.currentChatId, content, true, signal);
             if (response instanceof ReadableStream) {
-                await this.handleStreamResponse(response);
+                await this.handleStreamResponse(response, signal);
             } else {
                 this.handleJSONResponse(response);
             }
         } catch (error) {
-            console.error('Failed to send message:', error);
-            if (error.message.includes('LLM service unavailable') || error.status === 503 || error.message.includes('generation model')) {
+            // AbortError — пользователь нажал «Стоп», это ожидаемо, не показываем ошибку
+            if (error.name === 'AbortError') {
+                // ничего не делаем — стрим уже мог частично отрисоваться, это нормально
+            } else if (error.message.includes('LLM service unavailable') || error.status === 503 || error.message.includes('generation model')) {
                 this.addMessage('system', 'Генеративная модель не настроена или недоступна. Перейдите в Настройки → Генеративные модели.');
             } else {
+                console.error('Failed to send message:', error);
                 this.addMessage('system', `Ошибка: ${error.message}`);
             }
         } finally {
-            this.sendBtn.disabled = false;
             this.isStreaming = false;
+            this._resetToSendMode();
         }
     }
 
@@ -405,8 +455,11 @@ class ChatManager {
      *   validation_required       → createValidationCard()
      *   pipeline_resumed          → createPipelineStatusLine('pipeline_resumed', ...)
      *   pipeline_cancelled        → createPipelineStatusLine('pipeline_cancelled', ...)
+     *
+     * @param {ReadableStream} stream
+     * @param {AbortSignal|null} signal — пробрасывается из sendMessage()
      */
-    async handleStreamResponse(stream) {
+    async handleStreamResponse(stream, signal = null) {
         const reader = stream.getReader();
         const decoder = new TextDecoder();
         let assistantMessage = null;
@@ -422,7 +475,7 @@ class ChatManager {
         const handleNestedStream = async (nestedStream) => {
             this.isStreaming = true;
             try {
-                await this.handleStreamResponse(nestedStream);
+                await this.handleStreamResponse(nestedStream, signal);
             } finally {
                 this.isStreaming = false;
             }
@@ -430,6 +483,9 @@ class ChatManager {
 
         try {
             while (!streamDone) {
+                // Если сигнал сброшен — выходим из цикла чисто
+                if (signal && signal.aborted) break;
+
                 const { done, value } = await reader.read();
                 if (done) break;
                 const chunk = decoder.decode(value, { stream: true });
@@ -512,8 +568,14 @@ class ChatManager {
                 }
             }
         } catch (error) {
-            console.error('Stream error:', error);
-            if (!assistantMessage) this.addMessage('system', 'Ошибка при получении ответа');
+            // AbortError от reader.read() при abort() — не показываем ошибку
+            if (error.name !== 'AbortError') {
+                console.error('Stream error:', error);
+                if (!assistantMessage) this.addMessage('system', 'Ошибка при получении ответа');
+            }
+        } finally {
+            // Освобождаем ридер в любом случае (в том числе при abort)
+            try { reader.cancel(); } catch (_) { /* ignore */ }
         }
 
         // Стрим завершён — запрещаем новые RAF-рендеры чтобы они не стёрли источники
@@ -538,7 +600,8 @@ class ChatManager {
 
         this.scrollToBottom();
 
-        if (window.sidebarManager) {
+        // Обновляем заголовок чата только если генерация не была прервана
+        if (!(signal && signal.aborted) && window.sidebarManager) {
             await window.sidebarManager.loadChats();
             try {
                 const chatData = await chatAPI.getChat(this.currentChatId);

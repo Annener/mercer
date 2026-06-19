@@ -277,6 +277,32 @@
     border-color: #3498db;
 }
 
+/* === Stop button (режим генерации) === */
+#send-btn.btn-stop {
+    background-color: #e74c3c;
+    border-color: #c0392b;
+    color: #fff;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    animation: pulse-stop 1.4s ease-in-out infinite;
+}
+
+#send-btn.btn-stop:hover {
+    background-color: #c0392b;
+    border-color: #a93226;
+}
+
+#send-btn.btn-stop:active {
+    background-color: #a93226;
+    transform: scale(0.97);
+}
+
+@keyframes pulse-stop {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(231, 76, 60, 0.4); }
+    50%       { box-shadow: 0 0 0 5px rgba(231, 76, 60, 0); }
+}
+
 /* === Status banner === */
 .status-banner {
     margin: 0 30px 12px;

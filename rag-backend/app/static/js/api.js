@@ -79,17 +79,25 @@ class ChatAPI {
         return response.json();
     }
 
-    async sendMessage(chatId, content, stream = true) {
+    /**
+     * @param {string} chatId
+     * @param {string} content
+     * @param {boolean} stream
+     * @param {AbortSignal|null} signal — опциональный сигнал для прерывания запроса
+     */
+    async sendMessage(chatId, content, stream = true, signal = null) {
         const url = stream
             ? `${this.baseUrl}/chat/${chatId}/send_stream`
             : `${this.baseUrl}/chat/${chatId}/send`;
         // C25-A fix: при stream=true добавляем stream:true в body (SendMessageRequest требует это поле)
         const body = stream ? { content, stream: true } : { content };
-        const response = await fetch(url, {
+        const fetchOptions = {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body),
-        });
+        };
+        if (signal) fetchOptions.signal = signal;
+        const response = await fetch(url, fetchOptions);
         if (!response.ok) {
             let errMsg = response.statusText;
             try {
