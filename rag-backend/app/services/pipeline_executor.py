@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Chat
 from app.services.pipeline_dag import get_execution_levels
+from app.services.query_rewriter import query_rewriter
 from app.services.retrieval import (
     format_context_with_role,
     get_document_ids_by_tags,
@@ -37,7 +38,7 @@ _VALIDATION_TTL = timedelta(hours=1)
 # =============================================================================
 
 def _build_levels(steps: list[PipelineStep]) -> list[list[PipelineStep]]:
-    """Shim: перенаправляет вызов в get_execution_levels() из pipeline_dag.
+    """Схим: перенаправляет вызов в get_execution_levels() из pipeline_dag.
 
     Оставлен для обратной совместимости импорта в тестах.
     Используйте get_execution_levels() напрямую в новом коде.
@@ -147,6 +148,10 @@ class PipelineExecutor:
                 if stop:
                     return
 
+        logger.info(
+            "All DAG levels complete, starting final_composition. step_results keys=%s",
+            list(ctx.step_results.keys()),
+        )
         async for chunk in self._run_final_composition(ctx, provider):
             yield chunk
 
@@ -161,7 +166,16 @@ class PipelineExecutor:
                 yield chunk
             return
 
-        hits = await self._retrieve_for_step_dag(step, ctx)
+        try:
+            hits = await self._retrieve_for_step_dag(step, ctx, provider)
+        except Exception as exc:
+            logger.error(
+                "Step retrieval error: step=%s err=%s", step.step_id, exc, exc_info=True
+            )
+            ctx.step_results[step.step_id] = ""
+            yield {"type": "step_error", "step_id": step.step_id, "message": str(exc)}
+            return
+
         if not hits:
             # Не перезаписываем результат, если он уже установлен
             # (например, передан через context_snapshot при resume или в тесте).
@@ -261,8 +275,13 @@ class PipelineExecutor:
         self,
         step: PipelineStep,
         ctx: PipelineExecutionContext,
+        provider: Any,
     ) -> list[SearchHit]:
-        """Retrieval для DAG-шага через ctx.vault_ids + step.tag_ids."""
+        """Ретривал для DAG-шага.
+
+        Поисковый запрос формируется через rewrite_for_retrieval: комбинируются цель шага
+        (step.system_prompt) и запрос пользователя в оптимальный векторный запрос.
+        """
         top_k = step.top_k or int(await settings_service.get("retrieval.top_k"))
         vault_ids: list[str] = ctx.vault_ids or []
 
@@ -281,9 +300,22 @@ class PipelineExecutor:
                 logger.info("Step skipped: no indexed docs for tag_ids. step=%s", step.step_id)
                 return []
 
+        # Формируем поисковый запрос: резолвим плейсхолдеры в промте шага и перепишем через LLM
+        step_prompt = _resolve_prompt(step.system_prompt or "", ctx)
+        search_query = await query_rewriter.rewrite_for_retrieval(
+            ctx.query,
+            step_prompt,
+            provider,
+        )
+        logger.info(
+            "RETRIEVE step=%s search_query='%s'",
+            step.step_id,
+            search_query[:120],
+        )
+
         if len(vault_ids) == 1:
-            return await retrieve(ctx.query, vault_ids[0], document_ids=document_ids, top_k=top_k, db=self.db)
-        return await retrieve_multi_vault(ctx.query, vault_ids, document_ids=document_ids, top_k=top_k, db=self.db)
+            return await retrieve(search_query, vault_ids[0], document_ids=document_ids, top_k=top_k, db=self.db)
+        return await retrieve_multi_vault(search_query, vault_ids, document_ids=document_ids, top_k=top_k, db=self.db)
 
     async def _save_pause_state(
         self,
