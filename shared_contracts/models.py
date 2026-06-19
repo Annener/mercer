@@ -510,6 +510,7 @@ class ChatRecord(ORMModel):
     vault_id: str | None = None   # TODO(iter4-cleanup): удалить после полного перехода фронта на domain_id
     domain_id: str | None = None
     campaign_id: str | None = None
+    locked_pipeline_id: str | None = None  # fix: поле отсутствовало — фронт не получал значение после lock
     created_at: datetime
     updated_at: datetime
 
