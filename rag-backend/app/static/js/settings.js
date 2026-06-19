@@ -207,8 +207,7 @@ class SettingsManager {
         } else if (action === 'edit-emb') {
             await this.showEmbeddingModelModal(id);
         } else if (action === 'delete-emb') {
-            if (!confirm('Удалить embedding-модель?')) return;
-            try {
+            if (!confirm('Удалить embedding-модель?')) return;\n            try {
                 await this.api.deleteEmbeddingModel(id);
                 await this.loadTab('emb-models');
             } catch (e) { alert('Ошибка: ' + e.message); }
@@ -312,6 +311,10 @@ document.addEventListener('DOMContentLoaded', async () => {
             btn.addEventListener('click', async () => {
                 tabNav.querySelectorAll('[data-tab]').forEach(b => b.classList.remove('active'));
                 btn.classList.add('active');
+                // fix: синхронизируем currentTab при клике, иначе _onSave-коллбэки
+                // из PipelineBuilder/модалей после сохранения вызывают
+                // loadTab(this.currentTab) с устаревшим значением 'domains'.
+                window.settingsManager.currentTab = btn.dataset.tab;
                 await window.settingsManager.loadTab(btn.dataset.tab);
             });
         });
