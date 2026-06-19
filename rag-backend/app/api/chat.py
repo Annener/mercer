@@ -15,7 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Campaign, Chat, ClarificationStateRow, Message
-from app.db.session import get_db
+from app.db.session import get_db, async_session_factory
 from app.services.domain_service import domain_service
 from app.services.pipeline_executor import PipelineExecutor
 from app.services.pipeline_router import PipelineRouter
@@ -91,6 +91,12 @@ class MessageResponse(BaseModel):
 
 class PipelineLockRequest(BaseModel):
     pipeline_id: str | None = None
+
+
+class SavePartialRequest(BaseModel):
+    """Сохранение частичного ответа ассистента при прерывании стрима клиентом."""
+    user_content: str
+    assistant_content: str
 
 
 @router.post("/create", response_model=CreateChatResponse)
@@ -218,6 +224,42 @@ async def lock_pipeline(
     return {"status": "ok", "locked_pipeline_id": req.pipeline_id}
 
 
+@router.post("/{chat_id}/save_partial", response_model=dict)
+async def save_partial_message(
+    chat_id: str,
+    req: SavePartialRequest,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """
+    Сохраняет пару user+assistant сообщений при прерывании стрима клиентом (кнопка «Стоп»).
+    Вызывается фронтендом после abort(), когда есть накопленный частичный ответ.
+    Идемпотентен: если сообщения уже были сохранены бэком в БД — дубликаты не создаются
+    (фронт проверяет наличие fullContent перед вызовом).
+    """
+    chat = await _get_chat_or_404(chat_id, db)
+
+    # Сохраняем только если есть хоть что-то
+    if req.user_content.strip():
+        user_msg = Message(chat_id=chat.id, role="user", content=req.user_content)
+        db.add(user_msg)
+
+    if req.assistant_content.strip():
+        assistant_msg = Message(
+            chat_id=chat.id,
+            role="assistant",
+            content=req.assistant_content + " _(ответ прерван)_",
+        )
+        db.add(assistant_msg)
+
+    if chat.title == "New Chat" and req.user_content.strip():
+        chat.title = _auto_title(req.user_content)
+
+    await db.commit()
+    logger.info("Saved partial message: chat_id=%s user_len=%d assistant_len=%d",
+                chat_id, len(req.user_content), len(req.assistant_content))
+    return {"status": "ok"}
+
+
 @router.post("/{chat_id}/send", response_model=MessageResponse)
 async def send_message(
     chat_id: str,
@@ -343,9 +385,10 @@ async def send_message_stream(
 
     chat = await _get_chat_or_404(chat_id, db)
 
+    # ── Сохраняем user_msg сразу (commit), чтобы он не потерялся при abort ──
     user_msg = Message(chat_id=chat.id, role="user", content=req.content)
     db.add(user_msg)
-    await db.flush()
+    await db.commit()  # commit сразу — не flush
 
     domain_id = await _domain_id_for_chat(chat, db) or chat.domain_id
 
@@ -419,6 +462,11 @@ async def send_message_stream(
             "No pipeline found for domain_id=%s — falling back to plain LLM stream", domain_id
         )
 
+        # Захватываем chat_id для сохранения в finally (сессия db может быть закрыта)
+        _chat_id = chat.id
+        _chat_title = chat.title
+        _original_query = context.original_query or req.content
+
         async def plain_stream() -> AsyncIterator[str]:
             provider = settings_service.get_active_provider()
             if provider is None:
@@ -448,31 +496,60 @@ async def send_message_stream(
             messages.append({"role": "user", "content": req.content})
 
             full_answer = ""
-            async for token in provider.generate_stream(messages):
-                full_answer += token
-                chunk = json.dumps({"type": "token", "content": token}, ensure_ascii=False)
-                yield f"data: {chunk}\n\n"
+            completed = False
+            try:
+                async for token in provider.generate_stream(messages):
+                    full_answer += token
+                    chunk = json.dumps({"type": "token", "content": token}, ensure_ascii=False)
+                    yield f"data: {chunk}\n\n"
 
-            if full_answer:
-                assistant_msg = Message(chat_id=chat.id, role="assistant", content=full_answer)
-                db.add(assistant_msg)
-                await db.commit()
-                if chat.title == "New Chat":
-                    chat.title = _auto_title(context.original_query or req.content)
-                    await db.commit()
+                # Стрим завершился нормально — сохраняем полный ответ
+                completed = True
+                if full_answer:
+                    async with async_session_factory() as save_db:
+                        assistant_msg = Message(chat_id=_chat_id, role="assistant", content=full_answer)
+                        save_db.add(assistant_msg)
+                        if _chat_title == "New Chat":
+                            save_chat = await save_db.get(Chat, _chat_id)
+                            if save_chat:
+                                save_chat.title = _auto_title(_original_query)
+                        await save_db.commit()
 
-            if hits:
-                sources_chunk = json.dumps(
-                    {
-                        "type": "sources",
-                        "grouped_by_step": False,
-                        "sources": _hits_to_sources(hits),
-                    },
-                    ensure_ascii=False,
-                )
-                yield f"data: {sources_chunk}\n\n"
+                if hits:
+                    sources_chunk = json.dumps(
+                        {
+                            "type": "sources",
+                            "grouped_by_step": False,
+                            "sources": _hits_to_sources(hits),
+                        },
+                        ensure_ascii=False,
+                    )
+                    yield f"data: {sources_chunk}\n\n"
 
-            yield "data: [DONE]\n\n"
+                yield "data: [DONE]\n\n"
+
+            except (GeneratorExit, asyncio.CancelledError):
+                # Клиент разорвал соединение (abort) — сохраняем накопленное
+                # Фронт также вызовет /save_partial, но дублирования нет:
+                # фронт сохраняет только если есть fullContent на клиенте,
+                # здесь мы сохраняем то что накопил генератор на сервере.
+                if full_answer and not completed:
+                    logger.info(
+                        "Stream aborted by client, saving partial answer: chat_id=%s len=%d",
+                        _chat_id, len(full_answer),
+                    )
+                    try:
+                        async with async_session_factory() as save_db:
+                            assistant_msg = Message(
+                                chat_id=_chat_id,
+                                role="assistant",
+                                content=full_answer + " _(ответ прерван)_",
+                            )
+                            save_db.add(assistant_msg)
+                            await save_db.commit()
+                    except Exception as e:
+                        logger.warning("Failed to save partial answer: %s", e)
+                raise
 
         return StreamingResponse(plain_stream(), media_type="text/event-stream")
 
