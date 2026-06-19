@@ -270,6 +270,3 @@ class PipelineRouter:
             )
         )
         await db.commit()
-
-
-pipeline_router = PipelineRouter.__new__(PipelineRouter)
