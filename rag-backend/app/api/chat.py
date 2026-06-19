@@ -93,6 +93,30 @@ class PipelineLockRequest(BaseModel):
     pipeline_id: str | None = None
 
 
+async def _save_partial_answer(
+    db: AsyncSession,
+    chat: Chat,
+    full_answer: str,
+    title_query: str,
+) -> None:
+    """Сохраняем частичный ответ модели в БД, защищая commit от CancelledError.
+
+    asyncio.shield() предотвращает отмену db.commit() даже если
+    родительская asyncio-таска уже отменена (client disconnect).
+    """
+    if not full_answer:
+        return
+    try:
+        assistant_msg = Message(chat_id=chat.id, role="assistant", content=full_answer)
+        db.add(assistant_msg)
+        await asyncio.shield(db.commit())
+        if chat.title == "New Chat":
+            chat.title = _auto_title(title_query)
+            await asyncio.shield(db.commit())
+    except Exception:
+        logger.exception("Failed to persist partial assistant answer chat_id=%s", chat.id)
+
+
 @router.post("/create", response_model=CreateChatResponse)
 async def create_chat(
     req: CreateChatRequest,
@@ -249,7 +273,7 @@ async def send_message(
         chat_id=str(chat.id),
         message_id=str(user_msg.id),
         query=req.content,
-        original_query=req.content,  # сохраняем оригинал до переформулировки
+        original_query=req.content,
         domain_id=domain_id,
         campaign_id=str(chat.campaign_id) if chat.campaign_id else None,
         vault_id=chat.vault_id,
@@ -257,7 +281,6 @@ async def send_message(
         retrieval_strategy=retrieval_strategy,
     )
 
-    # Шаг 8: загружаем историю ДО rewriting, чтобы rewriter мог её использовать
     history_stmt = select(Message).where(Message.chat_id == chat.id).order_by(Message.created_at).limit(20)
     history_result = await db.execute(history_stmt)
     context.history = [
@@ -271,7 +294,6 @@ async def send_message(
         for m in history_result.scalars().all()
     ]
 
-    # ★ QUERY REWRITING — переформулируем запрос перед retrieval
     provider = settings_service.get_active_provider()
     if provider:
         from app.db.models import Domain as DomainModel
@@ -287,7 +309,6 @@ async def send_message(
             provider=provider,
             domain_description=domain_description,
         )
-    # ★ КОНЕЦ QUERY REWRITING
 
     pipeline_router = PipelineRouter(db)
     pipeline = await pipeline_router.select(
@@ -345,8 +366,8 @@ async def send_message_stream(
 
     user_msg = Message(chat_id=chat.id, role="user", content=req.content)
     db.add(user_msg)
-    # FIX: коммитим user_msg ДО старта стрима — иначе при обрыве соединения
-    # транзакция откатывается и вопрос пользователя теряется из истории
+    # коммитим user_msg ДО старта стрима: при обрыве соединения
+    # вопрос пользователя всегда сохраняется в истории
     await db.commit()
 
     domain_id = await _domain_id_for_chat(chat, db) or chat.domain_id
@@ -367,7 +388,7 @@ async def send_message_stream(
         chat_id=str(chat.id),
         message_id=str(user_msg.id),
         query=req.content,
-        original_query=req.content,  # сохраняем оригинал до переформулировки
+        original_query=req.content,
         domain_id=domain_id,
         campaign_id=str(chat.campaign_id) if chat.campaign_id else None,
         vault_ids=vault_ids,
@@ -375,7 +396,6 @@ async def send_message_stream(
         retrieval_strategy=retrieval_strategy,
     )
 
-    # Шаг 8: загружаем историю ДО rewriting, чтобы rewriter мог её использовать
     history_stmt = select(Message).where(Message.chat_id == chat.id).order_by(Message.created_at).limit(20)
     history_result = await db.execute(history_stmt)
     context.history = [
@@ -389,7 +409,6 @@ async def send_message_stream(
         for m in history_result.scalars().all()
     ]
 
-    # ★ QUERY REWRITING — переформулируем запрос перед retrieval
     provider = settings_service.get_active_provider()
     if provider:
         from app.db.models import Domain as DomainModel
@@ -405,7 +424,6 @@ async def send_message_stream(
             provider=provider,
             domain_description=domain_description,
         )
-    # ★ КОНЕЦ QUERY REWRITING
 
     pipeline_router = PipelineRouter(db)
     pipeline = await pipeline_router.select(
@@ -422,8 +440,8 @@ async def send_message_stream(
         )
 
         async def plain_stream() -> AsyncIterator[str]:
-            provider = settings_service.get_active_provider()
-            if provider is None:
+            _provider = settings_service.get_active_provider()
+            if _provider is None:
                 error_data = json.dumps({"type": "error", "message": "No LLM provider configured"}, ensure_ascii=False)
                 yield f"data: {error_data}\n\n"
                 yield "data: [DONE]\n\n"
@@ -432,7 +450,7 @@ async def send_message_stream(
             system_prompt = await _resolve_system_prompt(context.campaign_id, domain_id, db)
 
             hits: list[SearchHit] = await _fallback_retrieve(
-                query=context.query,  # используем переформулированный запрос для retrieval
+                query=context.query,
                 vault_ids=vault_ids,
                 domain_id=domain_id,
                 campaign_id=context.campaign_id,
@@ -450,22 +468,23 @@ async def send_message_stream(
             messages.append({"role": "user", "content": req.content})
 
             full_answer = ""
-            # FIX: try/finally гарантирует сохранение частичного ответа при обрыве соединения.
-            # Если клиент нажал «стоп» в середине генерации — накопленный текст всё равно
-            # запишется в БД, и чат не будет выглядеть пустым.
+            cancelled = False
             try:
-                async for token in provider.generate_stream(messages):
+                async for token in _provider.generate_stream(messages):
                     full_answer += token
                     chunk = json.dumps({"type": "token", "content": token}, ensure_ascii=False)
                     yield f"data: {chunk}\n\n"
+            except asyncio.CancelledError:
+                # Клиент оборвал соединение — сохраняем накопленное и выходим чисто
+                cancelled = True
             finally:
-                if full_answer:
-                    assistant_msg = Message(chat_id=chat.id, role="assistant", content=full_answer)
-                    db.add(assistant_msg)
-                    await db.commit()
-                    if chat.title == "New Chat":
-                        chat.title = _auto_title(context.original_query or req.content)
-                        await db.commit()
+                # asyncio.shield() защищает commit от отмены родительской таски
+                await _save_partial_answer(
+                    db, chat, full_answer,
+                    title_query=context.original_query or req.content,
+                )
+                if cancelled:
+                    return
 
             if hits:
                 sources_chunk = json.dumps(
@@ -494,7 +513,6 @@ async def send_message_stream(
     confirm_token = secrets.token_urlsafe(32)
     expires_at = datetime.now(UTC) + _CONFIRM_TTL
 
-    # pipeline_name — берём из объекта пайплайна (атрибут name, если есть, иначе pipeline_id)
     pipeline_name: str = getattr(pipeline, "name", None) or pipeline.pipeline_id
 
     chat.pending_pipeline_confirm = _build_confirm_payload(
@@ -556,7 +574,6 @@ def _build_confirm_payload(
         "pipeline_id": pipeline_id,
         "pipeline_name": pipeline_name,
         "expires_at": expires_at.isoformat(),
-        # Полный снапшот контекста — восстанавливается в pipeline_resume._restore_context()
         "context_snapshot": context.model_dump(mode="json"),
     }
 
@@ -696,7 +713,7 @@ async def _plain_llm_reply(
 
     vault_ids: list[str] = getattr(context, "vault_ids", []) or []
     hits: list[SearchHit] = await _fallback_retrieve(
-        query=context.query,  # используем переформулированный запрос для retrieval
+        query=context.query,
         vault_ids=vault_ids,
         domain_id=domain_id,
         campaign_id=context.campaign_id,
