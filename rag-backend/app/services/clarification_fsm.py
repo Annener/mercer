@@ -128,6 +128,9 @@ def generate_next_question(
 ) -> str:
     labels = [FIELD_LABELS.get(field, field) for field in missing_fields]
     template = prompt_pack.get("clarification", "Уточните, пожалуйста: {missing_fields}")
+    # TODO(TD-04): мигрировать на resolve_step_vars. Требует переименования плейсхолдеров
+    # в шаблоне «clarification» в PromptPack: {missing_fields} → {STEP.result}, {collected_fields} → {STEP.key}.
+    # После этого удалить format_prompt и _stringify из prompt_pack.py.
     return format_prompt(
         template,
         {
