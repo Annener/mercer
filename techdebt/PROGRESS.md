@@ -11,8 +11,8 @@
 | TD-05 | decide() дублирует select() | 🟡 | ✅ Готово | 1eaf053 | Удалёны decide() + _chat_history(), 3 импорта |
 | TD-06 | Пустая дир app/planners/ | 🟡 | ✅ Готово | 83d3773 | Удалён пустой __init__.py, директория убрана |
 | TD-07 | Дубликация format_context | 🟠 | ✅ Готово | 99c3e2e | format_context(role=None) + тонкая обёртка format_context_with_role |
-| TD-08 | async без await _default_top_k | 🟠 | ⬜ Не начато | — | — |
-| TD-09 | Дубликация _transaction() | 🟠 | ⬜ Не начато | — | — |
+| TD-08 | async без await _default_top_k | 🟠 | ✅ Готово | e23f953 | Удалена async-функция, заменена модульной константой _DEFAULT_TOP_K |
+| TD-09 | Дубликация _transaction() | 🟠 | ✅ Готово | cb189bf..02d1228 | Вынесено в app/db/utils.py::transactional(); удалено из 2 сервисов (16 вызовов) |
 | TD-10 | Двойная фильтрация в retrieve() | 🟠 | ⬜ Не начато | — | — |
 | TD-11 | Мелкие замечания (батч) | 🟢 | ⬜ Не начато | — | — |
 
@@ -82,10 +82,20 @@ _—— заполнить после исправления —_
 **SHA:** `99c3e2e` | **Side effects:** нет.
 
 ### TD-08
-_——_
+
+**Что было:** `async def _default_top_k() -> int` в `retrieval.py` — функция без единого `await`, вызывалась через `await _default_top_k()` в двух местах. Создавала корутину ради простого `os.getenv()`.
+
+**Что сделано:** функция удалена, заменена модульной константой `_DEFAULT_TOP_K = int(os.getenv("DEFAULT_TOP_K", "10"))`. Вычисляется один раз при импорте. Оба `await _default_top_k()` заменены на `_DEFAULT_TOP_K`.
+
+**SHA:** `e23f953` | **Side effects:** нет.
 
 ### TD-09
-_——_
+
+**Что было:** `@asynccontextmanager async def _transaction(self, db: AsyncSession)` — метод, скопированный дословно в `SettingsService` и `DomainService`. Итого 16 вызовов (`self._transaction(db)`) и две идентичные реализации. Любое изменение логики транзакций (savepoint, логирование) требовало правки в двух местах.
+
+**Что сделано:** создан `rag-backend/app/db/utils.py` с публичной функцией `transactional(db: AsyncSession)`. Оба сервиса переключены на `from app.db.utils import transactional`, приватные методы `_transaction` удалены. Неиспользуемые импорты `asynccontextmanager` и `AsyncIterator` убраны из обоих сервисов.
+
+**SHA:** `cb189bf` (utils.py), `d614a6d` (settings_service.py), `02d1228` (domain_service.py) | **Side effects:** нет. Alembic не затронут.
 
 ### TD-10
 _——_
