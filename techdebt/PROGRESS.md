@@ -7,7 +7,7 @@
 | TD-01 | Ghost-синглтон PipelineRouter | 🔴 | ✅ Готово | ec70fa6 | Удалена 1 строка, без side effects |
 | TD-02 | API-ключ через os.environ | 🔴 | ✅ Готово | — | — |
 | TD-03 | LLMRAGPlanner мёртвый код | 🟡 | ✅ Готово | b9d6c8e | Удалён класс + 2 импорта, добавлены тесты |
-| TD-04 | format_prompt deprecated | 🟡 | ⬜ Не начато | — | — |
+| TD-04 | format_prompt deprecated | 🟡 | ✅ Готово | 003cf36 | Сценарий B: уточнён комментарий, проставлен TODO |
 | TD-05 | decide() дублирует select() | 🟡 | ⬜ Не начато | — | — |
 | TD-06 | Пустая дир app/planners/ | 🟡 | ⬜ Не начато | — | — |
 | TD-07 | Дубликация format_context | 🟠 | ⬜ Не начато | — | — |
@@ -50,7 +50,12 @@ _—— заполнить после исправления —_
 **SHA:** `b9d6c8e` | **Side effects:** нет.
 
 ### TD-04
-_——_
+
+**Что было:** функция `format_prompt` помечена DEPRECATED с размытым комментарием «будет удалён после Этапа 8». Анализ показал: функция не является мёртвым кодом — её активно использует `clarification_fsm.generate_next_question` с плейсхолдерами `{missing_fields}` / `{collected_fields}`, несовместимыми с `resolve_step_vars` (паттерн `{STEP_ID.accessor}`).
+
+**Что сделано:** Сценарий B. В `prompt_pack.py` размытый комментарий заменён на конкретный: кто блокирует удаление, какие плейсхолдеры надо переименовать. В `clarification_fsm.py` добавлен `# TODO(TD-04)` на месте вызова.
+
+**SHA:** `003cf36` (prompt_pack.py), `088258c` (clarification_fsm.py) | **Side effects:** нет.
 
 ### TD-05
 _——_
