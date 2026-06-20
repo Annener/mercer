@@ -52,8 +52,64 @@ async def get_task_state(
 - HTTP endpoint `/index-tasks/{task_id}/cancel`
 - Всё остальное в `main.py`
 
-## После завершения
-Проверь: `grep -r "websocket\|WebSocket\|ConnectionManager" rag-indexer/`
-Все вхождения должны быть удалены.
+## ✅ Unit-тесты для этого этапа
 
-Обнови `STATUS.md` — этап 8 -> завершён.
+**Файл:** `tests/rag_indexer/test_task_state_endpoint.py`
+
+```bash
+pytest tests/rag_indexer/test_task_state_endpoint.py -v
+```
+
+```python
+# tests/rag_indexer/test_task_state_endpoint.py
+import pytest
+from httpx import AsyncClient
+from unittest.mock import AsyncMock
+# Адаптируй импорт под фактическую структуру
+# from rag_indexer.app.main import app
+
+@pytest.mark.asyncio
+async def test_get_task_state_returns_state(app):
+    """GET /index-tasks/{task_id}/state возвращает state из RedisStateManager."""
+    mock_state = {"status": "running", "files_done": 3, "files_total": 10, "files": {}}
+    app.state.state_manager = AsyncMock()
+    app.state.state_manager.get_task_state.return_value = mock_state
+
+    async with AsyncClient(app=app, base_url="http://test") as client:
+        resp = await client.get("/index-tasks/task-abc/state")
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "running"
+    assert resp.json()["files_done"] == 3
+
+@pytest.mark.asyncio
+async def test_get_task_state_returns_404_if_not_found(app):
+    """GET /index-tasks/{task_id}/state возвращает 404 если задача не найдена."""
+    app.state.state_manager = AsyncMock()
+    app.state.state_manager.get_task_state.return_value = None
+
+    async with AsyncClient(app=app, base_url="http://test") as client:
+        resp = await client.get("/index-tasks/nonexistent/state")
+    assert resp.status_code == 404
+
+def test_no_websocket_imports_in_codebase():
+    """После удаления в коде rag-indexer нет импортов WebSocket."""
+    import subprocess
+    result = subprocess.run(
+        ["grep", "-r", "websocket", "rag-indexer/", "--include=*.py", "-l"],
+        capture_output=True, text=True
+    )
+    files_with_ws = result.stdout.strip()
+    assert files_with_ws == "", f"Найдены файлы с websocket: {files_with_ws}"
+```
+
+> 💡 **Как запустить в чате:**  
+> Приведи мне содержимое `app/main.py` после изменений — я запущу тесты endpoint'а.
+
+## Проверка после реализации
+```bash
+grep -r "websocket\|WebSocket\|ConnectionManager" rag-indexer/
+# Ожидается: нет вывода
+```
+
+## После завершения
+Обнови `STATUS.md` — строку этапа 8: поставь ✅, запиши коммит, добавь в историю.

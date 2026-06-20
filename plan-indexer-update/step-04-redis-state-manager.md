@@ -143,10 +143,166 @@ error         str (пусто если нет)
 - `rag-indexer/parser/state/state_manager.py`
 - Директорию `/app/state/` можно убрать из Dockerfile если она там явно создаётся
 
-## Unit-тесты
-Напиши тесты с `fakeredis` (или `redis.asyncio` + `pytest-asyncio` с mock).
-Покрыть: create_task, update_file_stage, increment_files_done, mark_task_done,
-rebuild_vault_cache (все 4 статуса), is_cancelled.
+## ✅ Unit-тесты для этого этапа
+
+**Файл:** `tests/rag_indexer/test_redis_state_manager.py`  
+**Зависимость:** `fakeredis[aioredis]>=2.0` (добавь в `requirements-dev.txt`)
+
+```bash
+pytest tests/rag_indexer/test_redis_state_manager.py -v
+```
+
+```python
+# tests/rag_indexer/test_redis_state_manager.py
+import pytest
+import fakeredis.aioredis as fakeredis
+from rag_indexer.parser.state.redis_state_manager import RedisStateManager
+# Адаптируй импорт под фактический путь
+
+@pytest.fixture
+def redis():
+    return fakeredis.FakeRedis(decode_responses=True)
+
+@pytest.fixture
+def mgr(redis):
+    return RedisStateManager(redis)
+
+# --- create_task ---
+
+@pytest.mark.asyncio
+async def test_create_task_sets_status_running(mgr, redis):
+    await mgr.create_task("t1", "v1", [{"relative_path": "a.pdf"}], files_skipped=0, files_total=1)
+    status = await redis.hget("task:t1", "status")
+    assert status == "running"
+
+@pytest.mark.asyncio
+async def test_create_task_sets_ttl(mgr, redis):
+    await mgr.create_task("t2", "v1", [], files_skipped=0, files_total=0)
+    ttl = await redis.ttl("task:t2")
+    assert 86390 < ttl <= 86400
+
+@pytest.mark.asyncio
+async def test_create_task_adds_to_active_tasks(mgr, redis):
+    await mgr.create_task("t3", "v1", [], files_skipped=0, files_total=0)
+    members = await redis.smembers("active_tasks")
+    assert "t3" in members
+
+@pytest.mark.asyncio
+async def test_create_task_files_hash_populated(mgr, redis):
+    files = [{"relative_path": "doc.pdf"}, {"relative_path": "img.png"}]
+    await mgr.create_task("t4", "v1", files, files_skipped=1, files_total=3)
+    keys = await redis.hkeys("task:t4:files")
+    assert "doc.pdf" in keys
+    assert "img.png" in keys
+
+# --- update_file_stage ---
+
+@pytest.mark.asyncio
+async def test_update_file_stage(mgr, redis):
+    import json
+    await mgr.create_task("t5", "v1", [{"relative_path": "a.pdf"}], 0, 1)
+    await mgr.update_file_stage("t5", "a.pdf", stage="indexing", chunks_total=10, chunks_done=3)
+    raw = await redis.hget("task:t5:files", "a.pdf")
+    data = json.loads(raw)
+    assert data["stage"] == "indexing"
+    assert data["chunks_total"] == 10
+    assert data["chunks_done"] == 3
+
+# --- increment_files_done ---
+
+@pytest.mark.asyncio
+async def test_increment_files_done(mgr, redis):
+    await mgr.create_task("t6", "v1", [], 0, 2)
+    await mgr.increment_files_done("t6")
+    await mgr.increment_files_done("t6")
+    val = await redis.hget("task:t6", "files_done")
+    assert int(val) == 2
+
+# --- mark_task_done ---
+
+@pytest.mark.asyncio
+async def test_mark_task_done(mgr, redis):
+    await mgr.create_task("t7", "v1", [], 0, 0)
+    await mgr.mark_task_done("t7")
+    status = await redis.hget("task:t7", "status")
+    assert status == "done"
+    members = await redis.smembers("active_tasks")
+    assert "t7" not in members
+
+@pytest.mark.asyncio
+async def test_mark_task_done_with_error(mgr, redis):
+    await mgr.create_task("t8", "v1", [], 0, 0)
+    await mgr.mark_task_done("t8", error="connection refused")
+    status = await redis.hget("task:t8", "status")
+    assert status == "error"
+    error = await redis.hget("task:t8", "error")
+    assert "connection refused" in error
+
+# --- cancel ---
+
+@pytest.mark.asyncio
+async def test_request_cancel_and_is_cancelled(mgr, redis):
+    await mgr.request_cancel("t9")
+    assert await mgr.is_cancelled("t9") is True
+
+@pytest.mark.asyncio
+async def test_is_cancelled_false_before_request(mgr):
+    assert await mgr.is_cancelled("t_none") is False
+
+@pytest.mark.asyncio
+async def test_clear_cancel(mgr):
+    await mgr.request_cancel("t10")
+    await mgr.clear_cancel("t10")
+    assert await mgr.is_cancelled("t10") is False
+
+# --- rebuild_vault_cache ---
+
+@pytest.mark.asyncio
+async def test_rebuild_vault_cache_indexed(mgr, redis):
+    import json
+    pg_docs = [{"relative_path": "a.pdf", "md5": "aaa", "status": "indexed", "chunks_count": 5}]
+    disk_files = [{"relative_path": "a.pdf", "checksum": "aaa"}]
+    await mgr.rebuild_vault_cache("v1", pg_docs, disk_files)
+    raw = await redis.hget("vault:v1:files", "a.pdf")
+    assert json.loads(raw)["index_status"] == "indexed"
+
+@pytest.mark.asyncio
+async def test_rebuild_vault_cache_stale(mgr, redis):
+    import json
+    pg_docs = [{"relative_path": "b.pdf", "md5": "old", "status": "indexed", "chunks_count": 3}]
+    disk_files = [{"relative_path": "b.pdf", "checksum": "new"}]
+    await mgr.rebuild_vault_cache("v1", pg_docs, disk_files)
+    raw = await redis.hget("vault:v1:files", "b.pdf")
+    assert json.loads(raw)["index_status"] == "stale"
+
+@pytest.mark.asyncio
+async def test_rebuild_vault_cache_deleted(mgr, redis):
+    import json
+    pg_docs = [{"relative_path": "c.pdf", "md5": "ccc", "status": "indexed", "chunks_count": 2}]
+    disk_files = []  # файла нет на диске
+    await mgr.rebuild_vault_cache("v1", pg_docs, disk_files)
+    raw = await redis.hget("vault:v1:files", "c.pdf")
+    assert json.loads(raw)["index_status"] == "deleted"
+
+@pytest.mark.asyncio
+async def test_rebuild_vault_cache_pending(mgr, redis):
+    import json
+    pg_docs = []  # нет в PostgreSQL
+    disk_files = [{"relative_path": "d.pdf", "checksum": "ddd"}]
+    await mgr.rebuild_vault_cache("v1", pg_docs, disk_files)
+    raw = await redis.hget("vault:v1:files", "d.pdf")
+    assert json.loads(raw)["index_status"] == "pending"
+
+@pytest.mark.asyncio
+async def test_rebuild_vault_cache_no_ttl(mgr, redis):
+    """vault:*:files не должен иметь TTL."""
+    await mgr.rebuild_vault_cache("v2", [], [])
+    ttl = await redis.ttl("vault:v2:files")
+    assert ttl == -1  # -1 = нет TTL, -2 = ключ не существует
+```
+
+> 💡 **Как запустить в чате:**  
+> Приведи мне содержимое `redis_state_manager.py` — я запущу эти тесты и покажу результат.
 
 ## После завершения
-Обнови `STATUS.md` — этап 4 -> завершён.
+Обнови `STATUS.md` — строку этапа 4: поставь ✅, запиши коммит, добавь в историю.

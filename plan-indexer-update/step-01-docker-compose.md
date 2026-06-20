@@ -71,5 +71,17 @@ docker-compose exec redis redis-cli ping
 # Ожидается: PONG
 ```
 
+## ✅ Тесты для этого этапа
+
+Unit-тесты не нужны — это инфраструктурный шаг.  
+Проверка выполняется вручную командами выше.
+
+Дополнительно — проверь connectivity из контейнеров:
+```bash
+docker-compose run --rm rag-indexer python -c \
+  "import redis.asyncio as r; import asyncio; asyncio.run(r.from_url('redis://redis:6379').ping())"
+# Ожидается: True
+```
+
 ## После завершения
-Обнови `STATUS.md` — этап 1 → ✅, добавь коммит/ветку в колонку.
+Обнови `STATUS.md` — строку этапа 1: поставь ✅, запиши коммит, добавь в историю.

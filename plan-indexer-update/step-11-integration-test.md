@@ -22,25 +22,32 @@ docker-compose exec redis redis-cli ping
 # PONG
 ```
 
+4. Убедись что тестовый vault существует и содержит файлы:
+```bash
+docker-compose exec rag-indexer ls /data/vaults/
+# Должен быть хотя бы один vault с PDF-файлами внутри
+```
+
 ## Тест 1: Базовый запуск и polling прогресса
 
 ```bash
-# Запустить индексацию (через rag-backend или rag-indexer напрямую)
+# Запустить индексацию (порты уточни из docker-compose.yml)
+# rag-indexer обычно слушает на 8001, rag-backend на 8000
 TASK_ID=$(curl -s -X POST http://localhost:8001/index-tasks \
   -H "Content-Type: application/json" \
-  -d '{"vault_id": "test-vault"}' | jq -r .task_id)
+  -d '{"vault_id": "<VAULT_ID>"}' | jq -r .task_id)
 
 echo "Task ID: $TASK_ID"
 
-# Polling прогресса
+# Polling прогресса через rag-backend
 for i in $(seq 1 10); do
-  curl -s http://localhost:8000/index-tasks/$TASK_ID/state | jq .status
+  curl -s http://localhost:8000/index-tasks/$TASK_ID/state | jq '{status, files_done, files_total}'
   sleep 2
 done
 ```
 
 **Ожидается:**
-- `status` меняется: `running` -> `done`
+- `status` меняется: `running` → `done`
 - `files_done` инкрементируется
 - Ответ содержит `files` с прогрессом по файлам
 
@@ -49,7 +56,7 @@ done
 ```bash
 TASK_ID=$(curl -s -X POST http://localhost:8001/index-tasks \
   -H "Content-Type: application/json" \
-  -d '{"vault_id": "large-vault"}' | jq -r .task_id)
+  -d '{"vault_id": "<VAULT_ID_С_БОЛЬШИМ_ЧИСЛОМ_ФАЙЛОВ>"}' | jq -r .task_id)
 
 sleep 3
 
@@ -58,7 +65,7 @@ curl -s -X POST http://localhost:8001/index-tasks/$TASK_ID/cancel
 
 sleep 2
 
-# Проверить статус
+# Проверить статус через rag-backend
 curl -s http://localhost:8000/index-tasks/$TASK_ID/state | jq .status
 # Ожидается: "cancelled"
 ```
@@ -67,24 +74,27 @@ curl -s http://localhost:8000/index-tasks/$TASK_ID/state | jq .status
 
 ```bash
 # После успешной индексации
-curl -s http://localhost:8000/vaults/test-vault/index-state | jq .by_status
+curl -s http://localhost:8000/vaults/<VAULT_ID>/index-state | jq .by_status
 # Ожидается: {"indexed": N} или {"indexed": N, "stale": M}
 ```
 
-## Тест 4: Рестарт rag-indexer не теряет активные задачи
+## Тест 4: Рестарт rag-indexer не теряет task state из Redis
 
 ```bash
-# Запустить долгую задачу
-TASK_ID=$(...)
+# Запустить задачу на vault с большим числом файлов
+TASK_ID=$(curl -s -X POST http://localhost:8001/index-tasks \
+  -H "Content-Type: application/json" \
+  -d '{"vault_id": "<VAULT_ID>"}' | jq -r .task_id)
 
 # Через 5 секунд перезапустить indexer
+sleep 5
 docker-compose restart rag-indexer
 
-sleep 3
+sleep 5
 
-# Проверить — task state должен быть в Redis
+# Проверить — task state должен быть в Redis (AOF сохранил)
 curl -s http://localhost:8000/index-tasks/$TASK_ID/state | jq .status
-# Если задача не завершилась: "running" (Redis сохранил state)
+# Если задача не завершилась: статус сохранён ("running" или "done")
 # Если завершилась до рестарта: "done"
 ```
 
@@ -102,8 +112,13 @@ HGETALL task:<task_id>
 # Проверить vault cache
 HLEN vault:<vault_id>:files
 
-# Проверить cancel flag
-EXISTS cancel:<task_id>
+# Проверить отсутствие TTL у vault cache
+TTL vault:<vault_id>:files
+# Ожидается: -1 (нет TTL)
+
+# Проверить TTL у task
+TTL task:<task_id>
+# Ожидается: ~86400 (24 часа)
 ```
 
 ## Что проверить в логах
@@ -118,14 +133,23 @@ INFO - Vault cache rebuilt: vault_id=..., files=N
 INFO - Redis connected
 ```
 
+Отсутствие строк вида:
+```
+WebSocket
+broadcast
+ConnectionManager
+```
+
 ## Критерии успешного завершения
 - [ ] Polling `GET /index-tasks/{task_id}/state` возвращает корректный прогресс
-- [ ] Статус меняется running -> done без ошибок
-- [ ] Отмена переводит задачу в cancelled
+- [ ] Статус меняется `running` → `done` без ошибок
+- [ ] Отмена переводит задачу в `cancelled`
 - [ ] `GET /vaults/{vault_id}/index-state` возвращает корректные данные
+- [ ] `TTL vault:{vault_id}:files` = -1 (нет TTL)
+- [ ] `TTL task:{task_id}` ≈ 86400
 - [ ] Нет WS-зависимостей в логах и коде
 - [ ] `grep -r websocket rag-indexer/ rag-backend/` — пусто
 
 ## После завершения
-Обнови `STATUS.md` — этап 11 -> завершён.
+Обнови `STATUS.md` — строку этапа 11: поставь ✅, запиши коммит, добавь в историю.  
 Задокументируй любые отклонения от плана в колонке "Примечания".

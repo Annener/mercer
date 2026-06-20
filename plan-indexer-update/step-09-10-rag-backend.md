@@ -25,8 +25,6 @@ redis[asyncio]>=5.0
 
 ```python
 import redis.asyncio as aioredis
-from parser.state.redis_state_manager import RedisStateManager
-# или импортировать только нужные методы, не весь класс
 
 redis_client = aioredis.from_url(
     os.getenv("REDIS_URL", "redis://redis:6379"),
@@ -39,9 +37,10 @@ yield
 await redis_client.aclose()
 ```
 
-Примечание: `rag-backend` может работать с Redis напрямую (без RedisStateManager)
-если хочется минимальной зависимости. Или можно переиспользовать класс из
-`shared_contracts` или скопировать read-only методы. Реши по месту.
+**Важно:** `rag-backend` работает с Redis **напрямую** — не через `RedisStateManager`.  
+Класс `RedisStateManager` живёт в `rag-indexer/parser/state/` и **не доступен** в rag-backend  
+(разные контейнеры, нет общего Python-пакета). Используй `redis.asyncio` напрямую  
+или перенеси read-only методы в `shared_contracts` если это потребуется в будущем.
 
 ## Этап 10: новые endpoints
 
@@ -50,6 +49,8 @@ await redis_client.aclose()
 Читает из Redis напрямую — не делает HTTP к rag-indexer.
 
 ```python
+import json
+
 @router.get("/index-tasks/{task_id}/state")
 async def get_task_state(task_id: str, request: Request) -> dict:
     redis = request.app.state.redis
@@ -80,7 +81,7 @@ async def get_vault_index_state(vault_id: str, request: Request) -> dict:
     files = {path: json.loads(data) for path, data in files_raw.items()}
 
     # Считаем сводку
-    by_status = {}
+    by_status: dict[str, int] = {}
     for f in files.values():
         s = f.get("index_status", "unknown")
         by_status[s] = by_status.get(s, 0) + 1
@@ -104,5 +105,100 @@ async def get_vault_index_state(vault_id: str, request: Request) -> dict:
 Роут `GET /index-tasks/{task_id}/state` уже мог существовать как HTTP-прокси к
 rag-indexer — замени его реализацию на чтение из Redis.
 
+## ✅ Unit-тесты для этого этапа
+
+**Файл:** `tests/rag_backend/test_redis_endpoints.py`
+
+```bash
+pytest tests/rag_backend/test_redis_endpoints.py -v
+```
+
+```python
+# tests/rag_backend/test_redis_endpoints.py
+import json
+import pytest
+from httpx import AsyncClient
+from unittest.mock import AsyncMock
+# Адаптируй импорт под фактическую структуру
+# from rag_backend.app.main import app
+
+# --- /index-tasks/{task_id}/state ---
+
+@pytest.mark.asyncio
+async def test_get_task_state_running(app):
+    """Возвращает состояние бегущей задачи."""
+    task_hash = {"status": "running", "vault_id": "v1", "files_total": "10", "files_done": "3"}
+    files_hash = {"a.pdf": json.dumps({"stage": "indexing", "chunks_done": 5, "chunks_total": 20})}
+
+    redis_mock = AsyncMock()
+    redis_mock.hgetall.side_effect = [task_hash, files_hash]
+    app.state.redis = redis_mock
+
+    async with AsyncClient(app=app, base_url="http://test") as client:
+        resp = await client.get("/index-tasks/task-1/state")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "running"
+    assert "a.pdf" in data["files"]
+    assert data["files"]["a.pdf"]["stage"] == "indexing"
+
+@pytest.mark.asyncio
+async def test_get_task_state_not_found(app):
+    """404 если task_id не существует в Redis."""
+    redis_mock = AsyncMock()
+    redis_mock.hgetall.return_value = {}  # пустой hgetall = ключа нет
+    app.state.redis = redis_mock
+
+    async with AsyncClient(app=app, base_url="http://test") as client:
+        resp = await client.get("/index-tasks/ghost/state")
+    assert resp.status_code == 404
+
+# --- /vaults/{vault_id}/index-state ---
+
+@pytest.mark.asyncio
+async def test_get_vault_index_state(app):
+    """Возвращает сводку по статусам файлов vault'а."""
+    vault_files = {
+        "a.pdf": json.dumps({"md5": "aaa", "index_status": "indexed", "chunks_total": 5}),
+        "b.pdf": json.dumps({"md5": "bbb", "index_status": "stale", "chunks_total": 3}),
+        "c.pdf": json.dumps({"md5": "ccc", "index_status": "indexed", "chunks_total": 8}),
+    }
+    redis_mock = AsyncMock()
+    redis_mock.hgetall.return_value = vault_files
+    app.state.redis = redis_mock
+
+    async with AsyncClient(app=app, base_url="http://test") as client:
+        resp = await client.get("/vaults/vault-1/index-state")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["files_total"] == 3
+    assert data["by_status"]["indexed"] == 2
+    assert data["by_status"]["stale"] == 1
+
+@pytest.mark.asyncio
+async def test_get_vault_index_state_not_found(app):
+    """404 если vault не найден в Redis."""
+    redis_mock = AsyncMock()
+    redis_mock.hgetall.return_value = {}
+    app.state.redis = redis_mock
+
+    async with AsyncClient(app=app, base_url="http://test") as client:
+        resp = await client.get("/vaults/ghost-vault/index-state")
+    assert resp.status_code == 404
+
+def test_no_websocket_in_rag_backend():
+    """В rag-backend нет WebSocket-кода после рефакторинга."""
+    import subprocess
+    result = subprocess.run(
+        ["grep", "-r", "websocket", "rag-backend/", "--include=*.py", "-l"],
+        capture_output=True, text=True
+    )
+    assert result.stdout.strip() == "", f"Найдены WS-файлы: {result.stdout}"
+```
+
+> 💡 **Как запустить в чате:**  
+> Приведи мне содержимое `rag-backend/app/main.py` и router-файла с endpoints —  
+> я подставлю правильные импорты и запущу тесты.
+
 ## После завершения
-Обнови `STATUS.md` — этапы 9 и 10 -> завершены.
+Обнови `STATUS.md` — строки этапов 9 и 10: поставь ✅, запиши коммит, добавь в историю.

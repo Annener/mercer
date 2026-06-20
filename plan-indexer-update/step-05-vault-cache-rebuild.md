@@ -86,5 +86,64 @@ async def _rebuild_one_vault(state_manager, db_client, vault_id: str, vault_path
 - Не меняй `IndexerService` на этом этапе — broadcaster пока остаётся,
   он удаляется в этапе 7
 
+## ✅ Unit-тесты для этого этапа
+
+**Файл:** `tests/rag_indexer/test_startup_vault_rebuild.py`
+
+```bash
+pytest tests/rag_indexer/test_startup_vault_rebuild.py -v
+```
+
+```python
+# tests/rag_indexer/test_startup_vault_rebuild.py
+import pytest
+from unittest.mock import AsyncMock, MagicMock, patch
+
+# Тестируем вспомогательную функцию _rebuild_one_vault напрямую
+from rag_indexer.app.main import _rebuild_one_vault
+# Адаптируй импорт под фактический путь
+
+@pytest.mark.asyncio
+async def test_rebuild_skipped_if_path_not_exists(tmp_path):
+    """Если путь vault'а не существует — rebuild пропускается без ошибки."""
+    state_manager = AsyncMock()
+    db_client = AsyncMock()
+    await _rebuild_one_vault(state_manager, db_client, "v1", "/nonexistent/path")
+    state_manager.rebuild_vault_cache.assert_not_called()
+
+@pytest.mark.asyncio
+async def test_rebuild_calls_state_manager(tmp_path):
+    """_rebuild_one_vault вызывает rebuild_vault_cache с данными из pg и disk."""
+    vault_path = str(tmp_path)  # существующий путь
+    state_manager = AsyncMock()
+    db_client = AsyncMock()
+    db_client.get_all_documents.return_value = [
+        {"relative_path": "a.pdf", "md5": "aaa", "status": "indexed", "chunks_count": 5}
+    ]
+    mock_disk = [{"relative_path": "a.pdf", "checksum": "aaa"}]
+    with patch("rag_indexer.app.main.scan_vault", return_value=mock_disk):
+        await _rebuild_one_vault(state_manager, db_client, "v1", vault_path)
+    state_manager.rebuild_vault_cache.assert_called_once_with(
+        "v1",
+        db_client.get_all_documents.return_value,
+        mock_disk,
+    )
+
+@pytest.mark.asyncio
+async def test_rebuild_error_does_not_propagate(tmp_path):
+    """Ошибка в rebuild_vault_cache не должна подниматься наверх."""
+    vault_path = str(tmp_path)
+    state_manager = AsyncMock()
+    state_manager.rebuild_vault_cache.side_effect = RuntimeError("Redis down")
+    db_client = AsyncMock()
+    db_client.get_all_documents.return_value = []
+    with patch("rag_indexer.app.main.scan_vault", return_value=[]):
+        # Не должно бросить исключение
+        await _rebuild_one_vault(state_manager, db_client, "v1", vault_path)
+```
+
+> 💡 **Как запустить в чате:**  
+> Приведи мне содержимое `app/main.py` после изменений — я запущу эти тесты.
+
 ## После завершения
-Обнови `STATUS.md` — этап 5 -> завершён.
+Обнови `STATUS.md` — строку этапа 5: поставь ✅, запиши коммит, добавь в историю.
