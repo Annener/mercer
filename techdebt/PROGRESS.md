@@ -10,7 +10,7 @@
 | TD-04 | format_prompt deprecated | 🟡 | ✅ Готово | 003cf36 | Сценарий B: уточнён комментарий, проставлен TODO |
 | TD-05 | decide() дублирует select() | 🟡 | ✅ Готово | 1eaf053 | Удалёны decide() + _chat_history(), 3 импорта |
 | TD-06 | Пустая дир app/planners/ | 🟡 | ✅ Готово | 83d3773 | Удалён пустой __init__.py, директория убрана |
-| TD-07 | Дубликация format_context | 🟠 | ⬜ Не начато | — | — |
+| TD-07 | Дубликация format_context | 🟠 | ✅ Готово | 99c3e2e | format_context(role=None) + тонкая обёртка format_context_with_role |
 | TD-08 | async без await _default_top_k | 🟠 | ⬜ Не начато | — | — |
 | TD-09 | Дубликация _transaction() | 🟠 | ⬜ Не начато | — | — |
 | TD-10 | Двойная фильтрация в retrieve() | 🟠 | ⬜ Не начато | — | — |
@@ -74,7 +74,12 @@ _—— заполнить после исправления —_
 **SHA:** `83d3773` | **Side effects:** нет.
 
 ### TD-07
-_——_
+
+**Что было:** `format_context(hits)` и `format_context_with_role(hits, role)` в `retrieval.py` полностью дублировали логику построения нумерованных блоков (`source_index`, `numbered`, цикл `blocks`). Единственная разница — наличие заголовка `=== {role} ===` и поведение при пустом `hits` (заглушка vs пустая строка). При изменении формата контекста нужно было редактировать два места.
+
+**Что сделано:** Объединены в одну функцию `format_context(hits, role=None)` с опциональным параметром. `format_context_with_role` стала однострочной обёрткой `return format_context(hits, role=role)`. Публичные сигнатуры обеих функций сохранены, поведение не изменилось. Добавлен раздел-разделитель `# Context formatting` для читаемости.
+
+**SHA:** `99c3e2e` | **Side effects:** нет.
 
 ### TD-08
 _——_
