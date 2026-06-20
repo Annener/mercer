@@ -13,7 +13,7 @@
 | TD-07 | Дубликация format_context | 🟠 | ✅ Готово | 99c3e2e | format_context(role=None) + тонкая обёртка format_context_with_role |
 | TD-08 | async без await _default_top_k | 🟠 | ✅ Готово | e23f953 | Удалена async-функция, заменена модульной константой _DEFAULT_TOP_K |
 | TD-09 | Дубликация _transaction() | 🟠 | ✅ Готово | cb189bf..02d1228 | Вынесено в app/db/utils.py::transactional(); удалено из 2 сервисов (16 вызовов) |
-| TD-10 | Двойная фильтрация в retrieve() | 🟠 | ⬜ Не начато | — | — |
+| TD-10 | Двойная фильтрация в retrieve() | 🟠 | ✅ Готово | a530cec | Убран x10 overfetch; постфильтр оставлен как leak-detector + metadata fallback |
 | TD-11 | Мелкие замечания (батч) | 🟢 | ⬜ Не начато | — | — |
 
 ## Статусы
@@ -98,7 +98,12 @@ _—— заполнить после исправления —_
 **SHA:** `cb189bf` (utils.py), `d614a6d` (settings_service.py), `02d1228` (domain_service.py) | **Side effects:** нет. Alembic не затронут.
 
 ### TD-10
-_——_
+
+**Что было:** `retrieve()` применял фильтрацию по `document_ids` дважды: сначала через `filter_expr` в `_vector_search()` (на стороне LanceDB), затем повторно в Python после merge результатов. При этом включался `search_top_k = effective_top_k * 10`, а лог `post-filter applied` выглядел так, будто LanceDB-фильтр ненадёжен по умолчанию.
+
+**Что сделано:** доверие к LanceDB сделано явным: `search_top_k` теперь всегда равен `effective_top_k`, x10 overfetch убран. Постфильтр оставлен только как защитный leak-detector и metadata fallback для edge case, когда `document_id` приходит только в `metadata`. Вводящий в заблуждение лог заменён на warning о реальной утечке фильтра (`filter leak`) — он теперь сигнализирует о возможной проблеме storage API, а не о штатном поведении.
+
+**SHA:** `a530cec` | **Side effects:** нет. Alembic не затронут.
 
 ### TD-11
 _——_
