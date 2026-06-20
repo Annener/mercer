@@ -25,7 +25,7 @@ class PromptPack:
 
 # Regex для {STEP_ID.result} и {STEP_ID.key}
 # Группы: (step_id, accessor)  где accessor = "result" | любой другой ключ
-_VAR_PATTERN = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\.(result|[A-Za-z_][A-Za-z0-9_]*)\}")
+_VAR_PATTERN = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\.( result|[A-Za-z_][A-Za-z0-9_]*)\}")
 
 
 def resolve_step_vars(template: str, step_results: dict[str, Any]) -> str:
@@ -89,9 +89,16 @@ def resolve_step_vars(template: str, step_results: dict[str, Any]) -> str:
 def format_prompt(template: str, variables: dict[str, Any]) -> str:
     """Форматирует шаблон через .format_map с безопасным fallback для отсутствующих ключей.
 
-    DEPRECATED для новых пайплайнов: используй resolve_step_vars() вместо этой функции.
-    {context} и {collected_fields} поддерживаются только для обратной совместимости
-    и будут удалены после Этапа 8 (миграции данных).
+    DEPRECATED: не использовать в новых пайплайнах.
+    Для DAG-шагов используй resolve_step_vars() с паттерном {STEP_ID.result}/{STEP_ID.key}.
+
+    Единственный активный вызов:
+        clarification_fsm.generate_next_question — шаблон с плейсхолдерами
+        {missing_fields} и {collected_fields}.
+
+    Условие удаления: мигрировать generate_next_question на resolve_step_vars
+    (потребует переименования плейсхолдеров в шаблоне «clarification» в PromptPack).
+    После этого удалить format_prompt и _stringify.
     """
 
     class SafeDict(dict):
