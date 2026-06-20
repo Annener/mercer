@@ -1,3 +1,8 @@
+# Намеренное дублирование: этот файл является копией rag-backend/app/logging_config.py.
+# Оба сервиса используют одинаковую конфигурацию логирования, но shared_contracts
+# не монтируется в rag-indexer как Python-пакет на уровне приложения,
+# поэтому вынос в shared_contracts потребовал бы изменения точки входа indexer.
+# При изменении формата логов — обновляй оба файла синхронно.
 from __future__ import annotations
 
 import logging

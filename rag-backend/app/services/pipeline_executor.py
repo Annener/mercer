@@ -28,7 +28,10 @@ from shared_contracts.models import (
 
 logger = logging.getLogger(__name__)
 
-# Validation token живёт 1 час (по концепту)
+# Validation token живёт 1 час.
+# TTL записывается в pipeline_pause_state["expires_at"] при сохранении паузы.
+# Проверка истечения TTL выполняется в API-слое (pipeline_resume endpoint),
+# а не здесь: executor отвечает только за выполнение DAG, не за валидацию входящих токенов.
 _VALIDATION_TTL = timedelta(hours=1)
 
 

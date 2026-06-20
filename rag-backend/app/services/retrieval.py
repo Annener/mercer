@@ -4,6 +4,7 @@ import logging
 import json
 import math
 import os
+import re
 import uuid
 from typing import Any
 import httpx
@@ -573,7 +574,6 @@ def _score_from_response_text(response_text: str) -> float:
     2. Берём последнее непустое слово очищенного текста.
     3. yes-like → 1.0, no-like → 0.0, иначе 0.5 (нейтральный fallback).
     """
-    import re
     # Убираем thinking-блоки
     cleaned = re.sub(r"<think>.*?</think>", "", response_text, flags=re.DOTALL)
     # Берём последний токен (слово) из очищенного ответа
