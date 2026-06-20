@@ -340,10 +340,10 @@ async def retrieve_multi_vault(
     config: AppConfig | None = None,
     db: AsyncSession | None = None,
 ) -> list[SearchHit]:
-    """\u0418\u0449\u0435\u0442 \u0432\u043e \u0432\u0441\u0435\u0445 \u0443\u043a\u0430\u0437\u0430\u043d\u043d\u044b\u0445 vault'\u0430\u0445, \u043e\u0431\u044a\u0435\u0434\u0438\u043d\u044f\u0435\u0442 \u0440\u0435\u0437\u0443\u043b\u044c\u0442\u0430\u0442\u044b, \u0441\u043e\u0440\u0442\u0438\u0440\u0443\u0435\u0442 \u043f\u043e score, \u0432\u043e\u0437\u0432\u0440\u0430\u0449\u0430\u0435\u0442 top_k.
+    """Ищет во всех указанных vault'ах, объединяет результаты, сортирует по score, возвращает top_k.
 
-    \u0415\u0441\u043b\u0438 vault'\u044b \u0438\u0441\u043f\u043e\u043b\u044c\u0437\u0443\u044e\u0442 \u0440\u0430\u0437\u043d\u044b\u0435 embedding-\u043c\u043e\u0434\u0435\u043b\u0438 (\u043d\u0430\u043f\u0440. \u0440\u0430\u0437\u043d\u044b\u0435 dimensions),
-    \u043a\u0430\u0436\u0434\u044b\u0439 vault \u0440\u0435\u0448\u0430\u0435\u0442\u0441\u044f \u043e\u0442\u0434\u0435\u043b\u044c\u043d\u043e.
+    Если vault'ы используют разные embedding-модели (напр. разные dimensions),
+    каждый vault решается отдельно.
     """
     if not vault_ids:
         return []
@@ -392,14 +392,31 @@ async def retrieve_multi_vault(
     return result
 
 
-def format_context(hits: list[SearchHit]) -> str:
+# ---------------------------------------------------------------------------
+# Context formatting
+# ---------------------------------------------------------------------------
+
+def format_context(
+    hits: list[SearchHit],
+    role: str | None = None,
+) -> str:
     """
     Формирует блок контекста для LLM.
     Нумерация блоков [1], [2], ... строго соответствует нумерации карточек источников
     на фронтенде.
+
+    Если передан role — добавляет заголовок «=== {role} ===» перед телом.
+    При пустом hits:
+      - без role → строка-заглушка (поведение chat-пути)
+      - с role   → "" (pipeline-executor проверяет это сам)
     """
     if not hits:
-        return "Контекст не найден в базе знаний. Отвечай на основе общих знаний, но явно укажи что локальные данные не найдены."
+        if role:
+            return ""
+        return (
+            "Контекст не найден в базе знаний. "
+            "Отвечай на основе общих знаний, но явно укажи что локальные данные не найдены."
+        )
 
     source_index: dict[str, int] = {}
     numbered: list[tuple[int, SearchHit]] = []
@@ -410,39 +427,20 @@ def format_context(hits: list[SearchHit]) -> str:
             source_index[doc_id] = len(source_index) + 1
         numbered.append((source_index[doc_id], hit))
 
-    blocks = []
-    for n, hit in numbered:
-        blocks.append(f"[{n}] {hit.text}")
+    blocks = [f"[{n}] {hit.text}" for n, hit in numbered]
+    body = "\n\n".join(blocks)
 
-    return "\n\n".join(blocks)
+    if role:
+        return f"=== {role} ===\n{body}"
+    return body
 
 
 def format_context_with_role(hits: list[SearchHit], role: str) -> str:
     """
-    Формирует блок контекста с заголовком роли для pipeline-шагов.
-    Добавляет строку вида "=== <role> ===", затем нумерованные блоки [1], [2], ...
-    Если hits пуст — возвращает пустую строку (pipeline-executor проверяет это сам).
+    Обёртка над format_context для обратной совместимости.
+    Используется в pipeline_executor; публичная сигнатура сохранена.
     """
-    if not hits:
-        return ""
-
-    header = f"=== {role} ===" if role else ""
-
-    source_index: dict[str, int] = {}
-    numbered: list[tuple[int, SearchHit]] = []
-
-    for hit in hits:
-        doc_id = hit.document_id or ""
-        if doc_id not in source_index:
-            source_index[doc_id] = len(source_index) + 1
-        numbered.append((source_index[doc_id], hit))
-
-    blocks = []
-    for n, hit in numbered:
-        blocks.append(f"[{n}] {hit.text}")
-
-    body = "\n\n".join(blocks)
-    return f"{header}\n{body}" if header else body
+    return format_context(hits, role=role)
 
 
 async def _default_top_k() -> int:
