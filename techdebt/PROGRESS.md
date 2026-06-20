@@ -8,7 +8,7 @@
 | TD-02 | API-ключ через os.environ | 🔴 | ✅ Готово | — | — |
 | TD-03 | LLMRAGPlanner мёртвый код | 🟡 | ✅ Готово | b9d6c8e | Удалён класс + 2 импорта, добавлены тесты |
 | TD-04 | format_prompt deprecated | 🟡 | ✅ Готово | 003cf36 | Сценарий B: уточнён комментарий, проставлен TODO |
-| TD-05 | decide() дублирует select() | 🟡 | ⬜ Не начато | — | — |
+| TD-05 | decide() дублирует select() | 🟡 | ✅ Готово | 1eaf053 | Удалёны decide() + _chat_history(), 3 импорта |
 | TD-06 | Пустая дир app/planners/ | 🟡 | ⬜ Не начато | — | — |
 | TD-07 | Дубликация format_context | 🟠 | ⬜ Не начато | — | — |
 | TD-08 | async без await _default_top_k | 🟠 | ⬜ Не начато | — | — |
@@ -58,7 +58,12 @@ _—— заполнить после исправления —_
 **SHA:** `003cf36` (prompt_pack.py), `088258c` (clarification_fsm.py) | **Side effects:** нет.
 
 ### TD-05
-_——_
+
+**Что было:** метод `decide()` в `PipelineRouter` дублировал логику `select()` — тот же `PROMPT_TEMPLATE`, та же фильтрация пайплайнов, тот же LLM-вызов. Разница: `decide()` принимал `Chat` ORM и сам ходил в БД за историей (через `_chat_history()`), не имел фильтрации по campaign_id. Ни одного вызова в продакшн-коде не найдено.
+
+**Что сделано:** Сценарий A. Удалены `decide()` (~40 строк) и `_chat_history()` (~8 строк). Убраны неиспользуемые импорты: `sqlalchemy.select`, `Chat`, `Message`.
+
+**SHA:** `1eaf053` | **Side effects:** нет.
 
 ### TD-06
 _——_
