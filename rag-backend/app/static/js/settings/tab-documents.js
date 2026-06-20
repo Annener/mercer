@@ -119,7 +119,9 @@ const DocumentsTabMixin = {
             } else {
                 listEl.innerHTML = globalTags.map(t => `
                     <div class="docs-tag-row">
-                        <span class="badge" style="background:${t.color || 'var(--color-primary)'};color:white;flex:1;overflow:hidden;text-overflow:ellipsis;">${this.escapeHtml(t.name)}</span>
+                        <span class="badge badge--panel badge--active"
+                              style="background:${t.color || 'var(--color-primary)'};color:white;border-color:${t.color || 'var(--color-primary)'};"
+                        >${this.escapeHtml(t.name)}</span>
                         <input type="color" value="${t.color || '#01696f'}" data-tag-edit-color="${String(t.id)}" class="docs-tag-color-input" title="Цвет тега">
                         <button class="btn btn-xs" data-action="edit-tag-name" data-tag-id="${String(t.id)}" data-tag-name="${this.escapeHtml(t.name)}" title="Переименовать">✏️</button>
                         <button class="btn btn-xs" style="color:var(--color-error);" data-action="delete-tag" data-tag-id="${String(t.id)}" data-tag-name="${this.escapeHtml(t.name)}" title="Удалить">🗑</button>
@@ -272,8 +274,11 @@ const DocumentsTabMixin = {
 
             } else {
                 const doc = child.doc;
+                // Теги на файле: компактные бейджи с CSS-классами
                 const tags = (doc.tags || []).map(t =>
-                    `<span class="badge" style="background:${t.color || 'var(--color-primary-highlight)'};color:var(--color-text);">${this.escapeHtml(t.name)}</span>`
+                    `<span class="badge badge--file"
+                           style="background:${t.color || 'var(--color-primary)'};color:white;border-color:${t.color || 'var(--color-primary)'};"
+                    >${this.escapeHtml(t.name)}</span>`
                 ).join('');
 
                 const row = document.createElement('tr');
@@ -577,7 +582,7 @@ const DocumentsTabMixin = {
 
     _renderDirModalInner(container, allTags, allDocs, closeModal) {
         // Для каждого тега: посчитать сколько файлов его имеют
-        const tagDocCount = {}; // tagId -> кол-во файлов с этим тегом
+        const tagDocCount = {};
         for (const doc of allDocs) {
             for (const t of (doc.tags || [])) {
                 const tid = String(typeof t === 'object' ? t.id : t);
@@ -585,7 +590,6 @@ const DocumentsTabMixin = {
             }
         }
 
-        // Уникальные теги присутствующие хотя бы у одного файла (для секции «Снять»)
         const presentTagIds = Object.keys(tagDocCount);
         const presentTags = presentTagIds
             .map(tid => allTags.find(t => String(t.id) === tid))
@@ -595,15 +599,13 @@ const DocumentsTabMixin = {
         const assignBadges = allTags.map(t => {
             const tid = String(t.id);
             const allHaveIt = tagDocCount[tid] === allDocs.length && allDocs.length > 0;
-            return `<span class="badge docs-dir-tag-assign ${allHaveIt ? 'is-disabled' : 'is-active'}"
+            const activeStyle = `background:${t.color || 'var(--color-primary)'};color:white;border-color:${t.color || 'var(--color-primary)'};`;
+            const inactiveStyle = `background:var(--color-surface-offset);color:var(--color-text-faint);border-color:var(--color-border);`;
+            return `<span
+                class="badge badge--dir ${allHaveIt ? 'badge--inactive' : 'badge--active'} docs-dir-tag-assign ${allHaveIt ? 'is-disabled' : 'is-active'}"
                 data-tag-id="${tid}"
                 data-tag-color="${this.escapeHtml(t.color || '')}"
-                style="background:${allHaveIt ? 'var(--color-surface-offset)' : (t.color || 'var(--color-primary)')};
-                       color:${allHaveIt ? 'var(--color-text-faint)' : 'white'};
-                       border:1px solid ${allHaveIt ? 'var(--color-border)' : (t.color || 'var(--color-primary)')};
-                       cursor:${allHaveIt ? 'default' : 'pointer'};
-                       opacity:${allHaveIt ? '0.55' : '1'};
-                       margin:2px;"
+                style="${allHaveIt ? inactiveStyle : activeStyle}"
                 title="${allHaveIt ? 'Все файлы уже имеют этот тег' : 'Назначить на все файлы каталога'}"
             >${this.escapeHtml(t.name)}</span>`;
         }).join('');
@@ -612,12 +614,10 @@ const DocumentsTabMixin = {
         const removeBadges = presentTags.length
             ? presentTags.map(t => {
                 const tid = String(t.id);
-                return `<span class="badge docs-dir-tag-remove is-active"
+                return `<span
+                    class="badge badge--dir badge--removable docs-dir-tag-remove is-active"
                     data-tag-id="${tid}"
-                    style="background:${t.color || 'var(--color-primary)'};
-                           color:white;
-                           border:1px solid ${t.color || 'var(--color-primary)'};
-                           cursor:pointer;margin:2px;"
+                    style="background:${t.color || 'var(--color-primary)'};color:white;border-color:${t.color || 'var(--color-primary)'};"
                     title="Снять со всех файлов каталога где он есть"
                 >${this.escapeHtml(t.name)}</span>`;
             }).join('')
@@ -644,7 +644,6 @@ const DocumentsTabMixin = {
         container.querySelectorAll('.docs-dir-tag-assign.is-active').forEach(badge => {
             badge.addEventListener('click', async () => {
                 const tagId = badge.dataset.tagId;
-                const tagColor = badge.dataset.tagColor;
                 const statusEl = container.querySelector('#docs-dir-assign-status');
                 await this._applyDirTagOp({
                     docs: allDocs,
@@ -677,7 +676,6 @@ const DocumentsTabMixin = {
     },
 
     async _applyDirTagOp({ docs, tagId, mode, statusEl, container, closeModal, allTags }) {
-        // Блокируем все badge на время операции
         container.querySelectorAll('.docs-dir-tag-assign, .docs-dir-tag-remove').forEach(b => {
             b.style.pointerEvents = 'none';
             b.style.opacity = '0.5';
@@ -697,10 +695,10 @@ const DocumentsTabMixin = {
 
             let newTagIds;
             if (mode === 'assign') {
-                if (hasTag) continue; // уже есть — пропускаем
+                if (hasTag) continue;
                 newTagIds = [...currentTagIds, tagId];
             } else {
-                if (!hasTag) continue; // нет — пропускаем
+                if (!hasTag) continue;
                 newTagIds = currentTagIds.filter(id => id !== tagId);
             }
 
@@ -711,7 +709,6 @@ const DocumentsTabMixin = {
             }
         }
 
-        // Разблокируем badges
         container.querySelectorAll('.docs-dir-tag-assign, .docs-dir-tag-remove').forEach(b => {
             b.style.pointerEvents = '';
             b.style.opacity = '';
@@ -729,7 +726,6 @@ const DocumentsTabMixin = {
             }
         }
 
-        // Обновляем дерево документов в фоне
         await this.loadDocumentsData();
     },
 
@@ -857,12 +853,13 @@ const DocumentsTabMixin = {
         container.innerHTML = this._docsAllTags.map(t => {
             const tid = String(t.id);
             const on  = this._docsCurrentTags.includes(tid);
-            return `<span class="badge docs-modal-tag-toggle ${on ? 'is-active' : ''}" data-tag-id="${tid}"
-                style="background:${on ? (t.color || 'var(--color-primary)') : 'var(--color-surface-offset)'};
-                       color:${on ? 'white' : 'var(--color-text)'};
-                       border:1px solid ${on ? (t.color || 'var(--color-primary)') : 'var(--color-border)'};
-                       cursor:pointer;margin:2px;"
-                data-color="${t.color || ''}"
+            const activeStyle  = `background:${t.color || 'var(--color-primary)'};color:white;border-color:${t.color || 'var(--color-primary)'};`;
+            const inactiveStyle = `background:var(--color-surface-offset);color:var(--color-text);border-color:var(--color-border);`;
+            return `<span
+                class="badge badge--modal badge--active docs-modal-tag-toggle ${on ? 'is-on' : 'is-off'}"
+                data-tag-id="${tid}"
+                data-color="${this.escapeHtml(t.color || '')}"
+                style="${on ? activeStyle : inactiveStyle}"
             >${this.escapeHtml(t.name)}</span>`;
         }).join('');
 
@@ -872,15 +869,17 @@ const DocumentsTabMixin = {
                 const on  = this._docsCurrentTags.includes(tid);
                 if (on) {
                     this._docsCurrentTags = this._docsCurrentTags.filter(x => x !== tid);
-                    el.style.background = 'var(--color-surface-offset)';
-                    el.style.color      = 'var(--color-text)';
-                    el.style.border     = '1px solid var(--color-border)';
+                    el.style.background   = 'var(--color-surface-offset)';
+                    el.style.color        = 'var(--color-text)';
+                    el.style.borderColor  = 'var(--color-border)';
+                    el.classList.replace('is-on', 'is-off');
                 } else {
                     this._docsCurrentTags.push(tid);
                     const color = el.dataset.color || 'var(--color-primary)';
-                    el.style.background = color;
-                    el.style.color      = 'white';
-                    el.style.border     = `1px solid ${color}`;
+                    el.style.background  = color;
+                    el.style.color       = 'white';
+                    el.style.borderColor = color;
+                    el.classList.replace('is-off', 'is-on');
                 }
             });
         });
