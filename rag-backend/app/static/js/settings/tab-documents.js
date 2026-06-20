@@ -10,6 +10,11 @@ const DocumentsTabMixin = {
     _docsIndexWs: null,
     _docsOpenDirs: null,
 
+    /** Shorthand: contrast text color for a given bg hex/css-var */
+    _tc(color) {
+        return typeof _textColor === 'function' ? _textColor(color) : 'white';
+    },
+
     async renderDocumentsTab() {
         return `
         <div class="docs-toolbar">
@@ -117,17 +122,20 @@ const DocumentsTabMixin = {
                 listEl.innerHTML = '<span class="docs-tags-empty">Тегов нет</span>';
                 if (panelEl) panelEl.style.width = '';
             } else {
-                listEl.innerHTML = globalTags.map(t => `
+                listEl.innerHTML = globalTags.map(t => {
+                    const color = t.color || '#01696f';
+                    return `
                     <div class="docs-tag-row">
                         <button class="badge badge--panel badge--active docs-domain-tag-trigger"
                                 type="button"
                                 data-tag-id="${String(t.id)}"
                                 data-tag-name="${this.escapeHtml(t.name)}"
-                                data-tag-color="${t.color || '#01696f'}"
+                                data-tag-color="${color}"
                                 title="Редактировать тег"
-                                style="background:${t.color || 'var(--color-primary)'};color:white;border-color:${t.color || 'var(--color-primary)'};"
+                                style="background:${color};color:${this._tc(color)};border-color:${color};"
                         >${this.escapeHtml(t.name)}</button>
-                    </div>`).join('');
+                    </div>`;
+                }).join('');
 
                 requestAnimationFrame(() => {
                     const widest = Array.from(listEl.querySelectorAll('.docs-domain-tag-trigger'))
@@ -175,6 +183,8 @@ const DocumentsTabMixin = {
     _openDomainTagModal(tag) {
         document.getElementById('docs-domain-tag-modal-backdrop')?.remove();
 
+        const initialColor = tag.color || '#01696f';
+
         const backdrop = document.createElement('div');
         backdrop.id = 'docs-domain-tag-modal-backdrop';
         backdrop.className = 'docs-modal-backdrop';
@@ -194,8 +204,10 @@ const DocumentsTabMixin = {
                 <label class="docs-domain-tag-field docs-domain-tag-field--color">
                     <span class="docs-domain-tag-label">Цвет</span>
                     <div class="docs-domain-tag-color-row">
-                        <input type="color" id="docs-domain-tag-color" class="docs-tag-color-input" value="${this.escapeHtml(tag.color || '#01696f')}" title="Цвет тега">
-                        <span class="badge badge--modal" id="docs-domain-tag-preview" style="background:${tag.color || '#01696f'};color:white;border-color:${tag.color || '#01696f'};">${this.escapeHtml(tag.name || 'Тег')}</span>
+                        <input type="color" id="docs-domain-tag-color" class="docs-tag-color-input" value="${this.escapeHtml(initialColor)}" title="Цвет тега">
+                        <span class="badge badge--modal" id="docs-domain-tag-preview"
+                              style="background:${initialColor};color:${this._tc(initialColor)};border-color:${initialColor};"
+                        >${this.escapeHtml(tag.name || 'Тег')}</span>
                     </div>
                 </label>
                 <div class="docs-domain-tag-actions">
@@ -213,18 +225,18 @@ const DocumentsTabMixin = {
             document.body.style.overflow = '';
         };
 
-        const nameInput = backdrop.querySelector('#docs-domain-tag-name');
+        const nameInput  = backdrop.querySelector('#docs-domain-tag-name');
         const colorInput = backdrop.querySelector('#docs-domain-tag-color');
-        const previewEl = backdrop.querySelector('#docs-domain-tag-preview');
+        const previewEl  = backdrop.querySelector('#docs-domain-tag-preview');
 
         const syncPreview = () => {
-            const name = nameInput?.value?.trim() || 'Тег';
+            const name  = nameInput?.value?.trim() || 'Тег';
             const color = colorInput?.value || '#01696f';
             if (previewEl) {
-                previewEl.textContent = name;
-                previewEl.style.background = color;
+                previewEl.textContent  = name;
+                previewEl.style.background  = color;
                 previewEl.style.borderColor = color;
-                previewEl.style.color = 'white';
+                previewEl.style.color       = this._tc(color);
             }
         };
 
@@ -243,7 +255,7 @@ const DocumentsTabMixin = {
         document.addEventListener('keydown', escHandler);
 
         backdrop.querySelector('[data-action="save-domain-tag"]').addEventListener('click', async () => {
-            const newName = nameInput?.value?.trim();
+            const newName  = nameInput?.value?.trim();
             const newColor = colorInput?.value || '#01696f';
             if (!newName) {
                 alert('Название тега не может быть пустым');
@@ -370,11 +382,12 @@ const DocumentsTabMixin = {
 
             } else {
                 const doc = child.doc;
-                const tags = (doc.tags || []).map(t =>
-                    `<span class="badge badge--file"
-                           style="background:${t.color || 'var(--color-primary)'};color:white;border-color:${t.color || 'var(--color-primary)'};"
-                    >${this.escapeHtml(t.name)}</span>`
-                ).join('');
+                const tags = (doc.tags || []).map(t => {
+                    const color = t.color || 'var(--color-primary)';
+                    return `<span class="badge badge--file"
+                               style="background:${color};color:${this._tc(color)};border-color:${color};"
+                           >${this.escapeHtml(t.name)}</span>`;
+                }).join('');
 
                 const row = document.createElement('tr');
                 row.className = 'docs-row';
@@ -681,13 +694,14 @@ const DocumentsTabMixin = {
 
         const assignBadges = allTags.map(t => {
             const tid = String(t.id);
+            const color = t.color || 'var(--color-primary)';
             const allHaveIt = tagDocCount[tid] === allDocs.length && allDocs.length > 0;
-            const activeStyle = `background:${t.color || 'var(--color-primary)'};color:white;border-color:${t.color || 'var(--color-primary)'};`;
+            const activeStyle   = `background:${color};color:${this._tc(color)};border-color:${color};`;
             const inactiveStyle = `background:var(--color-surface-offset);color:var(--color-text-faint);border-color:var(--color-border);`;
             return `<span
                 class="badge badge--dir ${allHaveIt ? 'badge--inactive' : 'badge--active'} docs-dir-tag-assign ${allHaveIt ? 'is-disabled' : 'is-active'}"
                 data-tag-id="${tid}"
-                data-tag-color="${this.escapeHtml(t.color || '')}"
+                data-tag-color="${this.escapeHtml(color)}"
                 style="${allHaveIt ? inactiveStyle : activeStyle}"
                 title="${allHaveIt ? 'Все файлы уже имеют этот тег' : 'Назначить на все файлы каталога'}"
             >${this.escapeHtml(t.name)}</span>`;
@@ -696,10 +710,11 @@ const DocumentsTabMixin = {
         const removeBadges = presentTags.length
             ? presentTags.map(t => {
                 const tid = String(t.id);
+                const color = t.color || 'var(--color-primary)';
                 return `<span
                     class="badge badge--dir badge--removable docs-dir-tag-remove is-active"
                     data-tag-id="${tid}"
-                    style="background:${t.color || 'var(--color-primary)'};color:white;border-color:${t.color || 'var(--color-primary)'};"
+                    style="background:${color};color:${this._tc(color)};border-color:${color};"
                     title="Снять со всех файлов каталога где он есть"
                 >${this.escapeHtml(t.name)}</span>`;
             }).join('')
@@ -913,33 +928,34 @@ const DocumentsTabMixin = {
             return;
         }
         container.innerHTML = this._docsAllTags.map(t => {
-            const tid = String(t.id);
-            const on  = this._docsCurrentTags.includes(tid);
-            const activeStyle  = `background:${t.color || 'var(--color-primary)'};color:white;border-color:${t.color || 'var(--color-primary)'};`;
+            const tid   = String(t.id);
+            const on    = this._docsCurrentTags.includes(tid);
+            const color = t.color || 'var(--color-primary)';
+            const activeStyle   = `background:${color};color:${this._tc(color)};border-color:${color};`;
             const inactiveStyle = `background:var(--color-surface-offset);color:var(--color-text);border-color:var(--color-border);`;
             return `<span
                 class="badge badge--modal badge--active docs-modal-tag-toggle ${on ? 'is-on' : 'is-off'}"
                 data-tag-id="${tid}"
-                data-color="${this.escapeHtml(t.color || '')}"
+                data-color="${this.escapeHtml(color)}"
                 style="${on ? activeStyle : inactiveStyle}"
             >${this.escapeHtml(t.name)}</span>`;
         }).join('');
 
         container.querySelectorAll('.docs-modal-tag-toggle').forEach(el => {
             el.addEventListener('click', () => {
-                const tid = String(el.dataset.tagId);
-                const on  = this._docsCurrentTags.includes(tid);
+                const tid   = String(el.dataset.tagId);
+                const on    = this._docsCurrentTags.includes(tid);
+                const color = el.dataset.color || 'var(--color-primary)';
                 if (on) {
                     this._docsCurrentTags = this._docsCurrentTags.filter(x => x !== tid);
-                    el.style.background   = 'var(--color-surface-offset)';
-                    el.style.color        = 'var(--color-text)';
-                    el.style.borderColor  = 'var(--color-border)';
+                    el.style.background  = 'var(--color-surface-offset)';
+                    el.style.color       = 'var(--color-text)';
+                    el.style.borderColor = 'var(--color-border)';
                     el.classList.replace('is-on', 'is-off');
                 } else {
                     this._docsCurrentTags.push(tid);
-                    const color = el.dataset.color || 'var(--color-primary)';
                     el.style.background  = color;
-                    el.style.color       = 'white';
+                    el.style.color       = this._tc(color);
                     el.style.borderColor = color;
                     el.classList.replace('is-off', 'is-on');
                 }
