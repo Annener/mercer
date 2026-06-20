@@ -23,7 +23,6 @@
     font-weight: 650;
 }
 
-/* === Tabs === */
 .settings-tabs {
     display: flex;
     flex-wrap: wrap;
@@ -55,7 +54,6 @@
     border-bottom-color: #3498db;
 }
 
-/* === Content & layout === */
 .settings-content {
     max-width: 1180px;
     flex: 1;
@@ -72,7 +70,6 @@
     gap: 12px;
 }
 
-/* === Settings cards === */
 .settings-card {
     background: #fff;
     border: 1px solid #dfe6ee;
@@ -105,7 +102,6 @@
     min-height: 116px;
 }
 
-/* === Param list === */
 .settings-param-list {
     display: grid;
     gap: 8px;
@@ -137,7 +133,6 @@
     font-size: 13px;
 }
 
-/* === JSON editor === */
 .json-editor {
     width: 100%;
     min-height: 220px;
@@ -148,20 +143,6 @@
     border-radius: 5px;
     resize: vertical;
 }
-
-/* ============================================================= */
-/* === Badges / Tags                                          === */
-/*                                                               */
-/* АРХИТЕКТУРА:                                                  */
-/*   .badge           — базовый класс (форма, типографика)       */
-/*   .badge--{ctx}    — контекстный модификатор (размер)         */
-/*   .badge--active   — тег назначен (кликабельный)              */
-/*   .badge--inactive — тег не назначен (dim + pointer)          */
-/*   .badge--removable — показывает «×», cursor:pointer          */
-/*                                                               */
-/*   Inline-стили в JS: ТОЛЬКО background + color               */
-/*   Всё остальное — здесь.                                      */
-/* ============================================================= */
 
 .badge {
     display: inline-flex;
@@ -183,16 +164,6 @@
     -webkit-backdrop-filter: blur(2px);
 }
 
-/* ── Символ «×» внутри removable-бейджа ────────────────────── */
-.badge-x {
-    opacity: 0.7;
-    font-style: normal;
-    font-size: 1.1em;
-    line-height: 1;
-    pointer-events: none;
-}
-
-/* ── Группа бейджей (flex-контейнер) ────────────────────────── */
 .badge-group {
     display: flex;
     flex-wrap: wrap;
@@ -203,20 +174,6 @@
     align-items: flex-start;
 }
 
-/* ── Статусные бейджи (без inline-цвета) ───────────────────── */
-.badge.ok {
-    background: #e6f5ee;
-    color: #206a43;
-    border-color: rgba(32, 106, 67, 0.18);
-}
-
-.badge.muted {
-    background: #eef2f6;
-    color: #657789;
-    border-color: rgba(101, 119, 137, 0.15);
-}
-
-/* ── doc-status-badge (inline статусы прогресс-панели) ──────── */
 .doc-status-badge {
     display: inline-flex;
     align-items: center;
@@ -230,77 +187,48 @@
     box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
 }
 
-/* ============================================================= */
-/* КОНТЕКСТНЫЕ МОДИФИКАТОРЫ                                      */
-/* ============================================================= */
-
-/* ── Панель тегов домена (правая колонка) ──────────────────── */
 .badge--panel {
-    padding: 4px 12px;
+    padding: 5px 14px;
     font-size: 12px;
-    flex: 1;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    max-width: 100%;
+    width: 100%;
+    justify-content: center;
 }
 
-/* ── Теги на файлах в дереве: компактные ───────────────────── */
 .badge--file {
     padding: 2px 8px;
     font-size: 11px;
     box-shadow: 0 1px 2px rgba(0, 0, 0, 0.07);
 }
 
-/* ── Теги в модалке документа ───────────────────────────────── */
-.badge--modal {
-    padding: 4px 12px;
-    font-size: 12px;
-}
-
-/* ── Теги в модалке каталога ─────────────────────────────────── */
+.badge--modal,
 .badge--dir {
     padding: 4px 12px;
     font-size: 12px;
 }
 
-/* ── Теги кампании (собственные) ─────────────────────────────── */
-.badge--campaign-own {
-    padding: 4px 12px;
-    font-size: 12px;
-}
-
-/* ── Глобальные теги в кампании ──────────────────────────────── */
-.badge--campaign-global {
-    padding: 4px 12px;
-    font-size: 12px;
-}
-
-/* ============================================================= */
-/* СОСТОЯНИЯ                                                     */
-/* ============================================================= */
-
-/* Тег удаляемый / переключаемый → pointer + hover-эффект */
 .badge--removable,
 .badge--active,
-.badge--inactive {
+.badge--inactive,
+.docs-domain-tag-trigger {
     cursor: pointer;
 }
 
 .badge--removable:hover,
-.badge--active:hover {
+.badge--active:hover,
+.docs-domain-tag-trigger:hover {
     transform: translateY(-1px);
     box-shadow: 0 3px 8px rgba(0, 0, 0, 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.22);
     filter: brightness(1.06) saturate(1.08);
 }
 
 .badge--removable:active,
-.badge--active:active {
+.badge--active:active,
+.docs-domain-tag-trigger:active {
     transform: translateY(0);
     box-shadow: 0 1px 2px rgba(0, 0, 0, 0.10);
     filter: none;
 }
 
-/* Тег не назначен: dim, но кликабельный для назначения */
 .badge--inactive {
     opacity: 0.45;
 }
@@ -311,25 +239,11 @@
     box-shadow: 0 2px 6px rgba(0, 0, 0, 0.12);
 }
 
-/* ============================================================= */
-/* КОНТЕЙНЕРЫ — совместимость с существующими классами          */
-/* ============================================================= */
-
-/* Панель тегов: ряд с тегом и кнопками управления */
 .docs-tag-row {
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 4px 6px;
-    border-radius: 6px;
-    transition: background 0.12s;
 }
 
-.docs-tag-row:hover {
-    background: #f5f7fa;
-}
-
-/* Flex-контейнер тегов в дереве файлов */
 .docs-file-tags {
     display: flex;
     flex-wrap: wrap;
@@ -337,7 +251,6 @@
     align-items: center;
 }
 
-/* Flex-контейнер тегов в модалке документа */
 .docs-modal-tag-badges {
     display: flex;
     flex-wrap: wrap;
@@ -346,7 +259,6 @@
     align-content: flex-start;
 }
 
-/* Flex-контейнер тегов в модалке каталога */
 .docs-dir-tag-list {
     display: flex;
     flex-wrap: wrap;
@@ -355,12 +267,6 @@
     align-items: flex-start;
     align-content: flex-start;
 }
-
-/* ============================================================= */
-
-/* ===================================================== */
-/* Card dropdown menu                                    */
-/* ===================================================== */
 
 .card-menu-container {
     position: relative;
@@ -440,104 +346,55 @@
     color: #c0392b;
 }
 
-/* === Domains tab === */
-.domain-list {
+.domain-list,
+.model-list,
+.vaults-list {
     display: flex;
     flex-direction: column;
     gap: 12px;
     margin-bottom: 24px;
 }
 
-.domain-card {
+.domain-card,
+.model-card,
+.vault-card {
     background: #fff;
     border: 1px solid #dfe6ee;
     border-radius: 8px;
     padding: 16px;
 }
 
-.domain-card-header {
+.domain-card-header,
+.model-card-header,
+.vault-card-header {
     display: flex;
     align-items: center;
     gap: 12px;
     margin-bottom: 12px;
 }
 
-.domain-card-title {
+.domain-card-title,
+.model-card-title,
+.vault-card-title {
     font-weight: 600;
     font-size: 15px;
     flex: 1;
 }
 
-.domain-card-body {
+.domain-card-body,
+.model-card-body,
+.vault-card-body {
     display: flex;
     flex-direction: column;
     gap: 8px;
 }
 
-.domain-field-row {
+.domain-field-row,
+.vault-field-row {
     display: grid;
     grid-template-columns: 120px 1fr;
     align-items: center;
     gap: 12px;
-}
-
-.domain-field-label {
-    font-size: 12px;
-    color: #7f8c8d;
-    font-weight: 500;
-}
-
-.domain-card-actions {
-    display: flex;
-    gap: 8px;
-    margin-top: 12px;
-    justify-content: flex-end;
-}
-
-.domain-add-form {
-    background: #fff;
-    border: 1px dashed #dfe6ee;
-    border-radius: 8px;
-    padding: 16px;
-}
-
-/* === Models tab === */
-.model-list {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-    margin-bottom: 24px;
-}
-
-.model-card {
-    background: #fff;
-    border: 1px solid #dfe6ee;
-    border-radius: 8px;
-    padding: 16px;
-}
-
-.model-card.active-model {
-    border-color: #27ae60;
-    box-shadow: 0 0 0 2px #e6f5ee;
-}
-
-.model-card-header {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    margin-bottom: 12px;
-}
-
-.model-card-title {
-    font-weight: 600;
-    font-size: 15px;
-    flex: 1;
-}
-
-.model-card-body {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
 }
 
 .model-field-row {
@@ -547,24 +404,36 @@
     gap: 12px;
 }
 
-.model-field-label {
+.domain-field-label,
+.model-field-label,
+.vault-field-label,
+.model-add-label {
     font-size: 12px;
     color: #7f8c8d;
     font-weight: 500;
 }
 
-.model-card-actions {
+.domain-card-actions,
+.model-card-actions,
+.vault-card-actions {
     display: flex;
     gap: 8px;
     margin-top: 12px;
     justify-content: flex-end;
 }
 
-.model-add-form {
+.domain-add-form,
+.model-add-form,
+.vault-add-form {
     background: #fff;
     border: 1px dashed #dfe6ee;
     border-radius: 8px;
     padding: 16px;
+}
+
+.model-card.active-model {
+    border-color: #27ae60;
+    box-shadow: 0 0 0 2px #e6f5ee;
 }
 
 .model-add-form-title {
@@ -587,13 +456,6 @@
     gap: 4px;
 }
 
-.model-add-label {
-    font-size: 12px;
-    color: #7f8c8d;
-    font-weight: 500;
-}
-
-/* === Campaigns tab === */
 .campaigns-layout {
     display: grid;
     grid-template-columns: 280px 1fr;
@@ -644,70 +506,6 @@
     overflow-y: auto;
 }
 
-/* === Vaults tab === */
-.vaults-list {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-    margin-bottom: 24px;
-}
-
-.vault-card {
-    background: #fff;
-    border: 1px solid #dfe6ee;
-    border-radius: 8px;
-    padding: 16px;
-}
-
-.vault-card-header {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    margin-bottom: 12px;
-}
-
-.vault-card-title {
-    font-weight: 600;
-    flex: 1;
-}
-
-.vault-card-body {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-}
-
-.vault-field-row {
-    display: grid;
-    grid-template-columns: 120px 1fr;
-    align-items: center;
-    gap: 12px;
-}
-
-.vault-field-label {
-    font-size: 12px;
-    color: #7f8c8d;
-    font-weight: 500;
-}
-
-.vault-card-actions {
-    display: flex;
-    gap: 8px;
-    margin-top: 12px;
-    justify-content: flex-end;
-}
-
-.vault-add-form {
-    background: #fff;
-    border: 1px dashed #dfe6ee;
-    border-radius: 8px;
-    padding: 16px;
-}
-
-/* ===================================================== */
-/* Documents tab                                         */
-/* ===================================================== */
-
 .docs-toolbar {
     display: flex;
     align-items: center;
@@ -724,7 +522,8 @@
     flex-wrap: wrap;
 }
 
-.docs-toolbar-btn {
+.docs-toolbar-btn,
+.docs-tag-add-btn {
     flex-shrink: 0;
 }
 
@@ -748,9 +547,9 @@
     min-width: 0;
 }
 
-/* Панель тегов */
 .docs-tags-panel {
-    width: 440px;
+    width: 320px;
+    min-width: 260px;
     flex-shrink: 0;
     background: #fff;
     border: 1px solid #dfe6ee;
@@ -770,7 +569,7 @@
 .docs-tags-panel-list {
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: 6px;
     max-height: 320px;
     overflow-y: auto;
 }
@@ -807,12 +606,6 @@
     flex-shrink: 0;
 }
 
-.docs-tag-add-btn {
-    flex-shrink: 0;
-}
-
-/* ─── Прогресс-панель ─────────────────────────────────────────────────────── */
-
 .docs-index-progress-panel {
     margin-bottom: 16px;
     border: 1px solid #dfe6ee;
@@ -836,14 +629,15 @@
     font-weight: 600;
 }
 
-.idx-global-count {
+.idx-global-count,
+.idx-pct,
+.idx-file-chunks,
+.docs-dir-modal-count {
     font-size: 12px;
     color: #657789;
 }
 
 .idx-pct {
-    font-size: 12px;
-    color: #657789;
     margin-left: auto;
 }
 
@@ -851,19 +645,31 @@
     margin-left: 8px;
 }
 
-.idx-global-bar-wrap {
-    height: 6px;
+.idx-global-bar-wrap,
+.idx-file-bar-wrap {
     background: #eef2f6;
     border-radius: 99px;
     overflow: hidden;
+}
+
+.idx-global-bar-wrap {
+    height: 6px;
     margin-bottom: 12px;
 }
 
-.idx-bar {
+.idx-file-bar-wrap {
+    height: 3px;
+}
+
+.idx-bar,
+.idx-bar-file {
     height: 100%;
     background: #3498db;
-    border-radius: 99px;
     transition: width 0.4s ease;
+    min-width: 2px;
+}
+
+.idx-bar {
     min-width: 4px;
 }
 
@@ -908,28 +714,6 @@
     white-space: nowrap;
 }
 
-.idx-file-chunks {
-    font-size: 12px;
-    color: #95a5a6;
-    white-space: nowrap;
-}
-
-.idx-file-bar-wrap {
-    height: 3px;
-    background: #eef2f6;
-    border-radius: 99px;
-    overflow: hidden;
-}
-
-.idx-bar-file {
-    height: 100%;
-    background: #3498db;
-    transition: width 0.3s ease;
-    min-width: 2px;
-}
-
-/* ─── Модальное окно документа ────────────────────────────────────────────── */
-
 .docs-modal-backdrop {
     position: fixed;
     inset: 0;
@@ -952,6 +736,10 @@
     flex-direction: column;
     box-shadow: 0 8px 28px rgba(0,0,0,0.13);
     overflow: hidden;
+}
+
+.docs-domain-tag-modal {
+    max-width: 420px;
 }
 
 .docs-modal-header {
@@ -990,7 +778,11 @@
     border: none;
     cursor: pointer;
 }
-.docs-modal-close:hover { background: #f0f0f0; color: #2c3e50; }
+
+.docs-modal-close:hover {
+    background: #f0f0f0;
+    color: #2c3e50;
+}
 
 .docs-modal-body {
     display: flex;
@@ -1025,7 +817,6 @@
     margin-bottom: 10px;
 }
 
-/* Метаданные */
 .docs-modal-meta {
     width: 100%;
     border-collapse: collapse;
@@ -1050,8 +841,8 @@
     word-break: break-all;
 }
 
-/* Футер модала */
-.docs-modal-footer-btns {
+.docs-modal-footer-btns,
+.docs-domain-tag-actions {
     display: flex;
     align-items: center;
     gap: 10px;
@@ -1063,7 +854,8 @@
     flex: 1;
 }
 
-.docs-modal-delete-btn {
+.docs-modal-delete-btn,
+.docs-domain-tag-delete-btn {
     background: #e74c3c;
     color: #fff;
     border: none;
@@ -1076,13 +868,39 @@
     flex-shrink: 0;
 }
 
-.docs-modal-delete-btn:hover {
+.docs-modal-delete-btn:hover,
+.docs-domain-tag-delete-btn:hover {
     background: #c0392b;
 }
 
-/* ===================================================== */
-/* Directory tree (collapsible folders in docs tab)      */
-/* ===================================================== */
+.docs-domain-tag-modal-body {
+    padding: 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+
+.docs-domain-tag-field {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.docs-domain-tag-label {
+    font-size: 12px;
+    font-weight: 600;
+    color: #6b7d8f;
+}
+
+.docs-domain-tag-color-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.docs-domain-tag-name {
+    width: 100%;
+}
 
 .docs-dir-row {
     background: #f0f4f8;
@@ -1150,8 +968,6 @@
     font-size: 13px;
 }
 
-/* ─── File row: name + inline tags ───────────────────────────────────────── */
-
 .docs-file-row {
     display: flex;
     align-items: center;
@@ -1167,8 +983,6 @@
     max-width: 320px;
 }
 
-/* ─── Модальное окно каталога ─────────────────────────────────────────────── */
-
 .docs-dir-modal {
     max-width: 520px;
 }
@@ -1176,13 +990,6 @@
 .docs-dir-modal-body {
     padding: 20px 22px;
     overflow-y: auto;
-}
-
-.docs-dir-modal-count {
-    font-size: 12px;
-    color: #95a5a6;
-    font-weight: 400;
-    flex-shrink: 0;
 }
 
 .docs-dir-modal-section {
@@ -1194,7 +1001,6 @@
     margin: 16px 0;
 }
 
-/* Статусные строки операций */
 .docs-dir-modal-status {
     margin-top: 10px;
     font-size: 12px;

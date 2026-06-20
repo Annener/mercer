@@ -105,10 +105,9 @@ const DocumentsTabMixin = {
         } catch (_) {}
     },
 
-    // ─── Панель тегов домена ────────────────────────────────────────────────
-
     async _refreshTagsPanel(domainId) {
         const listEl = document.getElementById('docs-tags-panel-list');
+        const panelEl = document.getElementById('docs-tags-panel');
         if (!listEl) return;
         try {
             const resp = await this.api.getTags(domainId);
@@ -116,39 +115,38 @@ const DocumentsTabMixin = {
 
             if (!globalTags.length) {
                 listEl.innerHTML = '<span class="docs-tags-empty">Тегов нет</span>';
+                if (panelEl) panelEl.style.width = '';
             } else {
                 listEl.innerHTML = globalTags.map(t => `
                     <div class="docs-tag-row">
-                        <span class="badge badge--panel badge--active"
-                              style="background:${t.color || 'var(--color-primary)'};color:white;border-color:${t.color || 'var(--color-primary)'};"
-                        >${this.escapeHtml(t.name)}</span>
-                        <input type="color" value="${t.color || '#01696f'}" data-tag-edit-color="${String(t.id)}" class="docs-tag-color-input" title="Цвет тега">
-                        <button class="btn btn-xs" data-action="edit-tag-name" data-tag-id="${String(t.id)}" data-tag-name="${this.escapeHtml(t.name)}" title="Переименовать">✏️</button>
-                        <button class="btn btn-xs" style="color:var(--color-error);" data-action="delete-tag" data-tag-id="${String(t.id)}" data-tag-name="${this.escapeHtml(t.name)}" title="Удалить">🗑</button>
+                        <button class="badge badge--panel badge--active docs-domain-tag-trigger"
+                                type="button"
+                                data-tag-id="${String(t.id)}"
+                                data-tag-name="${this.escapeHtml(t.name)}"
+                                data-tag-color="${t.color || '#01696f'}"
+                                title="Редактировать тег"
+                                style="background:${t.color || 'var(--color-primary)'};color:white;border-color:${t.color || 'var(--color-primary)'};"
+                        >${this.escapeHtml(t.name)}</button>
                     </div>`).join('');
+
+                requestAnimationFrame(() => {
+                    const widest = Array.from(listEl.querySelectorAll('.docs-domain-tag-trigger'))
+                        .reduce((max, el) => Math.max(max, Math.ceil(el.getBoundingClientRect().width)), 0);
+                    if (panelEl && widest > 0) {
+                        const targetWidth = Math.min(Math.max(widest + 96, 260), 520);
+                        panelEl.style.width = `${targetWidth}px`;
+                    }
+                });
             }
 
-            listEl.querySelectorAll('[data-tag-edit-color]').forEach(inp => {
-                inp.addEventListener('change', async () => {
-                    try { await this.api.updateTag(inp.dataset.tagEditColor, { color: inp.value }); await this._refreshTagsPanel(domainId); await this.loadDocumentsData(); }
-                    catch (e) { alert('Ошибка цвета: ' + e.message); }
-                });
-            });
-
-            listEl.querySelectorAll('[data-action="edit-tag-name"]').forEach(btn => {
-                btn.addEventListener('click', async () => {
-                    const newName = prompt('Новое название:', btn.dataset.tagName);
-                    if (!newName || !newName.trim()) return;
-                    try { await this.api.updateTag(btn.dataset.tagId, { name: newName.trim() }); await this._refreshTagsPanel(domainId); }
-                    catch (e) { alert('Ошибка: ' + e.message); }
-                });
-            });
-
-            listEl.querySelectorAll('[data-action="delete-tag"]').forEach(btn => {
-                btn.addEventListener('click', async () => {
-                    if (!confirm(`Удалить тег «${btn.dataset.tagName}»?`)) return;
-                    try { await this.api.deleteTag(btn.dataset.tagId); await this._refreshTagsPanel(domainId); await this.loadDocumentsData(); }
-                    catch (e) { alert('Ошибка удаления: ' + e.message); }
+            listEl.querySelectorAll('.docs-domain-tag-trigger').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    this._openDomainTagModal({
+                        id: btn.dataset.tagId,
+                        name: btn.dataset.tagName,
+                        color: btn.dataset.tagColor,
+                        domainId,
+                    });
                 });
             });
 
@@ -165,6 +163,7 @@ const DocumentsTabMixin = {
                         if (nameInp) nameInp.value = '';
                         await this._refreshTagsPanel(domainId);
                         await this._loadTagFilterOptions(domainId);
+                        await this.loadDocumentsData();
                     } catch (e) { alert('Ошибка создания: ' + e.message); }
                 });
             }
@@ -173,7 +172,108 @@ const DocumentsTabMixin = {
         }
     },
 
-    // ─── Дерево документов ──────────────────────────────────────────────────
+    _openDomainTagModal(tag) {
+        document.getElementById('docs-domain-tag-modal-backdrop')?.remove();
+
+        const backdrop = document.createElement('div');
+        backdrop.id = 'docs-domain-tag-modal-backdrop';
+        backdrop.className = 'docs-modal-backdrop';
+        backdrop.innerHTML = `
+        <div class="docs-modal docs-domain-tag-modal" role="dialog" aria-modal="true" aria-label="Редактирование тега домена">
+            <div class="docs-modal-header">
+                <div class="docs-modal-title">
+                    <span class="docs-modal-filename">Тег домена</span>
+                </div>
+                <button class="docs-modal-close" data-action="close-domain-tag-modal" aria-label="Закрыть">✕</button>
+            </div>
+            <div class="docs-domain-tag-modal-body">
+                <label class="docs-domain-tag-field">
+                    <span class="docs-domain-tag-label">Название</span>
+                    <input type="text" id="docs-domain-tag-name" class="input-field docs-domain-tag-name" value="${this.escapeHtml(tag.name || '')}">
+                </label>
+                <label class="docs-domain-tag-field docs-domain-tag-field--color">
+                    <span class="docs-domain-tag-label">Цвет</span>
+                    <div class="docs-domain-tag-color-row">
+                        <input type="color" id="docs-domain-tag-color" class="docs-tag-color-input" value="${this.escapeHtml(tag.color || '#01696f')}" title="Цвет тега">
+                        <span class="badge badge--modal" id="docs-domain-tag-preview" style="background:${tag.color || '#01696f'};color:white;border-color:${tag.color || '#01696f'};">${this.escapeHtml(tag.name || 'Тег')}</span>
+                    </div>
+                </label>
+                <div class="docs-domain-tag-actions">
+                    <button class="btn btn-primary" data-action="save-domain-tag">Сохранить</button>
+                    <button class="btn docs-domain-tag-delete-btn" data-action="delete-domain-tag">Удалить</button>
+                </div>
+            </div>
+        </div>`;
+
+        document.body.appendChild(backdrop);
+        document.body.style.overflow = 'hidden';
+
+        const closeModal = () => {
+            backdrop.remove();
+            document.body.style.overflow = '';
+        };
+
+        const nameInput = backdrop.querySelector('#docs-domain-tag-name');
+        const colorInput = backdrop.querySelector('#docs-domain-tag-color');
+        const previewEl = backdrop.querySelector('#docs-domain-tag-preview');
+
+        const syncPreview = () => {
+            const name = nameInput?.value?.trim() || 'Тег';
+            const color = colorInput?.value || '#01696f';
+            if (previewEl) {
+                previewEl.textContent = name;
+                previewEl.style.background = color;
+                previewEl.style.borderColor = color;
+                previewEl.style.color = 'white';
+            }
+        };
+
+        nameInput?.addEventListener('input', syncPreview);
+        colorInput?.addEventListener('input', syncPreview);
+
+        backdrop.addEventListener('click', e => { if (e.target === backdrop) closeModal(); });
+        backdrop.querySelector('[data-action="close-domain-tag-modal"]').addEventListener('click', closeModal);
+
+        const escHandler = e => {
+            if (e.key === 'Escape') {
+                closeModal();
+                document.removeEventListener('keydown', escHandler);
+            }
+        };
+        document.addEventListener('keydown', escHandler);
+
+        backdrop.querySelector('[data-action="save-domain-tag"]').addEventListener('click', async () => {
+            const newName = nameInput?.value?.trim();
+            const newColor = colorInput?.value || '#01696f';
+            if (!newName) {
+                alert('Название тега не может быть пустым');
+                nameInput?.focus();
+                return;
+            }
+            try {
+                await this.api.updateTag(tag.id, { name: newName, color: newColor });
+                closeModal();
+                await this._refreshTagsPanel(tag.domainId);
+                await this._loadTagFilterOptions(tag.domainId);
+                await this.loadDocumentsData();
+            } catch (e) {
+                alert('Ошибка сохранения: ' + e.message);
+            }
+        });
+
+        backdrop.querySelector('[data-action="delete-domain-tag"]').addEventListener('click', async () => {
+            if (!confirm(`Удалить тег «${tag.name}»?`)) return;
+            try {
+                await this.api.deleteTag(tag.id);
+                closeModal();
+                await this._refreshTagsPanel(tag.domainId);
+                await this._loadTagFilterOptions(tag.domainId);
+                await this.loadDocumentsData();
+            } catch (e) {
+                alert('Ошибка удаления: ' + e.message);
+            }
+        });
+    },
 
     _buildDocsTree(docs) {
         const root = { _isDir: true, children: {} };
@@ -204,8 +304,6 @@ const DocumentsTabMixin = {
         }
         return set;
     },
-
-    // ─── Рекурсивный сбор всех doc-объектов из поддерева ────────────────────
 
     _collectDirDocs(node) {
         const result = [];
@@ -254,7 +352,6 @@ const DocumentsTabMixin = {
                 childGroup._pathPrefix = dirKey;
                 childGroup.style.display = isOpen ? '' : 'none';
 
-                // Клик по стрелке — только раскрыть/свернуть
                 dirRow.querySelector('.docs-dir-toggle').addEventListener('click', (e) => {
                     e.stopPropagation();
                     const nowOpen = childGroup.style.display !== 'none';
@@ -263,7 +360,6 @@ const DocumentsTabMixin = {
                     if (nowOpen) openDirs.delete(dirKey); else openDirs.add(dirKey);
                 });
 
-                // Клик по имени папки — открыть модалку тегов каталога
                 dirRow.querySelector('.docs-dir-label').addEventListener('click', (e) => {
                     e.stopPropagation();
                     this._openDirModal(name, child);
@@ -274,7 +370,6 @@ const DocumentsTabMixin = {
 
             } else {
                 const doc = child.doc;
-                // Теги на файле: компактные бейджи с CSS-классами
                 const tags = (doc.tags || []).map(t =>
                     `<span class="badge badge--file"
                            style="background:${t.color || 'var(--color-primary)'};color:white;border-color:${t.color || 'var(--color-primary)'};"
@@ -351,8 +446,6 @@ const DocumentsTabMixin = {
         this._renderDocsRows(filtered);
     },
 
-    // ─── Вспомогательная: разбор списка файлов из TaskStateResponse ──────────
-
     _parseTaskStateFiles(resp) {
         const s = resp?.state || resp || {};
         const filesInState = s.files || {};
@@ -374,8 +467,6 @@ const DocumentsTabMixin = {
         }
         return { files, total: fileList.length, done: doneCount, status: s.status };
     },
-
-    // ─── Прогресс-панель индексации ──────────────────────────────────────────
 
     _renderIndexProgress(state) {
         const panel = document.getElementById('docs-index-progress-panel');
@@ -445,8 +536,6 @@ const DocumentsTabMixin = {
             });
         }
     },
-
-    // ─── WebSocket + polling для индексатора ────────────────────────────────
 
     _startIndexerWs(taskId) {
         const state = { status: 'running', total: 0, done: 0, files: {} };
@@ -520,12 +609,8 @@ const DocumentsTabMixin = {
         }, 3000);
     },
 
-    // ─── Модальное окно каталога ─────────────────────────────────────────────
-
     async _openDirModal(dirName, dirNode) {
         const domainId = this._activeDomainId || await this._resolveDomainId();
-
-        // Собираем все файлы из поддерева
         const allDocs = this._collectDirDocs(dirNode);
 
         document.getElementById('docs-dir-modal-backdrop')?.remove();
@@ -581,7 +666,6 @@ const DocumentsTabMixin = {
     },
 
     _renderDirModalInner(container, allTags, allDocs, closeModal) {
-        // Для каждого тега: посчитать сколько файлов его имеют
         const tagDocCount = {};
         for (const doc of allDocs) {
             for (const t of (doc.tags || [])) {
@@ -595,7 +679,6 @@ const DocumentsTabMixin = {
             .map(tid => allTags.find(t => String(t.id) === tid))
             .filter(Boolean);
 
-        // Рендер секции «Назначить»
         const assignBadges = allTags.map(t => {
             const tid = String(t.id);
             const allHaveIt = tagDocCount[tid] === allDocs.length && allDocs.length > 0;
@@ -610,7 +693,6 @@ const DocumentsTabMixin = {
             >${this.escapeHtml(t.name)}</span>`;
         }).join('');
 
-        // Рендер секции «Снять»
         const removeBadges = presentTags.length
             ? presentTags.map(t => {
                 const tid = String(t.id);
@@ -640,37 +722,19 @@ const DocumentsTabMixin = {
                 <div id="docs-dir-remove-status" class="docs-dir-modal-status" style="display:none;"></div>
             </div>`;
 
-        // ── Обработчики: назначить ──
         container.querySelectorAll('.docs-dir-tag-assign.is-active').forEach(badge => {
             badge.addEventListener('click', async () => {
                 const tagId = badge.dataset.tagId;
                 const statusEl = container.querySelector('#docs-dir-assign-status');
-                await this._applyDirTagOp({
-                    docs: allDocs,
-                    tagId,
-                    mode: 'assign',
-                    statusEl,
-                    container,
-                    closeModal,
-                    allTags,
-                });
+                await this._applyDirTagOp({ docs: allDocs, tagId, mode: 'assign', statusEl, container, closeModal, allTags });
             });
         });
 
-        // ── Обработчики: снять ──
         container.querySelectorAll('.docs-dir-tag-remove.is-active').forEach(badge => {
             badge.addEventListener('click', async () => {
                 const tagId = badge.dataset.tagId;
                 const statusEl = container.querySelector('#docs-dir-remove-status');
-                await this._applyDirTagOp({
-                    docs: allDocs,
-                    tagId,
-                    mode: 'remove',
-                    statusEl,
-                    container,
-                    closeModal,
-                    allTags,
-                });
+                await this._applyDirTagOp({ docs: allDocs, tagId, mode: 'remove', statusEl, container, closeModal, allTags });
             });
         });
     },
@@ -728,8 +792,6 @@ const DocumentsTabMixin = {
 
         await this.loadDocumentsData();
     },
-
-    // ─── Модальное окно документа ───────────────────────────────────────────
 
     async _openDocModal(doc) {
         this._docsCurrentDoc = doc;
@@ -884,8 +946,6 @@ const DocumentsTabMixin = {
             });
         });
     },
-
-    // ─── Actions ─────────────────────────────────────────────────────────
 
     async handleDocumentsAction(action, btn) {
         if (action === 'run-indexer') {
