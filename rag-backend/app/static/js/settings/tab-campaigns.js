@@ -62,7 +62,6 @@ const CampaignsTabMixin = {
         let campaign = { name: '', description: '', system_prompt: '' };
         let campaignTags = [];
         let globalTags = [];
-        // selectedDomainId — домен из UI-фильтра (для создания новой кампании)
         const selectedDomainId = this._activeDomainId || null;
 
         if (isEdit) {
@@ -72,12 +71,10 @@ const CampaignsTabMixin = {
             } catch (e) { alert('Ошибка загрузки кампании: ' + e.message); return; }
         }
 
-        // fix: при редактировании берём домен из самой кампании, а не из UI-селектора
         const effectiveDomainId = isEdit
             ? (campaign.domain_id || selectedDomainId || null)
             : selectedDomainId;
 
-        // Загружаем глобальные теги домена (для выбора) + уже подключённые к кампании
         if (effectiveDomainId) {
             try {
                 const tagsResp = await this.api.getTags(effectiveDomainId);
@@ -93,7 +90,6 @@ const CampaignsTabMixin = {
             } catch (e) { /* ignore */ }
         }
 
-        // При создании — грузим домены для select
         let domains = [];
         if (!isEdit) {
             try {
@@ -140,7 +136,7 @@ const CampaignsTabMixin = {
             ${isEdit ? `
             <div class="form-group" style="padding:0 1.5rem;">
                 <label>Теги кампании</label>
-                <div id="camp-tags-list" style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:8px;"></div>
+                <div id="camp-tags-list" class="badge-group"></div>
                 <details>
                     <summary style="cursor:pointer;font-size:var(--text-sm);color:var(--color-primary);margin-top:4px;">+ Создать тег</summary>
                     <div style="display:flex;gap:8px;margin-top:8px;align-items:center;">
@@ -152,7 +148,7 @@ const CampaignsTabMixin = {
             </div>
             <div class="form-group" style="padding:0 1.5rem;">
                 <label>Глобальные теги домена</label>
-                <div id="camp-global-tags-list" style="display:flex;flex-wrap:wrap;gap:4px;min-height:28px;"></div>
+                <div id="camp-global-tags-list" class="badge-group"></div>
                 ${globalTags.length ? `
                 <select id="camp-global-tag-select" class="input-field" style="margin-top:8px;">
                     <option value="">+ Добавить глобальный тег...</option>
@@ -170,12 +166,21 @@ const CampaignsTabMixin = {
 
         let localCampTags = [...campaignTags];
 
+        // ── Теги кампании (собственные) ────────────────────────────────────
         const refreshTagsList = () => {
             const list = overlay.querySelector('#camp-tags-list');
             if (!list) return;
+            if (!localCampTags.length) {
+                list.innerHTML = '<span style="color:var(--color-text-faint)">нет тегов</span>';
+                return;
+            }
             list.innerHTML = localCampTags.map(t =>
-                `<span class="badge" style="background:${t.color || 'var(--color-primary-highlight)'};cursor:pointer;" data-remove-ctag="${this.escapeHtml(String(t.id))}">${this.escapeHtml(t.name)} ×</span>`
-            ).join('') || '<span style="color:var(--color-text-faint)">нет тегов</span>';
+                tagBadgeHtml(t, {
+                    context: 'campaign-own',
+                    removable: true,
+                    dataAttrs: { 'data-remove-ctag': String(t.id) },
+                })
+            ).join('');
             list.querySelectorAll('[data-remove-ctag]').forEach(el => {
                 el.onclick = async () => {
                     const tid = el.dataset.removeCtag;
@@ -187,23 +192,30 @@ const CampaignsTabMixin = {
         };
         refreshTagsList();
 
-        // --- Глобальные теги ---
+        // ── Глобальные теги домена ─────────────────────────────────────────
         let localLinkedGlobalTagIds = new Set(linkedGlobalTagIds);
 
         const refreshGlobalTagsList = () => {
             const list = overlay.querySelector('#camp-global-tags-list');
             if (!list) return;
             const linked = globalTags.filter(t => localLinkedGlobalTagIds.has(String(t.id)));
+            if (!linked.length) {
+                list.innerHTML = '<span style="color:var(--color-text-faint);font-size:var(--text-sm);">нет подключённых тегов</span>';
+                return;
+            }
             list.innerHTML = linked.map(t =>
-                `<span class="badge" style="background:${t.color || 'var(--color-surface-dynamic)'};cursor:pointer;" data-unlink-gtag="${this.escapeHtml(String(t.id))}">${this.escapeHtml(t.name)} ×</span>`
-            ).join('') || '<span style="color:var(--color-text-faint);font-size:var(--text-sm);">нет подключённых тегов</span>';
+                tagBadgeHtml(t, {
+                    context: 'campaign-global',
+                    removable: true,
+                    dataAttrs: { 'data-unlink-gtag': String(t.id) },
+                })
+            ).join('');
             list.querySelectorAll('[data-unlink-gtag]').forEach(el => {
                 el.onclick = async () => {
                     const tid = el.dataset.unlinkGtag;
                     try {
                         await this.api.unlinkCampaignGlobalTag(campaignId, tid);
                         localLinkedGlobalTagIds.delete(tid);
-                        // вернуть тег в select
                         const sel = overlay.querySelector('#camp-global-tag-select');
                         if (sel) {
                             const tag = globalTags.find(t => String(t.id) === tid);
@@ -227,7 +239,6 @@ const CampaignsTabMixin = {
             try {
                 await this.api.linkCampaignGlobalTag(campaignId, tid);
                 localLinkedGlobalTagIds.add(tid);
-                // убрать тег из select
                 e.target.querySelector(`option[value="${tid}"]`)?.remove();
                 e.target.value = '';
                 refreshGlobalTagsList();
