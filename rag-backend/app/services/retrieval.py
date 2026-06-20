@@ -274,9 +274,10 @@ async def retrieve(
         filter_expr: dict[str, Any] | None = None
         if document_ids is not None:
             filter_expr = {"document_id": {"$in": document_ids}}
-            search_top_k = effective_top_k * 10
-        else:
-            search_top_k = effective_top_k
+
+        # LanceDB применяет filter_expr на своей стороне — overfetch не нужен.
+        # _text_search фильтрует сам (text endpoint не принимает filter_expr).
+        search_top_k = effective_top_k
 
         vector_hits = await _vector_search(vault_id, vector, search_top_k, filter_expr)
 
@@ -303,19 +304,26 @@ async def retrieve(
             [h.document_id for h in raw_hits[:3]],
         )
 
+        # Страховочная проверка: LanceDB должен уже отфильтровать по document_id.
+        # Оставляем как защиту от edge cases в storage API, где document_id
+        # может лежать только в metadata (нестандартный маппинг полей).
+        # Если hits_removed > 0 регулярно — это сигнал о баге в storage API.
         results = raw_hits
         if document_ids is not None:
             doc_set = set(document_ids)
             results = [
-                h for h in results
+                h for h in raw_hits
                 if h.document_id in doc_set
                 or (h.metadata or {}).get("document_id") in doc_set
             ]
-            if len(results) != len(raw_hits):
-                logger.info(
-                    "RETRIEVE post-filter: raw=%d → filtered=%d (doc_set sample=%s)",
-                    len(raw_hits), len(results), list(doc_set)[:3],
+            hits_removed = len(raw_hits) - len(results)
+            if hits_removed > 0:
+                logger.warning(
+                    "RETRIEVE filter leak: LanceDB returned %d hits outside document_ids "
+                    "(removed=%d, doc_set sample=%s) — possible storage API mapping issue",
+                    len(raw_hits), hits_removed, list(doc_set)[:3],
                 )
+
         results = results[:effective_top_k]
 
         logger.info(
