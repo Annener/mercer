@@ -3,8 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
 from typing import Any
 
 from cryptography.fernet import Fernet
@@ -13,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import EmbeddingModelConfig, GenerationModelConfig
 from app.db.models import EmbeddingModel, GenerationModel, PlatformSetting, RerankModel, Vault
+from app.db.utils import transactional
 from app.providers.generation.base import GenerationProvider
 from app.providers.generation.openai_compatible import OpenAICompatibleProvider
 
@@ -95,13 +94,13 @@ class SettingsService:
         if setting is None:
             raise KeyError(key)
         converted = self._coerce_value(value, setting.value_type)
-        async with self._transaction(db):
+        async with transactional(db):
             setting.value = self._serialize_value(converted)
         self._setting_types[key] = setting.value_type
         self._settings_cache[key] = converted
 
     async def reset_all(self, db: AsyncSession) -> None:
-        async with self._transaction(db):
+        async with transactional(db):
             for key, value in DEFAULTS.items():
                 setting = await db.get(PlatformSetting, key)
                 if setting is not None:
@@ -134,7 +133,7 @@ class SettingsService:
         model = await self._get_generation_model(model_id, db)
         if model is None or not model.enabled:
             raise KeyError(model_id)
-        async with self._transaction(db):
+        async with transactional(db):
             await db.execute(update(GenerationModel).values(is_active=False))
             model.is_active = True
         provider = self._build_generation_provider(model)
@@ -168,7 +167,7 @@ class SettingsService:
         if api_key:
             payload["encrypted_api_key"] = self.encrypt_api_key(str(api_key))
         model = GenerationModel(**payload)
-        async with self._transaction(db):
+        async with transactional(db):
             db.add(model)
         await db.refresh(model)
         return self._generation_model_dict(model)
@@ -183,7 +182,7 @@ class SettingsService:
         payload = dict(data)
         api_key_marker = object()
         api_key = payload.pop("api_key", api_key_marker)
-        async with self._transaction(db):
+        async with transactional(db):
             for key, value in payload.items():
                 if value is not None and hasattr(model, key):
                     setattr(model, key, value)
@@ -203,7 +202,7 @@ class SettingsService:
             raise KeyError(model_id)
         if model.is_active:
             raise ValueError("Cannot delete active generation model")
-        async with self._transaction(db):
+        async with transactional(db):
             await db.delete(model)
 
     async def activate_generation_model(self, model_id: str, db: AsyncSession) -> None:
@@ -273,7 +272,7 @@ class SettingsService:
         if api_key:
             payload["encrypted_api_key"] = self.encrypt_api_key(str(api_key))
         model = EmbeddingModel(**payload)
-        async with self._transaction(db):
+        async with transactional(db):
             db.add(model)
         await db.refresh(model)
         return self._embedding_model_dict(model)
@@ -288,7 +287,7 @@ class SettingsService:
         payload = dict(data)
         api_key_marker = object()
         api_key = payload.pop("api_key", api_key_marker)
-        async with self._transaction(db):
+        async with transactional(db):
             for key, value in payload.items():
                 if value is not None and hasattr(model, key):
                     setattr(model, key, value)
@@ -304,7 +303,7 @@ class SettingsService:
         model = await self._get_embedding_model(model_id, db)
         if model is None:
             raise KeyError(model_id)
-        async with self._transaction(db):
+        async with transactional(db):
             await db.delete(model)
 
     # ------------------------------------------------------------------
@@ -330,7 +329,7 @@ class SettingsService:
         if api_key:
             payload["encrypted_api_key"] = self.encrypt_api_key(str(api_key))
         model = RerankModel(**payload)
-        async with self._transaction(db):
+        async with transactional(db):
             db.add(model)
         await db.refresh(model)
         return self._rerank_model_dict(model)
@@ -344,7 +343,7 @@ class SettingsService:
         payload = dict(data)
         api_key_marker = object()
         api_key = payload.pop("api_key", api_key_marker)
-        async with self._transaction(db):
+        async with transactional(db):
             for key, value in payload.items():
                 if value is not None and hasattr(model, key):
                     setattr(model, key, value)
@@ -359,14 +358,14 @@ class SettingsService:
         model = await self._get_rerank_model(model_id, db)
         if model is None:
             raise KeyError(model_id)
-        async with self._transaction(db):
+        async with transactional(db):
             await db.delete(model)
 
     async def activate_rerank_model(self, model_id: str, db: AsyncSession) -> dict[str, Any]:
         model = await self._get_rerank_model(model_id, db)
         if model is None or not model.enabled:
             raise KeyError(model_id)
-        async with self._transaction(db):
+        async with transactional(db):
             await db.execute(update(RerankModel).values(is_active=False))
             model.is_active = True
         await db.refresh(model)
@@ -529,19 +528,6 @@ class SettingsService:
             "created_at": model.created_at,
             "updated_at": model.updated_at,
         }
-
-    @asynccontextmanager
-    async def _transaction(self, db: AsyncSession) -> AsyncIterator[None]:
-        if db.in_transaction():
-            try:
-                yield
-                await db.commit()
-            except Exception:
-                await db.rollback()
-                raise
-        else:
-            async with db.begin():
-                yield
 
 
 settings_service = SettingsService()
