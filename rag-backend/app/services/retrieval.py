@@ -28,6 +28,10 @@ _RERANK_OLLAMA_CONCURRENCY = int(os.getenv("RERANK_OLLAMA_CONCURRENCY", "1"))
 # Без ограничения Qwen3-Reranker уходит в бесконечный <think>...</think> и зависает.
 _RERANK_OLLAMA_NUM_PREDICT = int(os.getenv("RERANK_OLLAMA_NUM_PREDICT", "32"))
 
+# Количество чанков, возвращаемых retrieve() по умолчанию.
+# Переопределяется через env DEFAULT_TOP_K.
+_DEFAULT_TOP_K = int(os.getenv("DEFAULT_TOP_K", "10"))
+
 
 async def delete_document_chunks(document_id: str, vault_id: str) -> None:
     """
@@ -250,7 +254,7 @@ async def retrieve(
             vault_id, strategy
         )
         return []
-    effective_top_k = top_k or await _default_top_k()
+    effective_top_k = top_k or _DEFAULT_TOP_K
     if strategy not in ("semantic", "hybrid"):
         logger.info("Retrieval strategy is not implemented: %s", strategy)
         return []
@@ -353,7 +357,7 @@ async def retrieve_multi_vault(
         "RETRIEVE_MULTI query='%s' vaults=%s top_k=%s",
         query, vault_ids, top_k
     )
-    effective_top_k = top_k or await _default_top_k()
+    effective_top_k = top_k or _DEFAULT_TOP_K
 
     all_hits: list[SearchHit] = []
     for vault_id in vault_ids:
@@ -441,10 +445,6 @@ def format_context_with_role(hits: list[SearchHit], role: str) -> str:
     Используется в pipeline_executor; публичная сигнатура сохранена.
     """
     return format_context(hits, role=role)
-
-
-async def _default_top_k() -> int:
-    return int(os.getenv("DEFAULT_TOP_K", "10"))
 
 
 async def _resolve_embedding_model(
