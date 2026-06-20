@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
 
@@ -10,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.db.models import ClarificationState, Domain, DomainClarificationField, DomainPrompt, Vault
+from app.db.utils import transactional
 
 
 @dataclass(frozen=True)
@@ -78,7 +77,7 @@ class DomainService:
             enabled=bool(data.get("enabled", True)),
             is_system=False,
         )
-        async with self._transaction(db):
+        async with transactional(db):
             db.add(domain)
             for prompt_type in ("system", "clarification", "planner", "pipeline_router"):
                 db.add(DomainPrompt(domain_id=domain_id, prompt_type=prompt_type, content=""))
@@ -90,7 +89,7 @@ class DomainService:
         domain = await db.get(Domain, domain_id)
         if domain is None:
             raise KeyError(domain_id)
-        async with self._transaction(db):
+        async with transactional(db):
             for field in ("display_name", "description", "enabled"):
                 if field in data:
                     setattr(domain, field, data[field])
@@ -107,14 +106,14 @@ class DomainService:
         result = await db.execute(select(func.count()).select_from(Vault).where(Vault.domain_id == domain_id))
         if result.scalar_one() > 0:
             raise ValueError("Cannot delete domain: vaults still exist")
-        async with self._transaction(db):
+        async with transactional(db):
             await db.delete(domain)
         self.invalidate(domain_id)
 
     async def update_prompts(self, domain_id: str, prompts: dict[str, str], db: AsyncSession) -> None:
         if await db.get(Domain, domain_id) is None:
             raise KeyError(domain_id)
-        async with self._transaction(db):
+        async with transactional(db):
             for prompt_type, content in prompts.items():
                 result = await db.execute(
                     select(DomainPrompt).where(DomainPrompt.domain_id == domain_id, DomainPrompt.prompt_type == prompt_type)
@@ -137,7 +136,7 @@ class DomainService:
         if removed and not await self.can_delete_fields(domain_id, sorted(removed), db):
             raise ValueError("Cannot delete clarification fields used by active states")
 
-        async with self._transaction(db):
+        async with transactional(db):
             await db.execute(delete(DomainClarificationField).where(DomainClarificationField.domain_id == domain_id))
             for index, field in enumerate(fields):
                 db.add(
@@ -200,19 +199,6 @@ class DomainService:
             "created_at": domain.created_at,
             "updated_at": domain.updated_at,
         }
-
-    @asynccontextmanager
-    async def _transaction(self, db: AsyncSession) -> AsyncIterator[None]:
-        if db.in_transaction():
-            try:
-                yield
-                await db.commit()
-            except Exception:
-                await db.rollback()
-                raise
-        else:
-            async with db.begin():
-                yield
 
 
 domain_service = DomainService()
