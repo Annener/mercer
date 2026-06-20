@@ -149,24 +149,151 @@
     resize: vertical;
 }
 
-/* === Badges === */
+/* ============================================================= */
+/* === Badges / Tags                                          === */
+/* Базовый класс .badge применяется к статусным бейджам.         */
+/* Теги документов расширяют его через inline-стили (color/bg),  */
+/* поэтому здесь только форма, типографика и переходы.           */
+/* ============================================================= */
+
 .badge {
+    display: inline-flex;
+    align-items: center;
     align-self: flex-start;
     border-radius: 999px;
-    padding: 3px 8px;
-    font-size: 12px;
+    padding: 3px 10px;
+    font-size: 11.5px;
+    font-weight: 500;
+    letter-spacing: 0.02em;
+    line-height: 1.5;
     white-space: nowrap;
+    /* Мягкая тень даёт ощущение «живого» элемента */
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.18);
+    transition: transform 0.12s ease, box-shadow 0.12s ease, opacity 0.12s ease;
+    /* Убираем резкий border-box gap — оставляем border только если задан inline */
+    border: 1px solid transparent;
+    /* Текст не «плавает» при смене состояний */
+    user-select: none;
+    /* Небольшое blur фона через backdrop делает тег полупрозрачным в контексте */
+    backdrop-filter: blur(2px);
+    -webkit-backdrop-filter: blur(2px);
 }
 
+/* ─── Интерактивные теги (cursor: pointer задан JS-ом inline) ── */
+.badge[style*="cursor: pointer"],
+.badge[style*="cursor:pointer"],
+.docs-modal-tag-toggle,
+.docs-dir-tag-assign.is-active,
+.docs-dir-tag-remove.is-active {
+    cursor: pointer;
+}
+
+.badge[style*="cursor: pointer"]:hover,
+.badge[style*="cursor:pointer"]:hover,
+.docs-modal-tag-toggle:hover,
+.docs-dir-tag-assign.is-active:hover,
+.docs-dir-tag-remove.is-active:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 3px 8px rgba(0, 0, 0, 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.20);
+}
+
+.badge[style*="cursor: pointer"]:active,
+.badge[style*="cursor:pointer"]:active,
+.docs-modal-tag-toggle:active,
+.docs-dir-tag-assign.is-active:active,
+.docs-dir-tag-remove.is-active:active {
+    transform: translateY(0);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.10);
+}
+
+/* ─── Статусные бейджи (без inline-цвета, используют классы) ─── */
 .badge.ok {
     background: #e6f5ee;
     color: #206a43;
+    border-color: rgba(32, 106, 67, 0.18);
 }
 
 .badge.muted {
     background: #eef2f6;
     color: #657789;
+    border-color: rgba(101, 119, 137, 0.15);
 }
+
+/* ─── doc-status-badge (inline статусы в прогресс-панели) ──────── */
+.doc-status-badge {
+    display: inline-flex;
+    align-items: center;
+    border-radius: 999px;
+    padding: 2px 8px;
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.03em;
+    white-space: nowrap;
+    border: 1px solid transparent;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+}
+
+/* ─── Неактивные / задизейбленные теги ───────────────────────── */
+.docs-dir-tag-assign.is-disabled {
+    cursor: default !important;
+    /* opacity управляется JS-ом inline (0.55) — здесь не дублируем */
+}
+
+/* ─── Панель тегов: ряд с тегом и кнопками ───────────────────── */
+.docs-tag-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 6px;
+    border-radius: 6px;
+    transition: background 0.12s;
+}
+
+.docs-tag-row:hover {
+    background: #f5f7fa;
+}
+
+/* Тег-бейдж внутри .docs-tag-row получает чуть больше padding
+   чтобы не выглядеть «сплющенным» рядом с кнопками */
+.docs-tag-row .badge {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    /* чуть увеличенный padding в ряду тегов */
+    padding: 4px 12px;
+    font-size: 12px;
+}
+
+/* ─── Теги на файлах в дереве: компактные, с мягкой тенью ──────── */
+.docs-file-tags .badge {
+    padding: 2px 8px;
+    font-size: 11px;
+    /* Чуть приглушённее shadow на мелких тегах */
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.07);
+}
+
+/* ─── Теги в модалке документа: чуть крупнее ───────────────────── */
+.docs-modal-tag-badges .badge {
+    padding: 4px 12px;
+    font-size: 12px;
+    /* Активное состояние — заметная тень цвета тега (через filter) */
+    transition: transform 0.14s ease, box-shadow 0.14s ease, filter 0.14s ease;
+}
+
+.docs-modal-tag-badges .badge.is-active:hover,
+.docs-modal-tag-badges .badge.docs-modal-tag-toggle:hover {
+    filter: brightness(1.08) saturate(1.1);
+    transform: translateY(-1px);
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.16), inset 0 1px 0 rgba(255, 255, 255, 0.22);
+}
+
+/* ─── Теги в модалке каталога ────────────────────────────────────── */
+.docs-dir-tag-list .badge {
+    padding: 4px 12px;
+    font-size: 12px;
+}
+
+/* ============================================================= */
 
 /* ===================================================== */
 /* Card dropdown menu                                    */
@@ -597,7 +724,7 @@
 .docs-tags-panel-list {
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 4px;
     max-height: 320px;
     overflow-y: auto;
 }
@@ -607,11 +734,7 @@
     font-size: 12px;
 }
 
-.docs-tag-row {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-}
+/* .docs-tag-row описан выше в блоке Badges */
 
 .docs-tags-panel-create {
     border-top: 1px solid #dfe6ee;
@@ -1048,7 +1171,7 @@
 .docs-dir-tag-list {
     display: flex;
     flex-wrap: wrap;
-    gap: 4px;
+    gap: 6px;
     min-height: 32px;
     align-items: flex-start;
     align-content: flex-start;
