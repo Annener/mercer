@@ -16,7 +16,9 @@ from app.indexer_service import IndexerService
 from logging_config import setup_logging
 from parser.scanning.vault_scanner import scan_vault
 from parser.state.redis_state_manager import RedisStateManager
+from parser.watchdog.vault_watchdog import watchdog_loop
 from shared_contracts.models import StartIndexTaskRequest, StartIndexTaskResponse, TaskStateResponse
+from storage.storage_client import StorageClient
 
 
 logger = logging.getLogger(__name__)
@@ -68,12 +70,40 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         db_client=db_client,
         state_manager=state_manager,
     )
+
+    # Watchdog
+    watchdog_interval = int(os.getenv("WATCHDOG_INTERVAL_SEC", "60"))
+    storage_client = StorageClient(
+        os.getenv("STORAGE_API_URL", "http://db-api-server:8080")
+    )
+    # watchdog_task инициализируется None перед create_task:
+    # если исключение возникнет между IndexerService(...) и create_task,
+    # finally не упадёт с NameError.
+    watchdog_task: asyncio.Task[None] | None = None
+    watchdog_task = asyncio.create_task(
+        watchdog_loop(
+            db_client=db_client,
+            state_manager=state_manager,
+            indexer_service=app.state.indexer_service,
+            storage_client=storage_client,
+            interval_sec=watchdog_interval,
+        ),
+        name="vault-watchdog",
+    )
+    logger.info("Vault watchdog scheduled (interval=%ds)", watchdog_interval)
     logger.info("Service started. DB client connected. Redis ready.")
 
     try:
         yield
     finally:
         logger.info("Service shutdown requested. Cancelling active indexer tasks.")
+        # Отменяем watchdog
+        if watchdog_task is not None:
+            watchdog_task.cancel()
+            try:
+                await watchdog_task
+            except asyncio.CancelledError:
+                pass
         await app.state.indexer_service.shutdown(timeout_seconds=30)
         await db_client.close()
         await redis_client.aclose()

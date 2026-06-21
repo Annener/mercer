@@ -73,6 +73,7 @@ services:
       ENCRYPTION_KEY: ${ENCRYPTION_KEY}
       STORAGE_API_URL: ${STORAGE_API_URL:-http://db-api-server:8080}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      WATCHDOG_INTERVAL_SEC: "60"
     # ports не пробрасываем наружу — rag-indexer внутренний сервис,
     # доступен только через rag-backend (proxy) внутри rag-net
     volumes:
