@@ -18,7 +18,7 @@
 | 4 | rag-indexer: интеграция watchdog в lifespan | [step-04-lifespan.md](step-04-lifespan.md) | ✅ завершён | 815545b3343c89165b6e8a30c970edffd54da681 | `main.py`: `+watchdog_loop`, `+StorageClient`, `+watchdog_task`; `docker-compose.yml`: `+WATCHDOG_INTERVAL_SEC`; `.env.example`: `+WATCHDOG_INTERVAL_SEC`; 2 unit-теста |
 | 5 | rag-backend: API настроек + pending-files | [step-05-backend-api.md](step-05-backend-api.md) | ✅ завершён | 815545b3343c89165b6e8a30c970edffd54da681 | `watchdog_settings.py`: 5 эндпоинтов (GET/PATCH settings, per-vault + domain pending-files, domain index); `main.py`: `+watchdog_router`; 6 unit-тестов |
 | 6 | Фронтенд: настройки (вкладка Параметры) | [step-06-frontend-settings.md](step-06-frontend-settings.md) | ✅ завершён | 936dc3b7f2cbf1bba7ebff2b4af732b0d9971bac | `tab-indexing.js` создан; `settings.js`: `case 'indexing'` в `loadTab()` и `_dispatch()`; `index.html`: кнопка вкладки + `<script>` тег; `api.js`: `getWatchdogSettings` + `saveWatchdogSettings` |
-| 7 | Фронтенд: баннер в чате | [step-07-frontend-banner.md](step-07-frontend-banner.md) | ⬜ не начат | — | Polling `/domains/{domain_id}/pending-files` каждые 30с, баннер + кнопка запуска. ⚠️ Отклонение от CONCEPT: баннер работает на уровне домена, а не vault — vault_id берётŘ1ся из `chat.domain_id` |
+| 7 | Фронтенд: баннер в чате | [step-07-frontend-banner.md](step-07-frontend-banner.md) | ✅ завершён | eaff3bc8cfb342d53e115c518c52d1f751f580c3 | `pending-banner.js` создан (класс `PendingFilesBanner`); `.pending-banner` стили добавлены в `chat-area.css`; интеграция в `chat.js` и `index.html` уже присутствовала |
 | 8 | Интеграционный тест | [step-08-integration-test.md](step-08-integration-test.md) | ⬜ не начат | — | Ручной сценарий: new/changed/deleted file, смена настройки |
 
 ## Статусы
@@ -62,3 +62,4 @@
 | 2026-06-22 | Этап 4 | Реализация: `main.py` — добавлены импорты `watchdog_loop`/`StorageClient`, `watchdog_task` в lifespan, отмена в finally; `docker-compose.yml` + `.env.example`: `+WATCHDOG_INTERVAL_SEC`; 2 unit-теста |
 | 2026-06-22 | Этап 5 | Реализация: создан `watchdog_settings.py` (5 эндпоинтов: GET/PATCH settings, GET per-vault pending-files, GET domain pending-files, POST domain index); `main.py`: `+watchdog_router`; 6 unit-тестов |
 | 2026-06-22 | Этап 6 | Реализация: создан `tab-indexing.js` (IndexingTabMixin: renderIndexingTab + handleIndexingAction); все интеграционные точки уже присутствовали (api.js, settings.js, index.html) |
+| 2026-06-22 | Этап 7 | Реализация: создан `pending-banner.js` (класс PendingFilesBanner: polling, show/hide, triggerIndex, склонение); добавлены стили `.pending-banner` в `chat-area.css`; интеграция в `chat.js` и `index.html` уже присутствовала |
