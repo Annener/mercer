@@ -41,6 +41,7 @@ class SettingsManager {
                 case 'pipelines':     html = await this.renderPipelinesTab(); break;
                 case 'campaigns':     html = await this.renderCampaignsTab(); break;
                 case 'documents':     html = await this.renderDocumentsTab(); break;
+                case 'indexing':      html = await this.renderIndexingTab(); break;
                 default: html = '<div>Вкладка не найдена</div>';
             }
             this._tabContent.innerHTML = html;
@@ -105,6 +106,7 @@ class SettingsManager {
             case 'pipelines':     await this.handlePipelinesAction(action, id, btn); break;
             case 'campaigns':     await this.handleCampaignsAction(action, id, btn); break;
             case 'documents':     await this.handleDocumentsAction(action, btn); break;
+            case 'indexing':      await this.handleIndexingAction(action, id, btn); break;
         }
     }
 

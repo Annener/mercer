@@ -960,6 +960,24 @@ class ChatAPI {
         if (!response.ok) throw new Error(`Health check failed: ${response.statusText}`);
         return response.json();
     }
+
+    // === Watchdog settings ===
+
+    async getWatchdogSettings() {
+        const res = await fetch('/api/v1/settings/watchdog');
+        if (!res.ok) throw new Error('Failed to load watchdog settings');
+        return res.json(); // { auto_index_extensions: string[] }
+    }
+
+    async saveWatchdogSettings(extensions) {
+        const res = await fetch('/api/v1/settings/watchdog', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ auto_index_extensions: extensions }),
+        });
+        if (!res.ok) throw new Error('Failed to save watchdog settings');
+        return res.json();
+    }
 }
 
 // Глобальный синглтон API-клиента
