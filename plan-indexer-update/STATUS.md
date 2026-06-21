@@ -14,10 +14,10 @@
 | # | Название | Файл с деталями | Статус | Коммит | Примечания |
 |---|---|---|---|---|---|
 | 1 | Инфраструктура: Redis в docker-compose | [step-01](step-01-docker-compose.md) | ✅ завершён | feat(infra): add Redis service to docker-compose (step-01) | Сеть rag-net, redis:7-alpine, AOF, noeviction, REDIS_URL в rag-indexer и rag-backend |
-| 2 | shared_contracts: удалить chunk_ids | [step-02](step-02-shared-contracts.md) | ✅ завершён | feat(shared_contracts): remove chunk_ids from FileIndexState (step-02) | Поле удалено из модели; остаточные вхождения в state_manager/indexer_worker — этапы 4 и 6 |
-| 3 | db-api-server: новый endpoint documents/all | [step-03](step-03-db-api-server.md) | ✅ завершён | feat(rag-indexer): add GET /api/v1/vaults/{vault_id}/documents/all (step-03) | Точка доступа в rag-indexer (арх. решение). IndexerDBClient.get_all_documents() |
-| 4 | rag-indexer: RedisStateManager | [step-04](step-04-redis-state-manager.md) | ✅ завершён | feat(rag-indexer): add RedisStateManager, replace JSON state_manager (step-04) | Новый parser/state/redis_state_manager.py. state_manager.py сохранён с DEPRECATED-пометкой (используется в main.py до этапа 8). redis[asyncio]>=5.0 добавлен в requirements.txt |
-| 5 | rag-indexer: rebuild vault cache при старте | [step-05](step-05-vault-cache-rebuild.md) | ⬜ не начат | — | — |
+| 2 | shared_contracts: удалить chunk_ids | [step-02](step-02-shared-contracts.md) | ✅ завершён | feat(shared_contracts): remove chunk_ids from FileIndexState (step-02) | Поле удалено из модели |
+| 3 | db-api-server: новый endpoint documents/all | [step-03](step-03-db-api-server.md) | ✅ завершён | feat(rag-indexer): add GET /api/v1/vaults/{vault_id}/documents/all (step-03) | Точка доступа в rag-indexer (арх. решение) |
+| 4 | rag-indexer: RedisStateManager | [step-04](step-04-redis-state-manager.md) | ✅ завершён | feat(rag-indexer): add RedisStateManager, replace JSON state_manager (step-04) | Новый parser/state/redis_state_manager.py. redis[asyncio]>=5.0 в requirements.txt |
+| 5 | rag-indexer: rebuild vault cache при старте | [step-05](step-05-vault-cache-rebuild.md) | ✅ завершён | feat(rag-indexer): rebuild vault cache on startup via RedisStateManager (step-05) | get_all_vaults() добавлен в db_client. _rebuild_one_vault: skip missing path, gather+return_exceptions. app.state.state_manager сет. Тесты: test_startup_vault_rebuild.py |
 | 6 | rag-indexer: indexer_worker — убрать chunk_ids и broadcast | [step-06](step-06-indexer-worker.md) | ⬜ не начат | — | — |
 | 7 | rag-indexer: indexer_service — async cancel, убрать broadcaster | [step-07](step-07-indexer-service.md) | ⬜ не начат | — | — |
 | 8 | rag-indexer: удалить WebSocket | [step-08](step-08-remove-websocket.md) | ⬜ не начат | — | — |
@@ -28,7 +28,7 @@
 ## Статусы
 - ⬜ не начат
 - 🔄 в работе
-- ✅ завершён
+- ✅ завершّён
 - ❌ заблокирован (причина в примечаниях)
 
 ## Зависимости между этапами
@@ -54,7 +54,8 @@
 | Дата | Этап | Действие |
 |---|---|---|
 | — | — | Файл создан |
-| 2026-06-21 | 1 — Инфраструктура: Redis в docker-compose | ✅ Завершён. Добавлен redis:7-alpine (AOF, noeviction, rag-net), redis_data volume, REDIS_URL + depends_on redis в rag-indexer и rag-backend |
-| 2026-06-21 | 2 — shared_contracts: удалить chunk_ids | ✅ Завершён. Удалено поле chunk_ids из FileIndexState. Создан tests/shared_contracts/test_file_index_state.py |
-| 2026-06-21 | 3 — documents/all endpoint | ✅ Завершён. GET /api/v1/vaults/{vault_id}/documents/all в rag-indexer. IndexerDBClient.get_all_documents() добавлен |
-| 2026-06-21 | 4 — RedisStateManager | ✅ Завершён. Новый parser/state/redis_state_manager.py: task HASH + files HASH (TTL 86400), vault HASH (без TTL), active_tasks SET, cancel key. state_manager.py помечен DEPRECATED. redis[asyncio]>=5.0 в requirements.txt. Тесты: tests/rag_indexer/test_redis_state_manager.py |
+| 2026-06-21 | 1 | ✅ Redis в docker-compose |
+| 2026-06-21 | 2 | ✅ Удален chunk_ids из FileIndexState |
+| 2026-06-21 | 3 | ✅ GET /api/v1/vaults/{vault_id}/documents/all в rag-indexer |
+| 2026-06-21 | 4 | ✅ RedisStateManager: task/vault HASH, cancel, active_tasks SET |
+| 2026-06-21 | 5 | ✅ rebuild_vault_cache при старте: get_all_vaults + _rebuild_one_vault + gather. get_all_vaults() добавлен в db_client. Отклонение: _rebuild_one_vault пробрасывает исключение (caller перехватывает через return_exceptions=True) |

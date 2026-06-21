@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
+import redis.asyncio as aioredis
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 
@@ -13,32 +15,102 @@ from app.db_client import IndexerDBClient
 from app.indexer_service import IndexerService
 from app.websocket_manager import ConnectionManager
 from logging_config import setup_logging
+from parser.scanning.vault_scanner import scan_vault
+from parser.state.redis_state_manager import RedisStateManager
 from parser.state.state_manager import load_state
 from shared_contracts.models import StartIndexTaskRequest, StartIndexTaskResponse, TaskStateResponse
 
 
 logger = logging.getLogger(__name__)
 
+VAULT_DATA_ROOT = os.getenv("VAULT_DATA_ROOT", "/data/vaults")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     setup_logging("indexer")
+
+    # Redis
+    redis_client = aioredis.from_url(
+        os.getenv("REDIS_URL", "redis://redis:6379"),
+        decode_responses=True,
+    )
+    state_manager = RedisStateManager(redis_client)
+
+    # DB
     db_client = IndexerDBClient()
     await db_client.connect(os.getenv("DATABASE_URL", ""), os.getenv("ENCRYPTION_KEY", ""))
+
+    # Rebuild vault cache из PostgreSQL + disk scan
+    try:
+        vaults = await db_client.get_all_vaults()
+        rebuild_tasks = [
+            _rebuild_one_vault(
+                state_manager,
+                db_client,
+                vault["vault_id"],
+                vault.get("vault_path") or f"{VAULT_DATA_ROOT}/{vault['vault_id']}",
+            )
+            for vault in vaults
+        ]
+        results = await asyncio.gather(*rebuild_tasks, return_exceptions=True)
+        for vault, result in zip(vaults, results):
+            if isinstance(result, Exception):
+                logger.error(
+                    "Vault cache rebuild failed: vault_id=%s error=%s",
+                    vault["vault_id"], result,
+                )
+    except Exception:
+        logger.exception("Failed to rebuild vault cache on startup — continuing")
+
     app.state.db_client = db_client
+    app.state.redis_client = redis_client
+    app.state.state_manager = state_manager
     app.state.ws_manager = ConnectionManager()
     app.state.indexer_service = IndexerService(
         db_client=db_client,
         broadcaster=app.state.ws_manager.broadcast,
     )
-    logger.info("Service started. DB client connected.")
+    logger.info("Service started. DB client connected. Redis ready.")
+
     try:
         yield
     finally:
         logger.info("Service shutdown requested. Cancelling active indexer tasks.")
         await app.state.indexer_service.shutdown(timeout_seconds=30)
         await db_client.close()
+        await redis_client.aclose()
         logger.info("Service stopped.")
+
+
+async def _rebuild_one_vault(
+    state_manager: RedisStateManager,
+    db_client: IndexerDBClient,
+    vault_id: str,
+    vault_path: str,
+) -> None:
+    """Восстанавливает vault:{vault_id}:files в Redis.
+
+    Пропускает vault если директория не существует.
+    Ошибки логирует и не пробрасывает (вызывающий использует return_exceptions=True).
+    """
+    if not os.path.isdir(vault_path):
+        logger.warning(
+            "Vault path not found, skipping cache rebuild: vault_id=%s path=%s",
+            vault_id, vault_path,
+        )
+        return
+    try:
+        pg_docs = await db_client.get_all_documents(vault_id)
+        disk_files = await asyncio.to_thread(scan_vault, vault_path)
+        await state_manager.rebuild_vault_cache(vault_id, pg_docs, disk_files)
+        logger.info(
+            "Vault cache rebuilt: vault_id=%s pg_docs=%d disk_files=%d",
+            vault_id, len(pg_docs), len(disk_files),
+        )
+    except Exception:
+        logger.exception("Error rebuilding vault cache: vault_id=%s", vault_id)
+        raise
 
 
 app = FastAPI(title="RAG Indexer", lifespan=lifespan)

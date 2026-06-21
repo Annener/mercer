@@ -37,6 +37,13 @@ class IndexerDBClient:
         row = await self._fetchrow("SELECT * FROM vaults WHERE vault_id = $1", vault_id)
         return dict(row) if row is not None else None
 
+    async def get_all_vaults(self) -> list[dict[str, Any]]:
+        """Возвращает все enabled vault'ы. Используется при rebuild_vault_cache."""
+        rows = await self._fetch(
+            "SELECT vault_id, enabled, vault_path FROM vaults WHERE enabled = true"
+        )
+        return [dict(row) for row in rows]
+
     async def get_embedding_model(self, model_id: str) -> dict[str, Any] | None:
         row = await self._fetchrow("SELECT * FROM embedding_models WHERE model_id = $1 AND enabled = true", model_id)
         return dict(row) if row is not None else None
@@ -83,7 +90,6 @@ class IndexerDBClient:
         md5: str,
         mtime: int,
     ) -> dict[str, Any]:
-        """Создаёт запись в documents, возвращает весь ряд."""
         row = await self._fetchrow(
             """
             INSERT INTO documents (vault_id, source_path, md5, mtime, status)
@@ -107,7 +113,6 @@ class IndexerDBClient:
         mtime: int | None = None,
         indexed_at: datetime | None = None,
     ) -> None:
-        """Обновляет статус документа, опционально md5/mtime/indexed_at."""
         sets = ["status = $2"]
         params: list[Any] = [document_id, status]
         idx = 3
@@ -146,6 +151,7 @@ class IndexerDBClient:
         return [
             {
                 "source_path": row["source_path"],
+                "relative_path": row["source_path"],  # alias для rebuild_vault_cache
                 "md5": row["md5"],
                 "mtime": row["mtime"],
                 "status": row["status"],
