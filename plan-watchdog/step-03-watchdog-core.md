@@ -7,6 +7,23 @@
 
 ## Контекст из кодовой базы
 
+### `IndexerDBClient.get_all_vaults` (уже есть)
+
+`rag-indexer/app/db_client.py` уже содержит:
+
+```python
+async def get_all_vaults(self) -> list[dict[str, Any]]:
+    """Returns all enabled vaults."""
+    rows = await self._fetch(
+        "SELECT vault_id, enabled FROM vaults WHERE enabled = true"
+    )
+    return [dict(row) for row in rows]
+```
+
+> ⚠️ Метод возвращает **только enabled vaults** (`WHERE enabled = true`).
+> Столбца `vault_path` нет — watchdog строит путь самостоятельно:
+> `f"{VAULT_DATA_ROOT}/{vault['vault_id']}"`, где `VAULT_DATA_ROOT` берётся из env.
+
 ### `scan_vault` (уже есть)
 
 `rag-indexer/parser/scanning/vault_scanner.py` — возвращает список `dict`:
@@ -28,6 +45,10 @@
 ### `IndexerService.start_task` (уже есть)
 
 `rag-indexer/app/indexer_service.py` — `await service.start_task(vault_id, force_reindex=False)`.
+Возвращает `task_id: str`. Бросает:
+- `KeyError` — если `vault_id` не найден в БД
+- `ValueError` — если vault отключён (`enabled=False`)
+
 Watchdog вызывает его напрямую.
 
 ### `IndexerService.get_active_tasks` (уже есть)
@@ -83,7 +104,7 @@ async def is_vault_indexing(self, vault_id: str) -> bool:
 """Vault Watchdog — фоновый asyncio-луп обнаружения изменений vault.
 
 Алгоритм:
-  1. Запросить все активные vault из БД
+  1. Запросить все активные vault из БД (только enabled=true)
   2. Для каждого vault: скан диска, diff с Redis-кэшем
   3. Удалённые → атомарно: LanceDB + PG + Redis
   4. Изменённые/новые → авто-индексация или пометка pending
@@ -141,12 +162,14 @@ async def _run_once(
     storage_client: StorageClient,
 ) -> None:
     """One watchdog iteration across all enabled vaults."""
-    # get_setting возвращает None если ключ не найден — защита обязательна
-    raw_setting = await db_client.get_setting(WATCHDOG_SETTING_KEY) or ""
+    # get_setting возвращает None если ключ не найден ИЛИ value=""
+    # (сценарий 3 — только ручная индексация): используем `or ""` как guard.
+    raw_setting: str = await db_client.get_setting(WATCHDOG_SETTING_KEY) or ""
     auto_extensions: set[str] = {
         ext.strip() for ext in raw_setting.split(",") if ext.strip()
     }
 
+    # get_all_vaults возвращает только enabled=true вольты
     vaults = await db_client.get_all_vaults()
 
     for vault in vaults:
@@ -172,6 +195,7 @@ async def _process_vault(
     indexer_service: IndexerService,
     storage_client: StorageClient,
 ) -> None:
+    # vault_path строится из env, т.к. vault_path — не колонка в БД
     vault_path = f"{VAULT_DATA_ROOT}/{vault_id}"
     if not os.path.isdir(vault_path):
         return
@@ -292,6 +316,9 @@ async def _handle_deleted(
                 "Watchdog: failed to delete PG document document_id=%s",
                 document_id, exc_info=True,
             )
+    # else: файл никогда не был проиндексирован (нет записи в documents) —
+    # LanceDB и PG пропускаем, очищаем только Redis-кэш (шаг 3).
+
     # 3. Redis cache (всегда, даже если doc not in PG)
     await state_manager.remove_file_from_vault_cache(vault_id, relative_path)
 
@@ -310,7 +337,10 @@ async def _handle_deleted(
 rag-indexer/tests/test_vault_watchdog.py
 ```
 
-C `fakeredis` + `unittest.mock.AsyncMock` для `db_client`, `indexer_service`, `storage_client`:
+C `fakeredis` + `unittest.mock.AsyncMock` для `db_client`, `indexer_service`, `storage_client`.
+
+> ⚠️ Обязательно добавить `pytestmark = pytest.mark.asyncio` на уровне модуля,
+> иначе pytest молча пропустит все async-тесты.
 
 ```python
 import pytest
@@ -319,6 +349,8 @@ import fakeredis.aioredis
 from parser.state.redis_state_manager import RedisStateManager
 from parser.watchdog.vault_watchdog import _process_vault
 from storage.storage_client import StorageClient
+
+pytestmark = pytest.mark.asyncio
 
 
 @pytest.fixture
@@ -430,6 +462,37 @@ async def test_deleted_file_removed_from_all_stores(state_mgr):
     assert entry is None
 
 
+async def test_deleted_file_not_in_pg_still_cleans_redis(state_mgr):
+    """File deleted from disk but was never indexed (not in PG) -> only Redis cleaned."""
+    await state_mgr.mark_file_indexed("v1", "ghost.md", "bbb", 0)
+
+    db = AsyncMock()
+    db.get_document_by_path.return_value = None  # не было в PG
+    svc = AsyncMock()
+    storage = AsyncMock(spec=StorageClient)
+
+    with patch(
+        "parser.watchdog.vault_watchdog.scan_vault",
+        return_value=[],
+    ), patch(
+        "parser.watchdog.vault_watchdog.os.path.isdir",
+        return_value=True,
+    ):
+        await _process_vault(
+            vault_id="v1",
+            auto_extensions={".md"},
+            db_client=db,
+            state_manager=state_mgr,
+            indexer_service=svc,
+            storage_client=storage,
+        )
+
+    storage.delete_document.assert_not_awaited()
+    db.delete_document.assert_not_awaited()
+    entry = await state_mgr.get_vault_file_entry("v1", "ghost.md")
+    assert entry is None
+
+
 async def test_no_start_task_if_vault_already_indexing(state_mgr):
     """If vault is already indexing -> start_task not called."""
     # Эмулируем активную задачу в Redis
@@ -503,6 +566,7 @@ async def test_scan_vault_not_a_directory_is_handled(state_mgr):
 - [ ] Сценарий 1: новый файл + ext в auto_extensions → `start_task` вызван
 - [ ] Сценарий 2: новый файл + ext НЕ в auto_extensions → `pending`, `start_task` не вызван
 - [ ] Сценарий 3: файл исчез → LanceDB+PG+Redis очищены
+- [ ] Сценарий 3b: файл исчез, но никогда не был в PG → только Redis очищен, LanceDB/PG не трогаются
 - [ ] Сценарий 4: vault уже индексируется → `start_task` не вызван
 - [ ] Сценарий 5: директория vault исчезла в момент скана → warning, без краша
 - [ ] unit-тесты проходят
