@@ -44,6 +44,7 @@ COPY rag-indexer/config.py /app/config.py
 COPY rag-indexer/config_loader.py /app/config_loader.py
 COPY rag-indexer/logging_config.py /app/logging_config.py
 COPY rag-indexer/indexer_worker.py /app/indexer_worker.py
+COPY rag-indexer/tests /app/tests
 
 RUN find /usr/local/lib/python3.13/site-packages -type d \( -name __pycache__ -o -name tests \) -prune -exec rm -rf {} + \
     && find /usr/local/lib/python3.13/site-packages -type f -name "*.pyc" -delete \

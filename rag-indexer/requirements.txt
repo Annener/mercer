@@ -10,3 +10,6 @@ pillow
 pytesseract
 redis[asyncio]>=5.0
 uvicorn[standard]
+psycopg2-binary
+pytest
+pytest-asyncio
