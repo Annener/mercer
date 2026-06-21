@@ -60,7 +60,7 @@ async def test_patch_invalid_extension(mock_db):
     app.dependency_overrides[get_db] = lambda: mock_db
     try:
         with patch("redis.asyncio.from_url", return_value=mock_redis):
-            payload = {"auto_index_extensions": ["md"]}  # без точки
+            payload = {"auto_index_extensions": ["md"]}  # bez tochki
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
                 r = await c.patch("/api/v1/settings/watchdog", json=payload)
         assert r.status_code == 422
@@ -77,8 +77,6 @@ async def test_get_pending_files():
         "new.txt": json.dumps({"index_status": "pending", "md5": ""}),
         "__empty__": "1",
     }
-    # lifespan может перезаписать app.state.redis после from_url —
-    # устанавливаем напрямую уже после старта lifespan.
     with patch("redis.asyncio.from_url", return_value=mock_redis):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             app.state.redis = mock_redis
@@ -150,7 +148,7 @@ async def test_post_domain_index(mock_db):
 
     app.dependency_overrides[get_db] = lambda: mock_db
     try:
-    	with patch("redis.asyncio.from_url", return_value=mock_redis):
+        with patch("redis.asyncio.from_url", return_value=mock_redis):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
                 app.state.redis = mock_redis
                 r = await c.post("/api/v1/domains/dnd/index")
