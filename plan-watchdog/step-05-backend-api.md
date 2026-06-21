@@ -34,6 +34,15 @@ from sqlalchemy import text
 > ⚠️ Это **не** `asyncpg.Connection`. Запросы выполняются через `db.execute(text(...), {...})`.
 > После модифицирующих операций обязателен `await db.commit()`.
 
+### Предупреждение: существующий `settings_router`
+
+В `main.py` уже зарегистрирован:
+```python
+app.include_router(settings_router, prefix="/api/settings", tags=["settings"])
+```
+Новый `watchdog_router` использует `prefix="/api/v1"` — конфликта нет.
+Перед регистрацией проверьте: нет ли в `settings_router` маршрута `/watchdog`.
+
 ## Что нужно создать
 
 ### `rag-backend/app/api/watchdog_settings.py`
@@ -64,7 +73,7 @@ SETTING_KEY = "watchdog_auto_index_extensions"
 class WatchdogSettings(BaseModel):
     """Payload and response for watchdog settings."""
     auto_index_extensions: list[str]
-    """Ordered list of extensions, e.g. [".md", ".pdf"]"""
+    """Ордеред лист расширений, e.g. [".md", ".pdf"]"""
 
     @field_validator("auto_index_extensions", mode="before")
     @classmethod
@@ -111,7 +120,7 @@ async def update_watchdog_settings(
     payload: WatchdogSettings,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> WatchdogSettings:
-    """Upserts watchdog setting in PostgreSQL.
+    """Упсертит watchdog setting в PostgreSQL.
 
     Validation: at least one extension must be provided.
     Extension must start with '.'
@@ -197,22 +206,25 @@ app.include_router(watchdog_router)
 > Правильный способ переопределить FastAPI-зависимость — `app.dependency_overrides`,
 > а **не** `monkeypatch.setattr`. После каждого теста override очищается.
 
+> ⚠️ **Важно**: при запуске `AsyncClient(transport=ASGITransport(app=app))` lifespan стартует
+> и перезаписывает `app.state.redis` реальным клиентом.
+> Для тестов, требующих Redis, необходимо патчить `aioredis.from_url`
+> ещё до старта lifespan — пример ниже.
+
+> ⚠️ Обязательно добавить `pytestmark = pytest.mark.asyncio` на уровне модуля,
+> иначе async-тесты молча пропускаются.
+
 ```python
 import json
 import pytest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 from httpx import AsyncClient, ASGITransport
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.main import app
 from app.db.session import get_db
 
-
-@pytest.fixture
-def mock_redis():
-    r = AsyncMock()
-    app.state.redis = r
-    return r
+pytestmark = pytest.mark.asyncio
 
 
 @pytest.fixture
@@ -221,16 +233,18 @@ def mock_db():
     return db
 
 
-async def test_get_watchdog_settings_default(mock_redis, mock_db):
+async def test_get_watchdog_settings_default(mock_db):
     # fetchone() возвращает None — должен вернуть значения по умолчанию
     result_mock = MagicMock()
     result_mock.fetchone.return_value = None
     mock_db.execute.return_value = result_mock
 
+    mock_redis = AsyncMock()
     app.dependency_overrides[get_db] = lambda: mock_db
     try:
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
-            r = await c.get("/api/v1/settings/watchdog")
+        with patch("redis.asyncio.from_url", return_value=mock_redis):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+                r = await c.get("/api/v1/settings/watchdog")
         assert r.status_code == 200
         data = r.json()
         assert set(data["auto_index_extensions"]) == {".md", ".pdf"}
@@ -238,46 +252,52 @@ async def test_get_watchdog_settings_default(mock_redis, mock_db):
         app.dependency_overrides.clear()
 
 
-async def test_patch_watchdog_settings(mock_redis, mock_db):
+async def test_patch_watchdog_settings(mock_db):
     mock_db.execute = AsyncMock()
     mock_db.commit = AsyncMock()
 
+    mock_redis = AsyncMock()
     app.dependency_overrides[get_db] = lambda: mock_db
     try:
-        payload = {"auto_index_extensions": [".md", ".txt"]}
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
-            r = await c.patch("/api/v1/settings/watchdog", json=payload)
+        with patch("redis.asyncio.from_url", return_value=mock_redis):
+            payload = {"auto_index_extensions": [".md", ".txt"]}
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+                r = await c.patch("/api/v1/settings/watchdog", json=payload)
         assert r.status_code == 200
         assert ".txt" in r.json()["auto_index_extensions"]
-        mock_db.commit.assert_awaited_once()  # проверяем, что commit был вызван
+        mock_db.commit.assert_awaited_once()  # commit должен быть вызван
     finally:
         app.dependency_overrides.clear()
 
 
-async def test_patch_invalid_extension(mock_redis, mock_db):
+async def test_patch_invalid_extension(mock_db):
     mock_db.execute = AsyncMock()
     mock_db.commit = AsyncMock()
 
+    mock_redis = AsyncMock()
     app.dependency_overrides[get_db] = lambda: mock_db
     try:
-        payload = {"auto_index_extensions": ["md"]}  # без точки
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
-            r = await c.patch("/api/v1/settings/watchdog", json=payload)
+        with patch("redis.asyncio.from_url", return_value=mock_redis):
+            payload = {"auto_index_extensions": ["md"]}  # без точки
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+                r = await c.patch("/api/v1/settings/watchdog", json=payload)
         assert r.status_code == 422
         mock_db.commit.assert_not_awaited()  # commit не должен вызываться при ошибке
     finally:
         app.dependency_overrides.clear()
 
 
-async def test_get_pending_files(mock_redis):
+async def test_get_pending_files():
+    mock_redis = AsyncMock()
     mock_redis.hgetall.return_value = {
         "notes.md": json.dumps({"index_status": "pending", "md5": "abc"}),
         "report.pdf": json.dumps({"index_status": "indexed", "md5": "def"}),
         "new.txt": json.dumps({"index_status": "pending", "md5": ""}),
         "__empty__": "1",
     }
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
-        r = await c.get("/api/v1/vaults/v1/pending-files")
+    with patch("redis.asyncio.from_url", return_value=mock_redis):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            r = await c.get("/api/v1/vaults/v1/pending-files")
     assert r.status_code == 200
     data = r.json()
     assert data["total"] == 2
