@@ -22,10 +22,17 @@ app.state.redis  # redis.asyncio.Redis, decode_responses=True
 
 ### PG в `rag-backend`
 
-`rag-backend/app/db.py` уже содержит `get_db()` — возвращает `asyncpg.Connection`
-через `Depends`. Те же зависимости используем здесь.
+`rag-backend/app/db/session.py` содержит `get_db()` — возвращает **`AsyncSession` (SQLAlchemy)**
+через `Depends`. Импорт:
 
-Уточнить название dependency через MCPдо реализации.
+```python
+from app.db.session import get_db
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import text
+```
+
+> ⚠️ Это **не** `asyncpg.Connection`. Запросы выполняются через `db.execute(text(...), {...})`.
+> После модифицирующих операций обязателен `await db.commit()`.
 
 ## Что нужно создать
 
@@ -40,8 +47,10 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, field_validator
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db import get_db  # уточнить импорт перед реализацией
+from app.db.session import get_db
 
 router = APIRouter(prefix="/api/v1", tags=["watchdog"])
 
@@ -81,14 +90,15 @@ class PendingFilesResponse(BaseModel):
 
 @router.get("/settings/watchdog", response_model=WatchdogSettings)
 async def get_watchdog_settings(
-    db: Annotated[object, Depends(get_db)],
+    db: Annotated[AsyncSession, Depends(get_db)],
 ) -> WatchdogSettings:
     """Returns current watchdog auto-index extensions from PostgreSQL."""
-    row = await db.fetchrow(
-        "SELECT value FROM platform_settings WHERE key = $1",
-        SETTING_KEY,
+    result = await db.execute(
+        text("SELECT value FROM platform_settings WHERE key = :key"),
+        {"key": SETTING_KEY},
     )
-    raw: str = row["value"] if row else ".md,.pdf"
+    row = result.fetchone()
+    raw: str = row[0] if row else ".md,.pdf"
     return WatchdogSettings(auto_index_extensions=raw)
 
 
@@ -99,7 +109,7 @@ async def get_watchdog_settings(
 @router.patch("/settings/watchdog", response_model=WatchdogSettings)
 async def update_watchdog_settings(
     payload: WatchdogSettings,
-    db: Annotated[object, Depends(get_db)],
+    db: Annotated[AsyncSession, Depends(get_db)],
 ) -> WatchdogSettings:
     """Upserts watchdog setting in PostgreSQL.
 
@@ -117,14 +127,16 @@ async def update_watchdog_settings(
             )
 
     await db.execute(
-        """
-        INSERT INTO platform_settings (key, value)
-        VALUES ($1, $2)
-        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
-        """,
-        SETTING_KEY,
-        payload.to_db_value(),
+        text(
+            """
+            INSERT INTO platform_settings (key, value)
+            VALUES (:key, :value)
+            ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+            """
+        ),
+        {"key": SETTING_KEY, "value": payload.to_db_value()},
     )
+    await db.commit()  # без commit изменение не сохранится
     return payload
 
 
@@ -180,16 +192,20 @@ app.include_router(watchdog_router)
 
 ## ✅ Unit-тесты
 
-```
-tests/rag_backend/test_watchdog_api.py
-```
+Путь: `rag-backend/app/tests/test_watchdog_api.py`
+
+> Правильный способ переопределить FastAPI-зависимость — `app.dependency_overrides`,
+> а **не** `monkeypatch.setattr`. После каждого теста override очищается.
 
 ```python
 import json
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 from httpx import AsyncClient, ASGITransport
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.main import app
+from app.db.session import get_db
 
 
 @pytest.fixture
@@ -201,40 +217,56 @@ def mock_redis():
 
 @pytest.fixture
 def mock_db():
-    db = AsyncMock()
+    db = AsyncMock(spec=AsyncSession)
     return db
 
 
-async def test_get_watchdog_settings_default(mock_redis, mock_db, monkeypatch):
-    mock_db.fetchrow.return_value = None
-    monkeypatch.setattr("app.api.watchdog_settings.get_db", lambda: mock_db)
+async def test_get_watchdog_settings_default(mock_redis, mock_db):
+    # fetchone() возвращает None — должен вернуть значения по умолчанию
+    result_mock = MagicMock()
+    result_mock.fetchone.return_value = None
+    mock_db.execute.return_value = result_mock
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
-        r = await c.get("/api/v1/settings/watchdog")
-    assert r.status_code == 200
-    data = r.json()
-    assert set(data["auto_index_extensions"]) == {".md", ".pdf"}
+    app.dependency_overrides[get_db] = lambda: mock_db
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            r = await c.get("/api/v1/settings/watchdog")
+        assert r.status_code == 200
+        data = r.json()
+        assert set(data["auto_index_extensions"]) == {".md", ".pdf"}
+    finally:
+        app.dependency_overrides.clear()
 
 
-async def test_patch_watchdog_settings(mock_redis, mock_db, monkeypatch):
+async def test_patch_watchdog_settings(mock_redis, mock_db):
     mock_db.execute = AsyncMock()
-    monkeypatch.setattr("app.api.watchdog_settings.get_db", lambda: mock_db)
+    mock_db.commit = AsyncMock()
 
-    payload = {"auto_index_extensions": [".md", ".txt"]}
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
-        r = await c.patch("/api/v1/settings/watchdog", json=payload)
-    assert r.status_code == 200
-    assert ".txt" in r.json()["auto_index_extensions"]
+    app.dependency_overrides[get_db] = lambda: mock_db
+    try:
+        payload = {"auto_index_extensions": [".md", ".txt"]}
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            r = await c.patch("/api/v1/settings/watchdog", json=payload)
+        assert r.status_code == 200
+        assert ".txt" in r.json()["auto_index_extensions"]
+        mock_db.commit.assert_awaited_once()  # проверяем, что commit был вызван
+    finally:
+        app.dependency_overrides.clear()
 
 
-async def test_patch_invalid_extension(mock_redis, mock_db, monkeypatch):
+async def test_patch_invalid_extension(mock_redis, mock_db):
     mock_db.execute = AsyncMock()
-    monkeypatch.setattr("app.api.watchdog_settings.get_db", lambda: mock_db)
+    mock_db.commit = AsyncMock()
 
-    payload = {"auto_index_extensions": ["md"]}  # без точки
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
-        r = await c.patch("/api/v1/settings/watchdog", json=payload)
-    assert r.status_code == 422
+    app.dependency_overrides[get_db] = lambda: mock_db
+    try:
+        payload = {"auto_index_extensions": ["md"]}  # без точки
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            r = await c.patch("/api/v1/settings/watchdog", json=payload)
+        assert r.status_code == 422
+        mock_db.commit.assert_not_awaited()  # commit не должен вызываться при ошибке
+    finally:
+        app.dependency_overrides.clear()
 
 
 async def test_get_pending_files(mock_redis):
@@ -256,6 +288,7 @@ async def test_get_pending_files(mock_redis):
 
 - [ ] `GET /api/v1/settings/watchdog` — 200, возвращает по умолчанию если PG пуст или ключ отсутствует
 - [ ] `PATCH /api/v1/settings/watchdog` — 422 если расширение без `.`
+- [ ] `PATCH` вызывает `db.commit()` после `execute`
 - [ ] `GET /api/v1/vaults/{vault_id}/pending-files` — читает Redis, игнорирует `__empty__`
 - [ ] unit-тесты проходят
 - [ ] `STATUS.md` обновлён: этап 5 → ✅
