@@ -26,7 +26,7 @@ def _now_iso() -> str:
 
 
 class RedisStateManager:
-    """State-менеджер на базе Redis.
+    """Стате-менеджер на базе Redis.
 
     Ожидает redis.asyncio.Redis с decode_responses=True.
     """
@@ -46,7 +46,7 @@ class RedisStateManager:
         files_skipped: int,
         files_total: int,
     ) -> None:
-        """Cоздаёт task:{task_id} HASH и task:{task_id}:files HASH.
+        """Создаёт task:{task_id} HASH и task:{task_id}:files HASH.
 
         Устанавливает TTL 86400с на оба ключа.
         Добавляет task_id в SET active_tasks.
@@ -100,9 +100,8 @@ class RedisStateManager:
         checksum_md5: str = "",
         error: str | None = None,
     ) -> None:
-        """Oбновляет поле файла в task:{task_id}:files HASH."""
+        """Обновляет поле файла в task:{task_id}:files HASH."""
         files_key = f"task:{task_id}:files"
-        # Читаем текущее значение для merge checksum если не передан
         existing_raw = await self._r.hget(files_key, relative_path)
         if existing_raw:
             existing = json.loads(existing_raw)
@@ -123,7 +122,7 @@ class RedisStateManager:
         await self._r.hincrby(f"task:{task_id}", "files_done", 1)
 
     async def mark_task_done(self, task_id: str, error: str | None = None) -> None:
-        """Uстанавливает status=done/error, finished_at. SREM active_tasks."""
+        """Устанавливает status=done/error, finished_at. SREM active_tasks."""
         task_key = f"task:{task_id}"
         status = "error" if error else "done"
         pipe = self._r.pipeline()
@@ -136,7 +135,7 @@ class RedisStateManager:
         await pipe.execute()
 
     async def mark_task_cancelled(self, task_id: str) -> None:
-        """Uстанавливает status=cancelled. SREM active_tasks."""
+        """Устанавливает status=cancelled. SREM active_tasks."""
         task_key = f"task:{task_id}"
         pipe = self._r.pipeline()
         pipe.hset(task_key, mapping={  # type: ignore[arg-type]
@@ -147,7 +146,7 @@ class RedisStateManager:
         await pipe.execute()
 
     async def get_task_state(self, task_id: str) -> dict[str, Any] | None:
-        """Vозвращает task HASH + files HASH или None.
+        """Возвращает task HASH + files HASH или None.
 
         Структура: {"status": ..., "vault_id": ..., ..., "files": {"path": {...}}}
         """
@@ -178,7 +177,7 @@ class RedisStateManager:
         pg_documents: list[dict],
         disk_files: list[dict],
     ) -> None:
-        """Pестроит vault:{vault_id}:files HASH из PostgreSQL + диска.
+        """Рестроит vault:{vault_id}:files HASH из PostgreSQL + диска.
 
         Логика index_status:
           нет на диске                          -> "deleted"
@@ -188,25 +187,20 @@ class RedisStateManager:
         """
         vault_key = f"vault:{vault_id}:files"
 
-        # Индексируем pg по relative_path
         pg_index: dict[str, dict] = {}
         for doc in pg_documents:
             path = doc.get("relative_path") or doc.get("source_path", "")
             pg_index[path] = doc
 
-        # Индексируем диск по relative_path
         disk_index: dict[str, dict] = {}
         for f in disk_files:
             path = f.get("relative_path", "")
             disk_index[path] = f
 
-        # Объединяем все известные пути
         all_paths = set(pg_index) | set(disk_index)
 
         if not all_paths:
-            # Очищаем старый кэш и выходим — ключ создаём пустым для теста no-TTL
             await self._r.delete(vault_key)
-            # Создаём пустой хэш чтобы ttl-тест (значение -1) проходил
             await self._r.hset(vault_key, "__empty__", "1")
             return
 
@@ -234,7 +228,6 @@ class RedisStateManager:
             }
             pipe.hset(vault_key, path, json.dumps(entry, ensure_ascii=False))
 
-        # Без TTL — кэш восстанавливается из PostgreSQL при старте
         await pipe.execute()
 
     async def mark_file_indexed(
@@ -244,10 +237,10 @@ class RedisStateManager:
         md5: str,
         chunks_total: int,
     ) -> None:
-        """Oбновляет запись в vault:{vault_id}:files."""
+        """Обновляет запись в vault:{vault_id}:files."""
         vault_key = f"vault:{vault_id}:files"
         existing_raw = await self._r.hget(vault_key, relative_path)
-        if existing_raw and existing_raw != "1":  # guard against __empty__ sentinel
+        if existing_raw and existing_raw != "1":
             try:
                 existing = json.loads(existing_raw)
             except json.JSONDecodeError:
@@ -274,8 +267,6 @@ class RedisStateManager:
         """
         vault_key = f"vault:{vault_id}:files"
         existing_raw = await self._r.hget(vault_key, relative_path)
-        # Guard `!= "1"` защищает от нечаянного коллижена с сентинелом __empty__,
-        # который хранит значение "1" (аналогично mark_file_indexed).
         if existing_raw and existing_raw != "1":
             try:
                 existing = json.loads(existing_raw)
@@ -332,7 +323,7 @@ class RedisStateManager:
         return result
 
     async def get_vault_state(self, vault_id: str) -> dict[str, Any] | None:
-        """Vозвращает все файлы + счётчики по статусам."""
+        """Возвращает все файлы + счётчики по статусам."""
         vault_key = f"vault:{vault_id}:files"
         raw = await self._r.hgetall(vault_key)
         if not raw:
@@ -354,6 +345,23 @@ class RedisStateManager:
 
         return {"files": files, "counts": counts}
 
+    async def is_vault_indexing(self, vault_id: str) -> bool:
+        """Returns True if there is a running task for this vault in Redis.
+
+        Uses pipeline to fetch all active task metadata in one round-trip.
+        """
+        active_ids = await self._r.smembers("active_tasks")
+        if not active_ids:
+            return False
+        pipe = self._r.pipeline()
+        for task_id in active_ids:
+            pipe.hmget(f"task:{task_id}", "vault_id", "status")
+        results = await pipe.execute()
+        for values in results:
+            if values[0] == vault_id and values[1] == "running":
+                return True
+        return False
+
     # ------------------------------------------------------------------
     # Cancel
     # ------------------------------------------------------------------
@@ -363,7 +371,7 @@ class RedisStateManager:
         await self._r.set(f"cancel:{task_id}", "1", ex=CANCEL_TTL)
 
     async def is_cancelled(self, task_id: str) -> bool:
-        """Eхистс cancel:{task_id}."""
+        """Ехистс cancel:{task_id}."""
         return bool(await self._r.exists(f"cancel:{task_id}"))
 
     async def clear_cancel(self, task_id: str) -> None:
