@@ -33,6 +33,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 Нужно добавить новые env-переменные: `WATCHDOG_INTERVAL_SEC` (default `"60"`)
 и `STORAGE_API_URL` (default `"http://db-api-server:8080"`).
 
+> ⚠️ `asyncio` уже импортирован в `main.py` — добавлять его повторно не нужно.
+> `STORAGE_API_URL` читается внутри lifespan (а не на уровне модуля),
+> чтобы env читался уже после загрузки `.env` / docker-compose.
+
 ## Что нужно сделать
 
 ### Изменения в `rag-indexer/app/main.py`
@@ -58,7 +62,10 @@ watchdog_interval = int(os.getenv("WATCHDOG_INTERVAL_SEC", "60"))
 storage_client = StorageClient(
     os.getenv("STORAGE_API_URL", "http://db-api-server:8080")
 )
-watchdog_task: asyncio.Task[None] | None = None  # guard: None если задача не успела создаться
+# watchdog_task инициализируется None перед create_task:
+# если исключение возникнет между IndexerService(...) и create_task,
+# finally не упадёт с NameError.
+watchdog_task: asyncio.Task[None] | None = None
 watchdog_task = asyncio.create_task(
     watchdog_loop(
         db_client=db_client,
@@ -71,10 +78,6 @@ watchdog_task = asyncio.create_task(
 )
 logger.info("Vault watchdog scheduled (interval=%ds)", watchdog_interval)
 ```
-
-> ⚠️ `watchdog_task` инициализируется `None` перед созданием `create_task`.
-> Если исключение возникнет между `IndexerService(...)` и `create_task`,
-> `finally` не упадёт с `NameError`.
 
 #### 3. Отмена в `finally`
 
@@ -133,12 +136,16 @@ Unit-тесты lifespan сложны без полного ASGITransport + ре
 rag-indexer/tests/test_watchdog_lifespan.py
 ```
 
+> ⚠️ Обязательно добавить `pytestmark = pytest.mark.asyncio` на уровне модуля.
+
 ```python
 import asyncio
 import pytest
 from unittest.mock import AsyncMock, patch
 from storage.storage_client import StorageClient
 from parser.watchdog.vault_watchdog import watchdog_loop
+
+pytestmark = pytest.mark.asyncio
 
 
 async def test_watchdog_loop_stops_on_cancel():
@@ -160,15 +167,19 @@ async def test_watchdog_loop_stops_on_cancel():
     )
     await asyncio.sleep(0)  # даём loop запуститься
     task.cancel()
-    await asyncio.wait_for(task, timeout=1.0)
-    assert task.cancelled() or task.done()
+    # wait_for бросит CancelledError наружу — перехватываем явно.
+    try:
+        await asyncio.wait_for(task, timeout=1.0)
+    except (asyncio.CancelledError, asyncio.TimeoutError):
+        pass
+    assert task.done()
 
 
 async def test_watchdog_loop_calls_run_once():
     """After one iteration, _run_once is called at least once."""
     call_count = 0
 
-    async def fake_run_once(db, state, svc, storage):  # четыре параметра, как в _run_once
+    async def fake_run_once(db, state, svc, storage):
         nonlocal call_count
         call_count += 1
 
@@ -187,7 +198,7 @@ async def test_watchdog_loop_calls_run_once():
                 state_manager=state,
                 indexer_service=svc,
                 storage_client=storage,
-                interval_sec=0,
+                interval_sec=0,  # без задержки между итерациями
             )
         )
         await asyncio.sleep(0.05)
