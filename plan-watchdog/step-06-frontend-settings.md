@@ -1,173 +1,222 @@
-# Этап 6 — Фронтенд: настройки (Settings → секция «Индексация»)
+# Этап 6 — Фронтенд: вкладка «Индексация» в настройках платформы
 
 ## Цель
 
-Добавить в UI управление `watchdog_auto_index_extensions`: админ видит чекбоксы
-по расширениям и сохраняет при нажатии «Сохранить».
+Добавить в UI управление `watchdog_auto_index_extensions`: администратор видит чекбоксы
+по расширениям, может добавить своё и сохраняет нажатием «Сохранить».
 
-## Контекст из кодовой базы
+## Архитектурный контекст
 
-Уточните перед реализацией через MCP:
+Фронтенд — **чистый vanilla JS без фреймворков**. Никакого Vue/React/JSX.
 
-```
-frontend/src/views/SettingsView.*
-frontend/src/api/*.js (или *.ts)
-```
+Паттерн организации:
+- `rag-backend/app/static/js/api.js` — единый класс `chatAPI` со всеми fetch-методами
+- `rag-backend/app/static/js/settings.js` — класс `SettingsManager`; switch по `tab` в `loadTab()` и `_dispatch()`
+- `rag-backend/app/static/js/settings/tab-*.js` — каждый файл экспортирует mixin-объект и вызывает `Object.assign(SettingsManager.prototype, ...)`
+- `rag-backend/app/static/index.html` — nav с кнопками `data-tab="..."` и `<script>` тегами
 
-Фронтенд использует `fetch` или axios-централизованный client, узнайте до реализации.
-
-## Что нужно сделать
-
-### UX-логика
+## UX-логика
 
 ```
-Секция «Индексация»:
+Вкладка «Индексация»:
   Заголовок: «Авто-индексация при изменении файлов»
   Подзаголовок: «Файлы этих типов будут переиндексированы автоматически»
   [✓] .md
   [✓] .pdf
   [ ] .docx
   [ ] .txt
-  Ввод своего расширения: [    ] + [Добавить]
+  [ ] .rst
+  [ ] .html
+  Ввод своего расширения: [______] + [Добавить]
   [Сохранить]
 ```
 
 Предопределённый список расширений: `.md`, `.pdf`, `.docx`, `.txt`, `.rst`, `.html`.
-Lookup построен статически в компоненте, дополнительно можно ввести своё.
+Дополнительно пользователь может ввести любое своё расширение.
 
-### API-слой
+## Что нужно сделать
 
-Создайте `frontend/src/api/watchdogSettings.js` (или `.ts`):
+### 1. `rag-backend/app/static/js/api.js` — добавить два метода в класс `chatAPI`
 
 ```js
-const BASE = '/api/v1/settings/watchdog';
-
-export async function getWatchdogSettings() {
-  const res = await fetch(BASE);
-  if (!res.ok) throw new Error('Failed to load watchdog settings');
-  return res.json(); // { auto_index_extensions: string[] }
+// Watchdog settings
+async getWatchdogSettings() {
+    const res = await fetch('/api/v1/settings/watchdog');
+    if (!res.ok) throw new Error('Failed to load watchdog settings');
+    return res.json(); // { auto_index_extensions: string[] }
 }
 
-export async function saveWatchdogSettings(extensions) {
-  const res = await fetch(BASE, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ auto_index_extensions: extensions }),
-  });
-  if (!res.ok) throw new Error('Failed to save watchdog settings');
-  return res.json();
+async saveWatchdogSettings(extensions) {
+    const res = await fetch('/api/v1/settings/watchdog', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ auto_index_extensions: extensions }),
+    });
+    if (!res.ok) throw new Error('Failed to save watchdog settings');
+    return res.json();
 }
 ```
 
-### Компонент `WatchdogSettings`
+### 2. `rag-backend/app/static/js/settings/tab-indexing.js` — создать новый файл
 
-Создайте `frontend/src/components/WatchdogSettings.vue`
-(или `.jsx`/`.tsx` — смотрите какой фреймворк использует проект):
+Паттерн идентичен `tab-params.js`: mixin-объект + `Object.assign`.
 
-```vue
-<script setup>
-import { ref, onMounted } from 'vue';
-import { getWatchdogSettings, saveWatchdogSettings } from '@/api/watchdogSettings';
+```js
+const INDEXING_KNOWN_EXTENSIONS = ['.md', '.pdf', '.docx', '.txt', '.rst', '.html'];
 
-const KNOWN_EXTENSIONS = ['.md', '.pdf', '.docx', '.txt', '.rst', '.html'];
+const IndexingTabMixin = {
+    async renderIndexingTab() {
+        let currentExtensions = [];
+        try {
+            const data = await this.api.getWatchdogSettings();
+            currentExtensions = data.auto_index_extensions || [];
+        } catch (e) {
+            console.error('Failed to load watchdog settings', e);
+        }
 
-const selected = ref(new Set());
-const customInput = ref('');
-const saving = ref(false);
-const error = ref('');
-const success = ref(false);
+        const selectedSet = new Set(currentExtensions);
 
-onMounted(async () => {
-  try {
-    const data = await getWatchdogSettings();
-    selected.value = new Set(data.auto_index_extensions);
-  } catch (e) {
-    error.value = 'Не удалось загрузить настройки';
-  }
-});
+        // Собираем все расширения: известные + кастомные из текущих настроек
+        const allExtensions = [
+            ...INDEXING_KNOWN_EXTENSIONS,
+            ...currentExtensions.filter(e => !INDEXING_KNOWN_EXTENSIONS.includes(e)),
+        ];
 
-function toggle(ext) {
-  if (selected.value.has(ext)) selected.value.delete(ext);
-  else selected.value.add(ext);
-}
+        const checkboxesHtml = allExtensions.map(ext => `
+            <label class="settings-param-row indexing-ext-row">
+                <input type="checkbox"
+                       data-ext="${this.escapeHtml(ext)}"
+                       ${selectedSet.has(ext) ? 'checked' : ''}>
+                <span>${this.escapeHtml(ext)}</span>
+            </label>
+        `).join('');
 
-function addCustom() {
-  const ext = customInput.value.trim();
-  if (!ext.startsWith('.')) {
-    error.value = 'Расширение должно начинаться с "."';
-    return;
-  }
-  selected.value.add(ext);
-  customInput.value = '';
-  error.value = '';
-}
+        return `
+            <div class="settings-section">
+                <h3>Авто-индексация при изменении файлов</h3>
+                <p class="settings-param-desc">
+                    Файлы этих типов будут переиндексированы автоматически при изменении в vault-директории
+                </p>
 
-async function save() {
-  saving.value = true;
-  error.value = '';
-  success.value = false;
-  try {
-    await saveWatchdogSettings([...selected.value]);
-    success.value = true;
-    setTimeout(() => { success.value = false; }, 3000);
-  } catch (e) {
-    error.value = 'Не удалось сохранить настройки';
-  } finally {
-    saving.value = false;
-  }
-}
-</script>
+                <div id="indexing-ext-list" class="indexing-ext-list">
+                    ${checkboxesHtml}
+                </div>
 
-<template>
-  <section class="watchdog-settings">
-    <h3>Авто-индексация при изменении файлов</h3>
-    <p class="hint">Файлы этих типов будут переиндексированы автоматически</p>
+                <div class="indexing-custom-input settings-toolbar">
+                    <input type="text"
+                           id="indexing-custom-ext"
+                           placeholder=".epub"
+                           style="width: 140px;">
+                    <button class="btn btn-secondary" data-action="add-ext">Добавить</button>
+                </div>
 
-    <div class="ext-list">
-      <label v-for="ext in KNOWN_EXTENSIONS" :key="ext">
-        <input type="checkbox" :checked="selected.has(ext)" @change="toggle(ext)" />
-        {{ ext }}
-      </label>
-    </div>
+                <div id="indexing-message" style="min-height: 1.5em; margin-top: 8px;"></div>
 
-    <div class="custom-input">
-      <input
-        v-model="customInput"
-        placeholder=".epub"
-        @keyup.enter="addCustom"
-      />
-      <button type="button" @click="addCustom">Добавить</button>
-    </div>
+                <div class="settings-params-footer">
+                    <button class="btn btn-primary" data-action="save-indexing">Сохранить</button>
+                </div>
+            </div>
+        `;
+    },
 
-    <div v-if="error" class="error">{{ error }}</div>
-    <div v-if="success" class="success">Настройки сохранены</div>
+    async handleIndexingAction(action, id, btn) {
+        if (action === 'add-ext') {
+            const input = this._tabContent.querySelector('#indexing-custom-ext');
+            const msgEl = this._tabContent.querySelector('#indexing-message');
+            const ext = (input?.value || '').trim();
+            if (!ext.startsWith('.')) {
+                if (msgEl) {
+                    msgEl.textContent = 'Расширение должно начинаться с "."';
+                    msgEl.className = 'error';
+                }
+                return;
+            }
+            // Проверяем дубликат
+            const existing = this._tabContent.querySelector(`[data-ext="${CSS.escape(ext)}"]`);
+            if (existing) {
+                if (msgEl) {
+                    msgEl.textContent = `Расширение ${ext} уже есть в списке`;
+                    msgEl.className = '';
+                }
+                return;
+            }
+            // Добавляем чекбокс
+            const list = this._tabContent.querySelector('#indexing-ext-list');
+            if (list) {
+                const label = document.createElement('label');
+                label.className = 'settings-param-row indexing-ext-row';
+                label.innerHTML = `
+                    <input type="checkbox" data-ext="${this.escapeHtml(ext)}" checked>
+                    <span>${this.escapeHtml(ext)}</span>
+                `;
+                list.appendChild(label);
+            }
+            if (input) input.value = '';
+            if (msgEl) { msgEl.textContent = ''; msgEl.className = ''; }
 
-    <button :disabled="saving" @click="save">
-      {{ saving ? 'Сохранение…' : 'Сохранить' }}
-    </button>
-  </section>
-</template>
+        } else if (action === 'save-indexing') {
+            const msgEl = this._tabContent.querySelector('#indexing-message');
+            const checked = [...this._tabContent.querySelectorAll('#indexing-ext-list [data-ext]')]
+                .filter(cb => cb.checked)
+                .map(cb => cb.dataset.ext);
+            try {
+                await this.api.saveWatchdogSettings(checked);
+                if (msgEl) {
+                    msgEl.textContent = 'Настройки сохранены';
+                    msgEl.className = 'success';
+                    setTimeout(() => { if (msgEl) { msgEl.textContent = ''; msgEl.className = ''; } }, 3000);
+                }
+            } catch (e) {
+                if (msgEl) {
+                    msgEl.textContent = 'Ошибка сохранения: ' + e.message;
+                    msgEl.className = 'error';
+                }
+            }
+        }
+    },
+};
+
+Object.assign(SettingsManager.prototype, IndexingTabMixin);
 ```
 
-### Включение в `SettingsView`
+### 3. `rag-backend/app/static/js/settings.js` — добавить в два switch
 
-```vue
-<WatchdogSettings />
+В методе `loadTab()`:
+```js
+case 'indexing': html = await this.renderIndexingTab(); break;
 ```
-в секции «Индексация».
+
+В методе `_dispatch()`:
+```js
+case 'indexing': await this.handleIndexingAction(action, id, btn); break;
+```
+
+### 4. `rag-backend/app/static/index.html` — два изменения
+
+**4a. Добавить кнопку вкладки** в `<nav class="settings-tabs">` (после `documents`):
+```html
+<button data-tab="indexing">Индексация</button>
+```
+
+**4b. Добавить `<script>` тег** после `tab-documents.js`:
+```html
+<script src="/static/js/settings/tab-indexing.js"></script>
+```
 
 ## Файлы для создания / изменения
 
 | Файл | Действие |
 |---|---|
-| `frontend/src/api/watchdogSettings.js` | Создать |
-| `frontend/src/components/WatchdogSettings.vue` | Создать |
-| `frontend/src/views/SettingsView.vue` | `+<WatchdogSettings />` в секции индексации |
+| `rag-backend/app/static/js/api.js` | Добавить методы `getWatchdogSettings`, `saveWatchdogSettings` |
+| `rag-backend/app/static/js/settings/tab-indexing.js` | **Создать** |
+| `rag-backend/app/static/js/settings.js` | Добавить `case 'indexing'` в `loadTab()` и `_dispatch()` |
+| `rag-backend/app/static/index.html` | Добавить кнопку вкладки и `<script>` тег |
 
 ## Критерий готовности
 
-- [ ] При открытии вкладки читается `GET /api/v1/settings/watchdog`, чекбоксы отображают текущие значения
-- [ ] При «Сохранить» отправляется `PATCH /api/v1/settings/watchdog` с выбранными расширениями
+- [ ] При открытии вкладки «Индексация» читается `GET /api/v1/settings/watchdog`, чекбоксы отображают текущие значения
+- [ ] При «Сохранить» отправляется `PATCH /api/v1/settings/watchdog` с выбранными расширениями в виде массива
 - [ ] Валидация: нельзя добавить расширение без точки
-- [ ] Сообщение «Настройки сохранены» после успешного сохранения
+- [ ] Нельзя добавить дубликат расширения
+- [ ] Сообщение «Настройки сохранены» автоматически исчезает через 3 секунды
 - [ ] `STATUS.md` обновлён: этап 6 → ✅
