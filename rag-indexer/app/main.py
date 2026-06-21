@@ -9,11 +9,10 @@ from typing import Any
 
 import redis.asyncio as aioredis
 import uvicorn
-from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request
 
 from app.db_client import IndexerDBClient
 from app.indexer_service import IndexerService
-from app.websocket_manager import ConnectionManager
 from logging_config import setup_logging
 from parser.scanning.vault_scanner import scan_vault
 from parser.state.redis_state_manager import RedisStateManager
@@ -48,7 +47,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 state_manager,
                 db_client,
                 vault["vault_id"],
-                # vault_path не хранится в БД — строим из VAULT_DATA_ROOT + vault_id
                 f"{VAULT_DATA_ROOT}/{vault['vault_id']}",
             )
             for vault in vaults
@@ -66,7 +64,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.db_client = db_client
     app.state.redis_client = redis_client
     app.state.state_manager = state_manager
-    app.state.ws_manager = ConnectionManager()
     app.state.indexer_service = IndexerService(
         db_client=db_client,
         state_manager=state_manager,
@@ -89,11 +86,6 @@ async def _rebuild_one_vault(
     vault_id: str,
     vault_path: str,
 ) -> None:
-    """Rebuilds vault:{vault_id}:files in Redis.
-
-    Skips vault if the directory does not exist on disk.
-    Errors are logged and re-raised so the caller handles them via return_exceptions=True.
-    """
     if not os.path.isdir(vault_path):
         logger.warning(
             "Vault path not found, skipping cache rebuild: vault_id=%s path=%s",
@@ -145,35 +137,23 @@ async def cancel_index_task(task_id: str, request: Request) -> dict[str, bool | 
     return {"task_id": task_id, "cancelled": True}
 
 
-@app.get("/api/v1/tasks/{task_id}/state", response_model=TaskStateResponse)
-async def get_task_state(task_id: str, request: Request) -> TaskStateResponse:
+@app.get("/api/v1/tasks/{task_id}/state")
+async def get_task_state(task_id: str, request: Request) -> dict[str, Any]:
+    """Polling endpoint: возвращает состояние задачи из Redis.
+
+    Используется rag-backend вместо WebSocket-потока.
+    """
     state_manager: RedisStateManager = request.app.state.state_manager
     raw = await state_manager.get_task_state(task_id)
     if raw is None:
-        raise HTTPException(status_code=404, detail="Task state not found")
-    return TaskStateResponse(
-        task_id=raw["task_id"],
-        vault_id=raw["vault_id"],
-        status=raw["status"],
-    )
+        raise HTTPException(status_code=404, detail="Task not found")
+    return raw
 
 
-@app.get("/tasks/{task_id}/state", response_model=TaskStateResponse)
-async def get_task_state_legacy(task_id: str, request: Request) -> TaskStateResponse:
+@app.get("/tasks/{task_id}/state")
+async def get_task_state_legacy(task_id: str, request: Request) -> dict[str, Any]:
+    """Legacy alias for backwards compatibility."""
     return await get_task_state(task_id, request)
-
-
-@app.websocket("/api/v1/tasks/{task_id}/stream")
-async def stream_task(task_id: str, websocket: WebSocket) -> None:
-    manager = _ws_manager(websocket)
-    await manager.connect(task_id, websocket)
-    try:
-        while True:
-            await websocket.receive_text()
-    except WebSocketDisconnect:
-        pass
-    finally:
-        await manager.disconnect(task_id, websocket)
 
 
 @app.get("/api/v1/vaults/{vault_id}/documents/all")
@@ -181,12 +161,6 @@ async def get_vault_documents(
     vault_id: str,
     request: Request,
 ) -> list[dict[str, Any]]:
-    """Returns all documents for a vault from PostgreSQL.
-
-    Used by rag-indexer during rebuild_vault_cache (step 5):
-    reads source_path, md5, mtime, status, indexed_at to
-    initialise vault:{vault_id}:files in Redis.
-    """
     db: IndexerDBClient = request.app.state.db_client
     return await db.get_all_documents(vault_id)
 
@@ -196,13 +170,6 @@ def _indexer_service(request: Request) -> IndexerService:
     if not isinstance(service, IndexerService):
         raise HTTPException(status_code=503, detail="Indexer service is not initialized")
     return service
-
-
-def _ws_manager(websocket: WebSocket) -> ConnectionManager:
-    manager = getattr(websocket.app.state, "ws_manager", None)
-    if not isinstance(manager, ConnectionManager):
-        raise RuntimeError("WebSocket manager is not initialized")
-    return manager
 
 
 if __name__ == "__main__":
