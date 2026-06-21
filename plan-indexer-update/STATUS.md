@@ -18,8 +18,8 @@
 | 6 | rag-indexer: indexer_worker — убрать chunk_ids и broadcast | [step-06](step-06-indexer-worker.md) | ✅ завершён | ef3d737 | run_indexing принимает state_manager. Убран broadcast, is_cancelled-callable, WS-модели |
 | 7 | rag-indexer: indexer_service — async cancel, убрать broadcaster | [step-07](step-07-indexer-service.md) | ✅ завершён | f0e1330 | Удалены _broadcaster, _cancel_flags, get_broadcaster. cancel_task → async Redis-флаг |
 | 8 | rag-indexer: удалить WebSocket | [step-08](step-08-remove-websocket.md) | ✅ завершён | 0f0ca43 | Удалены: websocket_manager.py, WS-эндпоинт, ConnectionManager из main.py. Добавлен polling GET /api/v1/tasks/{task_id}/state. Тесты: test_task_state_endpoint.py |
-| 9 | rag-backend: Redis client + polling endpoint | [step-09-10](step-09-10-rag-backend.md) | ⬜ не начат | — | — |
-| 10 | rag-backend: vault index-state endpoint | [step-09-10](step-09-10-rag-backend.md) | ⬜ не начат | — | — |
+| 9 | rag-backend: Redis client + polling endpoint | [step-09-10](step-09-10-rag-backend.md) | ✅ завершён | 7abc7eb | redis[asyncio]>=5.0 в requirements.txt. Redis lifespan в main.py. Новый роутер indexer_state.py. Удалён WS-прокси и HTTP-прокси /index-tasks/{task_id}/state из db_management.py |
+| 10 | rag-backend: vault index-state endpoint | [step-09-10](step-09-10-rag-backend.md) | ✅ завершён | 7abc7eb | GET /vaults/{vault_id}/index-state в indexer_state.py — читает vault:{vault_id}:files из Redis, возвращает сводку by_status |
 | 11 | Интеграционный тест | [step-11](step-11-integration-test.md) | ⬜ не начат | — | — |
 
 ## Статусы
@@ -55,3 +55,4 @@
 | 2026-06-21 | 6 | ✅ indexer_worker: run_indexing → state_manager. Удалены broadcast, is_cancelled, WS-модели |
 | 2026-06-21 | 7 | ✅ indexer_service: удалены _broadcaster, _cancel_flags, get_broadcaster. cancel_task → async Redis-флаг. shutdown() добавлен |
 | 2026-06-21 | 8 | ✅ Удалены websocket_manager.py, WS-эндпоинт /api/v1/tasks/{task_id}/stream, ConnectionManager из main.py. Добавлен polling GET /api/v1/tasks/{task_id}/state |
+| 2026-06-21 | 9-10 | ✅ redis[asyncio]>=5.0 в requirements.txt. Redis lifespan (app.state.redis). Новый indexer_state.py: GET /index-tasks/{task_id}/state и GET /vaults/{vault_id}/index-state — оба читают Redis напрямую. Удалён @router.websocket /ws/index-tasks/{task_id} и HTTP-прокси /index-tasks/{task_id}/state из db_management.py. Тесты: tests/rag_backend/test_redis_endpoints.py |
