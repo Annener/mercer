@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
 from typing import Annotated
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, field_validator
 from sqlalchemy import text
@@ -13,8 +16,10 @@ from app.db.session import get_db
 
 router = APIRouter(prefix="/api/v1", tags=["watchdog"])
 
+logger = logging.getLogger(__name__)
+
 SETTING_KEY = "watchdog_auto_index_extensions"
-_INDEXER_QUEUE = "indexer:queue"
+INDEXER_API_URL = os.getenv("INDEXER_API_URL", "http://rag-indexer:9000")
 
 
 # ------------------------------------------------------------------
@@ -202,17 +207,15 @@ async def get_domain_pending_files(
 @router.post("/domains/{domain_id}/index", response_model=IndexResponse)
 async def trigger_domain_index(
     domain_id: str,
-    request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> IndexResponse:
-    """Queues indexing tasks for all pending files across the domain's vaults.
+    """Triggers indexing for all vaults of a domain via rag-indexer HTTP API.
 
-    For each vault in the domain:
-    1. Reads vault:{vault_id}:files HASH from Redis.
-    2. Collects paths with index_status='pending'.
-    3. Pushes one JSON task per file to 'indexer:queue' via LPUSH.
+    For each vault in the domain sends:
+        POST {INDEXER_API_URL}/api/v1/tasks
+        {"vault_id": "<id>", "force_reindex": false}
 
-    Returns the total number of tasks queued.
+    Returns the number of successfully queued tasks.
     Does NOT wait for indexing to complete — fire-and-forget.
     """
     result = await db.execute(
@@ -221,21 +224,31 @@ async def trigger_domain_index(
     )
     vault_ids = [row[0] for row in result.fetchall()]
 
-    r = request.app.state.redis
     queued = 0
-
-    for vault_id in vault_ids:
-        raw: dict[str, str] = await r.hgetall(f"vault:{vault_id}:files")
-        for path, value in raw.items():
-            if path == "__empty__":
-                continue
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        for vault_id in vault_ids:
             try:
-                entry = json.loads(value)
-            except (json.JSONDecodeError, TypeError):
-                continue
-            if entry.get("index_status") == "pending":
-                task = json.dumps({"vault_id": vault_id, "path": path})
-                await r.lpush(_INDEXER_QUEUE, task)
+                resp = await client.post(
+                    f"{INDEXER_API_URL}/api/v1/tasks",
+                    json={"vault_id": vault_id, "force_reindex": False},
+                )
+                resp.raise_for_status()
                 queued += 1
+                logger.info(
+                    "Queued indexing task: vault_id=%s task_id=%s",
+                    vault_id,
+                    resp.json().get("task_id", "?"),
+                )
+            except httpx.HTTPStatusError as exc:
+                logger.warning(
+                    "Indexer rejected task for vault_id=%s: status=%d body=%s",
+                    vault_id, exc.response.status_code, exc.response.text,
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to queue indexing task for vault_id=%s",
+                    vault_id,
+                    exc_info=True,
+                )
 
     return IndexResponse(domain_id=domain_id, queued=queued)
