@@ -4,6 +4,7 @@ import logging
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Any
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -99,6 +100,21 @@ async def stream_task(task_id: str, websocket: WebSocket) -> None:
         pass
     finally:
         await manager.disconnect(task_id, websocket)
+
+
+@app.get("/api/v1/vaults/{vault_id}/documents/all")
+async def get_vault_documents(
+    vault_id: str,
+    request: Request,
+) -> list[dict[str, Any]]:
+    """Возвращает все документы vault'а из PostgreSQL.
+
+    Используется rag-indexer при rebuild_vault_cache (шаг 5):
+    читает source_path, md5, mtime, status, indexed_at для
+    инициализации vault:{vault_id}:files в Redis.
+    """
+    db: IndexerDBClient = request.app.state.db_client
+    return await db.get_all_documents(vault_id)
 
 
 def _indexer_service(request: Request) -> IndexerService:

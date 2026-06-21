@@ -128,6 +128,32 @@ class IndexerDBClient:
             *params,
         )
 
+    async def get_all_documents(self, vault_id: str) -> list[dict[str, Any]]:
+        """Возвращает все документы vault'а из PostgreSQL.
+
+        Используется при rebuild_vault_cache для инициализации
+        vault:{vault_id}:files в Redis.
+        Поля: source_path, md5, mtime, status, indexed_at.
+        """
+        rows = await self._fetch(
+            """
+            SELECT source_path, md5, mtime, status, indexed_at
+            FROM documents
+            WHERE vault_id = $1
+            """,
+            vault_id,
+        )
+        return [
+            {
+                "source_path": row["source_path"],
+                "md5": row["md5"],
+                "mtime": row["mtime"],
+                "status": row["status"],
+                "indexed_at": row["indexed_at"].isoformat() if row["indexed_at"] is not None else None,
+            }
+            for row in rows
+        ]
+
     # -------------------------------------------------------------------------
     # internal helpers
     # -------------------------------------------------------------------------

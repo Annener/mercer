@@ -15,7 +15,7 @@
 |---|---|---|---|---|---|
 | 1 | Инфраструктура: Redis в docker-compose | [step-01](step-01-docker-compose.md) | ✅ завершён | feat(infra): add Redis service to docker-compose (step-01) | Сеть rag-net, redis:7-alpine, AOF, noeviction, REDIS_URL в rag-indexer и rag-backend |
 | 2 | shared_contracts: удалить chunk_ids | [step-02](step-02-shared-contracts.md) | ✅ завершён | feat(shared_contracts): remove chunk_ids from FileIndexState (step-02) | Поле удалено из модели; остаточные вхождения в state_manager/indexer_worker — этапы 4 и 6; unit-тесты в tests/shared_contracts/ |
-| 3 | db-api-server: новый endpoint documents/all | [step-03](step-03-db-api-server.md) | ⬜ не начат | — | — |
+| 3 | db-api-server: новый endpoint documents/all | [step-03](step-03-db-api-server.md) | ✅ завершён | feat(rag-indexer): add GET /api/v1/vaults/{vault_id}/documents/all (step-03) | ⚠️ Отклонение от плана: endpoint размещён в rag-indexer, а не db-api-server. db-api-server — LanceDB-only gateway, не должен держать PostgreSQL-соединений (будет вынесен на отдельный инстанс). Метод IndexerDBClient.get_all_documents() — asyncpg SQL. Поля: source_path/md5/mtime/status/indexed_at (chunks_count в схеме не существует). Тесты: rag-indexer/tests/test_documents_all.py |
 | 4 | rag-indexer: RedisStateManager | [step-04](step-04-redis-state-manager.md) | ⬜ не начат | — | — |
 | 5 | rag-indexer: rebuild vault cache при старте | [step-05](step-05-vault-cache-rebuild.md) | ⬜ не начат | — | — |
 | 6 | rag-indexer: indexer_worker — убрать chunk_ids и broadcast | [step-06](step-06-indexer-worker.md) | ⬜ не начат | — | — |
@@ -56,3 +56,4 @@
 | — | — | Файл создан |
 | 2026-06-21 | 1 — Инфраструктура: Redis в docker-compose | ✅ Завершён. Добавлен redis:7-alpine (AOF, noeviction, rag-net), redis_data volume, REDIS_URL + depends_on redis в rag-indexer и rag-backend |
 | 2026-06-21 | 2 — shared_contracts: удалить chunk_ids | ✅ Завершён. Удалено поле chunk_ids из FileIndexState. Создан tests/shared_contracts/test_file_index_state.py |
+| 2026-06-21 | 3 — documents/all endpoint | ✅ Завершён. GET /api/v1/vaults/{vault_id}/documents/all в rag-indexer (отклонение от плана обосновано: db-api-server — LanceDB-only, без PostgreSQL). IndexerDBClient.get_all_documents() добавлен. Тесты: rag-indexer/tests/test_documents_all.py |
