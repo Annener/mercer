@@ -9,6 +9,16 @@ import fakeredis.aioredis as fakeredis
 
 from parser.state.redis_state_manager import RedisStateManager
 
+# Полный набор ключей, которые читает run_indexing из settings
+PLATFORM_SETTINGS = {
+    "chunking.chunk_size": 512,
+    "chunking.overlap": 64,
+    "chunking.entity_aware_mode": False,
+    "pdf_sidecar.url": "http://sidecar:8081",
+    "pdf_sidecar.timeout_seconds": "60",
+    "pdf_sidecar.fallback_to_pdfminer": "true",
+}
+
 
 @pytest.fixture
 def fake_redis():
@@ -50,7 +60,7 @@ def test_no_is_cancelled_sync_in_worker():
 
 @pytest.mark.asyncio
 async def test_cancel_before_processing(state_manager):
-    """Если задача отменена до запуска, worker должен завершиться со статусом cancelled."""
+    """Если задача отменена до запуска цикла, worker должен завершиться со статусом cancelled."""
     await state_manager.create_task(
         task_id="t1",
         vault_id="v1",
@@ -61,10 +71,13 @@ async def test_cancel_before_processing(state_manager):
     await state_manager.request_cancel("t1")
 
     db_client = AsyncMock()
-    db_client.get_platform_settings.return_value = {}
-    db_client.get_vault.return_value = {"enabled": True, "embedding_model_id": "em1",
-                                        "chunk_size": 512, "overlap": 64,
-                                        "entity_aware_mode": False, "domain_id": None}
+    # Полный набор ключей, run_indexing читает всё до проверки отмены
+    db_client.get_platform_settings.return_value = PLATFORM_SETTINGS
+    db_client.get_vault.return_value = {
+        "enabled": True, "embedding_model_id": "em1",
+        "chunk_size": 512, "overlap": 64,
+        "entity_aware_mode": False, "domain_id": None,
+    }
     db_client.get_embedding_model.return_value = {
         "model_id": "em1", "provider": "ollama", "model_name": "nomic",
         "base_url": "http://localhost:11434", "dimensions": 768,
@@ -73,27 +86,30 @@ async def test_cancel_before_processing(state_manager):
     }
     db_client.decrypt_api_key.return_value = ""
     db_client.update_vault_binding_status = AsyncMock()
+    # get_document_by_path должен быть доступен (для предварительного разделения skipped/new)
+    db_client.get_document_by_path.return_value = None
 
-    # Мокируем scan_vault чтобы он вернул файл
+    # scan_vault патчим напрямую; asyncio.to_thread не патчим —
+    # scan_vault уже заменён до run_indexing вызывает asyncio.to_thread(scan_vault, ...)
     with patch("indexer_worker.scan_vault", return_value=[{
         "relative_path": "doc.pdf", "path": "/data/vaults/v1/doc.pdf",
         "checksum": "abc123", "last_modified": 0, "extension": ".pdf",
     }]):
-        # create_task уже вызван выше, но run_indexing вызовет его снова —
-        # допускаем это (idempotent в redis, ключ просто перезаписывается)
-        with patch("indexer_worker.asyncio.to_thread", new_callable=AsyncMock):
-            from indexer_worker import run_indexing
-            await run_indexing(
-                task_id="t1",
-                vault_id="v1",
-                force_reindex=True,
-                db_client=db_client,
-                state_manager=state_manager,
-            )
+        from indexer_worker import run_indexing
+        await run_indexing(
+            task_id="t1",
+            vault_id="v1",
+            force_reindex=True,
+            db_client=db_client,
+            state_manager=state_manager,
+        )
 
     task_state = await state_manager.get_task_state("t1")
     assert task_state is not None
-    assert task_state["status"] == "cancelled"
+    assert task_state["status"] == "cancelled", (
+        f"Expected 'cancelled', got {task_state['status']!r}. "
+        "Check that request_cancel was set before run_indexing."
+    )
 
 
 @pytest.mark.asyncio
@@ -110,17 +126,11 @@ async def test_mark_file_indexed_called_after_success(state_manager):
     sm_spy = AsyncMock(wraps=state_manager)
 
     db_client = AsyncMock()
-    db_client.get_platform_settings.return_value = {
-        "chunking.chunk_size": 512, "chunking.overlap": 64,
-        "chunking.entity_aware_mode": False,
-        "pdf_sidecar.url": "http://sidecar",
-        "pdf_sidecar.timeout_seconds": "60",
-        "pdf_sidecar.fallback_to_pdfminer": "true",
-    }
+    db_client.get_platform_settings.return_value = PLATFORM_SETTINGS
     db_client.get_vault.return_value = {
         "enabled": True, "embedding_model_id": "em1",
         "chunk_size": None, "overlap": None,
-        "entity_aware_mode": None, "domain_id": None
+        "entity_aware_mode": None, "domain_id": None,
     }
     db_client.get_embedding_model.return_value = {
         "model_id": "em1", "provider": "ollama", "model_name": "nomic",
