@@ -38,9 +38,13 @@ class IndexerDBClient:
         return dict(row) if row is not None else None
 
     async def get_all_vaults(self) -> list[dict[str, Any]]:
-        """Возвращает все enabled vault'ы. Используется при rebuild_vault_cache."""
+        """Returns all enabled vaults. Used during rebuild_vault_cache on startup.
+
+        NOTE: vault_path is NOT a DB column — it is derived as
+        {VAULT_DATA_ROOT}/{vault_id} in the caller (main.py).
+        """
         rows = await self._fetch(
-            "SELECT vault_id, enabled, vault_path FROM vaults WHERE enabled = true"
+            "SELECT vault_id, enabled FROM vaults WHERE enabled = true"
         )
         return [dict(row) for row in rows]
 
@@ -134,11 +138,10 @@ class IndexerDBClient:
         )
 
     async def get_all_documents(self, vault_id: str) -> list[dict[str, Any]]:
-        """Возвращает все документы vault'а из PostgreSQL.
+        """Returns all documents for a vault from PostgreSQL.
 
-        Используется при rebuild_vault_cache для инициализации
-        vault:{vault_id}:files в Redis.
-        Поля: source_path, md5, mtime, status, indexed_at.
+        Used during rebuild_vault_cache to initialise vault:{vault_id}:files in Redis.
+        Fields: source_path, md5, mtime, status, indexed_at.
         """
         rows = await self._fetch(
             """
@@ -151,7 +154,7 @@ class IndexerDBClient:
         return [
             {
                 "source_path": row["source_path"],
-                "relative_path": row["source_path"],  # alias для rebuild_vault_cache
+                "relative_path": row["source_path"],  # alias for rebuild_vault_cache
                 "md5": row["md5"],
                 "mtime": row["mtime"],
                 "status": row["status"],

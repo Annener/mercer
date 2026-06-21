@@ -17,7 +17,6 @@ from app.websocket_manager import ConnectionManager
 from logging_config import setup_logging
 from parser.scanning.vault_scanner import scan_vault
 from parser.state.redis_state_manager import RedisStateManager
-from parser.state.state_manager import load_state
 from shared_contracts.models import StartIndexTaskRequest, StartIndexTaskResponse, TaskStateResponse
 
 
@@ -49,7 +48,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 state_manager,
                 db_client,
                 vault["vault_id"],
-                vault.get("vault_path") or f"{VAULT_DATA_ROOT}/{vault['vault_id']}",
+                # vault_path не хранится в БД — строим из VAULT_DATA_ROOT + vault_id
+                f"{VAULT_DATA_ROOT}/{vault['vault_id']}",
             )
             for vault in vaults
         ]
@@ -69,7 +69,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.ws_manager = ConnectionManager()
     app.state.indexer_service = IndexerService(
         db_client=db_client,
-        broadcaster=app.state.ws_manager.broadcast,
+        state_manager=state_manager,
     )
     logger.info("Service started. DB client connected. Redis ready.")
 
@@ -89,10 +89,10 @@ async def _rebuild_one_vault(
     vault_id: str,
     vault_path: str,
 ) -> None:
-    """Восстанавливает vault:{vault_id}:files в Redis.
+    """Rebuilds vault:{vault_id}:files in Redis.
 
-    Пропускает vault если директория не существует.
-    Ошибки логирует и не пробрасывает (вызывающий использует return_exceptions=True).
+    Skips vault if the directory does not exist on disk.
+    Errors are logged and re-raised so the caller handles them via return_exceptions=True.
     """
     if not os.path.isdir(vault_path):
         logger.warning(
@@ -146,16 +146,21 @@ async def cancel_index_task(task_id: str, request: Request) -> dict[str, bool | 
 
 
 @app.get("/api/v1/tasks/{task_id}/state", response_model=TaskStateResponse)
-async def get_task_state(task_id: str) -> TaskStateResponse:
-    state = await load_state(task_id)
-    if state is None:
+async def get_task_state(task_id: str, request: Request) -> TaskStateResponse:
+    state_manager: RedisStateManager = request.app.state.state_manager
+    raw = await state_manager.get_task_state(task_id)
+    if raw is None:
         raise HTTPException(status_code=404, detail="Task state not found")
-    return TaskStateResponse(task_id=state.task_id, vault_id=state.vault_id, status=state.status, state=state)
+    return TaskStateResponse(
+        task_id=raw["task_id"],
+        vault_id=raw["vault_id"],
+        status=raw["status"],
+    )
 
 
 @app.get("/tasks/{task_id}/state", response_model=TaskStateResponse)
-async def get_task_state_legacy(task_id: str) -> TaskStateResponse:
-    return await get_task_state(task_id)
+async def get_task_state_legacy(task_id: str, request: Request) -> TaskStateResponse:
+    return await get_task_state(task_id, request)
 
 
 @app.websocket("/api/v1/tasks/{task_id}/stream")
@@ -163,9 +168,6 @@ async def stream_task(task_id: str, websocket: WebSocket) -> None:
     manager = _ws_manager(websocket)
     await manager.connect(task_id, websocket)
     try:
-        state = await load_state(task_id)
-        if state is not None:
-            await websocket.send_json({"type": "snapshot", "state": state.model_dump(mode="json")})
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
@@ -179,11 +181,11 @@ async def get_vault_documents(
     vault_id: str,
     request: Request,
 ) -> list[dict[str, Any]]:
-    """Возвращает все документы vault'а из PostgreSQL.
+    """Returns all documents for a vault from PostgreSQL.
 
-    Используется rag-indexer при rebuild_vault_cache (шаг 5):
-    читает source_path, md5, mtime, status, indexed_at для
-    инициализации vault:{vault_id}:files в Redis.
+    Used by rag-indexer during rebuild_vault_cache (step 5):
+    reads source_path, md5, mtime, status, indexed_at to
+    initialise vault:{vault_id}:files in Redis.
     """
     db: IndexerDBClient = request.app.state.db_client
     return await db.get_all_documents(vault_id)
