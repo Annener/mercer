@@ -16,6 +16,7 @@ from app.api.db_management import router as db_management_router
 from app.api.indexer_state import router as indexer_state_router
 from app.api.pipeline_resume import router as pipeline_resume_router
 from app.api.settings import router as settings_router
+from app.api.watchdog_settings import router as watchdog_router
 from app.db.migrations import run_migrations
 from app.db.session import SessionLocal, dispose_engine
 from app.logging_config import setup_logging
@@ -71,6 +72,7 @@ app.include_router(config_router)
 app.include_router(settings_router, prefix="/api/settings", tags=["settings"])
 app.include_router(db_management_router)
 app.include_router(indexer_state_router)
+app.include_router(watchdog_router)
 
 # === Статика ===
 STATIC_DIR = Path(__file__).parent / "static"
