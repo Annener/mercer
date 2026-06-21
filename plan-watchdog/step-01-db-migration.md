@@ -49,7 +49,7 @@ docker compose exec postgres psql -U mercer -d mercer -c \
 """Add watchdog_auto_index_extensions to platform_settings.
 
 Revision ID: 0020_add_watchdog_setting
-Revises: 0019_pipeline_pause_state
+Revises: 0019
 Create Date: 2026-06-21
 
 Добавляет глобальную настройку watchdog-а: список расширений файлов,
@@ -63,7 +63,7 @@ from alembic import op
 import sqlalchemy as sa
 
 revision = "0020_add_watchdog_setting"
-down_revision = "0019_pipeline_pause_state"
+down_revision = "0019"
 branch_labels = None
 depends_on = None
 
@@ -120,7 +120,7 @@ docker compose exec postgres psql -U mercer -d mercer -c \
 ## Критерий готовности
 
 - [ ] Файл `0020_add_watchdog_setting.py` создан в `rag-backend/migrations/versions/`
-- [ ] `revision = "0020_add_watchdog_setting"`, `down_revision = "0019_pipeline_pause_state"`
+- [ ] `revision = "0020_add_watchdog_setting"`, `down_revision = "0019"`
 - [ ] `ON CONFLICT (key) DO NOTHING` присутствует в `upgrade()`
 - [ ] `downgrade()` удаляет запись по ключу
 - [ ] После `docker compose up` ключ виден в `SELECT`
