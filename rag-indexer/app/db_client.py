@@ -137,6 +137,31 @@ class IndexerDBClient:
             *params,
         )
 
+    async def delete_document(self, document_id: str) -> None:
+        """Deletes a document record from PostgreSQL by id.
+
+        NOTE: does NOT touch LanceDB — use StorageClient.delete_document() for that.
+        """
+        await self._execute(
+            "DELETE FROM documents WHERE id = $1",
+            document_id,
+        )
+
+    async def get_setting(self, key: str) -> Any:
+        """Returns the typed value of a platform_settings key.
+
+        Uses _cast_value() consistent with get_platform_settings().
+        Returns None if the key does not exist OR if value is an empty string
+        (because _cast_value returns `value or None` for value_type='str').
+        """
+        row = await self._fetchrow(
+            "SELECT value, value_type FROM platform_settings WHERE key = $1",
+            key,
+        )
+        if row is None:
+            return None
+        return self._cast_value(row["value"], row["value_type"])
+
     async def get_all_documents(self, vault_id: str) -> list[dict[str, Any]]:
         """Returns all documents for a vault from PostgreSQL.
 

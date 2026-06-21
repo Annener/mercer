@@ -262,6 +262,75 @@ class RedisStateManager:
 
         await self._r.hset(vault_key, relative_path, json.dumps(existing, ensure_ascii=False))
 
+    async def mark_file_pending(
+        self,
+        vault_id: str,
+        relative_path: str,
+    ) -> None:
+        """Sets index_status='pending' in vault:{vault_id}:files.
+
+        Preserves existing md5/indexed_md5/chunks_total fields.
+        Does NOT remove the file from vault cache.
+        """
+        vault_key = f"vault:{vault_id}:files"
+        existing_raw = await self._r.hget(vault_key, relative_path)
+        # Guard `!= "1"` защищает от нечаянного коллижена с сентинелом __empty__,
+        # который хранит значение "1" (аналогично mark_file_indexed).
+        if existing_raw and existing_raw != "1":
+            try:
+                existing = json.loads(existing_raw)
+            except json.JSONDecodeError:
+                existing = {}
+        else:
+            existing = {}
+
+        existing["index_status"] = "pending"
+        await self._r.hset(
+            vault_key, relative_path, json.dumps(existing, ensure_ascii=False)
+        )
+
+    async def remove_file_from_vault_cache(
+        self,
+        vault_id: str,
+        relative_path: str,
+    ) -> None:
+        """HDEL vault:{vault_id}:files relative_path."""
+        await self._r.hdel(f"vault:{vault_id}:files", relative_path)
+
+    async def get_vault_file_entry(
+        self,
+        vault_id: str,
+        relative_path: str,
+    ) -> dict[str, Any] | None:
+        """Returns parsed entry from vault:{vault_id}:files or None."""
+        raw = await self._r.hget(f"vault:{vault_id}:files", relative_path)
+        if not raw or raw == "1":
+            return None
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+
+    async def get_all_vault_file_entries(
+        self,
+        vault_id: str,
+    ) -> dict[str, dict[str, Any]]:
+        """Returns all file entries from vault:{vault_id}:files.
+
+        Skips the __empty__ sentinel.
+        Returns {relative_path: entry_dict}.
+        """
+        raw = await self._r.hgetall(f"vault:{vault_id}:files")
+        result: dict[str, dict[str, Any]] = {}
+        for path, value in raw.items():
+            if path == "__empty__":
+                continue
+            try:
+                result[path] = json.loads(value)
+            except json.JSONDecodeError:
+                result[path] = {"index_status": "unknown"}
+        return result
+
     async def get_vault_state(self, vault_id: str) -> dict[str, Any] | None:
         """Vозвращает все файлы + счётчики по статусам."""
         vault_key = f"vault:{vault_id}:files"
