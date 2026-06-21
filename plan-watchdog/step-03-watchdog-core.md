@@ -71,6 +71,23 @@ async def delete_document(self, document_id: str, vault_id: str) -> dict
 ```
 Делает `DELETE /index/document/{document_id}?vault_id=...` к `db-api-server`.
 
+### Структура vault-кэша в Redis
+
+`vault:{vault_id}:files` — HASH, ключ = `relative_path`, значение = JSON:
+```json
+{
+  "index_status": "indexed",
+  "indexed_md5": "...",
+  "md5": "...",
+  "chunks_total": 3
+}
+```
+
+> ⚠️ **Поле для сравнения checksums — `indexed_md5`**, а не `checksum_md5`.
+> `checksum_md5` существует только в `task:{task_id}:files` HASH (задачный контекст).
+> `mark_file_indexed` и `rebuild_vault_cache` пишут именно `indexed_md5` в vault-кэш.
+> Watchdog сравнивает: `disk_file["checksum"] != entry.get("indexed_md5", "")`.
+
 ## Что нужно создать / изменить
 
 ### Дополнительный метод в `RedisStateManager`
@@ -238,8 +255,11 @@ async def _process_vault(
         if entry is None:
             # Новый файл
             changed.append(disk_file)
-        elif disk_file["checksum"] != entry.get("checksum_md5", ""):
-            # Файл изменён (checksum_md5 — ключ из mark_file_indexed)
+        elif disk_file["checksum"] != entry.get("indexed_md5", ""):
+            # Файл изменён.
+            # indexed_md5 — поле vault:{vault_id}:files HASH, пишется в
+            # mark_file_indexed и rebuild_vault_cache. Не путать с
+            # checksum_md5, которое живёт только в task:{task_id}:files.
             changed.append(disk_file)
 
     if not changed:
