@@ -4,7 +4,6 @@ import asyncio
 import hashlib
 import logging
 import os
-from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from typing import Any
 
@@ -29,37 +28,21 @@ from parser.preprocessing.pdf_page_merger import (
 )
 from parser.preprocessing.preprocessor import preprocess
 from parser.scanning.vault_scanner import scan_vault
-from parser.state.state_manager import (
-    create_state,
-    load_last_successful_state,
-    load_state,
-    mark_task_cancelled,
-    mark_task_done,
-    save_last_successful_state,
-    update_file_status,
-)
+from parser.state.redis_state_manager import RedisStateManager
 from shared_contracts.models import (
-    FileIndexState,
-    IndexState,
     UpsertChunk,
     UpsertRequest,
-    WSFileChunkProgressMessage,
-    WSFileStatusMessage,
-    WSTaskCancelledMessage,
-    WSTaskCompleteMessage,
 )
 from storage.storage_client import StorageClient
 
 logger = logging.getLogger(__name__)
-
-BroadcastCallable = Callable[[str, dict[str, Any]], Awaitable[None]]
-CancelCallable = Callable[[str], bool]
 
 STORAGE_API_URL = os.getenv("STORAGE_API_URL", "http://db-api-server:8080")
 
 _AVG_WORD_LEN_CHARS = 6
 CHUNK_PROGRESS_REPORT_INTERVAL = 10
 _PARSING_HEARTBEAT_INTERVAL = 3.0
+CHECK_CANCEL_INTERVAL = 10  # проверять отмену каждые N чанков при эмбеддинге
 
 
 async def run() -> None:
@@ -71,12 +54,9 @@ async def run_indexing(
     vault_id: str,
     force_reindex: bool,
     db_client: IndexerDBClient,
-    is_cancelled: CancelCallable | None = None,
-    broadcast: BroadcastCallable | None = None,
+    state_manager: RedisStateManager,
 ) -> None:
-    is_cancelled = is_cancelled or (lambda _: False)
-    broadcast = broadcast or _noop_broadcast
-
+    """Основной воркер индексации. Использует RedisStateManager для хранения состояния."""
     try:
         settings = await db_client.get_platform_settings()
         vault = await db_client.get_vault(vault_id)
@@ -116,15 +96,15 @@ async def run_indexing(
             "fallback_to_pdfminer": bool(settings["pdf_sidecar.fallback_to_pdfminer"]),
         }
 
-        files = await asyncio.to_thread(scan_vault, vault_path)
+        all_files = await asyncio.to_thread(scan_vault, vault_path)
 
-        files_info: list[dict[str, Any]] = []
-        for f in files:
+        all_files_info: list[dict[str, Any]] = []
+        for f in all_files:
             relative_path = str(f.get("relative_path", "")).strip()
             if not relative_path:
                 logger.warning("Skipping file with missing relative_path: %s", f.get("path", "unknown"))
                 continue
-            files_info.append({
+            all_files_info.append({
                 "relative_path": relative_path,
                 "path": str(f["path"]),
                 "checksum": f["checksum"],
@@ -132,15 +112,38 @@ async def run_indexing(
                 "extension": str(f.get("extension", "")),
             })
 
-        await create_state(task_id, vault_id, files_info)
+        # Разделяем файлы на «нужно индексировать» и «пропустить»
+        new_and_changed: list[dict[str, Any]] = []
+        skipped_files: list[dict[str, Any]] = []
 
-        last_state = None if force_reindex else await load_last_successful_state(vault_id)
+        if not force_reindex:
+            for file_info in all_files_info:
+                relative_path = str(file_info.get("relative_path", ""))
+                md5 = file_info["checksum"]
+                mtime = int(file_info.get("last_modified") or 0)
+                doc = await db_client.get_document_by_path(vault_id, relative_path)
+                if doc is not None and doc["md5"] == md5 and doc["mtime"] == mtime and doc["status"] == "indexed":
+                    skipped_files.append(file_info)
+                else:
+                    new_and_changed.append(file_info)
+        else:
+            new_and_changed = all_files_info
+
+        # Создаём задачу в Redis
+        await state_manager.create_task(
+            task_id=task_id,
+            vault_id=vault_id,
+            files_to_index=[{"relative_path": f["relative_path"]} for f in new_and_changed],
+            files_skipped=len(skipped_files),
+            files_total=len(all_files_info),
+        )
+
         indexed_count = 0
         uploaded_document_ids: list[str] = []
 
-        for file_info in files_info:
-            if is_cancelled(task_id):
-                await _cancel_task(task_id, broadcast)
+        for file_info in new_and_changed:
+            if await state_manager.is_cancelled(task_id):
+                await state_manager.mark_task_cancelled(task_id)
                 return
 
             relative_path = str(file_info.get("relative_path", ""))
@@ -156,33 +159,8 @@ async def run_indexing(
             doc = await db_client.get_document_by_path(vault_id, relative_path)
 
             if doc is None:
-                # Новый файл — создаём запись
                 doc = await db_client.create_document(vault_id, relative_path, md5, mtime)
                 logger.info("New document registered: %s id=%s", relative_path, doc["id"])
-            elif not force_reindex and doc["md5"] == md5 and doc["mtime"] == mtime and doc["status"] == "indexed":
-                # Файл не изменился — пропускаем
-                logger.debug("Skipping unchanged file: %s", relative_path)
-                previous_file_state = _previous_file_state(last_state, relative_path)
-                await update_file_status(
-                    task_id,
-                    relative_path,
-                    status="done",
-                    progress_pct=100,
-                    chunk_ids=previous_file_state.chunk_ids if previous_file_state else [],
-                    chunks_total=len(previous_file_state.chunk_ids) if previous_file_state else 0,
-                    chunks_processed=len(previous_file_state.chunk_ids) if previous_file_state else 0,
-                    error=None,
-                )
-                indexed_count += 1
-                await _broadcast_chunk_progress(
-                    task_id,
-                    relative_path,
-                    "done",
-                    chunks_total=len(previous_file_state.chunk_ids) if previous_file_state else 0,
-                    chunks_processed=len(previous_file_state.chunk_ids) if previous_file_state else 0,
-                    broadcast=broadcast,
-                )
-                continue
             else:
                 # Файл изменился или force_reindex — удаляем старые чанки и переиндексируем
                 logger.info(
@@ -193,11 +171,10 @@ async def run_indexing(
                 await db_client.update_document_status(
                     str(doc["id"]), "pending", md5=md5, mtime=mtime
                 )
-                # Перечитываем doc с обновлёнными md5/mtime
                 doc = await db_client.get_document_by_path(vault_id, relative_path)
 
             try:
-                chunk_ids, _doc_id = await _process_file(
+                chunks_count, _doc_id = await _process_file(
                     task_id=task_id,
                     vault_id=vault_id,
                     file_info=file_info,
@@ -211,30 +188,27 @@ async def run_indexing(
                     entity_aware=bool(entity_aware),
                     parser_settings=parser_settings,
                     uploaded_document_ids=uploaded_document_ids,
-                    is_cancelled=is_cancelled,
-                    broadcast=broadcast,
+                    state_manager=state_manager,
                     db_client=db_client,
                 )
                 indexed_count += 1
-                await db_client.update_vault_chunk_count(vault_id, len(chunk_ids))
+                await state_manager.increment_files_done(task_id)
+                await state_manager.mark_file_indexed(vault_id, relative_path, md5, chunks_count)
+                await db_client.update_vault_chunk_count(vault_id, chunks_count)
             except asyncio.CancelledError:
-                await _cancel_task(task_id, broadcast)
+                await state_manager.mark_task_cancelled(task_id)
                 return
             except Exception as exc:
                 logger.warning("Failed to index file %s", relative_path, exc_info=True)
                 try:
-                    await update_file_status(
+                    await state_manager.update_file_stage(
                         task_id,
                         relative_path,
-                        status="error",
-                        progress_pct=100,
+                        stage="error",
                         error=str(exc),
                     )
                 except Exception as state_err:
                     logger.error("Failed to update state for %s: %s", relative_path, state_err)
-                await _broadcast_chunk_progress(
-                    task_id, relative_path, "error", broadcast=broadcast, error=str(exc)
-                )
                 if uploaded_document_ids:
                     logger.warning("Partial indexing detected. Rolling back documents: %s", uploaded_document_ids)
                     for document_id in uploaded_document_ids:
@@ -245,18 +219,12 @@ async def run_indexing(
                     await db_client.update_vault_binding_status(vault_id, "error")
                 raise
 
-        if is_cancelled(task_id):
-            await _cancel_task(task_id, broadcast)
+        if await state_manager.is_cancelled(task_id):
+            await state_manager.mark_task_cancelled(task_id)
             return
 
-        await mark_task_done(task_id)
+        await state_manager.mark_task_done(task_id)
         await db_client.update_vault_binding_status(vault_id, "bound")
-        final_state = await load_state(task_id)
-        if final_state is not None:
-            await save_last_successful_state(final_state)
-        await _broadcast_task_complete(
-            task_id, files_total=len(files_info), files_indexed=indexed_count, broadcast=broadcast
-        )
         logger.info("Indexing task completed: task_id=%s vault_id=%s", task_id, vault_id)
 
     except Exception as exc:
@@ -266,12 +234,7 @@ async def run_indexing(
             logger.warning("Failed to update vault status after indexing error: vault_id=%s", vault_id, exc_info=True)
         logger.error("Indexing task failed: task_id=%s vault_id=%s", task_id, vault_id, exc_info=True)
         try:
-            if await load_state(task_id) is None:
-                await create_state(task_id, vault_id, [])
-            await mark_task_done(task_id, error=str(exc))
-            partial_state = await load_state(task_id)
-            if partial_state is not None:
-                await save_last_successful_state(partial_state)
+            await state_manager.mark_task_done(task_id, error=str(exc))
         except Exception:
             logger.warning("Failed to mark task as error: %s", task_id, exc_info=True)
 
@@ -306,32 +269,32 @@ async def _process_file(
     entity_aware: bool,
     parser_settings: dict[str, Any],
     uploaded_document_ids: list[str],
-    is_cancelled: CancelCallable,
-    broadcast: BroadcastCallable,
+    state_manager: RedisStateManager,
     db_client: IndexerDBClient,
-) -> tuple[list[str], str]:
+) -> tuple[int, str]:
+    """Обрабатывает один файл. Возвращает (chunks_count, pg_document_id)."""
     absolute_path = str(file_info["path"])
     relative_path = str(file_info.get("relative_path", ""))
-    # document_id в LanceDB = UUID из таблицы documents
     pg_document_id = str(doc["id"])
 
-    await _ensure_not_cancelled(task_id, is_cancelled)
-    await update_file_status(task_id, relative_path, "parsing", 10)
-    await _broadcast_chunk_progress(task_id, relative_path, "parsing", broadcast=broadcast)
+    if await state_manager.is_cancelled(task_id):
+        raise asyncio.CancelledError
+
+    await state_manager.update_file_stage(task_id, relative_path, stage="parsing")
 
     parsed = await _parse_file_with_progress(
         absolute_path,
         str(file_info.get("extension", "")),
         task_id=task_id,
         relative_path=relative_path,
-        broadcast=broadcast,
-        is_cancelled=is_cancelled,
+        state_manager=state_manager,
         parser_settings=parser_settings,
     )
 
-    await _ensure_not_cancelled(task_id, is_cancelled)
-    await update_file_status(task_id, relative_path, "chunking", 35)
-    await _broadcast_chunk_progress(task_id, relative_path, "chunking", broadcast=broadcast)
+    if await state_manager.is_cancelled(task_id):
+        raise asyncio.CancelledError
+
+    await state_manager.update_file_stage(task_id, relative_path, stage="chunking")
 
     base_metadata: dict[str, Any] = dict(parsed.get("metadata") or {})
     base_metadata.update({
@@ -359,11 +322,10 @@ async def _process_file(
 
     if not text_for_chunking.strip():
         logger.warning("No text extracted from file: %s", relative_path)
-        await update_file_status(task_id, relative_path, "empty", 100, chunk_ids=[])
-        await _broadcast_chunk_progress(task_id, relative_path, "empty", broadcast=broadcast)
+        await state_manager.update_file_stage(task_id, relative_path, stage="empty")
         await db_client.update_document_status(pg_document_id, "indexed",
                                                 indexed_at=datetime.now(tz=timezone.utc))
-        return [], pg_document_id
+        return 0, pg_document_id
 
     if entity_aware:
         chunks, _entities = await asyncio.to_thread(
@@ -388,11 +350,10 @@ async def _process_file(
 
     if not chunks:
         logger.warning("No valid chunks generated for file: %s", relative_path)
-        await update_file_status(task_id, relative_path, "empty", 100, chunk_ids=[])
-        await _broadcast_chunk_progress(task_id, relative_path, "empty", broadcast=broadcast)
+        await state_manager.update_file_stage(task_id, relative_path, stage="empty")
         await db_client.update_document_status(pg_document_id, "indexed",
                                                 indexed_at=datetime.now(tz=timezone.utc))
-        return [], pg_document_id
+        return 0, pg_document_id
 
     for idx, chunk in enumerate(chunks):
         source_hint = f"{relative_path}:chunk_{idx}"
@@ -404,11 +365,10 @@ async def _process_file(
     chunks = [c for c in chunks if c.text.strip()]
     if not chunks:
         logger.warning("All chunks empty after preprocessing: %s", relative_path)
-        await update_file_status(task_id, relative_path, "empty", 100, chunk_ids=[])
-        await _broadcast_chunk_progress(task_id, relative_path, "empty", broadcast=broadcast)
+        await state_manager.update_file_stage(task_id, relative_path, stage="empty")
         await db_client.update_document_status(pg_document_id, "indexed",
                                                 indexed_at=datetime.now(tz=timezone.utc))
-        return [], pg_document_id
+        return 0, pg_document_id
 
     if is_pdf:
         _assign_page_numbers_and_headers(chunks, page_offsets, placed_headings)
@@ -428,27 +388,25 @@ async def _process_file(
         if headers:
             chunk.metadata["headers"] = headers
 
-    await _ensure_not_cancelled(task_id, is_cancelled)
-    await update_file_status(
-        task_id, relative_path, "indexing", 65,
-        chunks_total=len(chunks), chunks_processed=0,
-    )
-    await _broadcast_chunk_progress(
-        task_id, relative_path, "indexing",
-        chunks_total=len(chunks), chunks_processed=0, broadcast=broadcast,
+    if await state_manager.is_cancelled(task_id):
+        raise asyncio.CancelledError
+
+    await state_manager.update_file_stage(
+        task_id, relative_path, stage="indexing",
+        chunks_total=len(chunks), chunks_done=0,
     )
 
     vectors = await _embed_chunks(
         chunks, embedding_model, provider,
         task_id=task_id, file_path=relative_path,
-        broadcast=broadcast, is_cancelled=is_cancelled,
+        state_manager=state_manager,
     )
     if len(vectors) != len(chunks):
         raise ValueError("Embedding provider returned an unexpected number of vectors.")
 
     upsert_chunks = [
         UpsertChunk(
-            document_id=pg_document_id,  # UUID из PostgreSQL documents.id
+            document_id=pg_document_id,
             chunk_index=index,
             text=chunk.text,
             vector=vectors[index],
@@ -464,25 +422,18 @@ async def _process_file(
         raise ValueError(f"Failed to upsert chunk indices: {response.failed_indices}")
     uploaded_document_ids.append(pg_document_id)
 
-    # Обновляем статус в PostgreSQL
     await db_client.update_document_status(
         pg_document_id,
         "indexed",
         indexed_at=datetime.now(tz=timezone.utc),
     )
 
-    chunk_ids = [f"{pg_document_id}_{index}" for index in range(len(upsert_chunks))]
-    await update_file_status(
-        task_id, relative_path, "done", 100,
-        chunk_ids=chunk_ids,
-        chunks_total=len(chunks),
-        chunks_processed=len(chunks),
+    await state_manager.update_file_stage(
+        task_id, relative_path, stage="done",
+        chunks_total=len(chunks), chunks_done=len(chunks),
+        checksum_md5=file_info["checksum"],
     )
-    await _broadcast_chunk_progress(
-        task_id, relative_path, "done",
-        chunks_total=len(chunks), chunks_processed=len(chunks), broadcast=broadcast,
-    )
-    return chunk_ids, pg_document_id
+    return len(chunks), pg_document_id
 
 
 def _assign_page_numbers_and_headers(
@@ -519,8 +470,7 @@ async def _parse_file_with_progress(
     extension: str,
     task_id: str,
     relative_path: str,
-    broadcast: BroadcastCallable,
-    is_cancelled: CancelCallable | None = None,
+    state_manager: RedisStateManager,
     parser_settings: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     parse_task = asyncio.ensure_future(
@@ -533,12 +483,10 @@ async def _parse_file_with_progress(
                     asyncio.shield(parse_task), timeout=_PARSING_HEARTBEAT_INTERVAL
                 )
             except asyncio.TimeoutError:
-                if is_cancelled is not None and is_cancelled(task_id):
+                if await state_manager.is_cancelled(task_id):
                     parse_task.cancel()
                     raise asyncio.CancelledError
-                await _broadcast_chunk_progress(
-                    task_id, relative_path, "parsing", broadcast=broadcast
-                )
+                # heartbeat — просто ждём дальше
             except asyncio.CancelledError:
                 parse_task.cancel()
                 raise
@@ -553,8 +501,7 @@ async def _embed_chunks(
     provider: EmbeddingProvider,
     task_id: str | None = None,
     file_path: str | None = None,
-    broadcast: BroadcastCallable | None = None,
-    is_cancelled: CancelCallable | None = None,
+    state_manager: RedisStateManager | None = None,
 ) -> list[list[float]]:
     vectors: list[list[float]] = []
 
@@ -565,13 +512,13 @@ async def _embed_chunks(
     embed_start_time = asyncio.get_event_loop().time()
 
     for index, chunk in enumerate(chunks):
-        if is_cancelled is not None and task_id is not None and is_cancelled(task_id):
-            raise asyncio.CancelledError
+        # Проверяем отмену каждые CHECK_CANCEL_INTERVAL чанков
+        if state_manager is not None and task_id is not None and index % CHECK_CANCEL_INTERVAL == 0:
+            if await state_manager.is_cancelled(task_id):
+                raise asyncio.CancelledError
 
         embedding_text = chunk.metadata.get("embedding_text", chunk.text)
 
-        # W01 fix: provider.embed() может вернуть пустой список или список с пустым вектором
-        # (dimension mismatch, network error после retry, etc.).
         result = await provider.embed([embedding_text])
         vector = result[0] if result else []
         if not vector:
@@ -595,22 +542,6 @@ async def _embed_chunks(
             logger.info(
                 "Embedding progress: file=%s %d/%d chunks (%.1f c/s, ETA ~%.0fs)",
                 file_path or "?", processed_count, len(chunks), rate, eta,
-            )
-
-        if (
-            broadcast is not None
-            and task_id is not None
-            and file_path is not None
-            and (
-                processed_count % CHUNK_PROGRESS_REPORT_INTERVAL == 0
-                or processed_count == len(chunks)
-            )
-        ):
-            await _broadcast_chunk_progress(
-                task_id, file_path, "indexing",
-                chunks_total=len(chunks),
-                chunks_processed=processed_count,
-                broadcast=broadcast,
             )
 
     logger.info(
@@ -656,80 +587,9 @@ def _build_provider(embedding_model: EmbeddingModelConfig, api_key: str = "") ->
     raise ValueError(f"Unsupported embedding provider: {embedding_model.provider}")
 
 
-def _previous_file_state(
-    last_state: IndexState | None, relative_path: str
-) -> FileIndexState | None:
-    if last_state is None:
-        return None
-    return last_state.files.get(relative_path)
-
-
-def _should_skip(previous: FileIndexState | None, current_checksum: str) -> str | None:
-    if previous is None:
-        return None
-    if previous.status in ("done", "indexed"):
-        if previous.checksum_md5 == current_checksum:
-            return f"already indexed (status={previous.status})"
-        return None
-    if previous.status == "empty":
-        if previous.checksum_md5 == current_checksum:
-            return "previously empty, checksum unchanged"
-        return None
-    return None
-
-
 def _document_id(vault_id: str, relative_path: str) -> str:
     digest = hashlib.sha256(f"{vault_id}:{relative_path}".encode("utf-8")).hexdigest()[:16]
     return f"doc{digest}"
 
 
 document_id = _document_id
-
-
-async def _ensure_not_cancelled(task_id: str, is_cancelled: CancelCallable) -> None:
-    if is_cancelled(task_id):
-        raise asyncio.CancelledError
-
-
-async def _cancel_task(task_id: str, broadcast: BroadcastCallable) -> None:
-    await mark_task_cancelled(task_id)
-    event = WSTaskCancelledMessage(task_id=task_id)
-    await broadcast(task_id, event.model_dump(mode="json"))
-
-
-async def _broadcast_chunk_progress(
-    task_id: str,
-    file_path: str,
-    stage: str,
-    chunks_total: int = 0,
-    chunks_processed: int = 0,
-    broadcast: BroadcastCallable | None = None,
-    error: str | None = None,
-) -> None:
-    if broadcast is None:
-        return
-    event = WSFileChunkProgressMessage(
-        task_id=task_id,
-        file_path=file_path,
-        stage=stage,  # type: ignore[arg-type]
-        chunks_total=chunks_total,
-        chunks_processed=chunks_processed,
-        error=error,
-    )
-    await broadcast(task_id, event.model_dump(mode="json"))
-
-
-async def _broadcast_task_complete(
-    task_id: str,
-    files_total: int,
-    files_indexed: int,
-    broadcast: BroadcastCallable,
-) -> None:
-    event = WSTaskCompleteMessage(
-        task_id=task_id, files_total=files_total, files_indexed=files_indexed
-    )
-    await broadcast(task_id, event.model_dump(mode="json"))
-
-
-async def _noop_broadcast(_task_id: str, _message: dict[str, Any]) -> None:
-    return None
