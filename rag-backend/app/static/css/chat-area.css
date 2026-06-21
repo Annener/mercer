@@ -336,7 +336,7 @@
 }
 
 .retry-btn::before {
-    content: '↩';
+    content: '\21A9';
     font-size: 14px;
 }
 
@@ -378,4 +378,40 @@
     background: #ffe8a1;
     border-color: #c98a00;
     color: #5a4000;
+}
+
+/* === Pending files banner (step-07) === */
+.pending-banner {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.5rem 1rem;
+    background: var(--color-warning-highlight, #fff3cd);
+    border-bottom: 1px solid var(--color-warning, #e0a800);
+    font-size: 0.875rem;
+}
+
+.pending-banner__text {
+    flex: 1;
+    color: var(--color-text, #333);
+}
+
+.pending-banner__btn {
+    padding: 0.25rem 0.75rem;
+    background: var(--color-primary, #01696f);
+    color: #fff;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.875rem;
+    transition: background 0.15s;
+}
+
+.pending-banner__btn:hover {
+    background: var(--color-primary-hover, #0c4e54);
+}
+
+.pending-banner__btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
 }
