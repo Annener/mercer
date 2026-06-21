@@ -23,244 +23,252 @@
 Текущий чат загружается через `chatAPI.getChat(chatId)` и хранится в
 `chatManager.currentChat`. Поле `chat.domain_id` содержит идентификатор домена.
 
-### API endpoint
+### Архитектура `ChatManager`
 
-```
-GET /api/v1/domains/{domain_id}/pending-files
-→ { domain_id, total_pending, vaults: [{vault_id, pending_count}] }
-```
+- Конструктор собирает все DOM-элементы через `getElementById`.
+- `loadChat(chatId)` → устанавливает `this.currentChat` → вызывает `setupContextBar(chat)`.
+- `reset()` → вызывается при деселекте чата, скрывает UI.
+- Все DOM-элементы уже существуют к моменту `DOMContentLoaded`.
 
-Endpoint определён в `rag-backend/app/api/watchdog_settings.py` (этап 5).
-Он проксируется через `rag-backend` — дополнительных запросов к `rag-indexer`
-напрямую с фронтенда не требуется.
+## Что нужно создать / изменить
 
-## Что нужно сделать
+### 1. `rag-backend/app/static/js/pending-banner.js`
 
-### Новый файл `rag-backend/app/static/js/pending-banner.js`
+Новый файл — класс `PendingFilesBanner`.
 
-```js
+```javascript
 /**
- * PendingFilesBanner — баннер pending-файлов для чата.
+ * PendingFilesBanner
  *
- * Архитектура: vanilla JS класс, аналогично ChatManager.
- * Polling раз в POLL_MS миллисекунд.
- * Баннер показывается только если total_pending > 0.
+ * Показывает/скрывает баннер с количеством pending-файлов домена.
+ * Polling каждые 30 секунд пока есть pending-файлы.
+ *
+ * Использование:
+ *   const banner = new PendingFilesBanner('chat-banner-area');
+ *   banner.setDomain('domain-42', 'domain-42'); // запускает polling
+ *   banner.destroy();                            // останавливает polling, убирает DOM
  */
 class PendingFilesBanner {
-  constructor(container) {
-    this._container = container;  // DOM-элемент, куда вставляется баннер
-    this._domainId = null;
-    this._onStartIndex = null;
-    this._timer = null;
-    this._el = null;
-    this._starting = false;
-    this.POLL_MS = 30_000;
-  }
-
-  /**
-   * Устанавливает домен и коллбэк запуска индексации.
-   * Вызывать при каждой смене чата (в ChatManager.loadChat).
-   * @param {string|null} domainId
-   * @param {() => Promise<void>} onStartIndex
-   */
-  setDomain(domainId, onStartIndex) {
-    this._domainId = domainId;
-    this._onStartIndex = onStartIndex;
-    this._startPolling();
-  }
-
-  /** Останавливает polling (вызвать при уничтожении чата / смене страницы). */
-  destroy() {
-    clearInterval(this._timer);
-    this._timer = null;
-    if (this._el) {
-      this._el.remove();
-      this._el = null;
+    /**
+     * @param {string} containerId  — id контейнера, куда вставляется баннер
+     */
+    constructor(containerId) {
+        this._container = document.getElementById(containerId);
+        this._el = null;       // DOM-элемент баннера
+        this._timer = null;    // setInterval handle
+        this._domainId = null;
     }
-  }
 
-  // --- private ---
-
-  _startPolling() {
-    clearInterval(this._timer);
-    this._el?.remove();
-    this._el = null;
-    if (!this._domainId) return;
-    this._poll();  // немедленный первый запрос
-    this._timer = setInterval(() => this._poll(), this.POLL_MS);
-  }
-
-  async _poll() {
-    if (!this._domainId) return;
-    try {
-      const res = await fetch(`/api/v1/domains/${this._domainId}/pending-files`);
-      if (!res.ok) return;
-      const data = await res.json();
-      this._render(data.total_pending || 0);
-    } catch {
-      // сеть недоступна — баннер не трогаем
+    /**
+     * Устанавливает домен и запускает polling.
+     * Передача null останавливает polling и скрывает баннер.
+     *
+     * @param {string|null} domainId
+     */
+    setDomain(domainId) {
+        this._domainId = domainId;
+        this._startPolling();
     }
-  }
 
-  _render(count) {
-    if (count === 0) {
-      if (this._el) { this._el.remove(); this._el = null; }
-      return;
+    /**
+     * Останавливает polling и удаляет DOM-элемент баннера.
+     * Вызывается из ChatManager.reset().
+     */
+    destroy() {
+        this._stopPolling();
+        if (this._el) {
+            this._el.remove();
+            this._el = null;
+        }
+        this._domainId = null;
     }
-    if (!this._el) {
-      this._el = document.createElement('div');
-      this._el.className = 'pending-banner';
-      this._container.prepend(this._el);
-    }
-    // Склонение для русского языка: 1 → файл, 2-4 → файла, 5+ → файлов
-    const label = _pendingLabel(count);
-    this._el.innerHTML = `
-      <span>› ${label} ожидают индексации</span>
-      <button class="pending-banner__btn"${this._starting ? ' disabled' : ''}>
-        ${this._starting ? 'Запуск…' : 'Запустить индексацию'}
-      </button>`;
-    this._el.querySelector('.pending-banner__btn').onclick = () => this._handleStart();
-  }
 
-  async _handleStart() {
-    if (this._starting || !this._onStartIndex) return;
-    this._starting = true;
-    this._render(1);  // перерисовка с disabled-кнопкой
-    try {
-      await this._onStartIndex();
-      this._render(0);
-    } catch (e) {
-      console.error('PendingFilesBanner: indexing start failed', e);
-    } finally {
-      this._starting = false;
-      this._poll();
+    _startPolling() {
+        this._stopPolling();
+        if (!this._domainId) {
+            this._hide();
+            return;
+        }
+        // Немедленный первый запрос, затем каждые 30 с
+        this._poll();
+        this._timer = setInterval(() => this._poll(), 30_000);
     }
-  }
-}
 
-/**
- * Русское склонение: «1 файл», «2 файла», «5 файлов».
- * @param {number} n
- * @returns {string}
- */
-function _pendingLabel(n) {
-  const mod10 = n % 10;
-  const mod100 = n % 100;
-  let form;
-  if (mod100 >= 11 && mod100 <= 19) {
-    form = 'файлов';
-  } else if (mod10 === 1) {
-    form = 'файл';
-  } else if (mod10 >= 2 && mod10 <= 4) {
-    form = 'файла';
-  } else {
-    form = 'файлов';
-  }
-  return `${n} ${form}`;
+    _stopPolling() {
+        if (this._timer !== null) {
+            clearInterval(this._timer);
+            this._timer = null;
+        }
+    }
+
+    async _poll() {
+        if (!this._domainId) return;
+        try {
+            const res = await fetch(`/api/v1/domains/${encodeURIComponent(this._domainId)}/pending-files`);
+            if (!res.ok) return;
+            const data = await res.json();
+            if (data.total_pending > 0) {
+                this._show(data.total_pending);
+            } else {
+                this._hide();
+                // Нет pending — polling больше не нужен до следующего setDomain
+                this._stopPolling();
+            }
+        } catch (_) {
+            // Сетевая ошибка — молча игнорируем, попробуем на следующем тике
+        }
+    }
+
+    _show(count) {
+        if (!this._container) return;
+        const label = this._pendingLabel(count);
+        if (!this._el) {
+            this._el = document.createElement('div');
+            this._el.className = 'pending-banner';
+            this._el.innerHTML = `
+                <span class="pending-banner__text"></span>
+                <button class="pending-banner__btn" type="button">Запустить индексацию</button>
+            `;
+            this._el.querySelector('.pending-banner__btn').addEventListener('click', () => this._triggerIndex());
+            this._container.appendChild(this._el);
+        }
+        this._el.querySelector('.pending-banner__text').textContent = label;
+        this._el.style.display = '';
+    }
+
+    _hide() {
+        if (this._el) this._el.style.display = 'none';
+    }
+
+    async _triggerIndex() {
+        if (!this._domainId) return;
+        const btn = this._el?.querySelector('.pending-banner__btn');
+        if (btn) {
+            btn.disabled = true;
+            btn.textContent = 'Запускается…';
+        }
+        try {
+            const res = await fetch(
+                `/api/v1/domains/${encodeURIComponent(this._domainId)}/index`,
+                { method: 'POST' },
+            );
+            if (res.ok) {
+                // Перезапускаем polling — indexer начал работу
+                this._startPolling();
+            }
+        } catch (_) {
+            // ignore
+        } finally {
+            if (btn) {
+                btn.disabled = false;
+                btn.textContent = 'Запустить индексацию';
+            }
+        }
+    }
+
+    /**
+     * Возвращает строку с правильным склонением:
+     * «1 файл ожидает индексации», «3 файла…», «5 файлов…»
+     */
+    _pendingLabel(n) {
+        const mod100 = n % 100;
+        const mod10  = n % 10;
+        let form;
+        if (mod100 >= 11 && mod100 <= 19) {
+            form = 'файлов';
+        } else if (mod10 === 1) {
+            form = 'файл';
+        } else if (mod10 >= 2 && mod10 <= 4) {
+            form = 'файла';
+        } else {
+            form = 'файлов';
+        }
+        return `${n} ${form} ожидает индексации`;
+    }
 }
 ```
 
-### CSS в `rag-backend/app/static/css/main.css` (или отдельный файл)
+### 2. Изменения в `rag-backend/app/static/js/chat.js`
+
+#### 2a. Конструктор `ChatManager` — добавить после `this.initEventListeners()`
+
+```javascript
+// Баннер pending-файлов (step-07)
+this.pendingBanner = new PendingFilesBanner('chat-banner-area');
+```
+
+#### 2b. Метод `setupContextBar` — добавить в конец, после pipeline-логики
+
+```javascript
+// Запускаем / переключаем polling баннера
+if (this.pendingBanner) {
+    this.pendingBanner.setDomain(chat.domain_id || null);
+}
+```
+
+#### 2c. Метод `reset()` — добавить перед `this.currentChatId = null`
+
+> ⚠️ Используем `destroy()`, а **не** `setDomain(null)`.
+> `destroy()` останавливает polling **и** удаляет DOM-элемент баннера,
+> предотвращая утечку: при повторном открытии чата `setDomain()` создаст новый `_el`.
+
+```javascript
+if (this.pendingBanner) {
+    this.pendingBanner.destroy();
+}
+```
+
+### 3. HTML — добавить `#chat-banner-area` в `chat.html`
+
+Вставить **перед** `#messages-container`:
+
+```html
+<!-- Баннер pending-files (step-07) -->
+<div id="chat-banner-area"></div>
+```
+
+### 4. CSS — добавить стили баннера
+
+В файл стилей чата (`chat.css` или `main.css`):
 
 ```css
 .pending-banner {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 8px 16px;
-  background: var(--color-warning-highlight, #fff8e1);
-  border-left: 4px solid var(--color-warning, #f59e0b);
-  border-radius: 4px;
-  font-size: 0.9rem;
-  margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.5rem 1rem;
+    background: var(--color-warning-highlight, #fff3cd);
+    border-bottom: 1px solid var(--color-warning, #e0a800);
+    font-size: 0.875rem;
 }
+
+.pending-banner__text {
+    flex: 1;
+    color: var(--color-text, #333);
+}
+
 .pending-banner__btn {
-  padding: 4px 12px;
-  background: var(--color-warning, #f59e0b);
-  color: #fff;
-  border: none;
-  border-radius: 4px;
-  cursor: pointer;
+    padding: 0.25rem 0.75rem;
+    background: var(--color-primary, #01696f);
+    color: #fff;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.875rem;
 }
+
 .pending-banner__btn:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
+    opacity: 0.6;
+    cursor: not-allowed;
 }
 ```
 
-### Интеграция в `ChatManager` (`chat.js`)
+### 5. Подключение скрипта
 
-#### 1. Инициализация в конструкторе
-
-```js
-// В конструкторе ChatManager, после this.initEventListeners():
-const bannerContainer = document.getElementById('chat-banner-area');
-this.pendingBanner = bannerContainer
-  ? new PendingFilesBanner(bannerContainer)
-  : null;
-```
-
-> `#chat-banner-area` — новый `<div>` в шаблоне чата, добавляется над областью сообщений.
-> Если элемент не найден, баннер молча отключается (безопасный fallback).
-
-#### 2. Запуск polling при загрузке чата
-
-В `ChatManager.loadChat()`, после `await this.setupContextBar(data.chat)`:
-
-```js
-if (this.pendingBanner) {
-  this.pendingBanner.setDomain(
-    data.chat.domain_id || null,
-    () => this._startIndexingForDomain(data.chat.domain_id),
-  );
-}
-```
-
-#### 3. Метод запуска индексации
-
-```js
-/**
- * Запускает индексацию всех vault-ов домена через rag-backend.
- * rag-backend проксирует задачу в rag-indexer.
- * @param {string} domainId
- */
-async _startIndexingForDomain(domainId) {
-  const res = await fetch(`/api/v1/domains/${domainId}/index`, { method: 'POST' });
-  if (!res.ok) throw new Error(`Indexing start failed: ${res.status}`);
-}
-```
-
-> ⚠️ Endpoint `POST /api/v1/domains/{domain_id}/index` должен быть добавлен
-> в `rag-backend/app/api/watchdog_settings.py` или отдельный роутер.
-> Реализация: получает все vault-ы домена из PG и отправляет
-> `POST /api/v1/tasks` в `rag-indexer` для каждого vault.
-
-#### 4. Остановка при сбросе чата
-
-В `ChatManager.reset()`:
-
-```js
-if (this.pendingBanner) {
-  this.pendingBanner.setDomain(null, null);
-}
-```
-
-### HTML-шаблон (`chat.html`)
-
-Добавить перед контейнером сообщений:
-
-```html
-<div id="chat-banner-area"></div>
-<div id="messages-container"></div>
-```
-
-### Порядок подключения скриптов
-
-`pending-banner.js` должен быть загружен **до** `chat.js`:
+В `chat.html` добавить **до** `chat.js`:
 
 ```html
 <script src="/static/js/pending-banner.js"></script>
-<script src="/static/js/chat.js"></script>
 ```
 
 ## Файлы для создания / изменения
@@ -268,22 +276,20 @@ if (this.pendingBanner) {
 | Файл | Действие |
 |---|---|
 | `rag-backend/app/static/js/pending-banner.js` | Создать |
-| `rag-backend/app/static/css/main.css` | `+.pending-banner` стили |
-| `rag-backend/app/static/js/chat.js` | `+PendingFilesBanner` в конструкторе, `+setDomain` в `loadChat`, `+_startIndexingForDomain`, `+setDomain(null)` в `reset` |
-| `rag-backend/app/static/chat.html` | `+<div id="chat-banner-area">` перед `#messages-container` |
+| `rag-backend/app/static/js/chat.js` | `+pendingBanner` в конструкторе, `setupContextBar`, `reset()` |
+| `rag-backend/app/templates/chat.html` | `+#chat-banner-area` div, `+<script>` тег |
+| `rag-backend/app/static/css/chat.css` (или `main.css`) | `+.pending-banner` стили |
 
-## Открытые зависимости
+## Зависимости
 
-- `POST /api/v1/domains/{domain_id}/index` — endpoint запуска индексации по домену.
-  Если он отсутствует, добавить в `step-05` или создать `step-05b`.
-  Логика: `GET vaults WHERE domain_id=X` → `POST /api/v1/tasks` (rag-indexer) для каждого vault.
+- Этап 5: `GET /api/v1/domains/{domain_id}/pending-files` и `POST /api/v1/domains/{domain_id}/index` должны быть зарегистрированы.
 
 ## Критерий готовности
 
-- [ ] Баннер виден только при `total_pending > 0`
-- [ ] Polling останавливается при `setDomain(null)` / `destroy()`
-- [ ] При смене чата (смене `domain_id`) polling перезапускается
-- [ ] Кнопка заблокирована во время запуска (`disabled`)
-- [ ] Корректное склонение: 1 файл / 2 файла / 5 файлов
-- [ ] `pending-banner.js` загружается до `chat.js`
+- [ ] Баннер появляется при открытии чата с доменом, у которого есть pending-файлы
+- [ ] Баннер скрыт если pending = 0
+- [ ] Кнопка вызывает `POST /api/v1/domains/{domain_id}/index`
+- [ ] Polling останавливается когда pending = 0
+- [ ] `reset()` вызывает `destroy()` — polling останавливается, DOM очищается
+- [ ] Нет утечки таймеров при переключении между чатами
 - [ ] `STATUS.md` обновлён: этап 7 → ✅

@@ -2,13 +2,15 @@
 
 ## Цель
 
-Добавить три эндпоинта в `rag-backend`:
+Добавить пять эндпоинтов в `rag-backend`:
 - `GET  /api/v1/settings/watchdog` — читает настройку из PG
 - `PATCH /api/v1/settings/watchdog` — сохраняет настройку в PG
 - `GET  /api/v1/vaults/{vault_id}/pending-files` — читает `vault:{vault_id}:files` из Redis
   и возвращает файлы со статусом `pending` (per-vault, для внутреннего использования)
 - `GET  /api/v1/domains/{domain_id}/pending-files` — **агрегирующий endpoint** для фронтенда:
   суммирует `pending`-файлы по всем vault-ам домена
+- `POST /api/v1/domains/{domain_id}/index` — **запускает индексацию** всех `pending`-файлов
+  домена: отправляет задачи в очередь rag-indexer через Redis
 
 ## Контекст из кодовой базы
 
@@ -45,6 +47,16 @@ app.include_router(settings_router, prefix="/api/settings", tags=["settings"])
 Новый `watchdog_router` использует `prefix="/api/v1"` — конфликта нет.
 Перед регистрацией проверьте: нет ли в `settings_router` маршрута `/watchdog`.
 
+### Механизм запуска индексации через Redis
+
+`rag-indexer` слушает очередь `indexer:queue` (Redis List, `LPUSH` / `BRPOP`).
+Каждое задание — JSON-объект:
+```json
+{"vault_id": "<id>", "path": "<relative/path/to/file>"}
+```
+Endpoint `POST /domains/{domain_id}/index` собирает все pending-файлы домена
+и кладёт по одному заданию в очередь через `LPUSH indexer:queue <json>`.
+
 ## Что нужно создать
 
 ### `rag-backend/app/api/watchdog_settings.py`
@@ -66,6 +78,7 @@ from app.db.session import get_db
 router = APIRouter(prefix="/api/v1", tags=["watchdog"])
 
 SETTING_KEY = "watchdog_auto_index_extensions"
+_INDEXER_QUEUE = "indexer:queue"
 
 
 # ------------------------------------------------------------------
@@ -99,6 +112,11 @@ class DomainPendingFilesResponse(BaseModel):
     domain_id: str
     total_pending: int
     vaults: list[dict]  # [{vault_id, pending_count}]
+
+
+class IndexResponse(BaseModel):
+    domain_id: str
+    queued: int  # количество задач, отправленных в очередь
 
 
 # ------------------------------------------------------------------
@@ -208,7 +226,6 @@ async def get_domain_pending_files(
     then reads each vault's Redis cache and sums pending counts.
     Used by the frontend pending-files banner in the chat.
     """
-    # Получаем все vault_id домена из PG
     result = await db.execute(
         text("SELECT vault_id FROM vaults WHERE domain_id = :domain_id"),
         {"domain_id": domain_id},
@@ -240,6 +257,52 @@ async def get_domain_pending_files(
         total_pending=total_pending,
         vaults=vaults_summary,
     )
+
+
+# ------------------------------------------------------------------
+# POST /api/v1/domains/{domain_id}/index  (запуск индексации pending-файлов)
+# ------------------------------------------------------------------
+
+@router.post("/domains/{domain_id}/index", response_model=IndexResponse)
+async def trigger_domain_index(
+    domain_id: str,
+    request: Request,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> IndexResponse:
+    """Queues indexing tasks for all pending files across the domain's vaults.
+
+    For each vault in the domain:
+    1. Reads vault:{vault_id}:files HASH from Redis.
+    2. Collects paths with index_status='pending'.
+    3. Pushes one JSON task per file to 'indexer:queue' via LPUSH.
+
+    Returns the total number of tasks queued.
+    Does NOT wait for indexing to complete — fire-and-forget.
+    """
+    result = await db.execute(
+        text("SELECT vault_id FROM vaults WHERE domain_id = :domain_id"),
+        {"domain_id": domain_id},
+    )
+    vault_ids = [row[0] for row in result.fetchall()]
+
+    r = request.app.state.redis
+    queued = 0
+
+    for vault_id in vault_ids:
+        raw: dict[str, str] = await r.hgetall(f"vault:{vault_id}:files")
+        for path, value in raw.items():
+            if path == "__empty__":
+                continue
+            try:
+                entry = json.loads(value)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if entry.get("index_status") == "pending":
+                task = json.dumps({"vault_id": vault_id, "path": path})
+                await r.lpush(_INDEXER_QUEUE, task)
+                queued += 1
+
+    return IndexResponse(domain_id=domain_id, queued=queued)
 ```
 
 ### Регистрация роутера в `rag-backend/app/main.py`
@@ -292,7 +355,6 @@ def mock_db():
 
 
 async def test_get_watchdog_settings_default(mock_db):
-    # fetchone() возвращает None — должен вернуть значения по умолчанию
     result_mock = MagicMock()
     result_mock.fetchone.return_value = None
     mock_db.execute.return_value = result_mock
@@ -323,7 +385,7 @@ async def test_patch_watchdog_settings(mock_db):
                 r = await c.patch("/api/v1/settings/watchdog", json=payload)
         assert r.status_code == 200
         assert ".txt" in r.json()["auto_index_extensions"]
-        mock_db.commit.assert_awaited_once()  # commit должен быть вызван
+        mock_db.commit.assert_awaited_once()
     finally:
         app.dependency_overrides.clear()
 
@@ -340,7 +402,7 @@ async def test_patch_invalid_extension(mock_db):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
                 r = await c.patch("/api/v1/settings/watchdog", json=payload)
         assert r.status_code == 422
-        mock_db.commit.assert_not_awaited()  # commit не должен вызываться при ошибке
+        mock_db.commit.assert_not_awaited()
     finally:
         app.dependency_overrides.clear()
 
@@ -363,13 +425,11 @@ async def test_get_pending_files():
 
 
 async def test_get_domain_pending_files(mock_db):
-    # PG возвращает два vault-а для домена
     result_mock = MagicMock()
     result_mock.fetchall.return_value = [("vault-1",), ("vault-2",)]
     mock_db.execute.return_value = result_mock
 
     mock_redis = AsyncMock()
-    # vault-1: 2 pending, vault-2: 0 pending
     async def hgetall_side(key):
         if key == "vault:vault-1:files":
             return {
@@ -398,6 +458,49 @@ async def test_get_domain_pending_files(mock_db):
         assert vault_map["vault-2"] == 0
     finally:
         app.dependency_overrides.clear()
+
+
+async def test_post_domain_index(mock_db):
+    """POST /domains/{domain_id}/index queues tasks for pending files only."""
+    result_mock = MagicMock()
+    result_mock.fetchall.return_value = [("vault-1",), ("vault-2",)]
+    mock_db.execute.return_value = result_mock
+
+    mock_redis = AsyncMock()
+    async def hgetall_side(key):
+        if key == "vault:vault-1:files":
+            return {
+                "a.md": json.dumps({"index_status": "pending"}),
+                "b.md": json.dumps({"index_status": "indexed"}),
+            }
+        if key == "vault:vault-2:files":
+            return {
+                "c.md": json.dumps({"index_status": "pending"}),
+                "__empty__": "1",
+            }
+        return {}
+    mock_redis.hgetall.side_effect = hgetall_side
+    mock_redis.lpush = AsyncMock()
+
+    app.dependency_overrides[get_db] = lambda: mock_db
+    try:
+        with patch("redis.asyncio.from_url", return_value=mock_redis):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+                r = await c.post("/api/v1/domains/dnd/index")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["queued"] == 2           # a.md + c.md
+        assert data["domain_id"] == "dnd"
+        assert mock_redis.lpush.await_count == 2
+        # Проверяем что b.md (indexed) и __empty__ не попали в очередь
+        queued_tasks = [
+            json.loads(call.args[1])
+            for call in mock_redis.lpush.call_args_list
+        ]
+        paths = {t["path"] for t in queued_tasks}
+        assert paths == {"a.md", "c.md"}
+    finally:
+        app.dependency_overrides.clear()
 ```
 
 ## Критерий готовности
@@ -407,5 +510,7 @@ async def test_get_domain_pending_files(mock_db):
 - [ ] `PATCH` вызывает `db.commit()` после `execute`
 - [ ] `GET /api/v1/vaults/{vault_id}/pending-files` — читает Redis, игнорирует `__empty__`
 - [ ] `GET /api/v1/domains/{domain_id}/pending-files` — агрегирует по всем vault-ам домена из PG + Redis
+- [ ] `POST /api/v1/domains/{domain_id}/index` — кладёт в `indexer:queue` по одной задаче на каждый pending-файл, возвращает `{queued: N}`
+- [ ] `POST /index` не трогает `indexed`-файлы и не падает на `__empty__`
 - [ ] unit-тесты проходят
 - [ ] `STATUS.md` обновлён: этап 5 → ✅
