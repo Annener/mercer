@@ -18,7 +18,7 @@
 | 3 | db-api-server: новый endpoint documents/all | [step-03](step-03-db-api-server.md) | ✅ завершён | feat(rag-indexer): add GET /api/v1/vaults/{vault_id}/documents/all (step-03) | Точка доступа в rag-indexer (арх. решение) |
 | 4 | rag-indexer: RedisStateManager | [step-04](step-04-redis-state-manager.md) | ✅ завершён | feat(rag-indexer): add RedisStateManager, replace JSON state_manager (step-04) | Новый parser/state/redis_state_manager.py. redis[asyncio]>=5.0 в requirements.txt |
 | 5 | rag-indexer: rebuild vault cache при старте | [step-05](step-05-vault-cache-rebuild.md) | ✅ завершён | feat(rag-indexer): rebuild vault cache on startup via RedisStateManager (step-05) | get_all_vaults() добавлен в db_client. _rebuild_one_vault: skip missing path, gather+return_exceptions. app.state.state_manager сет. Тесты: test_startup_vault_rebuild.py |
-| 6 | rag-indexer: indexer_worker — убрать chunk_ids и broadcast | [step-06](step-06-indexer-worker.md) | ⬜ не начат | — | — |
+| 6 | rag-indexer: indexer_worker — убрать chunk_ids и broadcast | [step-06](step-06-indexer-worker.md) | ✅ завершён | ef3d737 | run_indexing принимает state_manager: RedisStateManager. Убран broadcast, is_cancelled-callable, WS-модели, JSON state_manager. Добавлены mark_file_indexed, increment_files_done, check_cancel в embed loop. Тесты: tests/rag_indexer/test_indexer_worker.py |
 | 7 | rag-indexer: indexer_service — async cancel, убрать broadcaster | [step-07](step-07-indexer-service.md) | ⬜ не начат | — | — |
 | 8 | rag-indexer: удалить WebSocket | [step-08](step-08-remove-websocket.md) | ⬜ не начат | — | — |
 | 9 | rag-backend: Redis client + polling endpoint | [step-09-10](step-09-10-rag-backend.md) | ⬜ не начат | — | — |
@@ -28,7 +28,7 @@
 ## Статусы
 - ⬜ не начат
 - 🔄 в работе
-- ✅ завершّён
+- ✅ завершён
 - ❌ заблокирован (причина в примечаниях)
 
 ## Зависимости между этапами
@@ -59,3 +59,4 @@
 | 2026-06-21 | 3 | ✅ GET /api/v1/vaults/{vault_id}/documents/all в rag-indexer |
 | 2026-06-21 | 4 | ✅ RedisStateManager: task/vault HASH, cancel, active_tasks SET |
 | 2026-06-21 | 5 | ✅ rebuild_vault_cache при старте: get_all_vaults + _rebuild_one_vault + gather. get_all_vaults() добавлен в db_client. Отклонение: _rebuild_one_vault пробрасывает исключение (caller перехватывает через return_exceptions=True) |
+| 2026-06-21 | 6 | ✅ indexer_worker: run_indexing → state_manager: RedisStateManager. Удалены broadcast, is_cancelled callable, WS-модели, JSON state_manager импорты. increment_files_done + mark_file_indexed после каждого файла. CHECK_CANCEL_INTERVAL в embed loop. Тесты: tests/rag_indexer/test_indexer_worker.py |
