@@ -1,3 +1,9 @@
+"""DEPRECATED: заменён RedisStateManager (этап 4).
+
+Оставлен временно: импорты из этого модуля ещё используются
+в app/main.py и indexer_service.py (этапы 6-8 заменят эти вызовы).
+Не добавлять новых вызовов к этому модулю.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -92,11 +98,6 @@ async def save_last_successful_state(state: IndexState) -> None:
 
 
 async def create_state(task_id: str, vault_id: str, files_info: list[dict]) -> IndexState:
-    """
-    Создаёт состояние задачи индексации.
-    ВАЖНО: файлы регистрируются с ключом = relative_path (не абсолютный path),
-    для консистентности с update_file_status и остальным кодом.
-    """
     files: dict[str, FileIndexState] = {}
     for file_info in files_info:
         relative_path = str(file_info.get("relative_path", "")).strip()
@@ -105,7 +106,6 @@ async def create_state(task_id: str, vault_id: str, files_info: list[dict]) -> I
 
         files[relative_path] = FileIndexState(
             checksum_md5=str(file_info["checksum"]),
-            chunk_ids=[],
             status="pending",
             progress_pct=0,
             chunks_total=0,
@@ -138,18 +138,14 @@ async def update_file_status(
         "error",
         "cancelled",
         "empty",
-        "indexed",  # back-compat с V2.1
+        "indexed",
     ],
-    progress_pct: int = 0,  # deprecated, оставляем для back-compat
+    progress_pct: int = 0,
     chunk_ids: list[str] | None = None,
     error: str | None = None,
     chunks_total: int | None = None,
     chunks_processed: int | None = None,
 ) -> None:
-    """
-    Обновляет статус файла в состоянии задачи.
-    file_path должен быть relative_path (относительный путь внутри vault).
-    """
     async with _state_lock:
         state = _read_state_unlocked(task_id)
         if state is None or state.task_id != task_id:
@@ -163,7 +159,7 @@ async def update_file_status(
         file_state.progress_pct = progress_pct
         file_state.error = error
         if chunk_ids is not None:
-            file_state.chunk_ids = chunk_ids
+            file_state.chunk_ids = []
         if chunks_total is not None:
             file_state.chunks_total = chunks_total
         if chunks_processed is not None:

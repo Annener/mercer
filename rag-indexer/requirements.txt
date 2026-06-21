@@ -8,4 +8,5 @@ pdfminer.six
 pdf2image
 pillow
 pytesseract
+redis[asyncio]>=5.0
 uvicorn[standard]
