@@ -46,6 +46,21 @@ services:
       retries: 3
     logging: *default-logging
 
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy noeviction
+    volumes:
+      - redis_data:/data
+    networks:
+      - rag-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    logging: *default-logging
+
   rag-indexer:
     build:
       context: .
@@ -57,6 +72,7 @@ services:
       DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://raguser:changeme@rag-db:5432/ragplatform}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY}
       STORAGE_API_URL: ${STORAGE_API_URL:-http://db-api-server:8080}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
     # ports не пробрасываем наружу — rag-indexer внутренний сервис,
     # доступен только через rag-backend (proxy) внутри rag-net
     volumes:
@@ -66,6 +82,8 @@ services:
       - ./logs:/app/logs
     depends_on:
       db-api-server:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     networks:
       - rag-net
@@ -89,6 +107,7 @@ services:
       STORAGE_API_URL: ${STORAGE_API_URL:-http://db-api-server:8080}
       INDEXER_API_URL: ${INDEXER_API_URL:-http://rag-indexer:9000}
       SERVICE_PORT: "8000"
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
     ports:
       - "8000:8000"
     volumes:
@@ -99,6 +118,8 @@ services:
       rag-db:
         condition: service_healthy
       db-api-server:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     networks:
       - rag-net
@@ -112,3 +133,6 @@ services:
 networks:
   rag-net:
     driver: bridge
+
+volumes:
+  redis_data:

@@ -13,7 +13,7 @@
 
 | # | Название | Файл с деталями | Статус | Коммит | Примечания |
 |---|---|---|---|---|---|
-| 1 | Инфраструктура: Redis в docker-compose | [step-01](step-01-docker-compose.md) | ⬜ не начат | — | — |
+| 1 | Инфраструктура: Redis в docker-compose | [step-01](step-01-docker-compose.md) | ✅ завершён | feat(infra): add Redis service to docker-compose (step-01) | Сеть rag-net, redis:7-alpine, AOF, noeviction, REDIS_URL в rag-indexer и rag-backend |
 | 2 | shared_contracts: удалить chunk_ids | [step-02](step-02-shared-contracts.md) | ⬜ не начат | — | — |
 | 3 | db-api-server: новый endpoint documents/all | [step-03](step-03-db-api-server.md) | ⬜ не начат | — | — |
 | 4 | rag-indexer: RedisStateManager | [step-04](step-04-redis-state-manager.md) | ⬜ не начат | — | — |
@@ -54,3 +54,4 @@
 | Дата | Этап | Действие |
 |---|---|---|
 | — | — | Файл создан |
+| 2026-06-21 | 1 — Инфраструктура: Redis в docker-compose | ✅ Завершён. Добавлен redis:7-alpine (AOF, noeviction, rag-net), redis_data volume, REDIS_URL + depends_on redis в rag-indexer и rag-backend |
