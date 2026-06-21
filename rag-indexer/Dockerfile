@@ -13,6 +13,9 @@ RUN uv pip install --system -e /app/shared_contracts
 COPY rag-indexer/requirements.txt /app/requirements.txt
 RUN uv pip install --system -r /app/requirements.txt
 
+COPY rag-indexer/requirements-dev.txt /app/requirements-dev.txt
+RUN uv pip install --system -r /app/requirements-dev.txt
+
 FROM python:3.13-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1
@@ -45,8 +48,9 @@ COPY rag-indexer/config_loader.py /app/config_loader.py
 COPY rag-indexer/logging_config.py /app/logging_config.py
 COPY rag-indexer/indexer_worker.py /app/indexer_worker.py
 COPY rag-indexer/tests /app/tests
+COPY rag-indexer/pytest.ini /app/pytest.ini
 
-RUN find /usr/local/lib/python3.13/site-packages -type d \( -name __pycache__ -o -name tests \) -prune -exec rm -rf {} + \
+RUN find /usr/local/lib/python3.13/site-packages -type d \( -name __pycache__ \) -prune -exec rm -rf {} + \
     && find /usr/local/lib/python3.13/site-packages -type f -name "*.pyc" -delete \
     && rm -rf /usr/local/lib/python3.13/site-packages/pip* \
     && rm -rf /usr/local/lib/python3.13/site-packages/uv \
