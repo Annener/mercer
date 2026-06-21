@@ -334,6 +334,8 @@ class ChatManager {
         this.currentChat = null;
         this._lastUserMessage = null;
         this.initEventListeners();
+        // Баннер pending-файлов (step-07)
+        this.pendingBanner = new PendingFilesBanner('chat-banner-area');
     }
 
     // -------------------------------------------------------
@@ -666,6 +668,11 @@ class ChatManager {
                 ? `${LOCK_ICON_CLOSED}<span>Авто: выкл</span>`
                 : `${LOCK_ICON_OPEN}<span>Авто</span>`;
         }
+
+        // Запускаем / переключаем polling баннера (step-07)
+        if (this.pendingBanner) {
+            this.pendingBanner.setDomain(chat.domain_id || null);
+        }
     }
 
     async togglePipelineLock() {
@@ -794,6 +801,10 @@ class ChatManager {
     }
 
     reset() {
+        // Останавливаем polling баннера и удаляем DOM-элемент (step-07)
+        if (this.pendingBanner) {
+            this.pendingBanner.destroy();
+        }
         this.currentChatId = null;
         this.clearMessages();
         this.inputArea.style.display = 'none';
