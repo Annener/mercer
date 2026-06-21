@@ -1,9 +1,11 @@
 from __future__ import annotations
 import logging
+import os
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
+import redis.asyncio as aioredis
 import uvicorn
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
@@ -11,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from app.api.chat import router as chat_router
 from app.api.config_api import router as config_router
 from app.api.db_management import router as db_management_router
+from app.api.indexer_state import router as indexer_state_router
 from app.api.pipeline_resume import router as pipeline_resume_router
 from app.api.settings import router as settings_router
 from app.db.migrations import run_migrations
@@ -28,6 +31,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     setup_logging("backend")
     app.state.settings_service = settings_service
     app.state.domain_service = domain_service
+
+    # Redis client — читаем напрямую, без RedisStateManager (он живёт в rag-indexer)
+    redis_client = aioredis.from_url(
+        os.getenv("REDIS_URL", "redis://redis:6379"),
+        decode_responses=True,
+    )
+    app.state.redis = redis_client
+
     try:
         async with SessionLocal() as db:
             await settings_service.load_settings(db)
@@ -47,6 +58,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        await redis_client.aclose()
         await dispose_engine()
         logger.info("Service stopped.")
 
@@ -58,6 +70,7 @@ app.include_router(pipeline_resume_router)  # Stage 5: pipeline_confirm + pipeli
 app.include_router(config_router)
 app.include_router(settings_router, prefix="/api/settings", tags=["settings"])
 app.include_router(db_management_router)
+app.include_router(indexer_state_router)
 
 # === Статика ===
 STATIC_DIR = Path(__file__).parent / "static"

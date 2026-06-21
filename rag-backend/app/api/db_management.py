@@ -7,7 +7,7 @@ import uuid
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,16 +16,6 @@ from starlette.responses import HTMLResponse
 from app.db.models import AuditLog, Document, Vault
 from app.db.session import get_db
 from shared_contracts.models import ChunkRecord, DocumentRecord, SearchHit
-
-# Попытка импорта websockets для прокси
-try:
-    from websockets import connect
-    from websockets.exceptions import ConnectionClosed
-    WEBSOCKETS_AVAILABLE = True
-except ImportError:
-    WEBSOCKETS_AVAILABLE = False
-    import warnings
-    warnings.warn("websockets library not installed. WebSocket proxy will not work. Run: pip install websockets")
 
 logger = logging.getLogger(__name__)
 
@@ -155,9 +145,7 @@ async def delete_document(
         _raise_upstream(response)
         payload = response.json()
 
-    # 2. Синхронизируем таблицу documents в Postgres — удаляем запись по (id, vault_id).
-    #    Если запись отсутствует — DELETE молча ничего не делает (идемпотентно).
-    #    Если document_id не является валидным UUID — логируем предупреждение и пропускаем.
+    # 2. Синхронизируем таблицу documents в Postgres
     try:
         doc_uuid = uuid.UUID(document_id)
         await db.execute(
@@ -171,13 +159,10 @@ async def delete_document(
     except Exception:
         logger.warning("delete_document: failed to delete from documents table: document_id=%s vault_id=%s", document_id, vault_id, exc_info=True)
 
-    # 3. Пересчитываем chunk_count vault'а по актуальным данным из storage
+    # 3. Пересчитываем chunk_count vault'а
     try:
         docs_response = await _fetch_documents_for_vault(vault_id)
         new_total = sum(int(doc.get("chunk_count", 0)) for doc in docs_response)
-        # B02 fix: Vault.id — UUID (internal PK), vault_id — строковый slug.
-        # db.get(Vault, vault_id) передавал slug как UUID → DataError.
-        # Используем select по Vault.vault_id.
         vault = await _get_vault_by_slug(db, vault_id)
         if vault is not None:
             vault.chunk_count = new_total
@@ -206,22 +191,12 @@ async def reindex_vault(vault_id: str, req: ReindexRequest | None = None) -> dic
 
 
 # === Index Tasks API ===
-# Согласно спецификации V3.0: /index-tasks/* (не /indexer/tasks/*.）
 
 @router.delete("/index-tasks/{task_id}")
 async def cancel_index_task(task_id: str) -> dict[str, Any]:
     """Отмена задачи индексации. Проксирует запрос к rag-indexer."""
     async with httpx.AsyncClient(base_url=INDEXER_API_URL, timeout=10) as client:
         response = await client.post(f"/api/v1/tasks/{task_id}/cancel")
-        _raise_upstream(response)
-        return response.json()
-
-
-@router.get("/index-tasks/{task_id}/state")
-async def get_index_task_state(task_id: str) -> dict[str, Any]:
-    """Получить состояние задачи индексации. Проксирует запрос к rag-indexer."""
-    async with httpx.AsyncClient(base_url=INDEXER_API_URL, timeout=10) as client:
-        response = await client.get(f"/api/v1/tasks/{task_id}/state")
         _raise_upstream(response)
         return response.json()
 
@@ -235,7 +210,6 @@ async def detach_vault(vault_id: str, db: AsyncSession = Depends(get_db)) -> dic
         _raise_upstream(response)
         payload = response.json()
 
-    # B02 fix: та же проблема — db.get(Vault, vault_id) падает на строковом slug.
     vault = await _get_vault_by_slug(db, vault_id)
     if vault is not None:
         vault.binding_status = "unbound"
@@ -245,44 +219,6 @@ async def detach_vault(vault_id: str, db: AsyncSession = Depends(get_db)) -> dic
     await db.commit()
     logger.info("Detached vault: vault_id=%s deleted_count=%s", vault_id, payload.get("deleted_count"))
     return {"status": "ok", "vault_id": vault_id, "storage": payload}
-
-
-# === WebSocket Proxy для прогресса индексации ===
-# Согласно спецификации V3.0: /ws/index-tasks/{task_id} (не /ws/indexer/tasks/.../stream)
-
-@router.websocket("/ws/index-tasks/{task_id}")
-async def websocket_index_task_proxy(websocket: WebSocket, task_id: str):
-    """
-    Проксирует WebSocket поток от rag-indexer к клиенту.
-    Клиент подключается к этому эндпоинту вместо прямого соединения с indexer.
-    """
-    await websocket.accept()
-    
-    if not WEBSOCKETS_AVAILABLE:
-        await websocket.send_text('{"error": "WebSocket proxy not available (websockets library missing)"}')
-        await websocket.close()
-        return
-
-    indexer_ws_url = f"ws://rag-indexer:9000/api/v1/tasks/{task_id}/stream"
-    
-    try:
-        async with connect(indexer_ws_url) as indexer_ws:
-            while True:
-                message = await indexer_ws.recv()
-                await websocket.send_text(message)
-    except ConnectionClosed:
-        logger.info("WebSocket connection closed for task %s", task_id)
-    except Exception as e:
-        logger.error("WebSocket proxy error for task %s: %s", task_id, e, exc_info=True)
-        try:
-            await websocket.send_text(f'{{"error": "{str(e)}"}}')
-        except:
-            pass
-    finally:
-        try:
-            await websocket.close()
-        except:
-            pass
 
 
 # === Вспомогательные функции ===

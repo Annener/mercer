@@ -5,6 +5,7 @@ fastapi
 httpx
 pydantic-settings
 pyyaml
+redis[asyncio]>=5.0
 sqlalchemy[asyncio]>=2.0
 uvicorn[standard]
 psycopg2-binary
