@@ -30,12 +30,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 ```
 
 `VAULT_DATA_ROOT` и `REDIS_URL` уже читаются из `os.getenv`.
-Нужно добавить новые env-переменные: `WATCHDOG_INTERVAL_SEC` (default `"60"`)
-и `STORAGE_API_URL` (default `"http://db-api-server:8080"`).
+Нужно добавить новую env-переменную: `WATCHDOG_INTERVAL_SEC` (default `"60"`).
 
 > ⚠️ `asyncio` уже импортирован в `main.py` — добавлять его повторно не нужно.
-> `STORAGE_API_URL` читается внутри lifespan (а не на уровне модуля),
-> чтобы env читался уже после загрузки `.env` / docker-compose.
+> `STORAGE_API_URL` уже присутствует в `docker-compose.yml` и `.env.example` —
+> добавлять его не нужно, читается внутри lifespan через `os.getenv`.
 
 ## Что нужно сделать
 
@@ -100,41 +99,45 @@ finally:
     logger.info("Service stopped.")
 ```
 
-### Изменения в `docker-compose.yml` / `.env.example`
+### Изменения в `docker-compose.yml`
 
-Добавить в секцию `rag-indexer` новые env-переменные:
+Добавить в секцию `rag-indexer` только новую переменную:
 
 ```yaml
 environment:
   WATCHDOG_INTERVAL_SEC: "60"
-  STORAGE_API_URL: "http://db-api-server:8080"
 ```
 
-И в `.env.example`:
+> ✅ `STORAGE_API_URL` уже присутствует в `docker-compose.yml` — добавлять не нужно.
+
+### Изменения в `.env.example`
+
+Добавить только новую переменную:
 
 ```
 # Vault Watchdog
 WATCHDOG_INTERVAL_SEC=60
-STORAGE_API_URL=http://db-api-server:8080
 ```
+
+> ✅ `STORAGE_API_URL` уже присутствует в `.env.example` — добавлять не нужно.
 
 ## Файлы для изменения
 
 | Файл | Действие |
 |---|---|
 | `rag-indexer/app/main.py` | `+import watchdog_loop`, `+import StorageClient`, `+storage_client`, `+watchdog_task` в lifespan, `+cancel` в finally |
-| `docker-compose.yml` | `+WATCHDOG_INTERVAL_SEC`, `+STORAGE_API_URL` в rag-indexer env |
-| `.env.example` | `+WATCHDOG_INTERVAL_SEC=60`, `+STORAGE_API_URL=...` |
+| `docker-compose.yml` | `+WATCHDOG_INTERVAL_SEC: "60"` в rag-indexer env |
+| `.env.example` | `+WATCHDOG_INTERVAL_SEC=60` |
 
 ## ✅ Unit-тесты
-
-Unit-тесты lifespan сложны без полного ASGITransport + реальных зависимостей.
-Достаточно проверить два аспекта: `watchdog_loop` корректно
-останавливается по `CancelledError` и вызывает `_run_once` хотя бы один раз.
 
 ```
 rag-indexer/tests/test_watchdog_lifespan.py
 ```
+
+Unit-тесты lifespan сложны без полного ASGITransport + реальных зависимостей.
+Достаточно проверить два аспекта: `watchdog_loop` корректно
+останавливается по `CancelledError` и вызывает `_run_once` хотя бы один раз.
 
 > ⚠️ Обязательно добавить `pytestmark = pytest.mark.asyncio` на уровне модуля.
 
@@ -167,7 +170,6 @@ async def test_watchdog_loop_stops_on_cancel():
     )
     await asyncio.sleep(0)  # даём loop запуститься
     task.cancel()
-    # wait_for бросит CancelledError наружу — перехватываем явно.
     try:
         await asyncio.wait_for(task, timeout=1.0)
     except (asyncio.CancelledError, asyncio.TimeoutError):
@@ -217,6 +219,6 @@ async def test_watchdog_loop_calls_run_once():
 - [ ] `watchdog_task` инициализирован `None` перед `create_task`
 - [ ] `watchdog_task` создаётся после `indexer_service` в lifespan
 - [ ] В `finally` есть `if watchdog_task is not None: watchdog_task.cancel()` + `await` в try/except CancelledError
-- [ ] `WATCHDOG_INTERVAL_SEC` и `STORAGE_API_URL` есть в docker-compose + .env.example
+- [ ] `WATCHDOG_INTERVAL_SEC` добавлен в docker-compose и `.env.example`
 - [ ] unit-тесты проходят
 - [ ] `STATUS.md` обновлён: этап 4 → ✅
