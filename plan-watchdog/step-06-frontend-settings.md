@@ -38,9 +38,17 @@
 Предопределённый список расширений: `.md`, `.pdf`, `.docx`, `.txt`, `.rst`, `.html`.
 Дополнительно пользователь может ввести любое своё расширение.
 
+> ℹ️ **Намеренное ограничение**: watchdog физически обрабатывает только `.md` и `.pdf`
+> (см. `SUPPORTED_EXTENSIONS` в `vault_watchdog.py`). Остальные расширения в этом списке
+> зарезервированы для будущего расширения — UI намеренно показывает их все.
+
 ## Что нужно сделать
 
 ### 1. `rag-backend/app/static/js/api.js` — добавить два метода в класс `chatAPI`
+
+> ⚠️ **Зависимость от step-05**: URL `/api/v1/settings/watchdog` должен точно совпадать
+> с path, зарегистрированным в роутере `rag-backend/app/api/settings/watchdog.py`.
+> Если в step-05 путь изменится — обновить оба метода ниже синхронно.
 
 ```js
 // Watchdog settings
@@ -64,6 +72,10 @@ async saveWatchdogSettings(extensions) {
 ### 2. `rag-backend/app/static/js/settings/tab-indexing.js` — создать новый файл
 
 Паттерн идентичен `tab-params.js`: mixin-объект + `Object.assign`.
+
+> ℹ️ **Пост-рендер хук не нужен**: данные загружаются внутри `renderIndexingTab()` напрямую
+> через `this.api.getWatchdogSettings()`. Не добавлять отдельный `loadIndexingData()` по
+> аналогии с `documents` — это приведёт к двойному запросу к API.
 
 ```js
 const INDEXING_KNOWN_EXTENSIONS = ['.md', '.pdf', '.docx', '.txt', '.rst', '.html'];
@@ -215,7 +227,7 @@ case 'indexing': await this.handleIndexingAction(action, id, btn); break;
 <button data-tab="indexing">Индексация</button>
 ```
 
-**4b. Добавить `<script>` тег`** после `tab-documents.js` и **обязательно после `settings.js`**:
+**4b. Добавить `<script>` тег** после `tab-documents.js` и **обязательно после `settings.js`**:
 ```html
 <script src="/static/js/settings/tab-indexing.js"></script>
 ```
