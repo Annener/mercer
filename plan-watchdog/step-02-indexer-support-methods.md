@@ -78,7 +78,8 @@ async def get_setting(self, key: str) -> Any:
     """Returns the typed value of a platform_settings key.
 
     Uses _cast_value() consistent with get_platform_settings().
-    Returns None if the key does not exist.
+    Returns None if the key does not exist OR if value is an empty string
+    (because _cast_value returns `value or None` for value_type='str').
     """
     row = await self._fetchrow(
         "SELECT value, value_type FROM platform_settings WHERE key = $1",
@@ -89,8 +90,9 @@ async def get_setting(self, key: str) -> Any:
     return self._cast_value(row["value"], row["value_type"])
 ```
 
-> ⚠️ Возвращает `None` (а не `""`), если ключ отсутствует. Вызывающий код
-> **обязан** проверять на `None` перед использованием.
+> ⚠️ Возвращает `None` как если ключ отсутствует, **так и если value — пустая строка**
+> (это поведение `_cast_value` при `value_type='str'`: `return value or None`).
+> Вызывающий код **обязан** проверять на `None` перед использованием.
 
 #### Правильный паттерн разбора в watchdog
 
@@ -99,13 +101,14 @@ async def get_setting(self, key: str) -> Any:
 ```python
 raw = await db_client.get_setting("watchdog_auto_index_extensions")
 # raw: str | None
+# None если ключ не найден ИЛИ если value="" (сценарий 3 — только ручная индексация)
 extensions = (
     [e.strip() for e in raw.split(",") if e.strip()]
     if raw
     else []
 )
 # extensions: list[str], например [".md", ".pdf"]
-# Если ключ не найден или пуст — пустой список, индексация не выполняется
+# Если ключ не найден или пуст — пустой список, авто-индексация не выполняется
 ```
 
 > ⚠️ Не писать `"".split(",")` без проверки — это вернёт `[""]` (список
@@ -129,6 +132,8 @@ async def mark_file_pending(
     """
     vault_key = f"vault:{vault_id}:files"
     existing_raw = await self._r.hget(vault_key, relative_path)
+    # Guard `!= "1"` защищает от нечаянного коллижена с сентинелом __empty__,
+    # который хранит значение "1" (аналогично mark_file_indexed).
     if existing_raw and existing_raw != "1":
         try:
             existing = json.loads(existing_raw)
@@ -214,12 +219,18 @@ async def get_all_vault_file_entries(
 
 ### RedisStateManager — `rag-indexer/tests/test_redis_state_manager.py`
 
-Тесты с `fakeredis[aioredis]>=2.0`:
+Тесты с `fakeredis[aioredis]>=2.0`.
+
+> ⚠️ Обязательно добавить `pytestmark = pytest.mark.asyncio` на уровне модуля
+> или декоратор `@pytest.mark.asyncio` на каждую async-функцию,
+> иначе pytest не будет запускать корутины как тесты.
 
 ```python
 import fakeredis.aioredis
 import pytest
 from parser.state.redis_state_manager import RedisStateManager
+
+pytestmark = pytest.mark.asyncio
 
 
 @pytest.fixture
@@ -276,12 +287,16 @@ async def test_get_all_vault_file_entries_returns_all(mgr):
 
 ### IndexerDBClient.get_setting — `rag-indexer/tests/test_db_client_get_setting.py`
 
-Тест с `asyncpg` mock (monkeypatch пула):
+Тест с `asyncpg` mock (monkeypatch пула).
+
+> ⚠️ Аналогично — добавить `pytestmark = pytest.mark.asyncio` на уровне модуля.
 
 ```python
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 from app.db_client import IndexerDBClient
+
+pytestmark = pytest.mark.asyncio
 
 
 @pytest.fixture
@@ -310,4 +325,16 @@ async def test_get_setting_returns_string_list_extensions(client):
     raw = await client.get_setting("watchdog_auto_index_extensions")
     extensions = [e.strip() for e in raw.split(",") if e.strip()] if raw else []
     assert extensions == [".md", ".pdf"]
+
+
+async def test_get_setting_returns_none_for_empty_string(client):
+    # _cast_value при value_type='str' возвращает `value or None`,
+    # поэтому пустая строка (сценарий 3 — только ручная индексация) → None.
+    row = {"value": "", "value_type": "str"}
+    client._fetchrow = AsyncMock(return_value=row)
+    raw = await client.get_setting("watchdog_auto_index_extensions")
+    assert raw is None
+    # Паттерн разбора в watchdog должен корректно обработать None → []
+    extensions = [e.strip() for e in raw.split(",") if e.strip()] if raw else []
+    assert extensions == []
 ```
