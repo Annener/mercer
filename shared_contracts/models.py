@@ -39,7 +39,6 @@ class ORMModel(BaseModel):
 
 class FileIndexState(BaseModel):
     checksum_md5: str
-    chunk_ids: list[str] = Field(default_factory=list)
     status: Literal[
         "pending",
         "parsing",
