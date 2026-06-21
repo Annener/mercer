@@ -15,6 +15,10 @@
 - `rag-backend/app/static/js/settings/tab-*.js` — каждый файл экспортирует mixin-объект и вызывает `Object.assign(SettingsManager.prototype, ...)`
 - `rag-backend/app/static/index.html` — nav с кнопками `data-tab="..."` и `<script>` тегами
 
+> ⚠️ **Порядок загрузки скриптов**: `settings.js` обязательно должен быть
+> загружен **раньше** `tab-indexing.js`. Если `tab-indexing.js`
+> окажется выше `settings.js` — `ReferenceError: SettingsManager is not defined`.
+
 ## UX-логика
 
 ```
@@ -159,6 +163,16 @@ const IndexingTabMixin = {
             const checked = [...this._tabContent.querySelectorAll('#indexing-ext-list [data-ext]')]
                 .filter(cb => cb.checked)
                 .map(cb => cb.dataset.ext);
+
+            // Клиентская валидация: backend вернёт 422, но лучше сообщить заранее
+            if (checked.length === 0) {
+                if (msgEl) {
+                    msgEl.textContent = 'Выберите хотя бы одно расширение';
+                    msgEl.className = 'error';
+                }
+                return;
+            }
+
             try {
                 await this.api.saveWatchdogSettings(checked);
                 if (msgEl) {
@@ -181,6 +195,9 @@ Object.assign(SettingsManager.prototype, IndexingTabMixin);
 
 ### 3. `rag-backend/app/static/js/settings.js` — добавить в два switch
 
+> ⚠️ **Обязательно обновить оба** switch в `loadTab()` и `_dispatch()`.
+> Если пропустить любой — вкладка откроется пустой или кнопки не будут реагировать.
+
 В методе `loadTab()`:
 ```js
 case 'indexing': html = await this.renderIndexingTab(); break;
@@ -198,7 +215,7 @@ case 'indexing': await this.handleIndexingAction(action, id, btn); break;
 <button data-tab="indexing">Индексация</button>
 ```
 
-**4b. Добавить `<script>` тег** после `tab-documents.js`:
+**4b. Добавить `<script>` тег`** после `tab-documents.js` и **обязательно после `settings.js`**:
 ```html
 <script src="/static/js/settings/tab-indexing.js"></script>
 ```
@@ -210,7 +227,7 @@ case 'indexing': await this.handleIndexingAction(action, id, btn); break;
 | `rag-backend/app/static/js/api.js` | Добавить методы `getWatchdogSettings`, `saveWatchdogSettings` |
 | `rag-backend/app/static/js/settings/tab-indexing.js` | **Создать** |
 | `rag-backend/app/static/js/settings.js` | Добавить `case 'indexing'` в `loadTab()` и `_dispatch()` |
-| `rag-backend/app/static/index.html` | Добавить кнопку вкладки и `<script>` тег |
+| `rag-backend/app/static/index.html` | Добавить кнопку вкладки и `<script>` тег в правильном порядке |
 
 ## Критерий готовности
 
@@ -218,5 +235,6 @@ case 'indexing': await this.handleIndexingAction(action, id, btn); break;
 - [ ] При «Сохранить» отправляется `PATCH /api/v1/settings/watchdog` с выбранными расширениями в виде массива
 - [ ] Валидация: нельзя добавить расширение без точки
 - [ ] Нельзя добавить дубликат расширения
+- [ ] Клиентская валидация: нельзя сохранить с пустым списком («Выберите хотя бы одно расширение»)
 - [ ] Сообщение «Настройки сохранены» автоматически исчезает через 3 секунды
 - [ ] `STATUS.md` обновлён: этап 6 → ✅
