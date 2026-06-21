@@ -16,6 +16,7 @@
 ```bash
 VAULT_ID="<vault_id>"    # заменить
 DOMAIN_ID="<domain_id>"  # заменить
+INTERVAL=15              # значение WATCHDOG_INTERVAL_SEC
 ```
 
 ## Сценарий 1 — Новый файл (авто-индексация)
@@ -26,11 +27,11 @@ curl -s http://localhost:8000/api/v1/settings/watchdog | jq
 # Ожидаем: {"auto_index_extensions": [".md", ".pdf"]}
 
 # 2. Создать новый .md-файл
-# Используем одинарные кавычки внутри bash -c и подставляем переменную снаружи
 docker compose exec rag-indexer bash -c \
   "echo '# Test' > /data/vaults/${VAULT_ID}/watchdog_test.md"
 
 # 3. Подождать WATCHDOG_INTERVAL_SEC + 5 секунд
+sleep $((INTERVAL + 5))
 
 # 4. Проверить логи watchdog
 docker compose logs rag-indexer | grep watchdog
@@ -58,6 +59,7 @@ docker compose exec rag-indexer bash -c \
   "echo '# Changed' >> /data/vaults/${VAULT_ID}/watchdog_test.md"
 
 # 3. Подождать WATCHDOG_INTERVAL_SEC + 5 секунд
+sleep $((INTERVAL + 5))
 
 # 4. Проверить pending — файл должен быть в статусе pending
 curl -s "http://localhost:8000/api/v1/vaults/${VAULT_ID}/pending-files" | jq
@@ -68,12 +70,16 @@ curl -s "http://localhost:8000/api/v1/domains/${DOMAIN_ID}/pending-files" | jq
 
 # 5. Симулировать нажатие кнопки «Запустить индексацию» из баннера
 curl -s -X POST "http://localhost:8000/api/v1/domains/${DOMAIN_ID}/index" | jq
+# Ожидаем: {"queued": 1}
 
-# 6. Подождать завершения задачи и проверить, что pending очищен
+# 6. Подождать завершения задачи (indexer обрабатывает асинхронно)
+sleep $((INTERVAL + 5))
+
+# 7. Проверить, что pending очищен
 curl -s "http://localhost:8000/api/v1/domains/${DOMAIN_ID}/pending-files" | jq
 # Ожидаем: {"total_pending": 0}
 
-# 7. Вернуть .md в авто-список
+# 8. Вернуть .md в авто-список
 curl -s -X PATCH http://localhost:8000/api/v1/settings/watchdog \
   -H 'Content-Type: application/json' \
   -d '{"auto_index_extensions": [".md", ".pdf"]}' | jq
@@ -87,6 +93,7 @@ docker compose exec rag-indexer bash -c \
   "rm /data/vaults/${VAULT_ID}/watchdog_test.md"
 
 # 2. Подождать WATCHDOG_INTERVAL_SEC + 5 секунд
+sleep $((INTERVAL + 5))
 
 # 3. Проверить логи
 docker compose logs rag-indexer | grep 'file deleted'
@@ -110,22 +117,40 @@ docker compose exec postgres psql -U mercer -d mercer -c \
 2. Снять чекбокс .pdf, оставить только .md
 3. Нажать «Сохранить» — должно появиться «Настройки сохранены»
 4. Проверить через curl:
+```
 
-   curl -s http://localhost:8000/api/v1/settings/watchdog | jq
-   # Ожидаем: {"auto_index_extensions": [".md"]}
+```bash
+curl -s http://localhost:8000/api/v1/settings/watchdog | jq
+# Ожидаем: {"auto_index_extensions": [".md"]}
+```
 
+```
 5. Создать новый .pdf-файл:
+```
 
-   docker compose exec rag-indexer bash -c \
-     "cp /dev/null /data/vaults/${VAULT_ID}/test_doc.pdf"
+```bash
+docker compose exec rag-indexer bash -c \
+  "cp /dev/null /data/vaults/${VAULT_ID}/test_doc.pdf"
+```
 
-6. Подождать WATCHDOG_INTERVAL_SEC + 5 секунд
+```
+6. Подождать WATCHDOG_INTERVAL_SEC + 5 секунд:
+```
 
+```bash
+sleep $((INTERVAL + 5))
+```
+
+```
 7. Проверить доменный pending — баннер должен появиться:
+```
 
-   curl -s "http://localhost:8000/api/v1/domains/${DOMAIN_ID}/pending-files" | jq
-   # Ожидаем: {"total_pending": 1, ...}
+```bash
+curl -s "http://localhost:8000/api/v1/domains/${DOMAIN_ID}/pending-files" | jq
+# Ожидаем: {"total_pending": 1, ...}
+```
 
+```
 8. Открыть чат с этим доменом — убедиться, что баннер виден в UI.
 9. Нажать «Запустить индексацию» в баннере, убедиться что баннер исчезает.
 ```
@@ -133,7 +158,7 @@ docker compose exec postgres psql -U mercer -d mercer -c \
 ## Критерий готовности
 
 - [ ] Сценарий 1: watchdog запустил индексацию автоматически, `total_pending = 0`
-- [ ] Сценарий 2: изменённый файл попал в `pending`; `POST /index` очистил его
+- [ ] Сценарий 2: изменённый файл попал в `pending`; `POST /index` очистил его после ожидания
 - [ ] Сценарий 3: удалённый файл очищен из LanceDB + PG + Redis
 - [ ] Сценарий 4: смена настройки через UI отражается в баннере чата
 - [ ] `STATUS.md` обновлён: этап 8 → ✅
