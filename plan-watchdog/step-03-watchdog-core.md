@@ -21,8 +21,9 @@
 }
 ```
 
-Важно: `scan_vault` всегда считает md5. Watchdog использует его напрямую
-(оптимизация mtime реализуется в самом watchdog перед запуском `scan_vault`).
+Важно: `scan_vault` — блокирующая функция, всегда считает md5.
+Вызывать только через `asyncio.to_thread`.
+Бросает `FileNotFoundError` / `NotADirectoryError` — обрабатывать в `_process_vault`.
 
 ### `IndexerService.start_task` (уже есть)
 
@@ -31,35 +32,43 @@ Watchdog вызывает его напрямую.
 
 ### `IndexerService.get_active_tasks` (уже есть)
 
-Возвращает `list[str]` task_id. Watchdog проверяет: если vault уже
-индексируется — новую задачу не запускает.
+Возвращает `list[str]` task_id из in-memory `self._tasks`.
 
-❗ `get_active_tasks()` возвращает task_id, не vault_id. Watchdog не может
-напрямую знать vault_id активных задач. Решение:
-проверяем `vault:{vault_id}:files` в Redis на наличие `task_state="running"`
-через новый метод `RedisStateManager.get_vault_active_task_id(vault_id)` —
-см. раздел ниже.
+> ⚠️ `get_active_tasks()` работает с in-memory dict и обнуляется при рестарте процесса.
+> Watchdog намеренно использует `RedisStateManager.is_vault_indexing(vault_id)` —
+> источник истины для активных задач — т.к. Redis переживает перезапуск.
 
-## Что нужно создать
+### `StorageClient.delete_document` (уже есть)
+
+`rag-indexer/storage/storage_client.py`:
+```python
+async def delete_document(self, document_id: str, vault_id: str) -> dict
+```
+Делает `DELETE /index/document/{document_id}?vault_id=...` к `db-api-server`.
+
+## Что нужно создать / изменить
 
 ### Дополнительный метод в `RedisStateManager`
 
-Добавить в `redis_state_manager.py` (как часть этапа 2 или сейчас):
+Добавить в `redis_state_manager.py`.
+
+> ✅ Использует pipeline для избежания N+1 round-trip к Redis при нескольких активных задачах.
 
 ```python
 async def is_vault_indexing(self, vault_id: str) -> bool:
     """Returns True if there is a running task for this vault in Redis.
 
-    Scans task:* HASHes for vault_id + status=running.
-    Cheaper alternative: check active_tasks SET, then HGET each task HASH.
+    Uses pipeline to fetch all active task metadata in one round-trip.
     """
     active_ids = await self._r.smembers("active_tasks")
+    if not active_ids:
+        return False
+    pipe = self._r.pipeline()
     for task_id in active_ids:
-        task_data = await self._r.hgetall(f"task:{task_id}")
-        if (
-            task_data.get("vault_id") == vault_id
-            and task_data.get("status") == "running"
-        ):
+        pipe.hmget(f"task:{task_id}", "vault_id", "status")
+    results = await pipe.execute()
+    for values in results:
+        if values[0] == vault_id and values[1] == "running":
             return True
     return False
 ```
@@ -75,7 +84,7 @@ async def is_vault_indexing(self, vault_id: str) -> bool:
 
 Алгоритм:
   1. Запросить все активные vault из БД
-  2. Для каждого vault: скан диска, diff с Redis-кэше
+  2. Для каждого vault: скан диска, diff с Redis-кэшем
   3. Удалённые → атомарно: LanceDB + PG + Redis
   4. Изменённые/новые → авто-индексация или пометка pending
 """
@@ -105,13 +114,18 @@ async def watchdog_loop(
     db_client: IndexerDBClient,
     state_manager: RedisStateManager,
     indexer_service: IndexerService,
+    storage_client: StorageClient,
     interval_sec: int = 60,
 ) -> None:
-    """Фоновый луп. Запускается через asyncio.create_task в lifespan."""
+    """Фоновый луп. Запускается через asyncio.create_task в lifespan.
+
+    storage_client передаётся снаружи (создаётся один раз в lifespan),
+    а не создаётся на каждой итерации.
+    """
     logger.info("Vault watchdog started (interval=%ds)", interval_sec)
     while True:
         try:
-            await _run_once(db_client, state_manager, indexer_service)
+            await _run_once(db_client, state_manager, indexer_service, storage_client)
         except asyncio.CancelledError:
             logger.info("Vault watchdog stopped.")
             return
@@ -124,16 +138,16 @@ async def _run_once(
     db_client: IndexerDBClient,
     state_manager: RedisStateManager,
     indexer_service: IndexerService,
+    storage_client: StorageClient,
 ) -> None:
     """One watchdog iteration across all enabled vaults."""
-    # Читаем настройку из БД на каждой итерации
-    raw_setting = await db_client.get_setting(WATCHDOG_SETTING_KEY)
+    # get_setting возвращает None если ключ не найден — защита обязательна
+    raw_setting = await db_client.get_setting(WATCHDOG_SETTING_KEY) or ""
     auto_extensions: set[str] = {
         ext.strip() for ext in raw_setting.split(",") if ext.strip()
     }
 
     vaults = await db_client.get_all_vaults()
-    storage_client = StorageClient(STORAGE_API_URL)
 
     for vault in vaults:
         vault_id = vault["vault_id"]
@@ -163,7 +177,17 @@ async def _process_vault(
         return
 
     # Скан диска (в потоке — блокирующая операция)
-    disk_files: list[dict[str, Any]] = await asyncio.to_thread(scan_vault, vault_path)
+    # Отдельно перехватываем FS-ошибки: директория могла исчезнуть между
+    # проверкой isdir и вызовом scan_vault (race condition).
+    try:
+        disk_files: list[dict[str, Any]] = await asyncio.to_thread(scan_vault, vault_path)
+    except (FileNotFoundError, NotADirectoryError) as exc:
+        logger.warning(
+            "Watchdog: vault directory unavailable vault_id=%s: %s",
+            vault_id, exc,
+        )
+        return
+
     disk_index = {f["relative_path"]: f for f in disk_files}
 
     # Читаем весь vault-кэш за один HGETALL
@@ -210,6 +234,8 @@ async def _process_vault(
         )
 
     if to_auto:
+        # is_vault_indexing использует Redis (переживает рестарт процесса),
+        # а не in-memory IndexerService.get_active_tasks()
         already_indexing = await state_manager.is_vault_indexing(vault_id)
         if not already_indexing:
             try:
@@ -237,7 +263,12 @@ async def _handle_deleted(
     state_manager: RedisStateManager,
     storage_client: StorageClient,
 ) -> None:
-    """Atomically remove a deleted file from LanceDB + PostgreSQL + Redis."""
+    """Atomically remove a deleted file from LanceDB + PostgreSQL + Redis.
+
+    Order: LanceDB → PG → Redis.
+    Redis удаляется последним — при сбое на предыдущих шагах
+    следующая итерация watchdog повторит попытку.
+    """
     logger.info(
         "Watchdog: file deleted vault_id=%s path=%s",
         vault_id, relative_path,
@@ -263,7 +294,7 @@ async def _handle_deleted(
             )
     # 3. Redis cache (всегда, даже если doc not in PG)
     await state_manager.remove_file_from_vault_cache(vault_id, relative_path)
-```
+
 
 ## Файлы для создания / изменения
 
@@ -287,6 +318,7 @@ from unittest.mock import AsyncMock, patch
 import fakeredis.aioredis
 from parser.state.redis_state_manager import RedisStateManager
 from parser.watchdog.vault_watchdog import _process_vault
+from storage.storage_client import StorageClient
 
 
 @pytest.fixture
@@ -301,7 +333,7 @@ async def test_new_file_auto_indexed(state_mgr):
     db.get_document_by_path.return_value = None
     svc = AsyncMock()
     svc.start_task.return_value = "task-xyz"
-    storage = AsyncMock()
+    storage = AsyncMock(spec=StorageClient)
 
     disk_file = {
         "relative_path": "notes.md",
@@ -335,7 +367,7 @@ async def test_new_file_marked_pending_when_not_in_auto(state_mgr):
     """New .pdf file with only .md in auto_extensions -> marked pending."""
     db = AsyncMock()
     svc = AsyncMock()
-    storage = AsyncMock()
+    storage = AsyncMock(spec=StorageClient)
 
     disk_file = {
         "relative_path": "report.pdf",
@@ -374,7 +406,7 @@ async def test_deleted_file_removed_from_all_stores(state_mgr):
     db = AsyncMock()
     db.get_document_by_path.return_value = {"id": "doc-1"}
     svc = AsyncMock()
-    storage = AsyncMock()
+    storage = AsyncMock(spec=StorageClient)
 
     with patch(
         "parser.watchdog.vault_watchdog.scan_vault",
@@ -396,6 +428,73 @@ async def test_deleted_file_removed_from_all_stores(state_mgr):
     db.delete_document.assert_awaited_once_with("doc-1")
     entry = await state_mgr.get_vault_file_entry("v1", "old.md")
     assert entry is None
+
+
+async def test_no_start_task_if_vault_already_indexing(state_mgr):
+    """If vault is already indexing -> start_task not called."""
+    # Эмулируем активную задачу в Redis
+    await state_mgr._r.sadd("active_tasks", "task-running")
+    await state_mgr._r.hset("task:task-running", mapping={
+        "vault_id": "v1",
+        "status": "running",
+    })
+
+    db = AsyncMock()
+    svc = AsyncMock()
+    storage = AsyncMock(spec=StorageClient)
+
+    disk_file = {
+        "relative_path": "notes.md",
+        "extension": ".md",
+        "checksum": "abc123",
+        "path": "/data/vaults/v1/notes.md",
+        "last_modified": 1700000000.0,
+        "size_bytes": 100,
+    }
+
+    with patch(
+        "parser.watchdog.vault_watchdog.scan_vault",
+        return_value=[disk_file],
+    ), patch(
+        "parser.watchdog.vault_watchdog.os.path.isdir",
+        return_value=True,
+    ):
+        await _process_vault(
+            vault_id="v1",
+            auto_extensions={".md"},
+            db_client=db,
+            state_manager=state_mgr,
+            indexer_service=svc,
+            storage_client=storage,
+        )
+
+    svc.start_task.assert_not_awaited()
+
+
+async def test_scan_vault_not_a_directory_is_handled(state_mgr):
+    """If vault directory disappears between isdir check and scan -> warning, no crash."""
+    db = AsyncMock()
+    svc = AsyncMock()
+    storage = AsyncMock(spec=StorageClient)
+
+    with patch(
+        "parser.watchdog.vault_watchdog.os.path.isdir",
+        return_value=True,
+    ), patch(
+        "parser.watchdog.vault_watchdog.scan_vault",
+        side_effect=FileNotFoundError("gone"),
+    ):
+        # Не должно бросить исключение наружу
+        await _process_vault(
+            vault_id="v1",
+            auto_extensions={".md"},
+            db_client=db,
+            state_manager=state_mgr,
+            indexer_service=svc,
+            storage_client=storage,
+        )
+
+    svc.start_task.assert_not_awaited()
 ```
 
 ## Критерий готовности
@@ -404,5 +503,7 @@ async def test_deleted_file_removed_from_all_stores(state_mgr):
 - [ ] Сценарий 1: новый файл + ext в auto_extensions → `start_task` вызван
 - [ ] Сценарий 2: новый файл + ext НЕ в auto_extensions → `pending`, `start_task` не вызван
 - [ ] Сценарий 3: файл исчез → LanceDB+PG+Redis очищены
+- [ ] Сценарий 4: vault уже индексируется → `start_task` не вызван
+- [ ] Сценарий 5: директория vault исчезла в момент скана → warning, без краша
 - [ ] unit-тесты проходят
 - [ ] `STATUS.md` обновлён: этап 3 → ✅
