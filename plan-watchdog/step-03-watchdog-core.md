@@ -38,9 +38,13 @@ async def get_all_vaults(self) -> list[dict[str, Any]]:
 }
 ```
 
-Важно: `scan_vault` — блокирующая функция, всегда считает md5.
-Вызывать только через `asyncio.to_thread`.
-Бросает `FileNotFoundError` / `NotADirectoryError` — обрабатывать в `_process_vault`.
+Важно:
+- `scan_vault` — блокирующая функция, всегда считает md5. Вызывать только через `asyncio.to_thread`.
+- Бросает `FileNotFoundError` / `NotADirectoryError` — обрабатывать в `_process_vault`.
+- **`scan_vault` фильтрует файлы по `SUPPORTED_EXTENSIONS = {".md", ".pdf"}` — жёстко в коде сканера.
+  Watchdog намеренно работает только с этими форматами.
+  Значение `watchdog_auto_index_extensions` определяет лишь режим реакции (авто-индексация vs pending),
+  но не расширяет набор обнаруживаемых расширений.**
 
 ### `IndexerService.start_task` (уже есть)
 
@@ -127,7 +131,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 VAULT_DATA_ROOT = os.getenv("VAULT_DATA_ROOT", "/data/vaults")
-STORAGE_API_URL = os.getenv("STORAGE_API_URL", "http://db-api-server:8080")
 WATCHDOG_SETTING_KEY = "watchdog_auto_index_extensions"
 
 
@@ -235,8 +238,8 @@ async def _process_vault(
         if entry is None:
             # Новый файл
             changed.append(disk_file)
-        elif disk_file["checksum"] != entry.get("indexed_md5", ""):
-            # Файл изменён
+        elif disk_file["checksum"] != entry.get("checksum_md5", ""):
+            # Файл изменён (checksum_md5 — ключ из mark_file_indexed)
             changed.append(disk_file)
 
     if not changed:
@@ -354,7 +357,7 @@ pytestmark = pytest.mark.asyncio
 
 
 @pytest.fixture
-async def state_mgr():
+def state_mgr():
     r = fakeredis.aioredis.FakeRedis(decode_responses=True)
     return RedisStateManager(r)
 
