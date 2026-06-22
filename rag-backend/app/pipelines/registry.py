@@ -12,12 +12,12 @@ from typing import Any
 
 import yaml
 
-from shared_contracts.models import PipelineContext, PipelineResult
+from shared_contracts.models import PipelineExecutionContext, PipelineResult
 
 
 logger = logging.getLogger(__name__)
 
-ExecuteCallable = Callable[[PipelineContext], Awaitable[PipelineResult]]
+ExecuteCallable = Callable[[PipelineExecutionContext], Awaitable[PipelineResult]]
 
 
 @dataclass(frozen=True)
@@ -36,7 +36,7 @@ class PipelineRunner:
     execute: ExecuteCallable
     source_hash: str
 
-    async def run(self, context: PipelineContext) -> PipelineResult:
+    async def run(self, context: PipelineExecutionContext) -> PipelineResult:
         result = await self.execute(context)
         if not isinstance(result, PipelineResult):
             result = PipelineResult.model_validate(result)
@@ -88,7 +88,7 @@ class PipelineRegistry:
         await self.load_all()
         return True
 
-    async def run(self, pipeline_id: str, context: PipelineContext, version: str | None = None) -> PipelineResult:
+    async def run(self, pipeline_id: str, context: PipelineExecutionContext, version: str | None = None) -> PipelineResult:
         runner = await self.get_runner(pipeline_id, version)
         if runner is None:
             raise KeyError(f"Pipeline not found: {pipeline_id}@{version or 'active'}")
