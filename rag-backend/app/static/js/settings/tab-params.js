@@ -60,7 +60,7 @@ const ParamsTabMixin = {
             ...currentExtensions.filter(e => !WATCHDOG_KNOWN_EXTENSIONS.includes(e)),
         ];
         const watchdogCheckboxesHtml = allExtensions.map(ext => `
-            <label class="settings-param-row indexing-ext-row">
+            <label class="indexing-ext-row">
                 <input type="checkbox"
                        data-ext="${this.escapeHtml(ext)}"
                        ${selectedSet.has(ext) ? 'checked' : ''}>
@@ -79,7 +79,7 @@ const ParamsTabMixin = {
                     const info = descriptions[key] || { label: key, desc: '' };
                     const inputHtml = isBool
                         ? `<input type="checkbox" data-key="${this.escapeHtml(key)}" ${(currentValue === true || currentValue === 'true') ? 'checked' : ''}>`
-                        : `<input data-key="${this.escapeHtml(key)}" value="${this.escapeHtml(currentValue ?? '')}" style="width:100%; max-width:340px; box-sizing:border-box;">`;
+                        : `<input data-key="${this.escapeHtml(key)}" value="${this.escapeHtml(currentValue ?? '')}">`;
                     return `
                         <div class="settings-param-row">
                             <div class="settings-param-info">
@@ -102,14 +102,13 @@ const ParamsTabMixin = {
                 <div id="watchdog-ext-list" class="indexing-ext-list">
                     ${watchdogCheckboxesHtml}
                 </div>
-                <div class="indexing-custom-input settings-toolbar">
+                <div class="indexing-custom-input">
                     <input type="text"
                            id="watchdog-custom-ext"
-                           placeholder=".epub"
-                           style="width: 140px;">
+                           placeholder=".epub">
                     <button class="btn btn-secondary" data-action="add-watchdog-ext">Добавить</button>
                 </div>
-                <div id="watchdog-message" style="min-height: 1.5em; margin-top: 8px;"></div>
+                <div id="watchdog-message" style="min-height: 1.2em; margin-top: 6px; font-size: 12px;"></div>
             </div>
 
             <div class="settings-params-footer">
