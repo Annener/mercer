@@ -1,7 +1,0 @@
-id: rule_lookup
-domain: dnd
-version: "1.0.0"
-description: "Dummy D&D rule lookup pipeline"
-contract:
-  input_keys: ["query", "context_chunks"]
-  output_keys: ["rule_reference"]
