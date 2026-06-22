@@ -1,5 +1,4 @@
 from __future__ import annotations
-import json
 import logging
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,14 +11,23 @@ from shared_contracts.models import PipelineInvocation, PlannerDecision
 
 logger = logging.getLogger(__name__)
 
-AMBIGUOUS_SUBJECTS = {
-    "класс": "subject",
-    "class": "subject",
-    "раса": "subject",
-    "race": "subject",
-    "заклинание": "subject",
-    "spell": "subject",
-}
+# Системный промпт роутера кларификации.
+# {fields_block} — описание доступных полей из настроек домена.
+_ROUTER_SYSTEM = """\
+Ты — роутер запросов RAG-ассистента. Твоя задача: определить, \
+каких данных не хватает чтобы дать точный ответ на запрос пользователя.
+
+Доступные поля для уточнения:
+{fields_block}
+
+Правила:
+- Уточняй ТОЛЬКО если без этой информации поиск по базе знаний вернёт нерелевантные результаты.
+- НЕ уточняй если запрос уже достаточно конкретный.
+- НЕ уточняй поля которые уже есть в истории диалога.
+- Верни JSON строго в формате: {{"missing_fields": ["field_name", ...]}}
+- Верни пустой список если уточнения не нужны: {{"missing_fields": []}}
+"""
+
 
 class Planner:
     def __init__(self, config: AppConfig | None = None, pipeline_registry: PipelineRegistry | None = None) -> None:
@@ -34,7 +42,6 @@ class Planner:
         domain_id: str | None,
         history: list[dict[str, str]] | None = None,
     ) -> tuple[PlannerDecision, list[str]]:
-        _ = history
         retrieval_strategy = "none"
         retrieval_enabled = bool(await settings_service.get("retrieval.enabled", db))
         if retrieval_enabled:
@@ -43,7 +50,9 @@ class Planner:
             elif domain_id:
                 retrieval_strategy = await self._strategy_for_domain(db, domain_id)
 
-        missing_fields = await self._missing_fields_for_domain(query, domain_id or "default", db)
+        missing_fields = await self._missing_fields_for_domain(
+            query, domain_id or "default", db, history=history or []
+        )
         pipeline_invocations = await self._pipeline_invocations(domain_id)
         max_clarification_turns = int(await settings_service.get("chat.max_clarification_turns", db))
         decision = PlannerDecision(
@@ -94,20 +103,50 @@ class Planner:
             for index, runner in enumerate(runners)
         ]
 
-    @staticmethod
-    def _missing_fields(query: str) -> list[str]:
-        words = query.lower().split()
-        if len(words) < 3:
-            return ["topic"]
-        missing: list[str] = []
-        for trigger, field in AMBIGUOUS_SUBJECTS.items():
-            if trigger in query.lower() and field not in missing:
-                missing.append(field)
-        return missing
-
-    async def _missing_fields_for_domain(self, query: str, domain_id: str, db: AsyncSession) -> list[str]:
+    async def _missing_fields_for_domain(
+        self,
+        query: str,
+        domain_id: str,
+        db: AsyncSession,
+        history: list[dict[str, str]],
+    ) -> list[str]:
         fields = await domain_service.get_clarification_fields(domain_id, db)
-        allowed = {field["field_name"] for field in fields}
-        if not allowed:
+        if not fields:
             return []
-        return [field for field in self._missing_fields(query) if field in allowed]
+
+        allowed = {f["field_name"] for f in fields}
+        provider = settings_service.get_active_provider()
+        if provider is None:
+            logger.warning("Planner: no active generation provider, skipping LLM clarification routing")
+            return []
+
+        # Строим описание полей из настроек домена (label + hint)
+        fields_block = "\n".join(
+            f'- {f["field_name"]}: {f["label"]}' + (f' — {f["hint"]}' if f.get("hint") else "")
+            for f in fields
+        )
+
+        system_content = _ROUTER_SYSTEM.format(fields_block=fields_block)
+
+        # Берём последние 6 сообщений истории чтобы роутер видел уже собранный контекст
+        recent_history = history[-6:] if history else []
+
+        messages = (
+            [{"role": "system", "content": system_content}]
+            + recent_history
+            + [{"role": "user", "content": query}]
+        )
+
+        try:
+            result = await provider.generate_json(
+                messages,
+                fallback={"missing_fields": []},
+            )
+            raw_fields = result.get("missing_fields", [])
+            # Фильтруем: только поля разрешённые для данного домена
+            missing = [f for f in raw_fields if isinstance(f, str) and f in allowed]
+            logger.info("Planner LLM router: query=%r missing_fields=%s", query[:80], missing)
+            return missing
+        except Exception as exc:
+            logger.warning("Planner LLM router failed, skipping clarification: %s", exc)
+            return []
