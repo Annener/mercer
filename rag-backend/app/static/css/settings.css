@@ -108,17 +108,62 @@
     max-width: 760px;
 }
 
-/* Params tab: full-width layout, three columns: label | control | (gap) */
+/* ======================================================
+   Params tab – grouped blocks
+   ====================================================== */
+.settings-params-fullwidth {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    max-width: 640px;
+}
+
+/* Each named group: same visual style as watchdog block */
+.settings-param-group {
+    margin-bottom: 20px;
+    background: #fff;
+    border: 1px solid #b8cfe0;
+    border-radius: 10px;
+    padding: 18px 20px 14px;
+    box-shadow: 0 1px 4px rgba(52, 120, 180, 0.06);
+}
+
+.settings-param-group-title {
+    font-size: 14px;
+    font-weight: 650;
+    color: #1f4e6e;
+    margin-bottom: 12px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.settings-param-group-title::before {
+    content: '';
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #3498db;
+    flex-shrink: 0;
+}
+
+/* Param row inside group */
 .settings-params-fullwidth .settings-param-row {
     display: grid;
-    grid-template-columns: minmax(180px, 340px) auto;
+    grid-template-columns: minmax(180px, 1fr) auto;
     align-items: center;
     gap: 10px 16px;
-    background: #fff;
-    border: 1px solid #dfe6ee;
-    border-radius: 6px;
-    padding: 9px 12px;
-    max-width: 640px;
+    background: transparent;
+    border: none;
+    border-top: 1px solid #eaf0f6;
+    border-radius: 0;
+    padding: 9px 2px;
+    max-width: none;
+}
+
+.settings-params-fullwidth .settings-param-row:first-of-type {
+    border-top: none;
 }
 
 .settings-param-row {
@@ -145,6 +190,14 @@
     flex-direction: column;
     gap: 2px;
     min-width: 0;
+}
+
+/* Label + tooltip trigger on same line */
+.settings-param-label-row {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    flex-wrap: wrap;
 }
 
 .settings-param-info strong {
@@ -187,8 +240,89 @@
     cursor: pointer;
 }
 
+/* ======================================================
+   Tooltip (? badge) — hover shows tooltip,
+   click/focus pins it until blur or second click
+   ====================================================== */
+.param-help {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 15px;
+    height: 15px;
+    border-radius: 50%;
+    background: #c8d9e8;
+    color: #3a6080;
+    font-size: 10px;
+    font-weight: 700;
+    font-style: normal;
+    cursor: pointer;
+    flex-shrink: 0;
+    position: relative;
+    user-select: none;
+    transition: background 0.15s;
+    outline: none;
+}
+
+.param-help:hover,
+.param-help:focus {
+    background: #3498db;
+    color: #fff;
+}
+
+/* Tooltip bubble */
+.param-help::after {
+    content: attr(data-tooltip);
+    position: absolute;
+    left: 50%;
+    bottom: calc(100% + 7px);
+    transform: translateX(-50%);
+    width: max-content;
+    max-width: 260px;
+    background: #1f3d52;
+    color: #e8f1f8;
+    font-size: 12px;
+    font-weight: 400;
+    line-height: 1.45;
+    padding: 7px 10px;
+    border-radius: 6px;
+    box-shadow: 0 4px 14px rgba(0,0,0,0.18);
+    white-space: pre-wrap;
+    pointer-events: none;
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.15s, visibility 0.15s;
+    z-index: 200;
+}
+
+/* Arrow */
+.param-help::before {
+    content: '';
+    position: absolute;
+    left: 50%;
+    bottom: calc(100% + 1px);
+    transform: translateX(-50%);
+    border: 5px solid transparent;
+    border-top-color: #1f3d52;
+    pointer-events: none;
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.15s, visibility 0.15s;
+    z-index: 201;
+}
+
+.param-help:hover::after,
+.param-help:hover::before,
+.param-help:focus::after,
+.param-help:focus::before,
+.param-help.pinned::after,
+.param-help.pinned::before {
+    opacity: 1;
+    visibility: visible;
+}
+
 .settings-params-footer {
-    margin-top: 20px;
+    margin-top: 8px;
     margin-bottom: 8px;
 }
 
@@ -213,13 +347,14 @@
    Watchdog block - bordered card, separated from params
    ====================================================== */
 .settings-watchdog-block {
-    margin-top: 32px;
+    margin-top: 0;
     max-width: 640px;
     background: #fff;
     border: 1px solid #b8cfe0;
     border-radius: 10px;
     padding: 18px 20px 14px;
     box-shadow: 0 1px 4px rgba(52, 120, 180, 0.06);
+    margin-bottom: 20px;
 }
 
 .settings-watchdog-title {
