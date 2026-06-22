@@ -1,54 +1,5 @@
 const RerankModelsTabMixin = {
 
-    // ─── Render ──────────────────────────────────────────────────────────────────
-
-    async renderRerankModelsTab() {
-        const models = await this.api.getRerankModels();
-        const modelsArr = Array.isArray(models) ? models : [];
-        return this._renderRerankModelList(modelsArr);
-    },
-
-    _renderRerankModelList(models) {
-        const toolbar = `<div class="settings-toolbar"><button class="btn btn-primary" data-action="new-rerank">+ Добавить модель</button></div>`;
-        if (!models || models.length === 0) {
-            return toolbar + `<div class="empty-state">Нет reranker-моделей. Нажмите «Добавить модель», чтобы добавить первую.</div>`;
-        }
-        return toolbar + `<div class="settings-grid">${models.map(model => {
-            const isActive = !!model.is_active;
-            const isEnabled = model.enabled !== false;
-            let badgeClass = 'muted';
-            let badgeText = 'неактивна';
-            let indicator = '⚪';
-            if (isActive && isEnabled) {
-                badgeClass = 'ok';
-                badgeText = 'АКТИВНА';
-                indicator = '🟢';
-            } else if (!isEnabled) {
-                badgeClass = 'muted';
-                badgeText = 'отключена';
-                indicator = '⚫';
-            }
-            const activateBtn = !isActive
-                ? `<button class="card-menu-item" data-action="activate-rerank" data-id="${this.escapeHtml(model.model_id)}">▶️ Активировать</button>`
-                : `<button class="card-menu-item" data-action="deactivate-rerank" data-id="${this.escapeHtml(model.model_id)}">⏸️ Деактивировать</button>`;
-            return `<article class="settings-card${isActive ? ' settings-card--active' : ''}">
-                <div class="settings-card-body">
-                    <h3>${this.escapeHtml(model.display_name || model.model_id)} <span class="badge ${badgeClass}">${badgeText}</span> ${indicator}</h3>
-                    <p class="settings-card-meta">${this.escapeHtml(model.base_url || '')} &nbsp;·&nbsp; ${this.escapeHtml(model.provider || '')}</p>
-                </div>
-                <div class="card-menu-container">
-                    <button class="card-menu-toggle" data-id="${this.escapeHtml(model.model_id)}" aria-label="Меню модели">⋮</button>
-                    <div class="card-menu">
-                        ${activateBtn}
-                        <button class="card-menu-item" data-action="edit-rerank" data-id="${this.escapeHtml(model.model_id)}">✏️ Редактировать</button>
-                        <button class="card-menu-item" data-action="check-rerank" data-id="${this.escapeHtml(model.model_id)}">🔍 Проверить</button>
-                        <button class="card-menu-item card-menu-danger" data-action="delete-rerank" data-id="${this.escapeHtml(model.model_id)}"${isActive ? ' disabled title="Нельзя удалить активную модель"' : ''}>🗑️ Удалить</button>
-                    </div>
-                </div>
-            </article>`;
-        }).join('')}</div>`;
-    },
-
     // ─── Action handler ───────────────────────────────────────────────────────────
 
     async handleRerankModelsAction(action, id, btn) {
@@ -68,13 +19,13 @@ const RerankModelsTabMixin = {
         } else if (action === 'activate-rerank') {
             try {
                 await this.api.activateRerankModel(id);
-                await this.loadTab('rerank-models');
+                await this.loadTab('models');
             } catch (e) { alert('Ошибка активации: ' + e.message); }
 
         } else if (action === 'deactivate-rerank') {
             try {
                 await this.api.deactivateRerankModel(id);
-                await this.loadTab('rerank-models');
+                await this.loadTab('models');
             } catch (e) { alert('Ошибка деактивации: ' + e.message); }
 
         } else if (action === 'check-rerank') {
@@ -97,7 +48,7 @@ const RerankModelsTabMixin = {
             if (!confirm(`Удалить reranker-модель «${id}»?`)) return;
             try {
                 await this.api.deleteRerankModel(id);
-                await this.loadTab('rerank-models');
+                await this.loadTab('models');
             } catch (e) { alert('Ошибка удаления: ' + e.message); }
         }
     },
@@ -201,7 +152,7 @@ const RerankModelsTabMixin = {
             try {
                 await this.api.createRerankModel(data);
                 closeModal();
-                await this.loadTab('rerank-models');
+                await this.loadTab('models');
             } catch (err) {
                 alert('Ошибка: ' + err.message);
                 saveBtn.disabled = false;
@@ -313,7 +264,7 @@ const RerankModelsTabMixin = {
             try {
                 await this.api.updateRerankModel(model.model_id, data);
                 closeModal();
-                await this.loadTab('rerank-models');
+                await this.loadTab('models');
             } catch (err) {
                 alert('Ошибка: ' + err.message);
                 saveBtn.disabled = false;
