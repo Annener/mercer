@@ -37,6 +37,7 @@ class SettingsManager {
                 case 'gen-models':    html = await this.renderGenerationModelsTab(); break;
                 case 'emb-models':    html = await this.renderEmbeddingModelsTab(); break;
                 case 'rerank-models': html = await this.renderRerankModelsTab(); break;
+                case 'models':        html = await this.renderModelsTab(); break;
                 case 'vaults':        html = await this.renderVaultsTab(); break;
                 case 'pipelines':     html = await this.renderPipelinesTab(); break;
                 case 'campaigns':     html = await this.renderCampaignsTab(); break;
@@ -101,6 +102,7 @@ class SettingsManager {
             case 'gen-models':    await this.handleGenModelsAction(action, id, btn); break;
             case 'emb-models':    await this.handleEmbModelsAction(action, id, btn); break;
             case 'rerank-models': await this.handleRerankModelsAction(action, id, btn); break;
+            case 'models':        await this.handleModelsAction(action, id, btn); break;
             case 'vaults':        await this.handleVaultsAction(action, id, btn); break;
             case 'pipelines':     await this.handlePipelinesAction(action, id, btn); break;
             case 'campaigns':     await this.handleCampaignsAction(action, id, btn); break;
@@ -193,7 +195,7 @@ class SettingsManager {
         }
     }
 
-    // ─── Generation Models ──────────────────────────────────────────────────────────────
+    // ─── Generation Models (legacy — для обратной совместимости пока жива вкладка gen-models) ──
 
     async handleGenModelsAction(action, id, btn) {
         if (action === 'new-gen') {
@@ -228,7 +230,7 @@ class SettingsManager {
         }
     }
 
-    // ─── Embedding Models ─────────────────────────────────────────────────────────────────
+    // ─── Embedding Models (legacy — для обратной совместимости пока жива вкладка emb-models) ──
 
     async handleEmbModelsAction(action, id, btn) {
         if (action === 'new-emb') {
@@ -250,6 +252,94 @@ class SettingsManager {
                     alert('❌ ' + (result?.error || 'Недоступна'));
                 }
             } catch (e) { alert('Ошибка проверки: ' + e.message); }
+        }
+    }
+
+    // ─── Models unified (gen + emb + rerank) ──────────────────────────────────────────────
+
+    async handleModelsAction(action, id, btn) {
+        // ── Генеративные ─────────────────────────────────────────
+        if (action === 'new-gen') {
+            await this.showGenerationModelModal();
+        } else if (action === 'edit-gen') {
+            await this.showGenerationModelModal(id);
+        } else if (action === 'delete-gen') {
+            if (!confirm('Удалить модель?')) return;
+            try {
+                await this.api.deleteGenerationModel(id);
+                await this.loadTab('models');
+            } catch (e) { alert('Ошибка: ' + e.message); }
+        } else if (action === 'activate-gen') {
+            try {
+                await this.api.setActiveGenerationModel(id);
+                await this.loadTab('models');
+            } catch (e) { alert('Ошибка активации: ' + e.message); }
+        } else if (action === 'toggle-gen') {
+            try {
+                await this.api.toggleGenerationModel(id);
+                await this.loadTab('models');
+            } catch (e) { alert('Ошибка: ' + e.message); }
+        } else if (action === 'check-gen') {
+            try {
+                const result = await this.api.checkGenerationModel(id);
+                if (result?.ok) {
+                    alert(`✅ Модель доступна (${result.latency_ms} мс)`);
+                } else {
+                    alert('❌ ' + (result?.error || 'Недоступна'));
+                }
+            } catch (e) { alert('Ошибка проверки: ' + e.message); }
+
+        // ── Embedding ─────────────────────────────────────────────
+        } else if (action === 'new-emb') {
+            await this.showEmbeddingModelModal();
+        } else if (action === 'edit-emb') {
+            await this.showEmbeddingModelModal(id);
+        } else if (action === 'delete-emb') {
+            if (!confirm('Удалить embedding-модель?')) return;
+            try {
+                await this.api.deleteEmbeddingModel(id);
+                await this.loadTab('models');
+            } catch (e) { alert('Ошибка: ' + e.message); }
+        } else if (action === 'check-emb') {
+            try {
+                const result = await this.api.checkEmbeddingModel(id);
+                if (result?.ok) {
+                    alert(`✅ Модель доступна (${result.latency_ms} мс)`);
+                } else {
+                    alert('❌ ' + (result?.error || 'Недоступна'));
+                }
+            } catch (e) { alert('Ошибка проверки: ' + e.message); }
+
+        // ── Reranker ──────────────────────────────────────────────
+        } else if (action === 'new-rerank') {
+            await this.showRerankModelModal();
+        } else if (action === 'edit-rerank') {
+            await this.showRerankModelEditModal(id);
+        } else if (action === 'activate-rerank') {
+            try {
+                await this.api.activateRerankModel(id);
+                await this.loadTab('models');
+            } catch (e) { alert('Ошибка активации: ' + e.message); }
+        } else if (action === 'deactivate-rerank') {
+            try {
+                await this.api.deactivateRerankModel(id);
+                await this.loadTab('models');
+            } catch (e) { alert('Ошибка деактивации: ' + e.message); }
+        } else if (action === 'check-rerank') {
+            try {
+                const result = await this.api.checkRerankModel(id);
+                if (result?.ok) {
+                    alert(`✅ Reranker доступен (${result.latency_ms} мс)`);
+                } else {
+                    alert('❌ ' + (result?.error || 'Недоступен'));
+                }
+            } catch (e) { alert('Ошибка проверки: ' + e.message); }
+        } else if (action === 'delete-rerank') {
+            if (!confirm('Удалить reranker-модель?')) return;
+            try {
+                await this.api.deleteRerankModel(id);
+                await this.loadTab('models');
+            } catch (e) { alert('Ошибка: ' + e.message); }
         }
     }
 
