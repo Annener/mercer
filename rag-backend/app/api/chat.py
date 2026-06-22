@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import secrets
 import uuid
 from collections.abc import AsyncIterator
@@ -47,6 +48,13 @@ config_for_vault = VaultConfigService()
 
 # Срок действия confirm-токена (концепт: 1 час)
 _CONFIRM_TTL = timedelta(hours=1)
+
+_AUTO_TITLE_PROMPT = """\
+Придумай короткое название (3–7 слов) для чата по первому вопросу пользователя.
+Название должно отражать суть вопроса, быть на том же языке что и вопрос.
+Верни ТОЛЬКО название, без кавычек, точек и пояснений.
+
+Вопрос: {query}"""
 
 
 class CreateChatRequest(BaseModel):
@@ -93,6 +101,49 @@ class PipelineLockRequest(BaseModel):
     pipeline_id: str | None = None
 
 
+def _auto_title_fallback(query: str) -> str:
+    """Fallback: берём первые 7 слов запроса как заголовок."""
+    cleaned = re.sub(r"[^\w\s\u0400-\u04ff]", " ", query).strip()
+    words = cleaned.split()
+    if len(words) > 7:
+        cleaned = " ".join(words[:7])
+    return cleaned[:255]
+
+
+async def _maybe_set_title(chat: Chat, query: str, db: AsyncSession) -> None:
+    """Устанавливает заголовок чата если chat.auto_title=true.
+
+    Логика:
+    - Если настройка выключена — ничего не делаем (заголовок остаётся 'New Chat').
+    - Если включена и есть активный LLM-провайдер — генерируем заголовок через LLM.
+    - Если LLM недоступен или вернул пустой ответ — fallback на срез первых 7 слов.
+    """
+    if chat.title != "New Chat":
+        return
+
+    auto_title_enabled: bool = await settings_service.get("chat.auto_title", db)
+    if not auto_title_enabled:
+        return
+
+    provider = settings_service.get_active_provider()
+    if provider is not None:
+        try:
+            prompt = _AUTO_TITLE_PROMPT.format(query=query[:500])
+            raw = await provider.generate([{"role": "user", "content": prompt}])
+            # Убираем возможные кавычки / лишние пробелы которые модель может добавить
+            title = re.sub(r'^["«»\'\s]+|["«»\'\s.]+$', "", raw.strip())
+            if title:
+                chat.title = title[:255]
+                logger.debug("auto_title LLM: '%s' → '%s'", query[:60], chat.title)
+                return
+        except Exception:
+            logger.warning("auto_title LLM generation failed, falling back to word-cut", exc_info=True)
+
+    # Fallback: простой срез слов
+    chat.title = _auto_title_fallback(query)
+    logger.debug("auto_title fallback: '%s' → '%s'", query[:60], chat.title)
+
+
 async def _save_partial_answer(
     db: AsyncSession,
     chat: Chat,
@@ -110,9 +161,8 @@ async def _save_partial_answer(
         assistant_msg = Message(chat_id=chat.id, role="assistant", content=full_answer)
         db.add(assistant_msg)
         await asyncio.shield(db.commit())
-        if chat.title == "New Chat":
-            chat.title = _auto_title(title_query)
-            await asyncio.shield(db.commit())
+        await _maybe_set_title(chat, title_query, db)
+        await asyncio.shield(db.commit())
     except Exception:
         logger.exception("Failed to persist partial assistant answer chat_id=%s", chat.id)
 
@@ -324,9 +374,8 @@ async def send_message(
         assistant_msg = Message(chat_id=chat.id, role="assistant", content=answer)
         db.add(assistant_msg)
         await db.commit()
-        if chat.title == "New Chat":
-            chat.title = _auto_title(context.original_query or req.content)
-            await db.commit()
+        await _maybe_set_title(chat, context.original_query or req.content, db)
+        await db.commit()
         return MessageResponse(content=answer, message_id=str(assistant_msg.id))
 
     context.pipeline_id = pipeline.pipeline_id
@@ -346,9 +395,8 @@ async def send_message(
     db.add(assistant_msg)
     await db.commit()
 
-    if chat.title == "New Chat":
-        chat.title = _auto_title(context.original_query or req.content)
-        await db.commit()
+    await _maybe_set_title(chat, context.original_query or req.content, db)
+    await db.commit()
 
     return MessageResponse(content=result.final_answer, message_id=str(assistant_msg.id))
 
@@ -751,13 +799,3 @@ async def _pipeline_versions(request: Request) -> dict[str, str]:
         for k, v in request.headers.items()
         if k.lower().startswith("x-pipeline-")
     }
-
-
-def _auto_title(query: str) -> str:
-    """Generate a short chat title from the first user message."""
-    import re
-    cleaned = re.sub(r"[^\w\s\u0400-\u04ff]", " ", query).strip()
-    words = cleaned.split()
-    if len(words) > 7:
-        cleaned = " ".join(words[:7])
-    return cleaned[:255]
