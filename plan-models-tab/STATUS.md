@@ -10,7 +10,7 @@
 | 2 | Создать `tab-models.js` (оркестратор + renderModelCard) | ✅ Выполнен | 7355fd2 |
 | 3 | Обновить `tab-gen-models.js` (loadTab + удалить renderModelList) | ✅ Выполнен | 52df0e7 |
 | 4 | Обновить `tab-emb-models.js` (loadTab + удалить renderEmbeddingModelsTab) | ✅ Выполнен | bff4705 |
-| 5 | Обновить `tab-rerank-models.js` (loadTab + удалить _renderRerankModelList) | ⬜ Не начат | — |
+| 5 | Обновить `tab-rerank-models.js` (loadTab + удалить _renderRerankModelList) | ✅ Выполнен | 8cc2283 |
 | 6 | Зарегистрировать вкладку `models` в SettingsManager | ⬜ Не начат | — |
 | 7 | Обновить HTML: заменить три вкладки на одну | ⬜ Не начат | — |
 | 8 | Удалить перенесённые стили из `settings.css` | ⬜ Не начат | — |
