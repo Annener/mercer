@@ -6,7 +6,7 @@
 
 | Шаг | Описание | Статус | Коммит / Заметки |
 |-----|----------|--------|------------------|
-| 1 | Создать `models.css` и подключить в HTML | ⬜ Не начат | — |
+| 1 | Создать `models.css` и подключить в HTML | ✅ Выполнен | 5883f83, f61e1cb |
 | 2 | Создать `tab-models.js` (оркестратор + renderModelCard) | ⬜ Не начат | — |
 | 3 | Обновить `tab-gen-models.js` (loadTab + удалить renderModelList) | ⬜ Не начат | — |
 | 4 | Обновить `tab-emb-models.js` (loadTab + удалить renderEmbeddingModelsTab) | ⬜ Не начат | — |
@@ -36,5 +36,5 @@ _Пока нет._
 
 - `api.js` **не трогаем** — URL там не меняются
 - Порядок `<script>`: `tab-gen-models.js` → `tab-emb-models.js` → `tab-rerank-models.js` → `tab-models.js`
-- `models.css` подключается **рядом** с `settings.css` в HTML
+- `models.css` подключен рядом с `settings.css` в HTML ✅
 - После Шага 1 стили **дублируются** — это нормально до Шага 8
