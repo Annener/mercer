@@ -13,11 +13,6 @@ from shared_contracts.models import ClarificationState
 
 logger = logging.getLogger(__name__)
 
-FIELD_LABELS = {
-    "topic": "тему или объект вопроса",
-    "subject": "конкретный класс, расу, заклинание или предмет",
-}
-
 
 async def get_state(db: AsyncSession, chat_id: uuid.UUID) -> ClarificationState:
     row = await db.get(ClarificationStateRow, chat_id)
@@ -126,15 +121,12 @@ def generate_next_question(
     collected: dict[str, str],
     prompt_pack: PromptPack,
 ) -> str:
-    labels = [FIELD_LABELS.get(field, field) for field in missing_fields]
+    # Используем label из prompt_pack если доступен, иначе field_name напрямую
     template = prompt_pack.get("clarification", "Уточните, пожалуйста: {missing_fields}")
-    # TODO(TD-04): мигрировать на resolve_step_vars. Требует переименования плейсхолдеров
-    # в шаблоне «clarification» в PromptPack: {missing_fields} → {STEP.result}, {collected_fields} → {STEP.key}.
-    # После этого удалить format_prompt и _stringify из prompt_pack.py.
     return format_prompt(
         template,
         {
-            "missing_fields": ", ".join(labels),
+            "missing_fields": ", ".join(missing_fields),
             "collected_fields": collected,
         },
     ).strip()
@@ -144,12 +136,11 @@ def _extract_field_value(field: str, user_message: str) -> str | None:
     text = user_message.strip()
     if not text:
         return None
-
-    patterns = {
-        "topic": [r"(?:про|о|about)\s+(.+)$"],
-        "subject": [r"(?:про|о|about)\s+(.+)$", r"(?:это|это про|я имею в виду)\s+(.+)$"],
-    }
-    for pattern in patterns.get(field, []):
+    patterns = [
+        r"(?:про|о|about)\s+(.+)$",
+        r"(?:это|это про|я имею в виду)\s+(.+)$",
+    ]
+    for pattern in patterns:
         match = re.search(pattern, text, re.IGNORECASE)
         if match:
             return _normalize_value(match.group(1))

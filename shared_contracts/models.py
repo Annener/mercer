@@ -610,6 +610,25 @@ class ClarificationAnswer(BaseModel):
     answers: dict[str, str]
 
 
+# ---------------------------------------------------------------------------
+# Clarification FSM state contract
+# ---------------------------------------------------------------------------
+
+class ClarificationState(BaseModel):
+    """Pydantic-DTO состояния машины уточняющих вопросов.
+
+    Не является ORM-моделью — живёт только в памяти и передаётся
+    между clarification_fsm и chat-роутом.
+    Персистируется через ClarificationState ORM-строку в БД
+    (app/db/models.py :: ClarificationState).
+    """
+    stage: Literal["idle", "collecting", "complete", "fallback"] = "idle"
+    missing_fields: list[str] = Field(default_factory=list)
+    collected: dict[str, str] = Field(default_factory=dict)
+    turn: int = 0
+    next_question: str | None = None
+
+
 class PipelineExecutionContext(BaseModel):
     """Полный контекст для запуска пайплайна.
 
