@@ -7,7 +7,7 @@
 | Шаг | Описание | Статус | Коммит / Заметки |
 |-----|----------|--------|------------------|
 | 1 | Создать `models.css` и подключить в HTML | ✅ Выполнен | 5883f83, f61e1cb |
-| 2 | Создать `tab-models.js` (оркестратор + renderModelCard) | ⬜ Не начат | — |
+| 2 | Создать `tab-models.js` (оркестратор + renderModelCard) | ✅ Выполнен | 7355fd2 |
 | 3 | Обновить `tab-gen-models.js` (loadTab + удалить renderModelList) | ⬜ Не начат | — |
 | 4 | Обновить `tab-emb-models.js` (loadTab + удалить renderEmbeddingModelsTab) | ⬜ Не начат | — |
 | 5 | Обновить `tab-rerank-models.js` (loadTab + удалить _renderRerankModelList) | ⬜ Не начат | — |
