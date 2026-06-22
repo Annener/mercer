@@ -1,41 +1,4 @@
 const GenModelsTabMixin = {
-    renderModelList(kind, models, label = '') {
-        const toolbar = `<div class="settings-toolbar"><button class="btn btn-primary" data-action="new-${kind}">+ Новая ${label}модель</button></div>`;
-        if (!models || models.length === 0) return toolbar + `<div class="empty-state">Нет моделей</div>`;
-        return toolbar + `<div class="settings-grid">${models.map(model => {
-            let badgeClass = 'muted', badgeText = 'ready';
-            if (model.is_active) { badgeClass = 'ok'; badgeText = 'active'; }
-            else if (model.enabled === false) { badgeClass = 'muted'; badgeText = 'disabled'; }
-            else if (kind === 'emb') { badgeClass = 'ok'; badgeText = 'ready'; }
-            const activateItem = kind === 'gen'
-                ? `<button class="card-menu-item" data-action="activate-${kind}" data-id="${this.escapeHtml(model.model_id)}"${model.is_active ? ' disabled' : ''}>▶️ Активировать</button>`
-                : '';
-            const deleteDisabled = (kind === 'gen' && model.is_active) || (model.connected_vaults && model.connected_vaults.length) ? ' disabled' : '';
-            return `<article class="settings-card">
-                <div>
-                    <h3>${this.escapeHtml(model.display_name || model.model_id)}</h3>
-                    <p>${this.escapeHtml(model.provider || '')}${model.dimensions ? ` · ${model.dimensions}` : ''}</p>
-                    ${model.connected_vaults ? `<p>${model.connected_vaults.length} vault'ов</p>` : ''}
-                </div>
-                <div class="card-menu-container">
-                    <button class="card-menu-toggle" data-id="${this.escapeHtml(model.model_id)}" aria-label="Меню">⋮</button>
-                    <div class="card-menu">
-                        <button class="card-menu-item" data-action="edit-${kind}" data-id="${this.escapeHtml(model.model_id)}">✏️ Изменить</button>
-                        <button class="card-menu-item" data-action="check-${kind}" data-id="${this.escapeHtml(model.model_id)}">🔍 Проверить</button>
-                        ${activateItem}
-                        ${kind === 'gen' ? `<button class="card-menu-item" data-action="toggle-gen" data-id="${this.escapeHtml(model.model_id)}">${model.enabled === false ? '▶️ Включить' : '⏸️ Выключить'}</button>` : ''}
-                        <button class="card-menu-item card-menu-danger" data-action="delete-${kind}" data-id="${this.escapeHtml(model.model_id)}"${deleteDisabled}>🗑️ Удалить</button>
-                    </div>
-                </div>
-                <div><span class="badge ${badgeClass}">${badgeText}</span></div>
-            </article>`;
-        }).join('')}</div>`;
-    },
-
-    async renderGenerationModelsTab() {
-        const models = await this.api.getGenerationModels();
-        return this.renderModelList('gen', Array.isArray(models) ? models : []);
-    },
 
     async showGenerationModelModal(modelId = null) {
         let model = null;
@@ -114,7 +77,7 @@ const GenModelsTabMixin = {
                     await this.api.createGenerationModel(data);
                 }
                 closeModal();
-                await this.loadTab(this.currentTab);
+                await this.loadTab('models');
             } catch (err) { alert('Ошибка: ' + err.message); }
         });
     },
