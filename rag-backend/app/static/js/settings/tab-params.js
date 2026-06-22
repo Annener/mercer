@@ -13,6 +13,8 @@ const SETTINGS_DEFAULTS = {
     'pdf_sidecar.fallback_to_pdfminer': true,
 };
 
+const WATCHDOG_KNOWN_EXTENSIONS = ['.md', '.pdf', '.docx', '.txt', '.rst', '.html'];
+
 const ParamsTabMixin = {
     getParamType(key) {
         const boolKeys = [
@@ -43,6 +45,29 @@ const ParamsTabMixin = {
             'pdf_sidecar.timeout_seconds':      { label: 'Таймаут PDF-Sidecar (сек)', desc: 'Сколько секунд ждать ответа от PDF-Sidecar.' },
             'pdf_sidecar.fallback_to_pdfminer': { label: 'Fallback на PDF-miner', desc: 'Если PDF-Sidecar недоступен — использовать встроенный pdfminer.' },
         };
+
+        // Загружаем текущие watchdog-расширения
+        let currentExtensions = [];
+        try {
+            const watchdogData = await this.api.getWatchdogExtensions();
+            currentExtensions = watchdogData.auto_index_extensions || [];
+        } catch (e) {
+            console.error('Failed to load watchdog extensions', e);
+        }
+        const selectedSet = new Set(currentExtensions);
+        const allExtensions = [
+            ...WATCHDOG_KNOWN_EXTENSIONS,
+            ...currentExtensions.filter(e => !WATCHDOG_KNOWN_EXTENSIONS.includes(e)),
+        ];
+        const watchdogCheckboxesHtml = allExtensions.map(ext => `
+            <label class="settings-param-row indexing-ext-row">
+                <input type="checkbox"
+                       data-ext="${this.escapeHtml(ext)}"
+                       ${selectedSet.has(ext) ? 'checked' : ''}>
+                <span>${this.escapeHtml(ext)}</span>
+            </label>
+        `).join('');
+
         return `
             <div class="settings-toolbar">
                 <button class="btn btn-secondary" data-action="reset-params">Сбросить все параметры</button>
@@ -68,6 +93,25 @@ const ParamsTabMixin = {
                         </div>`;
                 }).join('')}
             </form>
+
+            <div class="settings-watchdog-block">
+                <h3 class="settings-watchdog-title">Авто-индексация (Vault Watchdog)</h3>
+                <p class="settings-param-desc">
+                    Файлы этих типов будут переиндексированы автоматически при изменении в vault-директории.
+                </p>
+                <div id="watchdog-ext-list" class="indexing-ext-list">
+                    ${watchdogCheckboxesHtml}
+                </div>
+                <div class="indexing-custom-input settings-toolbar">
+                    <input type="text"
+                           id="watchdog-custom-ext"
+                           placeholder=".epub"
+                           style="width: 140px;">
+                    <button class="btn btn-secondary" data-action="add-watchdog-ext">Добавить</button>
+                </div>
+                <div id="watchdog-message" style="min-height: 1.5em; margin-top: 8px;"></div>
+            </div>
+
             <div class="settings-params-footer">
                 <button class="btn btn-primary" data-action="save-params">Сохранить параметры</button>
             </div>`;

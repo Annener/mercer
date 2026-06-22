@@ -41,7 +41,6 @@ class SettingsManager {
                 case 'pipelines':     html = await this.renderPipelinesTab(); break;
                 case 'campaigns':     html = await this.renderCampaignsTab(); break;
                 case 'documents':     html = await this.renderDocumentsTab(); break;
-                case 'indexing':      html = await this.renderIndexingTab(); break;
                 default: html = '<div>Вкладка не найдена</div>';
             }
             this._tabContent.innerHTML = html;
@@ -106,7 +105,6 @@ class SettingsManager {
             case 'pipelines':     await this.handlePipelinesAction(action, id, btn); break;
             case 'campaigns':     await this.handleCampaignsAction(action, id, btn); break;
             case 'documents':     await this.handleDocumentsAction(action, btn); break;
-            case 'indexing':      await this.handleIndexingAction(action, id, btn); break;
         }
     }
 
@@ -154,6 +152,15 @@ class SettingsManager {
                 for (const u of updates) {
                     await this.api.updateSettingsParam(u.key, u.value);
                 }
+
+                // Сохраняем watchdog-расширения через отдельный endpoint
+                const checkedExts = [...this._tabContent.querySelectorAll('#watchdog-ext-list [data-ext]')]
+                    .filter(cb => cb.checked)
+                    .map(cb => cb.dataset.ext);
+                if (checkedExts.length > 0) {
+                    await this.api.saveWatchdogExtensions(checkedExts);
+                }
+
                 alert('Параметры сохранены');
             } catch (e) { alert('Ошибка: ' + e.message); }
 
@@ -163,6 +170,32 @@ class SettingsManager {
                 await this.api.resetSettingsParams();
                 await this.loadTab('params');
             } catch (e) { alert('Ошибка сброса: ' + e.message); }
+
+        } else if (action === 'add-watchdog-ext') {
+            const input = this._tabContent.querySelector('#watchdog-custom-ext');
+            const msgEl = this._tabContent.querySelector('#watchdog-message');
+            const ext = (input?.value || '').trim();
+            if (!ext.startsWith('.')) {
+                if (msgEl) { msgEl.textContent = 'Расширение должно начинаться с "."'; msgEl.className = 'error'; }
+                return;
+            }
+            const existing = this._tabContent.querySelector(`#watchdog-ext-list [data-ext="${CSS.escape(ext)}"]`);
+            if (existing) {
+                if (msgEl) { msgEl.textContent = `Расширение ${ext} уже есть в списке`; msgEl.className = ''; }
+                return;
+            }
+            const list = this._tabContent.querySelector('#watchdog-ext-list');
+            if (list) {
+                const label = document.createElement('label');
+                label.className = 'settings-param-row indexing-ext-row';
+                label.innerHTML = `
+                    <input type="checkbox" data-ext="${this.escapeHtml(ext)}" checked>
+                    <span>${this.escapeHtml(ext)}</span>
+                `;
+                list.appendChild(label);
+            }
+            if (input) input.value = '';
+            if (msgEl) { msgEl.textContent = ''; msgEl.className = ''; }
         }
     }
 

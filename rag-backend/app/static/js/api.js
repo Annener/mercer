@@ -961,15 +961,16 @@ class ChatAPI {
         return response.json();
     }
 
-    // === Watchdog settings ===
+    // === Watchdog: расширения для авто-индексации ===
+    // Используется из tab-params.js; методы getWatchdogSettings/saveWatchdogSettings удалены.
 
-    async getWatchdogSettings() {
+    async getWatchdogExtensions() {
         const res = await fetch('/api/v1/settings/watchdog');
         if (!res.ok) throw new Error('Failed to load watchdog settings');
         return res.json(); // { auto_index_extensions: string[] }
     }
 
-    async saveWatchdogSettings(extensions) {
+    async saveWatchdogExtensions(extensions) {
         const res = await fetch('/api/v1/settings/watchdog', {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
