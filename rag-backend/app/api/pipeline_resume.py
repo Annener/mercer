@@ -276,3 +276,86 @@ async def pipeline_resume(
 
 async def _get_chat_or_404(chat_id: str, db: AsyncSession) -> Chat:
     try:
+        chat_uuid = uuid.UUID(chat_id)
+    except ValueError as exc:
+        raise HTTPException(422, f"Invalid chat_id format: {chat_id}") from exc
+    chat = await db.get(Chat, chat_uuid)
+    if not chat:
+        raise HTTPException(404, "Chat not found")
+    return chat
+
+
+def _restore_context(snapshot: dict[str, Any], chat_id: str) -> PipelineExecutionContext:
+    """Восстанавливает PipelineExecutionContext из JSONB-снапшота.
+
+    Гарантирует chat_id — на случай если снапшот не содержит его.
+    Генерирует дефолтный message_id если снапшот не содержит его
+    (старые записи до Этапа 1 или неполные снапшоты).
+    Генерирует дефолтный query="" если снапшот не содержит его.
+    """
+    ctx_data = {
+        "query": "",  # дефолт, если отсутствует в снапшоте
+        "message_id": str(uuid.uuid4()),  # дефолт, если отсутствует в снапшоте
+        **snapshot,
+        "chat_id": chat_id,  # всегда перезаписываем из chat_id URL-параметра
+    }
+    return PipelineExecutionContext.model_validate(ctx_data)
+
+
+async def _plain_rag_stream(
+    ctx: PipelineExecutionContext,
+    chat: Chat,
+    db: AsyncSession,
+) -> AsyncIterator[str]:
+    """Fallback plain RAG стрим — используется при отмене confirm."""
+    from app.api.chat import _fallback_retrieve, _resolve_system_prompt
+    from app.services.retrieval import format_context
+
+    provider = settings_service.get_active_provider()
+    if provider is None:
+        error_data = json.dumps(
+            {"type": "error", "message": "No LLM provider configured"},
+            ensure_ascii=False,
+        )
+        yield f"data: {error_data}\n\n"
+        return
+
+    system_prompt = await _resolve_system_prompt(ctx.campaign_id, ctx.domain_id, db)
+    vault_ids: list[str] = ctx.vault_ids or []
+
+    hits: list[SearchHit] = await _fallback_retrieve(
+        query=ctx.query,
+        vault_ids=vault_ids,
+        domain_id=ctx.domain_id,
+        campaign_id=ctx.campaign_id,
+        db=db,
+    )
+
+    rag_context = format_context(hits)
+    full_system = f"{system_prompt}\n\n{rag_context}" if rag_context else system_prompt
+
+    messages: list[dict[str, str]] = []
+    if full_system:
+        messages.append({"role": "system", "content": full_system})
+    for m in (ctx.history or []):
+        messages.append({"role": m.role, "content": m.content})
+    messages.append({"role": "user", "content": ctx.query})
+
+    full_answer = ""
+    async for token in provider.generate_stream(messages):
+        full_answer += token
+        chunk = json.dumps({"type": "token", "content": token}, ensure_ascii=False)
+        yield f"data: {chunk}\n\n"
+
+    if full_answer:
+        assistant_msg = Message(
+            chat_id=chat.id,
+            role="assistant",
+            content=full_answer,
+        )
+        db.add(assistant_msg)
+        await db.commit()
+        if chat.title == "New Chat":
+            from app.api.chat import _auto_title
+            chat.title = _auto_title(ctx.original_query or ctx.query)
+            await db.commit()
