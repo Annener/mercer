@@ -321,6 +321,9 @@ class ChatManager {
         this._renderScheduled = false;
         this._streamingDone = false; // флаг: стрим завершён, RAF не должен перезаписывать
         this._abortController = null; // текущий AbortController для активной генерации
+        // Значение настройки chat.stream_answers (по умолчанию true до загрузки).
+        // Обновляется при инициализации и при каждом открытии чата.
+        this._streamEnabled = true;
         this.messagesContainer = document.getElementById('messages-container');
         this.inputArea = document.getElementById('input-area');
         this.messageInput = document.getElementById('message-input');
@@ -336,6 +339,24 @@ class ChatManager {
         this.initEventListeners();
         // Баннер pending-файлов (step-07)
         this.pendingBanner = new PendingFilesBanner('chat-banner-area');
+        // Загружаем настройку стриминга при старте
+        this._loadStreamSetting();
+    }
+
+    /**
+     * Читает chat.stream_answers из /api/settings/params и кэширует в this._streamEnabled.
+     * Тихо игнорирует ошибки — при недоступности API остаётся дефолт true.
+     */
+    async _loadStreamSetting() {
+        try {
+            const params = await chatAPI.getSettingsParams();
+            const val = params['chat.stream_answers'];
+            // Значение может прийти как boolean или как строка 'true'/'false'
+            this._streamEnabled = (val === true || val === 'true');
+        } catch (e) {
+            // API недоступен — продолжаем со стримингом по умолчанию
+            console.warn('chat.js: could not load stream_answers setting, defaulting to true', e);
+        }
     }
 
     // -------------------------------------------------------
@@ -399,6 +420,8 @@ class ChatManager {
     async loadChat(chatId) {
         try {
             this.currentChatId = chatId;
+            // Обновляем настройку стриминга при каждом открытии чата — подхватываем изменения без перезагрузки
+            await this._loadStreamSetting();
             const data = await chatAPI.getChat(chatId);
             this.currentChat = data.chat;
             this.chatTitle.textContent = data.chat.title;
@@ -428,7 +451,15 @@ class ChatManager {
         this.isStreaming = true;
         const signal = this._setStopMode();
         try {
-            const response = await chatAPI.sendMessage(this.currentChatId, content, true, signal);
+            // Используем this._streamEnabled из настройки chat.stream_answers.
+            // При stream=false AbortSignal не передаётся (кнопка «Стоп» недоступна для sync-запроса).
+            const stream = this._streamEnabled;
+            const response = await chatAPI.sendMessage(
+                this.currentChatId,
+                content,
+                stream,
+                stream ? signal : null,
+            );
             if (response instanceof ReadableStream) {
                 await this.handleStreamResponse(response, signal);
             } else {
