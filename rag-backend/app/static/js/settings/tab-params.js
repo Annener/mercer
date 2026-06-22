@@ -1,7 +1,6 @@
 const SETTINGS_DEFAULTS = {
     'retrieval.enabled': true,
     'retrieval.top_k': 10,
-    'retrieval.reranker_enabled': false,
     'chunking.chunk_size': 2000,
     'chunking.overlap': 64,
     'chunking.entity_aware_mode': true,
@@ -24,7 +23,6 @@ const ParamsTabMixin = {
     getParamType(key) {
         const boolKeys = [
             'retrieval.enabled',
-            'retrieval.reranker_enabled',
             'chat.stream_answers',
             'chat.auto_title',
             'chunking.entity_aware_mode',
@@ -41,7 +39,6 @@ const ParamsTabMixin = {
         const descriptions = {
             'retrieval.enabled':                { label: 'RAG включён', desc: 'Включает поиск по базе знаний при ответе. Если выключить — ИИ отвечает только из своей памяти.' },
             'retrieval.top_k':                  { label: 'Top-K результатов', desc: 'Сколько фрагментов документов передавать ИИ при каждом запросе. Рекомендуется 5–15.' },
-            'retrieval.reranker_enabled':       { label: 'Reranker включён (retrieval)', desc: 'Включает дополнительную модель переранжирования результатов поиска на уровне retrieval.' },
             'chunking.chunk_size':              { label: 'Размер чанка', desc: 'Максимальное количество символов в одном фрагменте документа при индексации. Рекомендуется 1000–3000.' },
             'chunking.overlap':                 { label: 'Перекрытие чанков', desc: 'Сколько символов повторяется между соседними чанками. Рекомендуется 32–128.' },
             'chunking.entity_aware_mode':       { label: 'Режим осведомлённости об объектах', desc: 'При нарезке учитывает границы сущностей (персонажи, места). Улучшает качество для D&D текстов.' },

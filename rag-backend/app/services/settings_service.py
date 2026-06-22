@@ -19,7 +19,6 @@ from app.providers.generation.openai_compatible import OpenAICompatibleProvider
 DEFAULTS: dict[str, Any] = {
     "retrieval.enabled": True,
     "retrieval.top_k": 10,
-    "retrieval.reranker_enabled": False,
     "chunking.chunk_size": 2000,
     "chunking.overlap": 64,
     "chunking.entity_aware_mode": True,
