@@ -138,13 +138,9 @@ async def _process_vault(
             # checksum_md5, которое живёт только в task:{task_id}:files.
             changed.append(disk_file)
 
+    # Нет изменений — выходим без лога
     if not changed:
         return
-
-    logger.info(
-        "Watchdog: vault_id=%s changed=%d files",
-        vault_id, len(changed),
-    )
 
     to_auto = [f for f in changed if f["extension"] in auto_extensions]
     to_mark = [f for f in changed if f["extension"] not in auto_extensions]
@@ -161,6 +157,11 @@ async def _process_vault(
         # а не in-memory IndexerService.get_active_tasks()
         already_indexing = await state_manager.is_vault_indexing(vault_id)
         if not already_indexing:
+            # Логируем только когда реально запускаем задачу
+            logger.info(
+                "Watchdog: vault_id=%s changed=%d files",
+                vault_id, len(changed),
+            )
             try:
                 task_id = await indexer_service.start_task(vault_id, force_reindex=False)
                 logger.info(
