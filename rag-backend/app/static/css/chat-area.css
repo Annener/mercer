@@ -389,8 +389,8 @@
 
 /* === Pending files banner (step-07) ===
    Расположен в .context-banner-slot (правая часть context-bar).
-   Ширина — по контенту, не на всю строку.
-   Зелёный информационный стиль вместо жёлтого тревожного.
+   Ширина — по контенту.
+   Зелёный информационный стиль.
 */
 .pending-banner {
     display: inline-flex;
@@ -402,10 +402,34 @@
     border-radius: 6px;
     font-size: 0.8125rem;
     white-space: nowrap;
+    transition: background 0.2s, border-color 0.2s;
+}
+
+/* Режим индексации — чуть более нейтральный фон */
+.pending-banner:has(.pending-banner__spinner:not([style*="none"])) {
+    background: #f0f5f7;
+    border-color: #a0b8c4;
 }
 
 .pending-banner__text {
     color: #1f6b31;
+}
+
+.pending-banner__status {
+    color: #2c5364;
+    font-size: 0.8125rem;
+}
+
+/* Спиннер — вращающийся круг */
+.pending-banner__spinner {
+    color: #2e7d9a;
+    flex-shrink: 0;
+    animation: banner-spin 1s linear infinite;
+}
+
+@keyframes banner-spin {
+    from { transform: rotate(0deg); }
+    to   { transform: rotate(360deg); }
 }
 
 .pending-banner__btn {
