@@ -11,7 +11,7 @@
 | 3 | Обновить `tab-gen-models.js` (loadTab + удалить renderModelList) | ✅ Выполнен | 52df0e7 |
 | 4 | Обновить `tab-emb-models.js` (loadTab + удалить renderEmbeddingModelsTab) | ✅ Выполнен | bff4705 |
 | 5 | Обновить `tab-rerank-models.js` (loadTab + удалить _renderRerankModelList) | ✅ Выполнен | 8cc2283 |
-| 6 | Зарегистрировать вкладку `models` в SettingsManager | ⬜ Не начат | — |
+| 6 | Зарегистрировать вкладку `models` в SettingsManager | ✅ Выполнен | 9761c61 |
 | 7 | Обновить HTML: заменить три вкладки на одну | ⬜ Не начат | — |
 | 8 | Удалить перенесённые стили из `settings.css` | ⬜ Не начат | — |
 | 9 | Финальная проверка всех сценариев | ⬜ Не начат | — |
@@ -38,3 +38,4 @@ _Пока нет._
 - Порядок `<script>`: `tab-gen-models.js` → `tab-emb-models.js` → `tab-rerank-models.js` → `tab-models.js`
 - `models.css` подключен рядом с `settings.css` в HTML ✅
 - После Шага 1 стили **дублируются** — это нормально до Шага 8
+- `handleGenModelsAction` / `handleEmbModelsAction` в settings.js сохранены как legacy (для обратной совместимости со старыми вкладками до Шага 7)
