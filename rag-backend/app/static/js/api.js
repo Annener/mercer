@@ -530,22 +530,10 @@ class ChatAPI {
 
     // === Settings: Vaults CRUD ===
 
-    async getSettingsVaults(domainId = null) {
+    async getVaults(domainId = null) {
         const qs = domainId ? `?domain_id=${encodeURIComponent(domainId)}` : '';
         const response = await fetch(`${this.baseUrl}/api/settings/vaults${qs}`);
         if (!response.ok) throw new Error(`Failed to get vaults: ${response.statusText}`);
-        return response.json();
-    }
-
-    // Алиас без суффикса Settings (используется в новом коде)
-    async getVaults(domainId = null) {
-        return this.getSettingsVaults(domainId);
-    }
-
-    // Новый метод: получить один vault по id
-    async getVault(vaultId) {
-        const response = await fetch(`${this.baseUrl}/api/settings/vaults/${encodeURIComponent(vaultId)}`);
-        if (!response.ok) throw new Error(`Failed to get vault: ${response.statusText}`);
         return response.json();
     }
 
@@ -585,16 +573,16 @@ class ChatAPI {
         return response.json();
     }
 
-    // === Settings: Generation Models CRUD ===
+    // === Generation Models ===
 
     async getGenerationModels() {
-        const response = await fetch(`${this.baseUrl}/api/settings/models/generation`);
+        const response = await fetch(`${this.baseUrl}/api/settings/generation-models`);
         if (!response.ok) throw new Error(`Failed to get generation models: ${response.statusText}`);
         return response.json();
     }
 
     async createGenerationModel(data) {
-        const response = await fetch(`${this.baseUrl}/api/settings/models/generation`, {
+        const response = await fetch(`${this.baseUrl}/api/settings/generation-models`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(data),
@@ -604,7 +592,7 @@ class ChatAPI {
     }
 
     async updateGenerationModel(modelId, data) {
-        const response = await fetch(`${this.baseUrl}/api/settings/models/generation/${encodeURIComponent(modelId)}`, {
+        const response = await fetch(`${this.baseUrl}/api/settings/generation-models/${encodeURIComponent(modelId)}`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(data),
@@ -614,7 +602,7 @@ class ChatAPI {
     }
 
     async deleteGenerationModel(modelId) {
-        const response = await fetch(`${this.baseUrl}/api/settings/models/generation/${encodeURIComponent(modelId)}`, {
+        const response = await fetch(`${this.baseUrl}/api/settings/generation-models/${encodeURIComponent(modelId)}`, {
             method: 'DELETE',
         });
         if (!response.ok) throw new Error(`Failed to delete generation model: ${response.statusText}`);
@@ -622,7 +610,7 @@ class ChatAPI {
     }
 
     async setActiveGenerationModel(modelId) {
-        const response = await fetch(`${this.baseUrl}/api/settings/models/generation/${encodeURIComponent(modelId)}/activate`, {
+        const response = await fetch(`${this.baseUrl}/api/settings/generation-models/${encodeURIComponent(modelId)}/activate`, {
             method: 'POST',
         });
         if (!response.ok) throw new Error(`Failed to activate generation model: ${response.statusText}`);
@@ -630,7 +618,7 @@ class ChatAPI {
     }
 
     async toggleGenerationModel(modelId) {
-        const response = await fetch(`${this.baseUrl}/api/settings/models/generation/${encodeURIComponent(modelId)}/toggle`, {
+        const response = await fetch(`${this.baseUrl}/api/settings/generation-models/${encodeURIComponent(modelId)}/toggle`, {
             method: 'POST',
         });
         if (!response.ok) throw new Error(`Failed to toggle generation model: ${response.statusText}`);
@@ -638,48 +626,23 @@ class ChatAPI {
     }
 
     async checkGenerationModel(modelId) {
-        const response = await fetch(`${this.baseUrl}/api/settings/models/generation/${encodeURIComponent(modelId)}/check`, {
+        const response = await fetch(`${this.baseUrl}/api/settings/generation-models/${encodeURIComponent(modelId)}/check`, {
             method: 'POST',
         });
         if (!response.ok) throw new Error(`Failed to check generation model: ${response.statusText}`);
         return response.json();
     }
 
-    // Новые методы моделей (унифицированный API)
-    async getModels() {
-        const response = await fetch(`${this.baseUrl}/api/settings/models`);
-        if (!response.ok) throw new Error(`Failed to get models: ${response.statusText}`);
-        return response.json();
-    }
-
-    async getActiveModel() {
-        const response = await fetch(`${this.baseUrl}/api/settings/models/active`);
-        if (!response.ok) throw new Error(`Failed to get active model: ${response.statusText}`);
-        return response.json();
-    }
-
-    async setActiveModel(modelId) {
-        const response = await fetch(`${this.baseUrl}/api/settings/models/active`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ model_id: modelId }),
-        });
-        if (!response.ok) throw new Error(`Failed to set active model: ${response.statusText}`);
-        return response.json();
-    }
-
-    // === Settings: Embedding Models CRUD ===
-    // S19-A: setActiveEmbeddingModel удалён — роута нет, концепция неприменима (оригинал).
-    // Восстановлен в виде нового унифицированного API (/api/settings/embedding-models/active).
+    // === Embedding Models ===
 
     async getEmbeddingModels() {
-        const response = await fetch(`${this.baseUrl}/api/settings/models/embedding`);
+        const response = await fetch(`${this.baseUrl}/api/settings/embedding-models`);
         if (!response.ok) throw new Error(`Failed to get embedding models: ${response.statusText}`);
         return response.json();
     }
 
     async createEmbeddingModel(data) {
-        const response = await fetch(`${this.baseUrl}/api/settings/models/embedding`, {
+        const response = await fetch(`${this.baseUrl}/api/settings/embedding-models`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(data),
@@ -689,7 +652,7 @@ class ChatAPI {
     }
 
     async updateEmbeddingModel(modelId, data) {
-        const response = await fetch(`${this.baseUrl}/api/settings/models/embedding/${encodeURIComponent(modelId)}`, {
+        const response = await fetch(`${this.baseUrl}/api/settings/embedding-models/${encodeURIComponent(modelId)}`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(data),
@@ -699,7 +662,7 @@ class ChatAPI {
     }
 
     async deleteEmbeddingModel(modelId) {
-        const response = await fetch(`${this.baseUrl}/api/settings/models/embedding/${encodeURIComponent(modelId)}`, {
+        const response = await fetch(`${this.baseUrl}/api/settings/embedding-models/${encodeURIComponent(modelId)}`, {
             method: 'DELETE',
         });
         if (!response.ok) throw new Error(`Failed to delete embedding model: ${response.statusText}`);
@@ -707,40 +670,23 @@ class ChatAPI {
     }
 
     async checkEmbeddingModel(modelId) {
-        const response = await fetch(`${this.baseUrl}/api/settings/models/embedding/${encodeURIComponent(modelId)}/check`, {
+        const response = await fetch(`${this.baseUrl}/api/settings/embedding-models/${encodeURIComponent(modelId)}/check`, {
             method: 'POST',
         });
         if (!response.ok) throw new Error(`Failed to check embedding model: ${response.statusText}`);
         return response.json();
     }
 
-    // Новые методы embedding models (унифицированный API)
-    async getActiveEmbeddingModel() {
-        const response = await fetch(`${this.baseUrl}/api/settings/embedding-models/active`);
-        if (!response.ok) throw new Error(`Failed to get active embedding model: ${response.statusText}`);
-        return response.json();
-    }
-
-    async setActiveEmbeddingModel(modelId) {
-        const response = await fetch(`${this.baseUrl}/api/settings/embedding-models/active`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ model_id: modelId }),
-        });
-        if (!response.ok) throw new Error(`Failed to set active embedding model: ${response.statusText}`);
-        return response.json();
-    }
-
-    // === Settings: Rerank Models CRUD ===
+    // === Rerank Models ===
 
     async getRerankModels() {
-        const response = await fetch(`${this.baseUrl}/api/settings/models/rerank`);
+        const response = await fetch(`${this.baseUrl}/api/settings/rerank-models`);
         if (!response.ok) throw new Error(`Failed to get rerank models: ${response.statusText}`);
         return response.json();
     }
 
     async createRerankModel(data) {
-        const response = await fetch(`${this.baseUrl}/api/settings/models/rerank`, {
+        const response = await fetch(`${this.baseUrl}/api/settings/rerank-models`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(data),
@@ -750,7 +696,7 @@ class ChatAPI {
     }
 
     async updateRerankModel(modelId, data) {
-        const response = await fetch(`${this.baseUrl}/api/settings/models/rerank/${encodeURIComponent(modelId)}`, {
+        const response = await fetch(`${this.baseUrl}/api/settings/rerank-models/${encodeURIComponent(modelId)}`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(data),
@@ -760,67 +706,30 @@ class ChatAPI {
     }
 
     async deleteRerankModel(modelId) {
-        const response = await fetch(`${this.baseUrl}/api/settings/models/rerank/${encodeURIComponent(modelId)}`, {
+        const response = await fetch(`${this.baseUrl}/api/settings/rerank-models/${encodeURIComponent(modelId)}`, {
             method: 'DELETE',
         });
         if (!response.ok) throw new Error(`Failed to delete rerank model: ${response.statusText}`);
         // 204 No Content
     }
 
-    async activateRerankModel(modelId) {
-        const response = await fetch(`${this.baseUrl}/api/settings/models/rerank/${encodeURIComponent(modelId)}/activate`, {
-            method: 'POST',
-        });
-        if (!response.ok) throw new Error(`Failed to activate rerank model: ${response.statusText}`);
-        return response.json();
-    }
-
-    async deactivateRerankModel(modelId) {
-        const response = await fetch(`${this.baseUrl}/api/settings/models/rerank/${encodeURIComponent(modelId)}/deactivate`, {
-            method: 'POST',
-        });
-        if (!response.ok) throw new Error(`Failed to deactivate rerank model: ${response.statusText}`);
-        return response.json();
-    }
-
     async checkRerankModel(modelId) {
-        const response = await fetch(`${this.baseUrl}/api/settings/models/rerank/${encodeURIComponent(modelId)}/check`, {
+        const response = await fetch(`${this.baseUrl}/api/settings/rerank-models/${encodeURIComponent(modelId)}/check`, {
             method: 'POST',
         });
         if (!response.ok) throw new Error(`Failed to check rerank model: ${response.statusText}`);
         return response.json();
     }
 
-    // === Settings: Documents ===
+    // === Documents ===
 
-    // S40-B fix: бэк: GET /api/settings/documents?vault_id=|domain_id=&status=&tag_id=
-    // Один из vault_id / domain_id обязателен (иначе бэк вернёт 400).
-    async getSettingsDocuments({ vaultId = null, domainId = null, status = null, tagId = null } = {}) {
+    async getDocuments(vaultId = null, domainId = null) {
         const params = new URLSearchParams();
-        if (vaultId)  params.set('vault_id',  vaultId);
+        if (vaultId) params.set('vault_id', vaultId);
         if (domainId) params.set('domain_id', domainId);
-        if (status)   params.set('status',    status);
-        if (tagId)    params.set('tag_id',     tagId);
         const qs = params.toString() ? `?${params}` : '';
         const response = await fetch(`${this.baseUrl}/api/settings/documents${qs}`);
-        if (!response.ok) throw new Error(`Failed to get settings documents: ${response.statusText}`);
-        return response.json();
-    }
-
-    // S41-A fix: GET /api/settings/documents/{document_id} → DocumentRead
-    async getSettingsDocument(documentId) {
-        const response = await fetch(`${this.baseUrl}/api/settings/documents/${encodeURIComponent(documentId)}`);
-        if (!response.ok) throw new Error(`Failed to get settings document: ${response.statusText}`);
-        return response.json();
-    }
-
-    // Новые методы документов
-    async uploadDocument(formData) {
-        const response = await fetch(`${this.baseUrl}/api/settings/documents/upload`, {
-            method: 'POST',
-            body: formData,
-        });
-        if (!response.ok) throw new Error(`Failed to upload document: ${response.statusText}`);
+        if (!response.ok) throw new Error(`Failed to get documents: ${response.statusText}`);
         return response.json();
     }
 
@@ -832,137 +741,7 @@ class ChatAPI {
         // 204 No Content
     }
 
-    async reindexDocument(documentId) {
-        const response = await fetch(`${this.baseUrl}/api/settings/documents/${encodeURIComponent(documentId)}/reindex`, {
-            method: 'POST',
-        });
-        if (!response.ok) throw new Error(`Failed to reindex document: ${response.statusText}`);
-        return response.json();
-    }
-
-    // DB Management: Documents
-
-    // D1 fix: /api/db/documents?vault_id= (не /api/settings/documents?domain_id=)
-    async getDocumentsByVault(vaultId, limit = 100, offset = 0, orderBy = 'document_id') {
-        const params = new URLSearchParams({
-            vault_id: vaultId,
-            limit: String(limit),
-            offset: String(offset),
-            order_by: orderBy,
-        });
-        const response = await fetch(`${this.baseUrl}/api/db/documents?${params}`);
-        if (!response.ok) throw new Error(`Failed to get documents: ${response.statusText}`);
-        return response.json();
-    }
-
-    // D2 fix: DELETE /api/db/documents/{id}?vault_id=
-    // Ответ — JSON (не 204!), бэк возвращает payload с deleted_count.
-    async deleteDocumentById(documentId, vaultId) {
-        const params = new URLSearchParams({ vault_id: vaultId });
-        const response = await fetch(`${this.baseUrl}/api/db/documents/${encodeURIComponent(documentId)}?${params}`, {
-            method: 'DELETE',
-        });
-        if (!response.ok) throw new Error(`Failed to delete document: ${response.statusText}`);
-        return response.json(); // возвращает JSON, не 204
-    }
-
-    // D6 fix: PUT /api/settings/documents/{id}/labels
-    // Full-replace семантика: удаляет все старые метки, вставляет новые. Возвращает DocumentRead (200).
-    async updateDocumentLabels(documentId, tagIds) {
-        const response = await fetch(`${this.baseUrl}/api/settings/documents/${encodeURIComponent(documentId)}/labels`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ tag_ids: tagIds }),
-        });
-        if (!response.ok) throw new Error(`Failed to update document labels: ${response.statusText}`);
-        return response.json();
-    }
-
-    // S44-A fix: additive батч-назначение тегов
-    async batchLabelDocuments(documentIds, tagIds) {
-        const response = await fetch(`${this.baseUrl}/api/settings/documents/labels/batch`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ document_ids: documentIds, tag_ids: tagIds }),
-        });
-        if (!response.ok) throw new Error(`Failed to batch label documents: ${response.statusText}`);
-        // 204 No Content
-    }
-
-    // === Indexer ===
-
-    // D3 fix: POST /vaults/{id}/reindex (не /api/settings/vaults/{id}/reindex)
-    async runIndexer(vaultId = null, force = false) {
-        if (!vaultId) {
-            const vaults = await this.getSettingsVaults();
-            const list = Array.isArray(vaults) ? vaults : (vaults.vaults || []);
-            const active = list.find(v => v.enabled !== false) || list[0];
-            vaultId = active ? (active.vault_id || active.id) : null;
-        }
-        if (!vaultId) throw new Error('Vault не найден — создайте vault перед запуском индексации');
-        const response = await fetch(`${this.baseUrl}/vaults/${encodeURIComponent(vaultId)}/reindex`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ force_reindex: force }),
-        });
-        if (!response.ok) throw new Error(`Failed to reindex vault: ${response.statusText}`);
-        return response.json();
-    }
-
-    // D4 fix: WS /ws/index-tasks/{id}
-    connectToTaskStream(taskId) {
-        const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-        const wsUrl = `${proto}://${location.host}/ws/index-tasks/${encodeURIComponent(taskId)}`;
-        return new WebSocket(wsUrl);
-    }
-
-    // D5 fix: GET /index-tasks/{id}/state
-    async getIndexTaskState(taskId) {
-        const response = await fetch(`${this.baseUrl}/index-tasks/${encodeURIComponent(taskId)}/state`);
-        if (!response.ok) throw new Error(`Failed to get task state: ${response.statusText}`);
-        return response.json();
-    }
-
-    // D7 fix: POST /api/db/search/domain
-    async textSearchByDomain(domainId, queryText, limit = 20) {
-        const response = await fetch(`${this.baseUrl}/api/db/search/domain`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ domain_id: domainId, query_text: queryText, limit }),
-        });
-        if (!response.ok) throw new Error(`Failed to search by domain: ${response.statusText}`);
-        return response.json();
-    }
-
-    // === Analytics ===
-
-    async getAnalytics(domainId = null, startDate = null, endDate = null) {
-        const params = new URLSearchParams();
-        if (domainId) params.set('domain_id', domainId);
-        if (startDate) params.set('start_date', startDate);
-        if (endDate) params.set('end_date', endDate);
-        const qs = params.toString() ? `?${params}` : '';
-        const response = await fetch(`${this.baseUrl}/api/analytics${qs}`);
-        if (!response.ok) throw new Error(`Failed to get analytics: ${response.statusText}`);
-        return response.json();
-    }
-
-    async getChatAnalytics(chatId) {
-        const response = await fetch(`${this.baseUrl}/api/analytics/chat/${chatId}`);
-        if (!response.ok) throw new Error(`Failed to get chat analytics: ${response.statusText}`);
-        return response.json();
-    }
-
-    // === Health ===
-
-    async getHealth() {
-        const response = await fetch(`${this.baseUrl}/api/health`);
-        if (!response.ok) throw new Error(`Health check failed: ${response.statusText}`);
-        return response.json();
-    }
-
     // === Watchdog: расширения для авто-индексации ===
-    // Используется из tab-params.js; методы getWatchdogSettings/saveWatchdogSettings удалены.
 
     async getWatchdogExtensions() {
         const res = await fetch('/api/v1/settings/watchdog');
