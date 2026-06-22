@@ -1,14 +1,4 @@
 const EmbModelsTabMixin = {
-    async renderEmbeddingModelsTab() {
-        const [models, vaults] = await Promise.all([this.api.getEmbeddingModels(), this.api.getSettingsVaults()]);
-        const modelsArr = Array.isArray(models) ? models : [];
-        const vaultsArr = Array.isArray(vaults) ? vaults : [];
-        const enriched = modelsArr.map(model => ({
-            ...model,
-            connected_vaults: vaultsArr.filter(vault => vault.embedding_model_id === model.model_id),
-        }));
-        return this.renderModelList('emb', enriched, 'embedding-');
-    },
 
     async showEmbeddingModelModal(modelId = null) {
         let model = null;
@@ -83,7 +73,7 @@ const EmbModelsTabMixin = {
                     await this.api.createEmbeddingModel(data);
                 }
                 closeModal();
-                await this.loadTab(this.currentTab);
+                await this.loadTab('models');
             } catch (err) { alert('Ошибка: ' + err.message); }
         });
     },
