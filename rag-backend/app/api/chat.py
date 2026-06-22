@@ -17,9 +17,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Campaign, Chat, ClarificationStateRow, Message
 from app.db.session import get_db
+from app.services import clarification_fsm
 from app.services.domain_service import domain_service
 from app.services.pipeline_executor import PipelineExecutor
 from app.services.pipeline_router import PipelineRouter
+from app.services.planner import Planner
+from app.services.prompt_pack import PromptPack
 from app.services.query_rewriter import query_rewriter
 from app.services.retrieval import (
     format_context,
@@ -412,6 +415,39 @@ async def send_message_stream(
 
     chat = await _get_chat_or_404(chat_id, db)
 
+    # ───────────────────────────────────────────────────────────────────────────
+    # Кларификация: если есть активная сессия сбора — продолжаем её, не идём дальше
+    # ───────────────────────────────────────────────────────────────────────────
+    clarif_state = await clarification_fsm.get_state(db, chat.id)
+    if clarif_state.stage == "collecting":
+        max_turns: int = int(await settings_service.get("chat.max_clarification_turns", db))
+        prompt_pack = PromptPack(await domain_service.get_prompts(
+            chat.domain_id or "default", db
+        ))
+        new_state = clarification_fsm.process_clarification_answer(
+            clarif_state, req.content, max_turns, prompt_pack
+        )
+        await clarification_fsm.save_state(db, chat.id, new_state)
+
+        if new_state.stage == "collecting":
+            # Ещё есть несобранные поля — задаём следующий вопрос
+            user_msg = Message(chat_id=chat.id, role="user", content=req.content)
+            db.add(user_msg)
+            question = new_state.next_question or ""
+            assistant_msg = Message(chat_id=chat.id, role="assistant", content=question)
+            db.add(assistant_msg)
+            await db.commit()
+
+            async def clarif_stream() -> AsyncIterator[str]:
+                chunk = json.dumps({"type": "token", "content": question}, ensure_ascii=False)
+                yield f"data: {chunk}\n\n"
+                yield "data: [DONE]\n\n"
+
+            return StreamingResponse(clarif_stream(), media_type="text/event-stream")
+
+        # stage == "complete" или "fallback" — продолжаем к генерации ответа
+        # (fallthrough ниже)
+
     user_msg = Message(chat_id=chat.id, role="user", content=req.content)
     db.add(user_msg)
     # коммитим user_msg ДО старта стрима: при обрыве соединения
@@ -473,15 +509,64 @@ async def send_message_stream(
             domain_description=domain_description,
         )
 
+    # ───────────────────────────────────────────────────────────────────────────
+    # Planner: решаем нужна ли кларификация (только если FSM был idle)
+    # ───────────────────────────────────────────────────────────────────────────
+    if clarif_state.stage == "idle":
+        planner = Planner()
+        decision, missing_fields = await planner.decide(
+            db=db,
+            query=context.query,
+            vault_id=chat.vault_id,
+            domain_id=domain_id,
+            history=[
+                {"role": m.role, "content": m.content}
+                for m in (context.history or [])
+            ],
+        )
+        if decision.clarification_needed and missing_fields:
+            max_turns: int = int(await settings_service.get("chat.max_clarification_turns", db))
+            prompt_pack = PromptPack(await domain_service.get_prompts(
+                domain_id or "default", db
+            ))
+            new_state = await clarification_fsm.start_collecting(
+                db, chat.id, missing_fields, prompt_pack
+            )
+            await db.commit()
+            question = new_state.next_question or ""
+            assistant_msg = Message(chat_id=chat.id, role="assistant", content=question)
+            db.add(assistant_msg)
+            await db.commit()
+            logger.info(
+                "Clarification started: chat_id=%s missing=%s max_turns=%s",
+                chat.id, missing_fields, max_turns,
+            )
+
+            async def clarif_start_stream() -> AsyncIterator[str]:
+                chunk = json.dumps(
+                    {"type": "clarification", "content": question},
+                    ensure_ascii=False,
+                )
+                yield f"data: {chunk}\n\n"
+                yield "data: [DONE]\n\n"
+
+            return StreamingResponse(clarif_start_stream(), media_type="text/event-stream")
+
     pipeline_router = PipelineRouter(db)
     pipeline = await pipeline_router.select(
         context,
         locked_pipeline_id=chat.locked_pipeline_id,
     )
 
-    # ─────────────────────────────────────────────────────────────────────────
+    # После генерации ответа — сбрасываем FSM в idle
+    async def _reset_clarif_fsm() -> None:
+        await clarification_fsm.save_state(
+            db, chat.id, clarification_fsm.idle_state()
+        )
+
+    # ───────────────────────────────────────────────────────────────────────────
     # FALLBACK: пайплайн не найден → plain RAG stream, без confirm-карточки
-    # ─────────────────────────────────────────────────────────────────────────
+    # ───────────────────────────────────────────────────────────────────────────
     if pipeline is None:
         logger.info(
             "No pipeline found for domain_id=%s — falling back to plain LLM stream", domain_id
@@ -526,6 +611,7 @@ async def send_message_stream(
                 # Клиент оборвал соединение — сохраняем накопленное и выходим чисто
                 cancelled = True
             finally:
+                await _reset_clarif_fsm()
                 # asyncio.shield() защищает commit от отмены родительской таски
                 await _save_partial_answer(
                     db, chat, full_answer,
@@ -549,10 +635,10 @@ async def send_message_stream(
 
         return StreamingResponse(plain_stream(), media_type="text/event-stream")
 
-    # ─────────────────────────────────────────────────────────────────────────
+    # ───────────────────────────────────────────────────────────────────────────
     # PIPELINE FOUND — сохраняем pending_pipeline_confirm, просим подтверждения
     # Реальное выполнение произойдёт в POST /pipeline_confirm (Этап 5)
-    # ─────────────────────────────────────────────────────────────────────────
+    # ───────────────────────────────────────────────────────────────────────────
     context.pipeline_id = pipeline.pipeline_id
     context.pipeline_version = pipeline.version
     context.steps = pipeline.steps
@@ -793,7 +879,7 @@ async def _audit(
 
 
 async def _pipeline_versions(request: Request) -> dict[str, str]:
-    """Extract X-Pipeline-Version headers for reproducibility tracking."""
+    """Извлекаем X-Pipeline-Version заголовки для reproducibility tracking."""
     return {
         k.removeprefix("x-pipeline-"): v
         for k, v in request.headers.items()
