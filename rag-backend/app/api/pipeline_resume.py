@@ -308,7 +308,7 @@ async def _plain_rag_stream(
     db: AsyncSession,
 ) -> AsyncIterator[str]:
     """Fallback plain RAG стрим — используется при отмене confirm."""
-    from app.api.chat import _fallback_retrieve, _resolve_system_prompt
+    from app.api.chat import _fallback_retrieve, _maybe_set_title, _resolve_system_prompt
     from app.services.retrieval import format_context
 
     provider = settings_service.get_active_provider()
@@ -355,7 +355,5 @@ async def _plain_rag_stream(
         )
         db.add(assistant_msg)
         await db.commit()
-        if chat.title == "New Chat":
-            from app.api.chat import _auto_title
-            chat.title = _auto_title(ctx.original_query or ctx.query)
-            await db.commit()
+        await _maybe_set_title(chat, ctx.original_query or ctx.query, db)
+        await db.commit()
