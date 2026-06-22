@@ -52,11 +52,9 @@ class PipelineRegistry:
         self._lock = asyncio.Lock()
         self._runners: dict[str, dict[str, PipelineRunner]] = {}
         self._active_versions: dict[str, str] = {}
-        self._fingerprints: dict[Path, str] = {}
 
     async def load_all(self) -> None:
         runners: list[PipelineRunner] = []
-        fingerprints: dict[Path, str] = {}
         for metadata_path in sorted(self.pipelines_path.glob("*/*.yaml")):
             try:
                 runner = _load_pipeline(metadata_path)
@@ -64,9 +62,6 @@ class PipelineRegistry:
                 logger.error("Failed to load pipeline: %s", metadata_path, exc_info=True)
                 continue
             runners.append(runner)
-            impl_path = metadata_path.with_name("impl.py")
-            fingerprints[metadata_path] = _file_hash(metadata_path)
-            fingerprints[impl_path] = _file_hash(impl_path)
 
         async with self._lock:
             next_runners = {pipeline_id: dict(versions) for pipeline_id, versions in self._runners.items()}
@@ -78,15 +73,6 @@ class PipelineRegistry:
                 logger.info("Pipeline loaded: id=%s version=%s domain=%s", pipeline_id, runner.metadata.version, runner.metadata.domain)
             self._runners = next_runners
             self._active_versions = active_versions
-            self._fingerprints = fingerprints
-
-    async def reload_if_changed(self) -> bool:
-        current = _fingerprint_tree(self.pipelines_path)
-        async with self._lock:
-            if current == self._fingerprints:
-                return False
-        await self.load_all()
-        return True
 
     async def run(self, pipeline_id: str, context: PipelineExecutionContext, version: str | None = None) -> PipelineResult:
         runner = await self.get_runner(pipeline_id, version)
@@ -117,45 +103,6 @@ class PipelineRegistry:
             return sorted(active, key=lambda runner: runner.metadata.pipeline_id)
 
 
-class PipelineHotReloader:
-    def __init__(self, registry: PipelineRegistry, interval_seconds: float, debounce_seconds: float) -> None:
-        self.registry = registry
-        self.interval_seconds = interval_seconds
-        self.debounce_seconds = debounce_seconds
-        self._task: asyncio.Task[None] | None = None
-        self._stop = asyncio.Event()
-
-    async def start(self) -> None:
-        await self.registry.load_all()
-        self._task = asyncio.create_task(self._watch(), name="pipeline-hot-reload")
-
-    async def stop(self) -> None:
-        self._stop.set()
-        if self._task is not None:
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
-
-    async def _watch(self) -> None:
-        while not self._stop.is_set():
-            try:
-                await asyncio.wait_for(self._stop.wait(), timeout=self.interval_seconds)
-            except TimeoutError:
-                pass
-            if self._stop.is_set():
-                return
-            try:
-                changed = await self.registry.reload_if_changed()
-                if changed:
-                    await asyncio.sleep(self.debounce_seconds)
-                    await self.registry.reload_if_changed()
-                    logger.info("Pipeline registry hot-reloaded.")
-            except Exception:
-                logger.error("Pipeline hot-reload failed; keeping previous registry.", exc_info=True)
-
-
 def _load_pipeline(metadata_path: Path) -> PipelineRunner:
     impl_path = metadata_path.with_name("impl.py")
     with metadata_path.open("r", encoding="utf-8") as metadata_file:
@@ -171,7 +118,8 @@ def _load_pipeline(metadata_path: Path) -> PipelineRunner:
         output_keys=[str(value) for value in contract.get("output_keys", [])],
     )
     execute = _load_execute(metadata, impl_path)
-    return PipelineRunner(metadata=metadata, execute=execute, source_hash=_file_hash(metadata_path) + _file_hash(impl_path))
+    source_hash = hashlib.sha256(metadata_path.read_bytes()).hexdigest() + hashlib.sha256(impl_path.read_bytes()).hexdigest()
+    return PipelineRunner(metadata=metadata, execute=execute, source_hash=source_hash)
 
 
 def _load_execute(metadata: PipelineMetadata, impl_path: Path) -> ExecuteCallable:
@@ -186,16 +134,3 @@ def _load_execute(metadata: PipelineMetadata, impl_path: Path) -> ExecuteCallabl
     if execute is None or not inspect.iscoroutinefunction(execute):
         raise ValueError(f"Pipeline {impl_path} must define async execute(context)")
     return execute
-
-
-def _fingerprint_tree(path: Path) -> dict[Path, str]:
-    fingerprints: dict[Path, str] = {}
-    for file_path in sorted([*path.glob("*/*.yaml"), *path.glob("*/impl.py")]):
-        fingerprints[file_path] = _file_hash(file_path)
-    return fingerprints
-
-
-def _file_hash(path: Path) -> str:
-    if not path.exists():
-        return ""
-    return hashlib.sha256(path.read_bytes()).hexdigest()
