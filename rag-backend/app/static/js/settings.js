@@ -131,11 +131,6 @@ class SettingsManager {
     // ─── Params ────────────────────────────────────────────────────────────────────────────
 
     async handleParamsAction(action, id, btn) {
-        // C30 fix: перечислены все три action; старый код знал только save-params через
-        // устаревший #params-form [data-key] и никогда не обрабатывал reset-params (P02),
-        // а updatePlatformSetting не существует в api.js — правильный метод updateSettingsParam (P03).
-        // Checkbox передавал .value («on»/«») вместо .checked → правильно сериализуем в 'true'/'false' (P04).
-
         if (action === 'save-params') {
             const form = this._tabContent.querySelector('#params-form');
             if (!form) return;
@@ -153,13 +148,12 @@ class SettingsManager {
                     await this.api.updateSettingsParam(u.key, u.value);
                 }
 
-                // Сохраняем watchdog-расширения через отдельный endpoint
+                // Сохраняем watchdog-расширения — всегда, даже если список пуст
+                // (бэкенд вернёт 422 при пустом списке, что корректно)
                 const checkedExts = [...this._tabContent.querySelectorAll('#watchdog-ext-list [data-ext]')]
                     .filter(cb => cb.checked)
                     .map(cb => cb.dataset.ext);
-                if (checkedExts.length > 0) {
-                    await this.api.saveWatchdogExtensions(checkedExts);
-                }
+                await this.api.saveWatchdogExtensions(checkedExts);
 
                 alert('Параметры сохранены');
             } catch (e) { alert('Ошибка: ' + e.message); }
