@@ -1,7 +1,0 @@
-id: work_lookup
-domain: work
-version: "1.0.0"
-description: "Dummy work lookup pipeline"
-contract:
-  input_keys: ["query", "context_chunks"]
-  output_keys: ["work_reference"]
