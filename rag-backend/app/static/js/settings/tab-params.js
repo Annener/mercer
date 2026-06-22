@@ -13,6 +13,11 @@ const SETTINGS_DEFAULTS = {
     'pdf_sidecar.fallback_to_pdfminer': true,
 };
 
+// Keys managed elsewhere (not rendered in the generic params list)
+const PARAMS_EXCLUDED_KEYS = new Set([
+    'watchdog_auto_index_extensions',
+]);
+
 const WATCHDOG_KNOWN_EXTENSIONS = ['.md', '.pdf', '.docx', '.txt', '.rst', '.html'];
 
 const ParamsTabMixin = {
@@ -30,7 +35,9 @@ const ParamsTabMixin = {
 
     async renderParamsTab() {
         const params = await this.api.getSettingsParams();
-        const sortedKeys = Object.keys(params).sort();
+        const sortedKeys = Object.keys(params)
+            .filter(k => !PARAMS_EXCLUDED_KEYS.has(k))
+            .sort();
         const descriptions = {
             'retrieval.enabled':                { label: 'RAG включён', desc: 'Включает поиск по базе знаний при ответе. Если выключить — ИИ отвечает только из своей памяти.' },
             'retrieval.top_k':                  { label: 'Top-K результатов', desc: 'Сколько фрагментов документов передавать ИИ при каждом запросе. Рекомендуется 5–15.' },
@@ -46,7 +53,7 @@ const ParamsTabMixin = {
             'pdf_sidecar.fallback_to_pdfminer': { label: 'Fallback на PDF-miner', desc: 'Если PDF-Sidecar недоступен — использовать встроенный pdfminer.' },
         };
 
-        // Загружаем текущие watchdog-расширения
+        // Load current watchdog extensions
         let currentExtensions = [];
         try {
             const watchdogData = await this.api.getWatchdogExtensions();
