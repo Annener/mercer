@@ -352,19 +352,24 @@ async def retrieve_multi_vault(
     strategy: str = "hybrid",
     config: AppConfig | None = None,
     db: AsyncSession | None = None,
+    skip_rerank: bool = False,
 ) -> list[SearchHit]:
     """Ищет во всех указанных vault'ах, объединяет результаты, сортирует по score, возвращает top_k.
 
     Если vault'ы используют разные embedding-модели (напр. разные dimensions),
     каждый vault решается отдельно.
+
+    skip_rerank=True — пропустить rerank_hits даже если активная модель есть.
+    Используется из PipelineExecutor, который вызывает rerank_hits явно
+    для контроля статусных событий (step_status).
     """
     if not vault_ids:
         return []
     if isinstance(document_ids, list) and len(document_ids) == 0:
         return []
     logger.info(
-        "RETRIEVE_MULTI query='%s' vaults=%s top_k=%s",
-        query, vault_ids, top_k
+        "RETRIEVE_MULTI query='%s' vaults=%s top_k=%s skip_rerank=%s",
+        query, vault_ids, top_k, skip_rerank,
     )
     effective_top_k = top_k or _DEFAULT_TOP_K
 
@@ -396,8 +401,10 @@ async def retrieve_multi_vault(
 
     all_hits.sort(key=lambda h: h.score, reverse=True)
     result = all_hits[:effective_top_k]
-    if db is not None:
+
+    if db is not None and not skip_rerank:
         result = await rerank_hits(query, result, db)
+
     logger.info(
         "RETRIEVE_MULTI DONE query='%s' total_hits=%d after_merge=%d",
         query, len(all_hits), len(result)
