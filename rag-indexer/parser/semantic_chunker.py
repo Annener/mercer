@@ -38,6 +38,9 @@ _SENTENCE_SPLIT_RE = re.compile(
 # Паттерн для определения строки как Markdown-заголовка.
 _HEADING_RE = re.compile(r'^#{1,6}\s+')
 
+# Паттерн конца предложения для мягкого сплита: точка/!/?/… вне аббревиатур.
+_SENTENCE_END_RE = re.compile(r'[.!?…](?=\s|$)')
+
 
 def _split_sentences(text: str) -> list[str]:
     """Разбить текст на предложения без тяжёлых NLP-зависимостей."""
@@ -72,17 +75,42 @@ def _cosine_distance(a: list[float], b: list[float]) -> float:
     return 1.0 - dot / (norm_a * norm_b)
 
 
-def _fixed_split(text: str, max_chars: int) -> list[str]:
-    """Дробить строку на куски ≤ max_chars по пробелам (fallback для MAX guard)."""
+def _soft_split(text: str, max_chars: int, soft_threshold: int, search_window: int) -> list[str]:
+    """Дробить строку на куски ≤ max_chars с мягким поиском границы предложения.
+
+    Логика для каждого куска:
+    1. Если len(text) ≤ max_chars — возвращаем как есть.
+    2. Если len > soft_threshold — ищем конец предложения ([.!?…]) в окне
+       [soft_threshold - search_window .. soft_threshold + search_window].
+       Разрезаем сразу после найденного знака препинания.
+    3. Fallback: ищем последний пробел в пределах max_chars.
+    4. Жёсткий fallback: режем ровно по max_chars.
+    """
     if len(text) <= max_chars:
         return [text]
+
     chunks: list[str] = []
     while len(text) > max_chars:
-        split_at = text.rfind(' ', 0, max_chars)
+        split_at: int = -1
+
+        # Фаза 1: мягкий поиск конца предложения вокруг soft_threshold
+        window_start = max(0, soft_threshold - search_window)
+        window_end = min(max_chars, soft_threshold + search_window)
+        # Ищем последнее вхождение знака конца предложения в окне
+        for match in _SENTENCE_END_RE.finditer(text, window_start, window_end):
+            split_at = match.end()  # включаем знак препинания в текущий чанк
+
+        # Фаза 2: fallback на последний пробел в пределах max_chars
+        if split_at == -1:
+            split_at = text.rfind(' ', 0, max_chars)
+
+        # Фаза 3: жёсткий fallback
         if split_at == -1:
             split_at = max_chars
+
         chunks.append(text[:split_at].strip())
         text = text[split_at:].strip()
+
     if text:
         chunks.append(text)
     return chunks
@@ -92,7 +120,11 @@ class SemanticChunker:
     """Семантический чанкер на основе косинусного расстояния между эмбеддингами."""
 
     MIN_CHUNK_SENTENCES: int = 2
-    MAX_CHUNK_CHARS: int = 4000
+    MAX_CHUNK_CHARS: int = 1800
+    # При достижении SOFT_THRESHOLD начинаем искать конец предложения
+    SOFT_THRESHOLD: int = 1200
+    # Окно поиска конца предложения (±символов от SOFT_THRESHOLD)
+    SENTENCE_SEARCH_WINDOW: int = 300
 
     def __init__(self, embedding_provider: "EmbeddingProvider", threshold: float = 0.3) -> None:
         self._provider = embedding_provider
@@ -118,7 +150,12 @@ class SemanticChunker:
 
         # Если одно предложение — возвращаем как один чанк
         if len(sentences) == 1:
-            chunks = _fixed_split(sentences[0], self.MAX_CHUNK_CHARS)
+            chunks = _soft_split(
+                sentences[0],
+                self.MAX_CHUNK_CHARS,
+                self.SOFT_THRESHOLD,
+                self.SENTENCE_SEARCH_WINDOW,
+            )
             return [c for c in chunks if c.strip()]
 
         # 2. Батч-эмбеддинг всех предложений (один запрос)
@@ -176,7 +213,14 @@ class SemanticChunker:
         # 9. MAX_CHUNK_CHARS guard: принудительно дробить слишком большой чанк
         final_chunks: list[str] = []
         for chunk in raw_chunks:
-            final_chunks.extend(_fixed_split(chunk, self.MAX_CHUNK_CHARS))
+            final_chunks.extend(
+                _soft_split(
+                    chunk,
+                    self.MAX_CHUNK_CHARS,
+                    self.SOFT_THRESHOLD,
+                    self.SENTENCE_SEARCH_WINDOW,
+                )
+            )
 
         result = [c for c in final_chunks if c.strip()]
         logger.debug(
