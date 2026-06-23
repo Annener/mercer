@@ -334,6 +334,7 @@ class ChatManager {
         this.worldName = document.getElementById('world-name');
         this.pipelineSelect = document.getElementById('pipeline-select');
         this.lockPipelineBtn = document.getElementById('lock-pipeline-btn');
+        this.processingStatusEl = document.getElementById('processing-status');
         this.currentChat = null;
         this._lastUserMessage = null;
         this.initEventListeners();
@@ -357,6 +358,31 @@ class ChatManager {
             // API недоступен — продолжаем со стримингом по умолчанию
             console.warn('chat.js: could not load stream_answers setting, defaulting to true', e);
         }
+    }
+
+    // -------------------------------------------------------
+    // Processing status indicator
+    // -------------------------------------------------------
+
+    /**
+     * Показывает индикатор обработки с заданным текстом статуса.
+     * @param {string} text
+     */
+    showProcessingStatus(text) {
+        if (!this.processingStatusEl) return;
+        this.processingStatusEl.innerHTML =
+            `<span class="processing-status__dots"><span></span><span></span><span></span></span>` +
+            `<span class="processing-status__text">${escapeHtml(text)}</span>`;
+        this.processingStatusEl.classList.remove('hidden');
+    }
+
+    /**
+     * Скрывает индикатор обработки.
+     */
+    hideProcessingStatus() {
+        if (!this.processingStatusEl) return;
+        this.processingStatusEl.classList.add('hidden');
+        this.processingStatusEl.innerHTML = '';
     }
 
     // -------------------------------------------------------
@@ -478,12 +504,14 @@ class ChatManager {
         } finally {
             this.isStreaming = false;
             this._resetToSendMode();
+            this.hideProcessingStatus();
         }
     }
 
     /**
      * Обработчик SSE-стрима.
      * Дополнен обработкой чанков:
+     *   step_status               → showProcessingStatus()
      *   pipeline_confirm_required → createConfirmCard()
      *   validation_required       → createValidationCard()
      *   pipeline_resumed          → createPipelineStatusLine('pipeline_resumed', ...)
@@ -536,9 +564,14 @@ class ChatManager {
                             // Создаём assistantMessage только для типов с контентом,
                             // НЕ для карточек (они идут как самостоятельные элементы).
                             const needsAssistant = !['pipeline_confirm_required', 'validation_required',
-                                                     'pipeline_resumed', 'pipeline_cancelled'].includes(parsed.type);
+                                                     'pipeline_resumed', 'pipeline_cancelled',
+                                                     'step_status'].includes(parsed.type);
                             if (needsAssistant && !assistantMessage) {
                                 assistantMessage = this.addMessage('assistant', '');
+                            }
+
+                            if (parsed.type === 'step_status') {
+                                this.showProcessingStatus(parsed.text || '');
                             }
 
                             if (parsed.type === 'pipeline_selected') {
@@ -580,6 +613,8 @@ class ChatManager {
                             if (parsed.type === 'progress') this.updateProgressBar(assistantMessage, parsed.step, parsed.total, parsed.step_name);
                             if (parsed.type === 'step_done') this.markStepDone(assistantMessage, parsed.step);
                             if (parsed.type === 'token') {
+                                // Скрываем индикатор при первом токене — начался реальный стриминг ответа
+                                this.hideProcessingStatus();
                                 fullContent += parsed.content || '';
                                 pendingContent = fullContent;
                                 this.scheduleMarkdownRender(assistantMessage, () => pendingContent);
@@ -591,6 +626,7 @@ class ChatManager {
                                     assistantMessage.remove();
                                     assistantMessage = null;
                                 }
+                                this.hideProcessingStatus();
                                 this.addMessage('clarification', parsed.question || parsed.content || '', parsed.clarification_id);
                             }
                             if (parsed.type === 'error') this.addMessage('system', parsed.message || 'Pipeline error');
@@ -836,6 +872,7 @@ class ChatManager {
         if (this.pendingBanner) {
             this.pendingBanner.destroy();
         }
+        this.hideProcessingStatus();
         this.currentChatId = null;
         this.clearMessages();
         this.inputArea.style.display = 'none';
