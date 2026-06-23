@@ -495,22 +495,6 @@ async def send_message_stream(
         for m in history_result.scalars().all()
     ]
 
-    provider = settings_service.get_active_provider()
-    if provider:
-        from app.db.models import Domain as DomainModel
-        domain_obj = await db.get(DomainModel, context.domain_id) if context.domain_id else None
-        domain_description = (
-            domain_obj.description
-            if domain_obj and domain_obj.description
-            else None
-        )
-        context.query = await query_rewriter.rewrite(
-            original_query=context.query,
-            history=context.history,
-            provider=provider,
-            domain_description=domain_description,
-        )
-
     # ───────────────────────────────────────────────────────────────────────────────
     # Planner: решаем нужна ли кларификация (только если FSM был idle)
     # ───────────────────────────────────────────────────────────────────────────────
@@ -554,136 +538,158 @@ async def send_message_stream(
 
             return StreamingResponse(clarif_start_stream(), media_type="text/event-stream")
 
-    pipeline_router = PipelineRouter(db)
-    pipeline = await pipeline_router.select(
-        context,
-        locked_pipeline_id=chat.locked_pipeline_id,
-    )
+    # ───────────────────────────────────────────────────────────────────────────────
+    # Захватываем всё необходимое для plain_stream в замыкании.
+    # rewriter + pipeline_router переносим ВНУТРЬ генератора — это даёт возможность
+    # слать step_status чанки клиенту до того, как тяжёлые операции завершились.
+    # ───────────────────────────────────────────────────────────────────────────────
+    _locked_pipeline_id = chat.locked_pipeline_id
+    _chat = chat
 
     # После генерации ответа — сбрасываем FSM в idle
     async def _reset_clarif_fsm() -> None:
         await clarification_fsm.save_state(
-            db, chat.id, clarification_fsm.idle_state()
+            db, _chat.id, clarification_fsm.idle_state()
         )
 
-    # ───────────────────────────────────────────────────────────────────────────────
-    # FALLBACK: пайплайн не найден → plain RAG stream, без confirm-карточки
-    # ───────────────────────────────────────────────────────────────────────────────
-    if pipeline is None:
+    def _step(text: str) -> str:
+        """Форматирует step_status чанк для SSE."""
+        return f"data: {json.dumps({'type': 'step_status', 'text': text}, ensure_ascii=False)}\n\n"
+
+    async def plain_stream() -> AsyncIterator[str]:
+        _provider = settings_service.get_active_provider()
+        if _provider is None:
+            error_data = json.dumps({"type": "error", "message": "No LLM provider configured"}, ensure_ascii=False)
+            yield f"data: {error_data}\n\n"
+            yield "data: [DONE]\n\n"
+            return
+
+        # ── 1. Query rewriting (только если есть история) ─────────────────────
+        has_history = bool(context.history)
+        if has_history:
+            yield _step("Reformulating query...")
+            from app.db.models import Domain as DomainModel
+            domain_obj = await db.get(DomainModel, context.domain_id) if context.domain_id else None
+            domain_description = (
+                domain_obj.description
+                if domain_obj and domain_obj.description
+                else None
+            )
+            context.query = await query_rewriter.rewrite(
+                original_query=context.query,
+                history=context.history,
+                provider=_provider,
+                domain_description=domain_description,
+            )
+
+        # ── 2. Pipeline routing ────────────────────────────────────────────────
+        yield _step("Analyzing context...")
+        _pipeline_router = PipelineRouter(db)
+        pipeline = await _pipeline_router.select(
+            context,
+            locked_pipeline_id=_locked_pipeline_id,
+        )
+
+        # ── 2a. Pipeline found — сохраняем confirm и завершаем стрим ──────────
+        if pipeline is not None:
+            context.pipeline_id = pipeline.pipeline_id
+            context.pipeline_version = pipeline.version
+            context.steps = pipeline.steps
+            context.final_composition = pipeline.final_composition
+
+            confirm_token = secrets.token_urlsafe(32)
+            expires_at = datetime.now(UTC) + _CONFIRM_TTL
+            pipeline_name: str = getattr(pipeline, "name", None) or pipeline.pipeline_id
+
+            _chat.pending_pipeline_confirm = _build_confirm_payload(
+                confirm_token=confirm_token,
+                pipeline_id=pipeline.pipeline_id,
+                pipeline_name=pipeline_name,
+                context=context,
+                expires_at=expires_at,
+            )
+            await asyncio.shield(db.commit())
+
+            logger.info(
+                "Pipeline confirm required: chat_id=%s pipeline_id=%s token=%s…",
+                _chat.id, pipeline.pipeline_id, confirm_token[:8],
+            )
+
+            chunk = json.dumps(
+                {
+                    "type": "pipeline_confirm_required",
+                    "pipeline_name": pipeline_name,
+                    "reasoning": f"Выбран пайплайн «{pipeline_name}». Запустить?",
+                    "confirm_token": confirm_token,
+                },
+                ensure_ascii=False,
+            )
+            yield f"data: {chunk}\n\n"
+            yield "data: [DONE]\n\n"
+            return
+
+        # ── 3. Plain RAG fallback ──────────────────────────────────────────────
         logger.info(
             "No pipeline found for domain_id=%s — falling back to plain LLM stream", domain_id
         )
 
-        async def plain_stream() -> AsyncIterator[str]:
-            _provider = settings_service.get_active_provider()
-            if _provider is None:
-                error_data = json.dumps({"type": "error", "message": "No LLM provider configured"}, ensure_ascii=False)
-                yield f"data: {error_data}\n\n"
-                yield "data: [DONE]\n\n"
+        system_prompt = await _resolve_system_prompt(context.campaign_id, domain_id, db)
+
+        if vault_ids:
+            yield _step("Searching knowledge base...")
+
+        hits: list[SearchHit] = await _fallback_retrieve(
+            query=context.query,
+            vault_ids=vault_ids,
+            domain_id=domain_id,
+            campaign_id=context.campaign_id,
+            db=db,
+        )
+
+        rag_context = format_context(hits)
+        full_system = f"{system_prompt}\n\n{rag_context}" if system_prompt else rag_context
+
+        messages: list[dict[str, str]] = []
+        if full_system:
+            messages.append({"role": "system", "content": full_system})
+        for m in (context.history or []):
+            messages.append({"role": m.role, "content": m.content})
+        messages.append({"role": "user", "content": req.content})
+
+        yield _step("Generating response...")
+
+        full_answer = ""
+        cancelled = False
+        try:
+            async for token in _provider.generate_stream(messages):
+                full_answer += token
+                chunk = json.dumps({"type": "token", "content": token}, ensure_ascii=False)
+                yield f"data: {chunk}\n\n"
+        except asyncio.CancelledError:
+            cancelled = True
+        finally:
+            await _reset_clarif_fsm()
+            await _save_partial_answer(
+                db, _chat, full_answer,
+                title_query=context.original_query or req.content,
+            )
+            if cancelled:
                 return
 
-            yield f"data: {json.dumps({'type': 'step_status', 'text': 'Preparing context...'}, ensure_ascii=False)}\n\n"
-
-            system_prompt = await _resolve_system_prompt(context.campaign_id, domain_id, db)
-
-            hits: list[SearchHit] = await _fallback_retrieve(
-                query=context.query,
-                vault_ids=vault_ids,
-                domain_id=domain_id,
-                campaign_id=context.campaign_id,
-                db=db,
+        if hits:
+            sources_chunk = json.dumps(
+                {
+                    "type": "sources",
+                    "grouped_by_step": False,
+                    "sources": _hits_to_sources(hits),
+                },
+                ensure_ascii=False,
             )
+            yield f"data: {sources_chunk}\n\n"
 
-            if hits:
-                yield f"data: {json.dumps({'type': 'step_status', 'text': 'Searching knowledge base...'}, ensure_ascii=False)}\n\n"
-
-            rag_context = format_context(hits)
-            full_system = f"{system_prompt}\n\n{rag_context}" if system_prompt else rag_context
-
-            messages: list[dict[str, str]] = []
-            if full_system:
-                messages.append({"role": "system", "content": full_system})
-            for m in (context.history or []):
-                messages.append({"role": m.role, "content": m.content})
-            messages.append({"role": "user", "content": req.content})
-
-            yield f"data: {json.dumps({'type': 'step_status', 'text': 'Generating response...'}, ensure_ascii=False)}\n\n"
-
-            full_answer = ""
-            cancelled = False
-            try:
-                async for token in _provider.generate_stream(messages):
-                    full_answer += token
-                    chunk = json.dumps({"type": "token", "content": token}, ensure_ascii=False)
-                    yield f"data: {chunk}\n\n"
-            except asyncio.CancelledError:
-                cancelled = True
-            finally:
-                await _reset_clarif_fsm()
-                await _save_partial_answer(
-                    db, chat, full_answer,
-                    title_query=context.original_query or req.content,
-                )
-                if cancelled:
-                    return
-
-            if hits:
-                sources_chunk = json.dumps(
-                    {
-                        "type": "sources",
-                        "grouped_by_step": False,
-                        "sources": _hits_to_sources(hits),
-                    },
-                    ensure_ascii=False,
-                )
-                yield f"data: {sources_chunk}\n\n"
-
-            yield "data: [DONE]\n\n"
-
-        return StreamingResponse(plain_stream(), media_type="text/event-stream")
-
-    # ───────────────────────────────────────────────────────────────────────────────
-    # PIPELINE FOUND — сохраняем pending_pipeline_confirm, просим подтверждения
-    # Реальное выполнение произойдёт в POST /pipeline_confirm
-    # ───────────────────────────────────────────────────────────────────────────────
-    context.pipeline_id = pipeline.pipeline_id
-    context.pipeline_version = pipeline.version
-    context.steps = pipeline.steps
-    context.final_composition = pipeline.final_composition
-
-    confirm_token = secrets.token_urlsafe(32)
-    expires_at = datetime.now(UTC) + _CONFIRM_TTL
-
-    pipeline_name: str = getattr(pipeline, "name", None) or pipeline.pipeline_id
-
-    chat.pending_pipeline_confirm = _build_confirm_payload(
-        confirm_token=confirm_token,
-        pipeline_id=pipeline.pipeline_id,
-        pipeline_name=pipeline_name,
-        context=context,
-        expires_at=expires_at,
-    )
-    await db.commit()
-
-    logger.info(
-        "Pipeline confirm required: chat_id=%s pipeline_id=%s token=%s…",
-        chat.id, pipeline.pipeline_id, confirm_token[:8],
-    )
-
-    async def confirm_required_stream() -> AsyncIterator[str]:
-        chunk = json.dumps(
-            {
-                "type": "pipeline_confirm_required",
-                "pipeline_name": pipeline_name,
-                "reasoning": f"Выбран пайплайн «{pipeline_name}». Запустить?",
-                "confirm_token": confirm_token,
-            },
-            ensure_ascii=False,
-        )
-        yield f"data: {chunk}\n\n"
         yield "data: [DONE]\n\n"
 
-    return StreamingResponse(confirm_required_stream(), media_type="text/event-stream")
+    return StreamingResponse(plain_stream(), media_type="text/event-stream")
 
 
 @router.post("/{chat_id}/clarify", response_model=ClarificationResponse)
