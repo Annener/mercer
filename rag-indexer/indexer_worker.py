@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import logging
 import os
+import uuid
 from datetime import datetime, timezone
 from typing import Any
 
@@ -16,8 +17,6 @@ from parser.chunking.embedding_enricher import (
     build_embedding_text,
     extract_markdown_headers,
 )
-from parser.chunking.entity_chunker import chunk_with_entities
-from parser.chunking.generic_chunker import chunk_text
 from parser.parsing.md_parser import parse_markdown
 from parser.parsing.pdf_parser import parse_pdf
 from parser.preprocessing.pdf_page_merger import (
@@ -28,8 +27,10 @@ from parser.preprocessing.pdf_page_merger import (
 )
 from parser.preprocessing.preprocessor import preprocess
 from parser.scanning.vault_scanner import scan_vault
+from parser.semantic_chunker import SemanticChunker
 from parser.state.redis_state_manager import RedisStateManager
 from shared_contracts.models import (
+    ChunkRecord,
     UpsertChunk,
     UpsertRequest,
 )
@@ -85,11 +86,6 @@ async def run_indexing(
         await db_client.update_vault_binding_status(vault_id, "indexing")
 
         vault_path = f"/data/vaults/{vault_id}"
-        chunk_size = vault.get("chunk_size") or settings["chunking.chunk_size"]
-        overlap = vault.get("overlap") or settings["chunking.overlap"]
-        entity_aware = vault.get("entity_aware_mode")
-        if entity_aware is None:
-            entity_aware = settings["chunking.entity_aware_mode"]
         parser_settings = {
             "sidecar_url": settings["pdf_sidecar.url"],
             "timeout_seconds": float(settings["pdf_sidecar.timeout_seconds"]),
@@ -183,9 +179,6 @@ async def run_indexing(
                     provider=provider,
                     storage_client=storage_client,
                     vault=vault,
-                    chunk_size=int(chunk_size),
-                    overlap=int(overlap),
-                    entity_aware=bool(entity_aware),
                     parser_settings=parser_settings,
                     uploaded_document_ids=uploaded_document_ids,
                     state_manager=state_manager,
@@ -264,9 +257,6 @@ async def _process_file(
     provider: EmbeddingProvider,
     storage_client: StorageClient,
     vault: dict[str, Any],
-    chunk_size: int,
-    overlap: int,
-    entity_aware: bool,
     parser_settings: dict[str, Any],
     uploaded_document_ids: list[str],
     state_manager: RedisStateManager,
@@ -327,26 +317,30 @@ async def _process_file(
                                                 indexed_at=datetime.now(tz=timezone.utc))
         return 0, pg_document_id
 
-    if entity_aware:
-        chunks, _entities = await asyncio.to_thread(
-            chunk_with_entities,
-            text_for_chunking,
-            pg_document_id,
-            vault_id,
-            chunk_size,
-            overlap,
-            base_metadata,
-        )
-    else:
-        chunks = await asyncio.to_thread(
-            chunk_text,
-            text_for_chunking,
-            pg_document_id,
-            vault_id,
-            chunk_size,
-            overlap,
-            base_metadata,
-        )
+    # НОВОЕ: pre-clean всего текста ДО передачи в SemanticChunker.
+    # preprocess идемпотентна — повторный вызов на чанках ниже ничего не сломает.
+    # Без этого PDF-артефакты (U+FFFD, мягкие переносы) зашумят cosine similarity.
+    cleaned_for_chunking = await asyncio.to_thread(preprocess, text_for_chunking, relative_path)
+
+    # Семантический чанкинг (единственный путь для всех документов)
+    semantic_threshold = float(vault.get("semantic_threshold", 0.3))
+    raw_chunks: list[str] = await SemanticChunker(
+        provider,
+        semantic_threshold,
+    ).split(cleaned_for_chunking)
+
+    logger.info(
+        "SemanticChunker: file=%s chunks=%d threshold=%.2f",
+        relative_path, len(raw_chunks), semantic_threshold,
+    )
+
+    # Собираем ChunkRecord из сырых текстовых чанков
+    chunks: list[ChunkRecord] = _build_chunk_records(
+        raw_chunks=raw_chunks,
+        document_id=pg_document_id,
+        vault_id=vault_id,
+        base_metadata=base_metadata,
+    )
 
     if not chunks:
         logger.warning("No valid chunks generated for file: %s", relative_path)
@@ -434,6 +428,44 @@ async def _process_file(
         checksum_md5=file_info["checksum"],
     )
     return len(chunks), pg_document_id
+
+
+def _build_chunk_records(
+    raw_chunks: list[str],
+    document_id: str,
+    vault_id: str,
+    base_metadata: dict[str, Any],
+) -> list[ChunkRecord]:
+    """
+    Собирает list[ChunkRecord] из сырых текстовых чанков SemanticChunker.
+
+    word_start / word_end вычисляются накопленным счётчиком слов —
+    необходимы для _assign_page_numbers_and_headers при индексации PDF.
+    """
+    records: list[ChunkRecord] = []
+    global_word_offset = 0
+
+    for raw_text in raw_chunks:
+        if not raw_text.strip():
+            continue
+        word_count = len(raw_text.split())
+        chunk_metadata = dict(base_metadata)
+        chunk_metadata["word_start"] = global_word_offset
+        chunk_metadata["word_end"] = global_word_offset + word_count
+        records.append(
+            ChunkRecord(
+                chunk_id=f"chk_{uuid.uuid4().hex[:12]}",
+                document_id=document_id,
+                vault_id=vault_id,
+                text=raw_text,
+                vector=None,
+                metadata=chunk_metadata,
+                summary=None,
+            )
+        )
+        global_word_offset += word_count
+
+    return records
 
 
 def _assign_page_numbers_and_headers(
