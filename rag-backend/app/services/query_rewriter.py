@@ -43,22 +43,17 @@ RETRIEVAL_REWRITE_PROMPT = """\
 Ты — препроцессор запросов для семантического поиска в векторной базе знаний.
 Твой вывод используется как поисковый запрос, НЕ как ответ пользователю.
 
-Цель текущего шага поиска (используй для смещения акцента, НЕ копируй слова буквально):
+Задание для поиска:
 {step_prompt}
 
-Запрос пользователя: "{query}"
-
-Задача: сформируй одну поисковую фразу, которая наилучшим образом найдёт
-релевантные документы для выполнения цели шага.
+Задача: извлеки из задания ключевые сущности и сформируй короткую поисковую фразу.
 
 Правила:
 - Фраза должна быть короткой: 3-10 слов
-- Выдели конкретные сущности из запроса: имена, места, события, предметы
-- Используй цель шага чтобы сместить акцент на нужный аспект:
-  цель "найти механики боя" + запрос "что случилось с Михаилом" → "Михаил бой механики"
-- НЕ включай служебные слова из цели шага ("найти", "определить", "получить информацию о")
-- Убери глаголы-команды ("напиши", "расскажи"), вежливости, названия систем
-- Не добавляй информацию которой нет в запросе или истории
+- Выдели конкретные сущности: имена, места, предметы, события, термины
+- Убери глаголы-команды ("выгрузи", "найди", "определи", "получи информацию о")
+- Убери вежливости и служебные слова
+- Сохрани язык задания
 
 Верни ТОЛЬКО поисковую фразу — без объяснений, без знаков препинания в конце.
 """
@@ -104,7 +99,6 @@ class QueryRewriter:
 
     async def rewrite_for_retrieval(
         self,
-        original_query: str,
         step_prompt: str,
         provider,  # активный GenerationProvider
     ) -> str:
@@ -113,12 +107,13 @@ class QueryRewriter:
         Используется ТОЛЬКО в PipelineExecutor._retrieve_for_step_dag().
         Для обычного чата без пайплайна используется rewrite() выше.
 
-        Комбинирует цель шага (step_prompt) и запрос пользователя в один
-        оптимальный запрос к векторной БД.
+        Получает готовый step_prompt — system_prompt шага с уже подставленными
+        переменными (в т.ч. {query} если она была в шаблоне).
+        Задача: извлечь из него ключевые сущности в короткую поисковую фразу.
+        ctx.query намеренно не передаётся — смешивание источников здесь некорректно.
         """
         prompt = RETRIEVAL_REWRITE_PROMPT.format(
             step_prompt=step_prompt[:500],  # не перегружаем контекст модели
-            query=original_query,
         )
         try:
             rewritten = await provider.generate([
@@ -127,15 +122,15 @@ class QueryRewriter:
             rewritten = rewritten.strip()
             if rewritten:
                 logger.debug(
-                    "RetrievalRewrite step: '%s' → '%s'",
-                    original_query[:60],
+                    "RetrievalRewrite: '%s' → '%s'",
+                    step_prompt[:60],
                     rewritten[:60],
                 )
                 return rewritten
-            return original_query
+            return step_prompt
         except Exception:
-            logger.warning("rewrite_for_retrieval failed, fallback to original query", exc_info=True)
-            return original_query  # fallback — не ломаем пайплайн
+            logger.warning("rewrite_for_retrieval failed, fallback to step_prompt", exc_info=True)
+            return step_prompt  # fallback — не ломаем пайплайн
 
 
 query_rewriter = QueryRewriter()
