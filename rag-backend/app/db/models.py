@@ -154,6 +154,7 @@ class Vault(Base):
     chunk_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
     overlap: Mapped[int | None] = mapped_column(Integer, nullable=True)
     entity_aware_mode: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    semantic_threshold: Mapped[float] = mapped_column(Float, nullable=False, default=0.3, server_default="0.3")
     binding_status: Mapped[str] = mapped_column(String(32), nullable=False, default="unbound", server_default="unbound")
     chunk_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
