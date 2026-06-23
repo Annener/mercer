@@ -28,29 +28,30 @@ from shared_contracts.models import (
 
 logger = logging.getLogger(__name__)
 
-# Validation token живёт 1 час.
-# TTL записывается в pipeline_pause_state["expires_at"] при сохранении паузы.
-# Проверка истечения TTL выполняется в API-слое (pipeline_resume endpoint),
-# а не здесь: executor отвечает только за выполнение DAG, не за валидацию входящих токенов.
+
+def _status(text: str) -> dict:
+    """Emits a step_status chunk for displaying progress in the frontend."""
+    return {"type": "step_status", "text": text}
+
+
+# Validation token lives 1 hour.
 _VALIDATION_TTL = timedelta(hours=1)
 
 
 # =============================================================================
-# Module-level shim — для обратной совместимости тестов
-# тесты импортируют: from app.services.pipeline_executor import _build_levels
+# Module-level shim
 # =============================================================================
 
 def _build_levels(steps: list[PipelineStep]) -> list[list[PipelineStep]]:
-    """Схим: перенаправляет вызов в get_execution_levels() из pipeline_dag.
+    """Shim: redirects to get_execution_levels() from pipeline_dag.
 
-    Оставлен для обратной совместимости импорта в тестах.
-    Используйте get_execution_levels() напрямую в новом коде.
+    Kept for backward compatibility with tests.
     """
     return get_execution_levels(steps)
 
 
 def _resolve_prompt(template: str, ctx: PipelineExecutionContext) -> str:
-    """Подставить {query}, {STEP_ID.result}, {STEP_ID.key} в шаблон промта."""
+    """Substitute {query}, {STEP_ID.result}, {STEP_ID.key} in prompt template."""
     result = template.replace("{query}", ctx.query)
     for step_id, value in ctx.step_results.items():
         if step_id.startswith("_"):
@@ -67,7 +68,7 @@ def _resolve_prompt(template: str, ctx: PipelineExecutionContext) -> str:
 # =============================================================================
 
 class PipelineExecutor:
-    """Выполняет пайплайн базируясь на DAG с поддержкой validation-пауз.
+    """Executes pipeline DAG with validation-pause support.
 
     Public API:
         run_stream(ctx)                  -> AsyncIterator[dict]
@@ -90,7 +91,7 @@ class PipelineExecutor:
         self,
         ctx: PipelineExecutionContext,
     ) -> AsyncIterator[dict[str, Any]]:
-        """Запустить пайплайн с 0-го уровня DAG."""
+        """Start pipeline from DAG level 0."""
         async for chunk in self._dag_execute(ctx, start_after_step=None):
             yield chunk
 
@@ -99,7 +100,7 @@ class PipelineExecutor:
         ctx: PipelineExecutionContext,
         validated_step_id: str,
     ) -> AsyncIterator[dict[str, Any]]:
-        """Продолжить пайплайн после пользовательского ответа на validation-шаг."""
+        """Continue pipeline after user response to a validation step."""
         async for chunk in self._dag_execute(ctx, start_after_step=validated_step_id):
             yield chunk
 
@@ -169,6 +170,7 @@ class PipelineExecutor:
                 yield chunk
             return
 
+        yield _status(f"Searching knowledge base: {step.name}...")
         try:
             hits = await self._retrieve_for_step_dag(step, ctx, provider)
         except Exception as exc:
@@ -180,8 +182,6 @@ class PipelineExecutor:
             return
 
         if not hits:
-            # Не перезаписываем результат, если он уже установлен
-            # (например, передан через context_snapshot при resume или в тесте).
             if step.step_id not in ctx.step_results:
                 ctx.step_results[step.step_id] = ""
             yield {"type": "step_skipped_no_docs", "step_id": step.step_id, "step_name": step.name}
@@ -220,7 +220,7 @@ class PipelineExecutor:
         ctx: PipelineExecutionContext,
         provider: Any,
     ) -> AsyncGenerator[dict[str, Any], None]:
-        """asyncio.gather() для шагов одного уровня с независимыми DB-сессиями."""
+        """asyncio.gather() for steps in same level with independent DB sessions."""
         if not self._session_factory:
             logger.warning(
                 "PipelineExecutor: no session_factory — parallel steps run sequentially. "
@@ -262,6 +262,7 @@ class PipelineExecutor:
         provider: Any,
     ) -> AsyncGenerator[dict[str, Any], None]:
         prompt = _resolve_prompt(ctx.final_composition.system_prompt, ctx)
+        yield _status("Generating response...")
         try:
             async for token in provider.generate_stream([
                 {"role": "system", "content": prompt},
@@ -280,10 +281,10 @@ class PipelineExecutor:
         ctx: PipelineExecutionContext,
         provider: Any,
     ) -> list[SearchHit]:
-        """Ретривал для DAG-шага.
+        """Retrieval for a DAG step.
 
-        Поисковый запрос формируется через rewrite_for_retrieval: комбинируются цель шага
-        (step.system_prompt) и запрос пользователя в оптимальный векторный запрос.
+        Search query is formed via rewrite_for_retrieval: combines step goal
+        (step.system_prompt) and user query into an optimal vector query.
         """
         top_k = step.top_k or int(await settings_service.get("retrieval.top_k"))
         vault_ids: list[str] = ctx.vault_ids or []
@@ -303,7 +304,6 @@ class PipelineExecutor:
                 logger.info("Step skipped: no indexed docs for tag_ids. step=%s", step.step_id)
                 return []
 
-        # Формируем поисковый запрос: резолвим плейсхолдеры в промте шага и перепишем через LLM
         step_prompt = _resolve_prompt(step.system_prompt or "", ctx)
         search_query = await query_rewriter.rewrite_for_retrieval(
             ctx.query,
@@ -327,11 +327,11 @@ class PipelineExecutor:
         step_name: str,
         resume_token: str,
     ) -> None:
-        """Сохранить pipeline_pause_state в Chat.
+        """Save pipeline_pause_state in Chat.
 
-        context_snapshot — полный дамп контекста через model_dump(),
-        чтобы _restore_context() в pipeline_resume.py мог полностью восстановить
-        PipelineExecutionContext включая steps, final_composition, pipeline_id и все vault_ids.
+        context_snapshot is a full context dump via model_dump(),
+        so _restore_context() in pipeline_resume.py can fully restore
+        PipelineExecutionContext including steps, final_composition, pipeline_id and vault_ids.
         """
         try:
             chat = await self.db.get(Chat, uuid.UUID(ctx.chat_id))
