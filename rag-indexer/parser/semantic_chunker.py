@@ -38,30 +38,58 @@ _SENTENCE_SPLIT_RE = re.compile(
 # Паттерн для определения строки как Markdown-заголовка.
 _HEADING_RE = re.compile(r'^#{1,6}\s+')
 
+# Паттерн для разбивки текста по Markdown-заголовкам (с сохранением самих заголовков).
+# re.split с capture-группой возвращает заголовки как отдельные элементы списка.
+_HEADING_SPLIT_RE = re.compile(r'^(#{1,6}\s+.+)$', re.MULTILINE)
+
 # Паттерн конца предложения для мягкого сплита: точка/!/?/… вне аббревиатур.
 _SENTENCE_END_RE = re.compile(r'[.!?…](?=\s|$)')
 
 
 def _split_sentences(text: str) -> list[str]:
-    """Разбить текст на предложения без тяжёлых NLP-зависимостей."""
+    """Разбить текст на предложения без тяжёлых NLP-зависимостей.
+
+    Алгоритм:
+    1. Сначала разбиваем по MD-заголовкам (_HEADING_SPLIT_RE) — каждый заголовок
+       становится отдельным sentence независимо от того, есть ли вокруг него
+       пустые строки. Это гарантирует жёсткую границу чанка перед каждой секцией.
+    2. Для нешаголовочных сегментов: разбиваем по абзацам (\\n\\n+), потом
+       каждый абзац — по концу предложения + пробел + заглавная буква.
+    """
     if not text.strip():
         return []
-    # Сначала разбиваем по абзацам (\n\n+)
+
     parts: list[str] = []
-    for para in re.split(r'\n{2,}', text):
-        para = para.strip()
-        if not para:
+
+    # Шаг 1: разбиваем по заголовкам (capture-группа сохраняет сам заголовок).
+    segments = _HEADING_SPLIT_RE.split(text)
+
+    for seg in segments:
+        seg = seg.strip()
+        if not seg:
             continue
-        # Если это заголовок — отдельный «sentence»
-        if _HEADING_RE.match(para):
-            parts.append(para)
+
+        # Если сегмент целиком является заголовком — отдельный sentence.
+        if _HEADING_RE.match(seg) and '\n' not in seg:
+            parts.append(seg)
             continue
-        # Иначе разбиваем абзац по концу предложения + пробел + заглавная
-        sents = _SENTENCE_SPLIT_RE.split(para)
-        for s in sents:
-            s = s.strip()
-            if s:
-                parts.append(s)
+
+        # Нешаголовочный сегмент: разбиваем по абзацам, затем по предложениям.
+        for para in re.split(r'\n{2,}', seg):
+            para = para.strip()
+            if not para:
+                continue
+            # Если абзац оказался заголовком (без пустой строки вокруг него) —
+            # обрабатываем отдельно, не разбиваем по предложениям внутри.
+            if _HEADING_RE.match(para):
+                parts.append(para)
+                continue
+            sents = _SENTENCE_SPLIT_RE.split(para)
+            for s in sents:
+                s = s.strip()
+                if s:
+                    parts.append(s)
+
     return parts
 
 
