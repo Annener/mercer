@@ -43,6 +43,11 @@ class SidebarManager {
         const storedCampaignId = _storage.getItem('currentCampaignId');
         this.currentCampaignId = storedCampaignId || null;
 
+        // FIX race condition: флаг выставляется lockCampaignToChat() и сбрасывается
+        // unlockCampaign(). Пока true — loadCampaignsForDomain() не перезаписывает
+        // select.value и не сбрасывает currentCampaignId в null.
+        this._campaignLocked = false;
+
         this.initEventListeners();
         this.loadDomains();
     }
@@ -333,6 +338,13 @@ class SidebarManager {
                 return;
             }
 
+            // Сохраняем текущее значение селектора перед перерисовкой опций.
+            // Если кампания заблокирована (_campaignLocked), берём currentCampaignId —
+            // он гарантированно актуален. Иначе берём текущее select.value.
+            const valueToRestore = this._campaignLocked
+                ? this.currentCampaignId
+                : (select.value || null);
+
             select.innerHTML = '<option value="">— общий режим —</option>';
             for (const c of campArr) {
                 const opt = document.createElement('option');
@@ -344,13 +356,31 @@ class SidebarManager {
                 select.appendChild(opt);
             }
 
-            // D14 fix: то же поле `id` для поиска совпадения
-            if (this.currentCampaignId && campArr.some(c => String(c.id) === this.currentCampaignId)) {
-                select.value = this.currentCampaignId;
+            if (this._campaignLocked) {
+                // Селектор заблокирован lockCampaignToChat() — восстанавливаем значение
+                // не трогая currentCampaignId. Если кампания есть в списке — отображаем её имя.
+                // Если нет (редкий кейс: кампания удалена) — оставляем select на '' но не сбрасываем lock.
+                if (valueToRestore && campArr.some(c => String(c.id) === valueToRestore)) {
+                    select.value = valueToRestore;
+                } else if (valueToRestore) {
+                    // Кампании нет в списке — добавляем temp-опцию чтобы select не показывал ''.
+                    const tempOpt = document.createElement('option');
+                    tempOpt.value = valueToRestore;
+                    tempOpt.textContent = valueToRestore;
+                    tempOpt.dataset.temp = 'true';
+                    select.appendChild(tempOpt);
+                    select.value = valueToRestore;
+                }
             } else {
-                // BUG FIX #3: сбрасываем в null, не в ''
-                this.currentCampaignId = null;
-                select.value = '';
+                // Селектор не заблокирован — обычная логика восстановления выбора.
+                if (valueToRestore && campArr.some(c => String(c.id) === valueToRestore)) {
+                    select.value = valueToRestore;
+                    this.currentCampaignId = valueToRestore;
+                } else {
+                    // BUG FIX #3: сбрасываем в null, не в ''
+                    this.currentCampaignId = null;
+                    select.value = '';
+                }
             }
 
             block.style.display = 'block';
@@ -370,13 +400,19 @@ class SidebarManager {
      * чтобы createChatForCurrentDomain() брал правильное значение при создании
      * нового чата после просмотра заблокированного.
      *
-     * BUG FIX (race condition): если <option> с нужным campaignId ещё не добавлена
-     * в DOM (loadCampaignsForDomain не успел отработать) — создаём временную опцию.
-     * Она будет перезаписана при следующем вызове loadCampaignsForDomain.
+     * FIX race condition: выставляет _campaignLocked=true ДО установки select.value,
+     * чтобы параллельный вызов loadCampaignsForDomain() не перетёр значение.
+     * Если <option> ещё нет в DOM — создаём временную опцию (перезапишется loadCampaignsForDomain).
      */
     lockCampaignToChat(campaignId) {
         const select = this.campaignSelect;
         if (!select) return;
+
+        // Выставляем флаг первым — защищаем от гонки с loadCampaignsForDomain()
+        this._campaignLocked = true;
+        this.currentCampaignId = campaignId;
+        _storage.setItem('currentCampaignId', campaignId);
+
         // Если <option> ещё нет в DOM — создаём временную, чтобы select.value корректно встал.
         // Это происходит когда lockCampaignToChat вызывается из chat.js раньше, чем
         // loadCampaignsForDomain успевает заполнить список (race condition после первого ответа бота).
@@ -388,9 +424,6 @@ class SidebarManager {
             select.appendChild(tempOpt);
         }
         select.value = campaignId;
-        // Синхронизируем внутреннее состояние с кампанией чата
-        this.currentCampaignId = campaignId;
-        _storage.setItem('currentCampaignId', campaignId);
         this.applyLockStyle(true);
     }
 
@@ -400,6 +433,7 @@ class SidebarManager {
      * а также при открытии пустого чата (без сообщений).
      */
     unlockCampaign() {
+        this._campaignLocked = false;
         this.applyLockStyle(false);
     }
 
