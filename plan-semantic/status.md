@@ -7,27 +7,30 @@
 
 ## Этап 0 — Разведка
 
-**Статус**: `[ ]`
+**Статус**: `[x]` — завершено 23.06.2026
 
-**Файл результата**: `plan-semantic/recon.md` (не создан)
+**Файл результата**: `plan-semantic/recon.md` — заполнен
 
 **Чеклист**:
-- [ ] Прочитан `base_provider.py` — сигнатура `embed`, наличие `embed_batch`
-- [ ] Прочитан `ollama_provider.py`
-- [ ] Прочитан `openai_provider.py`
-- [ ] Прочитан `generic_chunker.py` — сигнатура `chunk_text`, возвращаемый тип
-- [ ] Прочитан `entity_chunker.py` — используется ли `_entities` после возврата
-- [ ] Прочитан `embedding_enricher.py` — сигнатуры `build_embedding_text`, `extract_markdown_headers`
-- [ ] Прочитан `preprocessor.py` — сигнатура `preprocess`, синхронная/асинхронная
-- [ ] Прочитан `_process_file` в `indexer_worker.py` — точный порядок вызовов
-- [ ] Прочитан `models.py` — все поля `Vault`
-- [ ] Прочитан `migrations.py` — формат последней миграции
-- [ ] Прочитан `shared_contracts/models.py` — передаётся ли vault между сервисами
-- [ ] Прочитан `db_client.py` — что возвращает `get_vault` (dict / ORM / dataclass)
-- [ ] Написан `plan-semantic/recon.md`
+- [x] Прочитан `base_provider.py` — сигнатура `embed`, `embed_batch` ОТСУТСТВУЕТ
+- [x] Прочитан `ollama_provider.py`
+- [x] Прочитан `openai_provider.py`
+- [x] Прочитан `generic_chunker.py` — сигнатура `chunk_text`, возвращаемый тип
+- [x] Прочитан `entity_chunker.py` — `_entities` НЕ используется после возврата
+- [x] Прочитан `embedding_enricher.py` — сигнатуры `build_embedding_text`, `extract_markdown_headers`
+- [x] Прочитан `preprocessor.py` — синхронная, идемпотентная
+- [x] Прочитан `_process_file` в `indexer_worker.py` — точный порядок вызовов
+- [x] Прочитан `models.py` — все поля `Vault`, `semantic_threshold` ОТСУТСТВУЕТ
+- [x] Прочитан `migrations.py` — Alembic runner, реальные миграции в `migrations/versions/`
+- [x] Прочитан `shared_contracts/models.py` — vault передаётся, `semantic_threshold` ОТСУТСТВУЕТ
+- [x] Прочитан `db_client.py` — `get_vault` возвращает `dict`, SELECT *
+- [x] Написан `plan-semantic/recon.md`
 
-**Заметки**:
-*(модель заполняет при работе)*
+**Ключевые находки**:
+- `embed_batch` отсутствует — Этап 1 обязателен
+- `_entities` не используется — ветку заменяем безболезненно
+- `migrations.py` — это Alembic runner; новая миграция добавляется в `migrations/versions/0022_...py`
+- preprocess сейчас вызывается ПОСЛЕ чанкинга; для SemanticChunker — ДО
 
 ---
 
@@ -37,12 +40,12 @@
 
 **Зависит от**: Этап 0
 
-> Пропустить если `embed_batch` уже есть (выяснится в Этапе 0)
+> НЕ пропускать — `embed_batch` ОТСУТСТВУЕТ
 
 **Чеклист**:
 - [ ] `base_provider.py` — добавлен абстрактный метод `embed_batch`
 - [ ] `ollama_provider.py` — реализация через `asyncio.gather`
-- [ ] `openai_provider.py` — реализация через batch-запрос
+- [ ] `openai_provider.py` — реализация через batch-запрос ("input": list[str])
 - [ ] `tests/test_embed_batch.py` — написан и проходит
 
 **Заметки**:
@@ -58,10 +61,9 @@
 
 **Чеклист**:
 - [ ] `models.py` — добавлено поле `semantic_threshold: float = 0.3`
-- [ ] `migrations.py` — добавлен SQL ALTER TABLE
-- [ ] Pydantic-схемы Vault — добавлено поле
-- [ ] `db_client.py` — `get_vault` возвращает `semantic_threshold`
-- [ ] `shared_contracts/models.py` — обновлён если нужно
+- [ ] `migrations/versions/0022_add_semantic_threshold.py` — новый Alembic-файл
+- [ ] `shared_contracts/models.py` — добавлено поле в VaultRead/Create/Update
+- [ ] `db_client.py` — `get_vault` вернёт `semantic_threshold` автоматически (через SELECT *)
 - [ ] Миграция применена локально
 - [ ] Поле проверено через API (create + get)
 
@@ -98,7 +100,7 @@
 **Чеклист**:
 - [ ] `preprocess(text_for_chunking)` вызывается ДО чанкинга
 - [ ] Обе старые ветки (fixed + entity_aware) заменены на `SemanticChunker`
-- [ ] `word_start` в metadata заполняется для PDF (для `_assign_page_numbers_and_headers`)
+- [ ] `word_start` в metadata заполняется в SemanticChunker для PDF page assignment
 - [ ] Логирование: количество чанков + threshold
 - [ ] `tests/test_indexer_integration.py` — проходит
 - [ ] Запущена индексация тестового документа вручную
@@ -131,8 +133,8 @@
 
 | Этап | Статус | Комментарий |
 |---|---|---|
-| 0. Разведка | `[ ]` | |
-| 1. embed_batch | `[ ]` | |
+| 0. Разведка | `[x]` | Завершено 23.06.2026, recon.md заполнен |
+| 1. embed_batch | `[ ]` | Обязателен — `embed_batch` отсутствует |
 | 2. Миграция БД | `[ ]` | |
 | 3. SemanticChunker | `[ ]` | |
 | 4. Интеграция | `[ ]` | |
@@ -140,4 +142,4 @@
 
 ---
 
-*Последнее обновление: не начато*
+*Последнее обновление: 23.06.2026, Этап 0 завершён*
