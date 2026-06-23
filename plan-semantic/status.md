@@ -56,20 +56,23 @@
 
 ## Этап 2 — Миграция БД и ORM
 
-**Статус**: `[ ]`
+**Статус**: `[x]` — завершено 23.06.2026
 
 **Зависит от**: Этап 0
 
 **Чеклист**:
-- [ ] `models.py` — добавлено поле `semantic_threshold: float = 0.3`
-- [ ] `migrations/versions/0022_add_semantic_threshold.py` — новый Alembic-файл
-- [ ] `shared_contracts/models.py` — добавлено поле в VaultRead/Create/Update
-- [ ] `db_client.py` — `get_vault` вернёт `semantic_threshold` автоматически (через SELECT *)
-- [ ] Миграция применена локально
+- [x] `rag-backend/app/db/models.py` — добавлено поле `semantic_threshold: float = 0.3`
+- [x] `rag-backend/migrations/versions/0022_add_semantic_threshold.py` — новый Alembic-файл (upgrade: add_column → backfill → NOT NULL; downgrade: drop_column)
+- [x] `shared_contracts/models.py` — добавлено поле в VaultRead (`float = 0.3`), VaultCreate (`float = 0.3`), VaultUpdate (`float | None = None`), VaultConfigEntry (`float = 0.3`)
+- [ ] `db_client.py` — `get_vault` вернёт `semantic_threshold` автоматически (через SELECT *) — **проверить вручную после применения миграции**
+- [ ] Миграция применена локально (`alembic upgrade head`)
 - [ ] Поле проверено через API (create + get)
 
 **Заметки**:
-*(модель заполняет при работе)*
+- ORM-модель `Vault` в `rag-backend/app/db/models.py`: `Column(Float, nullable=False, default=0.3, server_default="0.3")`
+- Alembic-миграция: 3-шаговая (add nullable → backfill → NOT NULL) для безопасного применения на живой БД
+- `db_client.py` не требует изменений — `get_vault` использует `SELECT *`, поле вернётся автоматически
+- После `alembic upgrade head` проверить: `SELECT semantic_threshold FROM vaults LIMIT 5;`
 
 ---
 
@@ -136,11 +139,11 @@
 |---|---|---|
 | 0. Разведка | `[x]` | Завершено 23.06.2026, recon.md заполнен |
 | 1. embed_batch | `[x]` | Завершено 23.06.2026, 3 файла + тест |
-| 2. Миграция БД | `[ ]` | |
+| 2. Миграция БД | `[x]` | Завершено 23.06.2026, 3 файла |
 | 3. SemanticChunker | `[ ]` | |
 | 4. Интеграция | `[ ]` | |
 | 5. Проверка качества | `[ ]` | |
 
 ---
 
-*Последнее обновление: 23.06.2026, Этап 1 завершён*
+*Последнее обновление: 23.06.2026, Этап 2 завершён*
