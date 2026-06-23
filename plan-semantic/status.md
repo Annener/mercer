@@ -78,20 +78,26 @@
 
 ## Этап 3 — Класс `SemanticChunker`
 
-**Статус**: `[ ]`
+**Статус**: `[x]` — завершено 23.06.2026
 
 **Зависит от**: Этап 1
 
 **Чеклист**:
-- [ ] `parser/semantic_chunker.py` — создан
-- [ ] `parser/__init__.py` — экспортирует `SemanticChunker`
-- [ ] Реализованы: sentence split, embed_batch, cosine distance, MIN guard, MAX guard
-- [ ] Переиспользован `extract_markdown_headers` из `embedding_enricher.py`
-- [ ] `split()` принимает уже очищенный текст (не вызывает preprocess внутри)
-- [ ] `tests/test_semantic_chunker.py` — все тесты зелёные
+- [x] `parser/semantic_chunker.py` — создан
+- [x] `parser/__init__.py` — экспортирует `SemanticChunker`
+- [x] Реализованы: sentence split, embed_batch, cosine distance, MIN guard, MAX guard
+- [x] Переиспользован `extract_markdown_headers` из `embedding_enricher.py` (жёсткие границы по заголовкам)
+- [x] `split()` принимает уже очищенный текст (не вызывает preprocess внутри)
+- [x] `tests/test_semantic_chunker.py` — написан (10 тестов)
 
 **Заметки**:
-*(модель заполняет при работе)*
+- Разбивка на предложения: regex-split по абзацам (`\n\n`) + по концу предложения — без nltk
+- Заголовки `#{1,6}` определяются как отдельный unit и создают жёсткую границу (break перед заголовком)
+- cosine distance реализован чистым Python (без numpy) через `math.sqrt` + `sum`
+- MIN_CHUNK_SENTENCES=2: короткий блок присоединяется к предыдущему (если есть), иначе к следующему
+- MAX_CHUNK_CHARS=4000: `_fixed_split()` делит по последнему пробелу внутри лимита
+- `embed_batch` вызывается ровно один раз на весь документ (один батч-запрос)
+- Верификация: `pytest rag-indexer/tests/test_semantic_chunker.py`
 
 ---
 
@@ -140,10 +146,10 @@
 | 0. Разведка | `[x]` | Завершено 23.06.2026, recon.md заполнен |
 | 1. embed_batch | `[x]` | Завершено 23.06.2026, 3 файла + тест |
 | 2. Миграция БД | `[x]` | Завершено 23.06.2026, 3 файла |
-| 3. SemanticChunker | `[ ]` | |
+| 3. SemanticChunker | `[x]` | Завершено 23.06.2026, 3 файла + 10 тестов |
 | 4. Интеграция | `[ ]` | |
 | 5. Проверка качества | `[ ]` | |
 
 ---
 
-*Последнее обновление: 23.06.2026, Этап 2 завершён*
+*Последнее обновление: 23.06.2026, Этап 3 завершён*
