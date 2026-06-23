@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 
 import httpx
 
@@ -9,11 +10,14 @@ from embedding.base_provider import EmbeddingProvider, ProviderUnavailableError
 
 logger = logging.getLogger(__name__)
 
-# Максимум параллельных запросов к Ollama.
-# Ollama однопоточна по inference — больше 1 параллельного запроса не ускоряет сам inference,
+# Максимум параллельных запросов для embed() (финальный эмбеддинг чанков).
+# Ollama однопоточна по inference — больше 1 параллельного запроса не ускоряет inference,
 # но позволяет pipeline (следующий запрос готовится пока текущий обрабатывается).
-# 3-4 — хороший баланс: Ollama успевает принять следующий запрос без простоя.
+# 3–4 — хороший баланс.
 _OLLAMA_CONCURRENCY = 4
+
+# Прогресс embed_batch логируется каждые N предложений.
+_BATCH_LOG_INTERVAL = 50
 
 
 class OllamaEmbeddingProvider(EmbeddingProvider):
@@ -53,18 +57,49 @@ class OllamaEmbeddingProvider(EmbeddingProvider):
             return list(await asyncio.gather(*tasks))
 
     async def embed_batch(self, texts: list[str]) -> list[list[float]]:
-        """Batch embedding for SemanticChunker.
+        """Последовательный batch embedding для SemanticChunker.
 
-        Ollama does not have a native batch endpoint — each text requires a separate
-        POST to /api/embeddings.  We parallelise all requests at once (no Semaphore)
-        because SemanticChunker calls this once per document with sentence-length texts
-        that are processed quickly by Ollama.  Order of results is preserved.
+        Почему последовательно, а не параллельно:
+        - Ollama однопоточна по inference — параллельные запросы не ускоряют обработку
+        - Большой PDF = сотни предложений; asyncio.gather без Semaphore
+          открывает сотни соединений одновременно; большинство виснет дольше timeout и упадает
+        - Последовательное выполнение гарантирует стабильную работу без зависаний
         """
         if not texts:
             return []
+
+        total = len(texts)
+        # timeout для embed_batch: фиксированный per-request timeout (как в embed),
+        # но httpx.AsyncClient создаётся один раз и переиспользуется для всех запросов
+        logger.info(
+            "embed_batch start: model=%s sentences=%d per_request_timeout=%ds",
+            self.model_name, total, self.timeout,
+        )
+
+        results: list[list[float]] = []
         async with httpx.AsyncClient(timeout=self.timeout) as client:
-            tasks = [self._embed_one(client, text) for text in texts]
-            return list(await asyncio.gather(*tasks))
+            for i, text in enumerate(texts):
+                vector = await self._embed_one(client, text)
+                results.append(vector)
+
+                processed = i + 1
+                if processed % _BATCH_LOG_INTERVAL == 0 or processed == total:
+                    logger.info(
+                        "embed_batch progress: %d/%d sentences embedded (model=%s)",
+                        processed, total, self.model_name,
+                    )
+
+        empty_count = sum(1 for v in results if not v)
+        if empty_count:
+            logger.warning(
+                "embed_batch: %d/%d sentences returned empty vectors (timeouts or errors)",
+                empty_count, total,
+            )
+        logger.info(
+            "embed_batch complete: %d/%d sentences OK (model=%s)",
+            total - empty_count, total, self.model_name,
+        )
+        return results
 
     async def _embed_one(self, client: httpx.AsyncClient, text: str) -> list[float]:
         last_unavailable: Exception | None = None
