@@ -57,7 +57,7 @@ async def run_indexing(
     db_client: IndexerDBClient,
     state_manager: RedisStateManager,
 ) -> None:
-    """Основной воркер индексации. Использует RedisStateManager для хранения состояния."""
+    """\u041e\u0441\u043d\u043e\u0432\u043d\u043e\u0439 \u0432\u043e\u0440\u043a\u0435\u0440 \u0438\u043d\u0434\u0435\u043a\u0441\u0430\u0446\u0438\u0438. \u0418\u0441\u043f\u043e\u043b\u044c\u0437\u0443\u0435\u0442 RedisStateManager \u0434\u043b\u044f \u0445\u0440\u0430\u043d\u0435\u043d\u0438\u044f \u0441\u043e\u0441\u0442\u043e\u044f\u043d\u0438\u044f."""
     try:
         settings = await db_client.get_platform_settings()
         vault = await db_client.get_vault(vault_id)
@@ -158,7 +158,6 @@ async def run_indexing(
                 doc = await db_client.create_document(vault_id, relative_path, md5, mtime)
                 logger.info("New document registered: %s id=%s", relative_path, doc["id"])
             else:
-                # Файл изменился или force_reindex — удаляем старые чанки и переиндексируем
                 logger.info(
                     "Re-indexing file (changed or forced): %s id=%s force=%s",
                     relative_path, doc["id"], force_reindex,
@@ -237,7 +236,7 @@ async def _delete_chunks_from_lancedb(
     vault_id: str,
     storage_client: StorageClient,
 ) -> None:
-    """Удаляет все чанки документа из LanceDB перед переиндексацией."""
+    """\u0423\u0434\u0430\u043b\u044f\u0435\u0442 \u0432\u0441\u0435 \u0447\u0430\u043d\u043a\u0438 \u0434\u043e\u043a\u0443\u043c\u0435\u043d\u0442\u0430 \u0438\u0437 LanceDB \u043f\u0435\u0440\u0435\u0434 \u043f\u0435\u0440\u0435\u0438\u043d\u0434\u0435\u043a\u0441\u0430\u0446\u0438\u0435\u0439."""
     try:
         await storage_client.delete_document(document_id, vault_id)
         logger.info("Deleted LanceDB chunks for document_id=%s vault_id=%s", document_id, vault_id)
@@ -262,7 +261,7 @@ async def _process_file(
     state_manager: RedisStateManager,
     db_client: IndexerDBClient,
 ) -> tuple[int, str]:
-    """Обрабатывает один файл. Возвращает (chunks_count, pg_document_id)."""
+    """\u041e\u0431\u0440\u0430\u0431\u0430\u0442\u044b\u0432\u0430\u0435\u0442 \u043e\u0434\u0438\u043d \u0444\u0430\u0439\u043b. \u0412\u043e\u0437\u0432\u0440\u0430\u0449\u0430\u0435\u0442 (chunks_count, pg_document_id)."""
     absolute_path = str(file_info["path"])
     relative_path = str(file_info.get("relative_path", ""))
     pg_document_id = str(doc["id"])
@@ -280,6 +279,7 @@ async def _process_file(
         state_manager=state_manager,
         parser_settings=parser_settings,
     )
+    logger.info("Parsing complete: %s", relative_path)
 
     if await state_manager.is_cancelled(task_id):
         raise asyncio.CancelledError
@@ -301,12 +301,17 @@ async def _process_file(
     text_for_chunking: str = ""
 
     if is_pdf:
+        logger.info("Merging PDF pages: %s", relative_path)
         merged_text, page_offsets, placed_headings = await asyncio.to_thread(
             merge_pdf_pages,
             parsed["pages"],
             parsed.get("headings"),
         )
         text_for_chunking = merged_text
+        logger.info(
+            "PDF merge complete: %s chars=%d pages_index=%d",
+            relative_path, len(text_for_chunking), len(page_offsets),
+        )
     else:
         text_for_chunking = str(parsed.get("text", ""))
 
@@ -317,20 +322,26 @@ async def _process_file(
                                                 indexed_at=datetime.now(tz=timezone.utc))
         return 0, pg_document_id
 
-    # НОВОЕ: pre-clean всего текста ДО передачи в SemanticChunker.
-    # preprocess идемпотентна — повторный вызов на чанках ниже ничего не сломает.
+    # pre-clean всего текста ДО передачи в SemanticChunker.
+    # preprocess идемпотентна — повторный вызов на чанках ничего не сломает.
     # Без этого PDF-артефакты (U+FFFD, мягкие переносы) зашумят cosine similarity.
+    logger.info("Preprocessing text for chunking: %s chars=%d", relative_path, len(text_for_chunking))
     cleaned_for_chunking = await asyncio.to_thread(preprocess, text_for_chunking, relative_path)
+    logger.info("Preprocessing complete: %s chars=%d", relative_path, len(cleaned_for_chunking))
 
     # Семантический чанкинг (единственный путь для всех документов)
     semantic_threshold = float(vault.get("semantic_threshold", 0.3))
+    logger.info(
+        "SemanticChunker start: %s threshold=%.2f",
+        relative_path, semantic_threshold,
+    )
     raw_chunks: list[str] = await SemanticChunker(
         provider,
         semantic_threshold,
     ).split(cleaned_for_chunking)
 
     logger.info(
-        "SemanticChunker: file=%s chunks=%d threshold=%.2f",
+        "SemanticChunker complete: file=%s chunks=%d threshold=%.2f",
         relative_path, len(raw_chunks), semantic_threshold,
     )
 
@@ -349,6 +360,7 @@ async def _process_file(
                                                 indexed_at=datetime.now(tz=timezone.utc))
         return 0, pg_document_id
 
+    logger.info("Post-processing %d chunks: strip + preprocess: %s", len(chunks), relative_path)
     for idx, chunk in enumerate(chunks):
         source_hint = f"{relative_path}:chunk_{idx}"
         chunk.text = strip_page_markers(chunk.text)
@@ -437,10 +449,10 @@ def _build_chunk_records(
     base_metadata: dict[str, Any],
 ) -> list[ChunkRecord]:
     """
-    Собирает list[ChunkRecord] из сырых текстовых чанков SemanticChunker.
+    \u0421\u043e\u0431\u0438\u0440\u0430\u0435\u0442 list[ChunkRecord] \u0438\u0437 \u0441\u044b\u0440\u044b\u0445 \u0442\u0435\u043a\u0441\u0442\u043e\u0432\u044b\u0445 \u0447\u0430\u043d\u043a\u043e\u0432 SemanticChunker.
 
-    word_start / word_end вычисляются накопленным счётчиком слов —
-    необходимы для _assign_page_numbers_and_headers при индексации PDF.
+    word_start / word_end \u0432\u044b\u0447\u0438\u0441\u043b\u044f\u044e\u0442\u0441\u044f \u043d\u0430\u043a\u043e\u043f\u043b\u0435\u043d\u043d\u044b\u043c \u0441\u0447\u0451\u0442\u0447\u0438\u043a\u043e\u043c \u0441\u043b\u043e\u0432 \u2014
+    \u043d\u0435\u043e\u0431\u0445\u043e\u0434\u0438\u043c\u044b \u0434\u043b\u044f _assign_page_numbers_and_headers \u043f\u0440\u0438 \u0438\u043d\u0434\u0435\u043a\u0441\u0430\u0446\u0438\u0438 PDF.
     """
     records: list[ChunkRecord] = []
     global_word_offset = 0
