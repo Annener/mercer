@@ -37,7 +37,6 @@ from shared_contracts.models import (
     ChatRecord,
     ClarificationAnswer,
     ClarificationResponse,
-    CreateChatRequest,
     CreateChatResponse,
     PipelineExecutionContext,
     SearchHit,
@@ -302,6 +301,7 @@ async def send_message(
     request: Request,
     db: AsyncSession = Depends(get_db),
 ) -> MessageResponse:
+    """Non-streaming endpoint. Accumulates all tokens from run_stream and returns final answer."""
     chat = await _get_chat_or_404(chat_id, db)
 
     user_msg = Message(chat_id=chat.id, role="user", content=req.content)
@@ -310,6 +310,7 @@ async def send_message(
 
     domain_id = await _domain_id_for_chat(chat, db) or chat.domain_id
 
+    # ensure_loaded: кэш может быть пустым после старта сервиса
     await config_for_vault.ensure_loaded(db)
     vault_ids: list[str] = [
         v.vault_id for v in config_for_vault.vaults.values()
@@ -385,13 +386,17 @@ async def send_message(
     context.steps = pipeline.steps
     context.final_composition = pipeline.final_composition
 
+    # Накапливаем токены из run_stream — единственный публичный API executor'а
     executor = PipelineExecutor(db)
-    result = await executor.run(context)
+    full_answer = ""
+    async for chunk in executor.run_stream(context):
+        if chunk.get("type") == "token":
+            full_answer += chunk.get("content", "")
 
     assistant_msg = Message(
         chat_id=chat.id,
         role="assistant",
-        content=result.final_answer,
+        content=full_answer,
         pipeline_id=pipeline.pipeline_id,
     )
     db.add(assistant_msg)
@@ -400,7 +405,7 @@ async def send_message(
     await _maybe_set_title(chat, context.original_query or req.content, db)
     await db.commit()
 
-    return MessageResponse(content=result.final_answer, message_id=str(assistant_msg.id))
+    return MessageResponse(content=full_answer, message_id=str(assistant_msg.id))
 
 
 @router.post("/{chat_id}/send_stream")
