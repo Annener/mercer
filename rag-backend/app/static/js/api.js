@@ -508,7 +508,7 @@ class ChatAPI {
         const response = await fetch(`${this.baseUrl}/api/settings/domains/${domainId}/fields`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ fields }),
+            body: JSON.stringify(fields),
         });
         if (!response.ok) throw new Error(`Failed to update domain fields: ${response.statusText}`);
         return response.json();
