@@ -12,7 +12,7 @@
 **Файл результата**: `plan-semantic/recon.md` — заполнен
 
 **Чеклист**:
-- [x] Прочитан `base_provider.py` — сигнатура `embed`, `embed_batch` ОТСУТСТВУЕТ
+- [x] Прочитан `base_provider.py` — сигнатура `embed`, `embed_batch` ОТСУТСТВОВАЛА
 - [x] Прочитан `ollama_provider.py`
 - [x] Прочитан `openai_provider.py`
 - [x] Прочитан `generic_chunker.py` — сигнатура `chunk_text`, возвращаемый тип
@@ -27,7 +27,7 @@
 - [x] Написан `plan-semantic/recon.md`
 
 **Ключевые находки**:
-- `embed_batch` отсутствует — Этап 1 обязателен
+- `embed_batch` отсутствовал — Этап 1 выполнен
 - `_entities` не используется — ветку заменяем безболезненно
 - `migrations.py` — это Alembic runner; новая миграция добавляется в `migrations/versions/0022_...py`
 - preprocess сейчас вызывается ПОСЛЕ чанкинга; для SemanticChunker — ДО
@@ -36,20 +36,21 @@
 
 ## Этап 1 — `embed_batch` в провайдерах
 
-**Статус**: `[ ]`
+**Статус**: `[x]` — завершено 23.06.2026
 
 **Зависит от**: Этап 0
 
-> НЕ пропускать — `embed_batch` ОТСУТСТВУЕТ
-
 **Чеклист**:
-- [ ] `base_provider.py` — добавлен абстрактный метод `embed_batch`
-- [ ] `ollama_provider.py` — реализация через `asyncio.gather`
-- [ ] `openai_provider.py` — реализация через batch-запрос ("input": list[str])
-- [ ] `tests/test_embed_batch.py` — написан и проходит
+- [x] `base_provider.py` — добавлен абстрактный метод `embed_batch`
+- [x] `ollama_provider.py` — реализация через `asyncio.gather` (N параллельных POST на /api/embeddings)
+- [x] `openai_provider.py` — реализация через batch-запрос (`"input": list[str]`, 1 HTTP-запрос)
+- [x] `tests/test_embed_batch.py` — написан (7 тестов: параллелизм Ollama, единственный запрос OpenAI, порядок, пустой вход, mismatch)
 
 **Заметки**:
-*(модель заполняет при работе)*
+- Ollama `embed_batch`: без Semaphore (SemanticChunker вызывает батч 1 раз на документ; предложения обрабатываются быстро)
+- OpenAI `embed_batch`: один POST с `input: list[str]`, ответ `data[i].embedding` → `results[i]`
+- При несоответствии длины ответа и входа возвращаются `[]` для каждого текста
+- Верификация: `pytest rag-indexer/tests/test_embed_batch.py`
 
 ---
 
@@ -134,7 +135,7 @@
 | Этап | Статус | Комментарий |
 |---|---|---|
 | 0. Разведка | `[x]` | Завершено 23.06.2026, recon.md заполнен |
-| 1. embed_batch | `[ ]` | Обязателен — `embed_batch` отсутствует |
+| 1. embed_batch | `[x]` | Завершено 23.06.2026, 3 файла + тест |
 | 2. Миграция БД | `[ ]` | |
 | 3. SemanticChunker | `[ ]` | |
 | 4. Интеграция | `[ ]` | |
@@ -142,4 +143,4 @@
 
 ---
 
-*Последнее обновление: 23.06.2026, Этап 0 завершён*
+*Последнее обновление: 23.06.2026, Этап 1 завершён*
