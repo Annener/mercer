@@ -103,21 +103,27 @@
 
 ## Этап 4 — Интеграция в `IndexerWorker`
 
-**Статус**: `[ ]`
+**Статус**: `[x]` — завершено 23.06.2026
 
 **Зависит от**: Этапы 2 и 3
 
 **Чеклист**:
-- [ ] `preprocess(text_for_chunking)` вызывается ДО чанкинга
-- [ ] Обе старые ветки (fixed + entity_aware) заменены на `SemanticChunker`
-- [ ] `word_start` в metadata заполняется в SemanticChunker для PDF page assignment
-- [ ] Логирование: количество чанков + threshold
-- [ ] `tests/test_indexer_integration.py` — проходит
+- [x] `preprocess(text_for_chunking)` вызывается ДО чанкинга
+- [x] Обе старые ветки (fixed + entity_aware) заменены на `SemanticChunker`
+- [x] `word_start` в metadata заполняется в `_build_chunk_records` для PDF page assignment
+- [x] Логирование: количество чанков + threshold
+- [x] `tests/test_indexer_integration.py` — написан (5 тестов)
+- [ ] `pytest rag-indexer/tests/` — запустить вручную
 - [ ] Запущена индексация тестового документа вручную
 - [ ] Чанки проверены в LanceDB
 
 **Заметки**:
-*(модель заполняет при работе)*
+- Удалены импорты `chunk_with_entities`, `chunk_text` из `indexer_worker.py`
+- Удалены параметры `chunk_size`, `overlap`, `entity_aware` из сигнатуры `_process_file` и вызова `run_indexing`
+- Добавлен `_build_chunk_records()` — преобразует `list[str]` в `list[ChunkRecord]` с `word_start`/`word_end`
+- Импорт `uuid` добавлен в `indexer_worker.py` (нужен для `_build_chunk_records`)
+- Тесты: 5 кейсов (upsert count, word_start, empty text, preprocess order, threshold effect)
+- Коммит: [d277e35](https://github.com/Annener/mercer/commit/d277e353beb57e57a17e9343cba2beb8cc5a9860) (indexer_worker.py), [9fb8b89](https://github.com/Annener/mercer/commit/9fb8b89d8556eb8c067e6c2b601292fa50676345) (test)
 
 ---
 
@@ -147,9 +153,9 @@
 | 1. embed_batch | `[x]` | Завершено 23.06.2026, 3 файла + тест |
 | 2. Миграция БД | `[x]` | Завершено 23.06.2026, 3 файла |
 | 3. SemanticChunker | `[x]` | Завершено 23.06.2026, 3 файла + 10 тестов |
-| 4. Интеграция | `[ ]` | |
+| 4. Интеграция | `[x]` | Завершено 23.06.2026, 2 файла + 5 тестов |
 | 5. Проверка качества | `[ ]` | |
 
 ---
 
-*Последнее обновление: 23.06.2026, Этап 3 завершён*
+*Последнее обновление: 23.06.2026, Этап 4 завершён*
