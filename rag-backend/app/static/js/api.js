@@ -745,6 +745,37 @@ class ChatAPI {
         return res.json();
     }
 
+    // === DB Management ===
+
+    /**
+     * Текстовый поиск по всем enabled vault'ам домена.
+     * Используется в db_management.js → doSearch().
+     *
+     * Backend: POST /api/db/search/domain
+     * Body:    { domain_id: string, query_text: string, limit: number }
+     * Returns: { results: SearchHit[] }
+     */
+    async textSearchByDomain(domainId, queryText, limit = 20) {
+        const response = await fetch(`${this.baseUrl}/api/db/search/domain`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                domain_id: domainId,
+                query_text: queryText,
+                limit,
+            }),
+        });
+        if (!response.ok) {
+            let errMsg = response.statusText;
+            try {
+                const errData = await response.json();
+                errMsg = errData.detail || errData.message || errMsg;
+            } catch (_) { /* ignore */ }
+            throw new Error(`Text search failed: ${errMsg}`);
+        }
+        return response.json(); // { results: SearchHit[] }
+    }
+
     // === Aliases & missing methods ===
 
     // tab-documents.js вызывает getSettingsVaults — алиас на getVaults
