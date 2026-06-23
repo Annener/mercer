@@ -28,6 +28,7 @@ from app.services.retrieval import (
     format_context,
     get_allowed_tag_ids,
     get_document_ids_by_tags,
+    rerank_hits,
     retrieve_multi_vault,
 )
 from app.services.settings_service import settings_service
@@ -567,7 +568,7 @@ async def send_message_stream(
         # ── 1. Query rewriting (только если есть история) ─────────────────────
         has_history = bool(context.history)
         if has_history:
-            yield _step("Reformulating query...")
+            yield _step("Переформулирую вопрос для поиска в базе знаний...")
             from app.db.models import Domain as DomainModel
             domain_obj = await db.get(DomainModel, context.domain_id) if context.domain_id else None
             domain_description = (
@@ -583,7 +584,7 @@ async def send_message_stream(
             )
 
         # ── 2. Pipeline routing ────────────────────────────────────────────────
-        yield _step("Analyzing context...")
+        yield _step("Анализирую контекст запроса...")
         _pipeline_router = PipelineRouter(db)
         pipeline = await _pipeline_router.select(
             context,
@@ -635,16 +636,23 @@ async def send_message_stream(
 
         system_prompt = await _resolve_system_prompt(context.campaign_id, domain_id, db)
 
+        hits: list[SearchHit] = []
         if vault_ids:
-            yield _step("Searching knowledge base...")
+            # ── 3a. Retrieval (без rerank) ─────────────────────────────────────
+            yield _step("Ищу в базе знаний...")
+            hits = await _fallback_retrieve(
+                query=context.query,
+                vault_ids=vault_ids,
+                domain_id=domain_id,
+                campaign_id=context.campaign_id,
+                db=db,
+                skip_rerank=True,
+            )
 
-        hits: list[SearchHit] = await _fallback_retrieve(
-            query=context.query,
-            vault_ids=vault_ids,
-            domain_id=domain_id,
-            campaign_id=context.campaign_id,
-            db=db,
-        )
+            # ── 3b. Reranking (явно, чтобы показать статус) ───────────────────
+            if hits:
+                yield _step("Выбираю лучшие результаты поиска...")
+                hits = await rerank_hits(context.query, hits, db)
 
         rag_context = format_context(hits)
         full_system = f"{system_prompt}\n\n{rag_context}" if system_prompt else rag_context
@@ -656,7 +664,8 @@ async def send_message_stream(
             messages.append({"role": m.role, "content": m.content})
         messages.append({"role": "user", "content": req.content})
 
-        yield _step("Generating response...")
+        # ── 3c. Generation ────────────────────────────────────────────────────
+        yield _step("Отправка контекста в генеративную модель для ответа...")
 
         full_answer = ""
         cancelled = False
@@ -773,12 +782,17 @@ async def _fallback_retrieve(
     domain_id: str | None,
     campaign_id: str | None,
     db: AsyncSession,
+    *,
+    skip_rerank: bool = False,
 ) -> list[SearchHit]:
     """RAG retrieval для no-pipeline fallback пути.
 
     - campaign выбрана: фильтруем по document_ids документов с тегами кампании + глобальными тегами домена.
     - общий режим: ищем по всему домену (без фильтра по document_ids).
     - если vault_ids пустой — возвращаем [].
+
+    skip_rerank=True — пропустить rerank_hits внутри retrieve_multi_vault.
+    Используется из plain_stream, где rerank вызывается явно для контроля step_status.
     """
     if not vault_ids or not domain_id:
         logger.info(
@@ -825,6 +839,7 @@ async def _fallback_retrieve(
         strategy="hybrid",
         config=None,
         db=db,
+        skip_rerank=skip_rerank,
     )
 
 
