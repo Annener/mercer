@@ -52,8 +52,15 @@ def _build_levels(steps: list[PipelineStep]) -> list[list[PipelineStep]]:
 
 
 def _resolve_prompt(template: str, ctx: PipelineExecutionContext) -> str:
-    """Substitute {query}, {STEP_ID.result}, {STEP_ID.key} in prompt template."""
-    result = template.replace("{query}", ctx.query)
+    """Substitute {query}, {STEP_ID.result}, {STEP_ID.key} in prompt template.
+
+    {query} resolves to ctx.original_query if set (the full user message before
+    QueryRewriter rewrites it for vector search), otherwise falls back to ctx.query.
+    This ensures the final composition prompt receives the complete user intent,
+    not a truncated retrieval-optimised phrase.
+    """
+    user_query = ctx.original_query if ctx.original_query else ctx.query
+    result = template.replace("{query}", user_query)
     for step_id, value in ctx.step_results.items():
         if step_id.startswith("_"):
             continue
@@ -275,11 +282,14 @@ class PipelineExecutor:
         provider: Any,
     ) -> AsyncGenerator[dict[str, Any], None]:
         prompt = _resolve_prompt(ctx.final_composition.system_prompt, ctx)
+        # Use the original unmodified user query as the user-role message so the
+        # LLM receives the full intent, not the retrieval-optimised short phrase.
+        user_content = ctx.original_query if ctx.original_query else ctx.query
         yield _status("Generating response...")
         try:
             async for token in provider.generate_stream([
                 {"role": "system", "content": prompt},
-                {"role": "user", "content": ctx.query},
+                {"role": "user", "content": user_content},
             ]):
                 yield {"type": "token", "content": token}
         except Exception as exc:
