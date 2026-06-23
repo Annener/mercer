@@ -21,7 +21,7 @@ from app.schemas.chat import (
     MessageResponse,
     SendMessageRequest,
 )
-from app.services.clarification_fsm import clarification_fsm
+from app.services import clarification_fsm
 from app.services.domain_service import domain_service
 from app.services.pipeline_executor import PipelineExecutor
 from app.services.pipeline_router import PipelineRouter
