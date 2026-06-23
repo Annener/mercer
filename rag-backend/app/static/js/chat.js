@@ -132,6 +132,9 @@ const LOCK_ICON_OPEN = `<svg width="15" height="15" viewBox="0 0 24 24" fill="no
 // SVG иконка «стоп» для кнопки прерывания генерации
 const STOP_ICON = `<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>`;
 
+// Специальное значение-сентинел для режима "Без пайплайна"
+const PIPELINE_NONE_ID = '__none__';
+
 // ============================================================
 // Pipeline inline-карточки (Этап 10)
 // ============================================================
@@ -691,8 +694,19 @@ class ChatManager {
             this.worldName.textContent = chat.domain_id ? `Домен: ${chat.domain_id}` : '';
         }
         if (!this.pipelineSelect) return;
-        const pipelines = await chatAPI.getPipelines(chat.domain_id, chat.campaign_id || null);
+
+        // ── Строим список опций ────────────────────────────────────────────────
+        // Первая опция — автоматический выбор через роутер
         this.pipelineSelect.innerHTML = '<option value="">Авто</option>';
+
+        // Опция «Без пайплайна» — отключает вызов LLM-роутера полностью
+        const noneOption = document.createElement('option');
+        noneOption.value = PIPELINE_NONE_ID;
+        noneOption.textContent = 'Без пайплайна';
+        this.pipelineSelect.appendChild(noneOption);
+
+        // Активные пайплайны домена/кампании
+        const pipelines = await chatAPI.getPipelines(chat.domain_id, chat.campaign_id || null);
         for (const pipeline of (pipelines || []).filter(p => p.is_active)) {
             const option = document.createElement('option');
             option.value = pipeline.pipeline_id;
@@ -702,189 +716,30 @@ class ChatManager {
 
         const lockedId = chat.locked_pipeline_id || '';
 
-        let lockedOptionExists = false;
-        if (lockedId) {
+        // Если заблокирован неизвестный (неактивный) пайплайн — добавляем «мёртвую» опцию
+        if (lockedId && lockedId !== PIPELINE_NONE_ID) {
+            let exists = false;
             for (const opt of this.pipelineSelect.options) {
-                if (opt.value === lockedId) {
-                    lockedOptionExists = true;
-                    break;
-                }
+                if (opt.value === lockedId) { exists = true; break; }
+            }
+            if (!exists) {
+                const hiddenOpt = document.createElement('option');
+                hiddenOpt.value = lockedId;
+                hiddenOpt.textContent = lockedId;
+                hiddenOpt.dataset.inactive = 'true';
+                this.pipelineSelect.appendChild(hiddenOpt);
             }
         }
 
-        if (lockedId && !lockedOptionExists) {
-            const hiddenOpt = document.createElement('option');
-            hiddenOpt.value = lockedId;
-            hiddenOpt.textContent = lockedId;
-            hiddenOpt.dataset.inactive = 'true';
-            this.pipelineSelect.appendChild(hiddenOpt);
-            lockedOptionExists = true;
-        }
-
-        const effectiveLocked = lockedId && lockedOptionExists ? lockedId : '';
+        // ── Восстанавливаем состояние блокировки ──────────────────────────────
+        const effectiveLocked = lockedId || '';
 
         this.pipelineSelect.dataset.selectedPipelineId = effectiveLocked;
         this.pipelineSelect.value = effectiveLocked;
         this.pipelineSelect.disabled = Boolean(effectiveLocked);
 
         if (this.lockPipelineBtn) {
-            this.lockPipelineBtn.classList.toggle('is-locked', Boolean(effectiveLocked));
-            this.lockPipelineBtn.setAttribute('aria-label', effectiveLocked ? 'Разблокировать пайплайн' : 'Зафиксировать пайплайн');
-            this.lockPipelineBtn.setAttribute('title', effectiveLocked ? 'Пайплайн зафиксирован. Нажмите, чтобы отменить.' : 'Нажмите, чтобы зафиксировать выбранный пайплайн');
-            this.lockPipelineBtn.innerHTML = effectiveLocked
-                ? `${LOCK_ICON_CLOSED}<span>Авто: выкл</span>`
-                : `${LOCK_ICON_OPEN}<span>Авто</span>`;
-        }
+            const isLocked = Boolean(effectiveLocked);
+            const isNoneMode = effectiveLocked === PIPELINE_NONE_ID;
 
-        // Запускаем / переключаем polling баннера (step-07)
-        if (this.pendingBanner) {
-            this.pendingBanner.setDomain(chat.domain_id || null);
-        }
-    }
-
-    async togglePipelineLock() {
-        if (!this.currentChatId || !this.pipelineSelect) return;
-
-        const currentlyLocked = Boolean(this.currentChat?.locked_pipeline_id);
-
-        const selectedPipelineId =
-            this.pipelineSelect.dataset.selectedPipelineId ||
-            this.pipelineSelect.value ||
-            null;
-
-        if (!currentlyLocked && !selectedPipelineId) return;
-
-        const pipelineId = currentlyLocked ? null : selectedPipelineId;
-
-        await chatAPI.lockPipeline(this.currentChatId, pipelineId);
-        const data = await chatAPI.getChat(this.currentChatId);
-        this.currentChat = data.chat;
-        await this.setupContextBar(data.chat);
-    }
-
-    showPipelineBadge(messageEl, data) {
-        messageEl.insertAdjacentHTML('beforeend', `<div class="pipeline-badge">${escapeHtml(data.pipeline_name || data.pipeline_id)} · ${escapeHtml(data.mode || 'auto')}</div>`);
-    }
-
-    updateProgressBar(messageEl, step, total, stepName) {
-        let bar = messageEl.querySelector('.pipeline-progress');
-        if (!bar) {
-            bar = document.createElement('div');
-            bar.className = 'pipeline-progress';
-            messageEl.appendChild(bar);
-        }
-        bar.innerHTML = Array.from({ length: total }, (_, i) =>
-            `<span class="pipeline-step ${i + 1 < step ? 'done' : i + 1 === step ? 'active' : ''}" data-step="${i + 1}">${i + 1}</span>`
-        ).join('') + `<em>${escapeHtml(stepName || '')}</em>`;
-    }
-
-    markStepDone(messageEl, step) {
-        messageEl.querySelector(`.pipeline-step[data-step="${step}"]`)?.classList.add('done');
-    }
-
-    /**
-     * Debounced markdown-рендер во время стриминга (через RAF, ~60fps).
-     */
-    scheduleMarkdownRender(element, contentGetter) {
-        if (this._renderScheduled || this._streamingDone) return;
-        this._renderScheduled = true;
-        requestAnimationFrame(() => {
-            this._renderScheduled = false;
-            if (this._streamingDone) return;
-            const text = contentGetter();
-            if (text) {
-                this.renderAssistantMarkdown(element, text);
-                this.scrollToBottom();
-            }
-        });
-    }
-
-    /**
-     * Перезаписывает innerHTML элемента сохраняя pipeline-баджи
-     * и восстанавливая блок источников если он был добавлен ранее.
-     */
-    renderAssistantMarkdown(element, text) {
-        const existingSources = element.querySelector('.sources-block');
-        const sourcesHtml = existingSources ? existingSources.outerHTML : '';
-        const prefix = Array.from(element.querySelectorAll('.pipeline-badge, .pipeline-progress'))
-            .map(node => node.outerHTML).join('');
-        element.innerHTML = prefix + renderMarkdown(text);
-        if (sourcesHtml) element.insertAdjacentHTML('beforeend', sourcesHtml);
-    }
-
-    handleJSONResponse(response) {
-        if (response.clarification_id) {
-            this.addMessage('clarification', response.content, response.clarification_id);
-        } else if (response.content) {
-            const msgEl = this.addMessage('assistant', response.content);
-            if (this._isLlmUnavailable(response.content)) {
-                this._appendRetryButton(msgEl);
-            }
-        }
-    }
-
-    _isLlmUnavailable(text) {
-        if (!text) return false;
-        return text.includes('LLM service unavailable')
-            || /llm.*(unavailable|error|timeout|refused)/i.test(text)
-            || /model.*not.*found/i.test(text)
-            || /generation model.*not configured/i.test(text);
-    }
-
-    _appendRetryButton(messageEl) {
-        const btn = document.createElement('button');
-        btn.className = 'retry-btn';
-        btn.textContent = 'Повторить запрос';
-        btn.title = 'Повторить последнее сообщение';
-        btn.addEventListener('click', () => {
-            if (this._lastUserMessage) {
-                btn.remove();
-                this.sendMessage(this._lastUserMessage);
-            }
-        });
-        messageEl.appendChild(btn);
-    }
-
-    addMessage(role, content, clarificationId = null) {
-        const messageDiv = document.createElement('div');
-        messageDiv.className = `message message-${role}`;
-        if (role === 'assistant' || role === 'clarification') {
-            messageDiv.innerHTML = renderMarkdown(content);
-        } else {
-            messageDiv.textContent = content;
-        }
-        if (clarificationId) messageDiv.dataset.clarificationId = clarificationId;
-        this.messagesContainer.appendChild(messageDiv);
-        this.scrollToBottom();
-        return messageDiv;
-    }
-
-    clearMessages() {
-        this.messagesContainer.querySelectorAll('.message, .typing-indicator, .pipeline-card, .pipeline-status-line').forEach(msg => msg.remove());
-    }
-
-    scrollToBottom() {
-        this.messagesContainer.scrollTop = this.messagesContainer.scrollHeight;
-    }
-
-    reset() {
-        // Останавливаем polling баннера и удаляем DOM-элемент (step-07)
-        if (this.pendingBanner) {
-            this.pendingBanner.destroy();
-        }
-        this.hideProcessingStatus();
-        this.currentChatId = null;
-        this.clearMessages();
-        this.inputArea.style.display = 'none';
-        this.welcomeMessage.style.display = 'block';
-        this.chatTitle.textContent = 'Выберите чат или создайте новый';
-    }
-}
-
-document.addEventListener('DOMContentLoaded', () => {
-    if (!window.chatAPI) {
-        console.error('chatAPI not available — ChatManager will not initialize');
-        return;
-    }
-    window.chatManager = new ChatManager();
-});
+            
