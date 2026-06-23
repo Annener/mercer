@@ -306,8 +306,12 @@ class PipelineExecutor:
     ) -> list[SearchHit]:
         """Retrieval for a DAG step (without rerank — caller handles it explicitly).
 
-        Search query is formed via rewrite_for_retrieval: combines step goal
-        (step.system_prompt) and user query into an optimal vector query.
+        Search query is built from step.system_prompt only:
+        - _resolve_prompt substitutes {query} with original_query if present in template
+        - rewrite_for_retrieval compresses the resolved prompt into a short search phrase
+
+        ctx.query is intentionally NOT passed to rewrite_for_retrieval — mixing it
+        with step_prompt was causing incorrect search queries (step intent lost).
         """
         top_k = step.top_k or int(await settings_service.get("retrieval.top_k"))
         vault_ids: list[str] = ctx.vault_ids or []
@@ -327,16 +331,21 @@ class PipelineExecutor:
                 logger.info("Step skipped: no indexed docs for tag_ids. step=%s", step.step_id)
                 return []
 
+        # _resolve_prompt подставляет {query} → original_query если она есть в шаблоне.
+        # Если {query} нет — step_prompt остаётся как есть (детерминированный запрос).
         step_prompt = _resolve_prompt(step.system_prompt or "", ctx)
+
+        # rewrite_for_retrieval получает только step_prompt — единственный источник.
+        # ctx.query намеренно не передаётся: его подмешивание ломало intent шага.
         search_query = await query_rewriter.rewrite_for_retrieval(
-            ctx.query,
             step_prompt,
             provider,
         )
         logger.info(
-            "RETRIEVE step=%s search_query='%s'",
+            "RETRIEVE step=%s step_prompt='%s' search_query='%s'",
             step.step_id,
-            search_query[:120],
+            step_prompt[:80],
+            search_query[:80],
         )
 
         if len(vault_ids) == 1:
