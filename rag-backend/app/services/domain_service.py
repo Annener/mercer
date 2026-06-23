@@ -59,8 +59,11 @@ class DomainService:
         return config.prompts.get(prompt_type, "")
 
     async def get_clarification_fields(self, domain_id: str, db: AsyncSession) -> list[dict[str, Any]]:
+        """Возвращает только поля с required=True.
+        Если таких нет — Planner пропускает LLM-вызов кларификации.
+        """
         config = await self.get_domain(domain_id, db)
-        return list(config.clarification_fields)
+        return [f for f in config.clarification_fields if f.get("required", True)]
 
     async def list_domains(self, db: AsyncSession) -> list[dict[str, Any]]:
         result = await db.execute(select(Domain).order_by(Domain.domain_id))
