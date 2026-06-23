@@ -252,6 +252,7 @@ class VaultRead(ORMModel):
     chunk_size: int | None = None
     overlap: int | None = None
     entity_aware_mode: bool | None = None
+    semantic_threshold: float = 0.3
     binding_status: Literal["unbound", "indexing", "bound", "error"] = "unbound"
     chunk_count: int = 0
     created_at: datetime | None = None
@@ -267,6 +268,7 @@ class VaultCreate(BaseModel):
     chunk_size: int | None = None
     overlap: int | None = None
     entity_aware_mode: bool | None = None
+    semantic_threshold: float = 0.3
 
 
 class VaultUpdate(BaseModel):
@@ -278,6 +280,7 @@ class VaultUpdate(BaseModel):
     chunk_size: int | None = None
     overlap: int | None = None
     entity_aware_mode: bool | None = None
+    semantic_threshold: float | None = None
     binding_status: Literal["unbound", "indexing", "bound", "error"] | None = None
     chunk_count: int | None = None
 
@@ -533,6 +536,7 @@ class VaultConfigEntry(BaseModel):
     chunk_size: int | None = None
     overlap: int | None = None
     entity_aware_mode: bool | None = None
+    semantic_threshold: float = 0.3
     binding_status: str = "unbound"
     chunk_count: int = 0
 
@@ -615,7 +619,7 @@ class ClarificationAnswer(BaseModel):
 # ---------------------------------------------------------------------------
 
 class ClarificationState(BaseModel):
-    """Pydantic-DTO состояния машины уточняющих вопросов.
+    """Пыдантик-DTO состояния машины уточняющих вопросов.
 
     Не является ORM-моделью — живёт только в памяти и передаётся
     между clarification_fsm и chat-роутом.
