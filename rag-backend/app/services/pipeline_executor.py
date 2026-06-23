@@ -16,6 +16,7 @@ from app.services.query_rewriter import query_rewriter
 from app.services.retrieval import (
     format_context_with_role,
     get_document_ids_by_tags,
+    rerank_hits,
     retrieve,
     retrieve_multi_vault,
 )
@@ -170,6 +171,7 @@ class PipelineExecutor:
                 yield chunk
             return
 
+        # --- Retrieval --------------------------------------------------
         yield _status(f"Searching knowledge base: {step.name}...")
         try:
             hits = await self._retrieve_for_step_dag(step, ctx, provider)
@@ -186,6 +188,17 @@ class PipelineExecutor:
                 ctx.step_results[step.step_id] = ""
             yield {"type": "step_skipped_no_docs", "step_id": step.step_id, "step_name": step.name}
             return
+
+        # --- Rerank (explicit, so we can emit a status before it) -------
+        if len(hits) > 1:
+            yield _status(f"Reranking results: {step.name}...")
+            try:
+                hits = await rerank_hits(ctx.query, hits, self.db)
+            except Exception as exc:
+                logger.warning(
+                    "Rerank failed for step=%s, using original order: %s",
+                    step.step_id, exc,
+                )
 
         formatted = format_context_with_role(hits, getattr(step, "role", None))
         ctx.step_results[step.step_id] = formatted
@@ -281,7 +294,7 @@ class PipelineExecutor:
         ctx: PipelineExecutionContext,
         provider: Any,
     ) -> list[SearchHit]:
-        """Retrieval for a DAG step.
+        """Retrieval for a DAG step (without rerank — caller handles it explicitly).
 
         Search query is formed via rewrite_for_retrieval: combines step goal
         (step.system_prompt) and user query into an optimal vector query.
@@ -317,8 +330,16 @@ class PipelineExecutor:
         )
 
         if len(vault_ids) == 1:
-            return await retrieve(search_query, vault_ids[0], document_ids=document_ids, top_k=top_k, db=self.db)
-        return await retrieve_multi_vault(search_query, vault_ids, document_ids=document_ids, top_k=top_k, db=self.db)
+            return await retrieve(
+                search_query, vault_ids[0],
+                document_ids=document_ids, top_k=top_k, db=self.db,
+            )
+        # skip_rerank=True: rerank happens explicitly in _run_dag_step after status emit
+        return await retrieve_multi_vault(
+            search_query, vault_ids,
+            document_ids=document_ids, top_k=top_k, db=self.db,
+            skip_rerank=True,
+        )
 
     async def _save_pause_state(
         self,
