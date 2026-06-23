@@ -369,14 +369,25 @@ class SidebarManager {
      * FIX: теперь синхронизирует this.currentCampaignId с campaignId чата,
      * чтобы createChatForCurrentDomain() брал правильное значение при создании
      * нового чата после просмотра заблокированного.
+     *
+     * BUG FIX (race condition): если <option> с нужным campaignId ещё не добавлена
+     * в DOM (loadCampaignsForDomain не успел отработать) — создаём временную опцию.
+     * Она будет перезаписана при следующем вызове loadCampaignsForDomain.
      */
     lockCampaignToChat(campaignId) {
         const select = this.campaignSelect;
         if (!select) return;
-        // Устанавливаем значение на кампанию чата
-        if (select.querySelector(`option[value="${campaignId}"]`)) {
-            select.value = campaignId;
+        // Если <option> ещё нет в DOM — создаём временную, чтобы select.value корректно встал.
+        // Это происходит когда lockCampaignToChat вызывается из chat.js раньше, чем
+        // loadCampaignsForDomain успевает заполнить список (race condition после первого ответа бота).
+        if (!select.querySelector(`option[value="${campaignId}"]`)) {
+            const tempOpt = document.createElement('option');
+            tempOpt.value = campaignId;
+            tempOpt.textContent = campaignId; // временный лейбл — перезапишется loadCampaignsForDomain
+            tempOpt.dataset.temp = 'true';
+            select.appendChild(tempOpt);
         }
+        select.value = campaignId;
         // Синхронизируем внутреннее состояние с кампанией чата
         this.currentCampaignId = campaignId;
         _storage.setItem('currentCampaignId', campaignId);
