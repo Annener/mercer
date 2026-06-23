@@ -12,7 +12,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.database import get_db
+from app.db.session import get_db
 from app.db.models import Campaign, Chat, Domain, Message
 from app.schemas.chat import (
     ChatCreate,
