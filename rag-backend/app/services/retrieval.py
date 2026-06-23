@@ -42,11 +42,22 @@ async def delete_document_chunks(document_id: str, vault_id: str) -> None:
     try:
         async with httpx.AsyncClient(base_url=STORAGE_API_URL, timeout=15) as client:
             response = await client.delete(
-                f"/index/documents/{document_id}",
+                f"/index/document/{document_id}",
                 params={"vault_id": vault_id},
             )
-            if response.status_code not in (200, 204, 404):
+            if response.status_code == 404:
+                logger.warning(
+                    "delete_document_chunks: document_id=%s not found in LanceDB vault=%s"
+                    " (already deleted or never indexed)",
+                    document_id, vault_id,
+                )
+            elif response.status_code not in (200, 204):
                 response.raise_for_status()
+            else:
+                logger.info(
+                    "delete_document_chunks: OK document_id=%s vault=%s status=%d",
+                    document_id, vault_id, response.status_code,
+                )
     except Exception:
         logger.warning(
             "Failed to delete chunks for document_id=%s vault_id=%s",
