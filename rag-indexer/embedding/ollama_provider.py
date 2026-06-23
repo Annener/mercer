@@ -52,6 +52,20 @@ class OllamaEmbeddingProvider(EmbeddingProvider):
             tasks = [_embed_with_sem(client, text) for text in texts]
             return list(await asyncio.gather(*tasks))
 
+    async def embed_batch(self, texts: list[str]) -> list[list[float]]:
+        """Batch embedding for SemanticChunker.
+
+        Ollama does not have a native batch endpoint — each text requires a separate
+        POST to /api/embeddings.  We parallelise all requests at once (no Semaphore)
+        because SemanticChunker calls this once per document with sentence-length texts
+        that are processed quickly by Ollama.  Order of results is preserved.
+        """
+        if not texts:
+            return []
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            tasks = [self._embed_one(client, text) for text in texts]
+            return list(await asyncio.gather(*tasks))
+
     async def _embed_one(self, client: httpx.AsyncClient, text: str) -> list[float]:
         last_unavailable: Exception | None = None
         for attempt in range(self.max_retries):
