@@ -446,6 +446,14 @@ class ChatManager {
             this.messageInput.style.height = Math.min(this.messageInput.scrollHeight, 150) + 'px';
         });
         this.lockPipelineBtn?.addEventListener('click', () => this.togglePipelineLock());
+        // Синхронизируем dataset при ручной смене селектора.
+        // Гарантирует консистентное состояние для togglePipelineLock
+        // даже если setupContextBar ещё не вызывался после смены.
+        this.pipelineSelect?.addEventListener('change', () => {
+            if (this.pipelineSelect) {
+                this.pipelineSelect.dataset.selectedPipelineId = this.pipelineSelect.value;
+            }
+        });
     }
 
     async loadChat(chatId) {
@@ -738,7 +746,9 @@ class ChatManager {
 
         const effectiveLocked = lockedId && lockedOptionExists ? lockedId : '';
 
-        this.pipelineSelect.dataset.selectedPipelineId = effectiveLocked;
+        // Инициализируем dataset явно — '' вместо undefined, чтобы change-listener
+        // и togglePipelineLock всегда получали консистентное значение.
+        this.pipelineSelect.dataset.selectedPipelineId = effectiveLocked || '';
         this.pipelineSelect.value = effectiveLocked;
         this.pipelineSelect.disabled = Boolean(effectiveLocked);
 
@@ -768,10 +778,10 @@ class ChatManager {
 
         const currentlyLocked = Boolean(this.currentChat?.locked_pipeline_id);
 
-        const selectedPipelineId =
-            this.pipelineSelect.dataset.selectedPipelineId ||
-            this.pipelineSelect.value ||
-            null;
+        // Читаем напрямую из .value — единственный достоверный источник текущего выбора.
+        // dataset.selectedPipelineId синхронизируется через change-listener и setupContextBar,
+        // но .value всегда актуален, в том числе при первом нажатии до любой блокировки.
+        const selectedPipelineId = this.pipelineSelect.value || null;
 
         if (!currentlyLocked && !selectedPipelineId) return;
 
