@@ -132,6 +132,11 @@ const LOCK_ICON_OPEN = `<svg width="15" height="15" viewBox="0 0 24 24" fill="no
 // SVG иконка «стоп» для кнопки прерывания генерации
 const STOP_ICON = `<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>`;
 
+// Специальное значение-сентинел для режима «Без пайплайна».
+// Если locked_pipeline_id равен этому значению — chat.py пропускает
+// pipeline_router.select() и идёт напрямую в plain RAG.
+const PIPELINE_NONE_ID = '__none__';
+
 // ============================================================
 // Pipeline inline-карточки (Этап 10)
 // ============================================================
@@ -441,6 +446,14 @@ class ChatManager {
             this.messageInput.style.height = Math.min(this.messageInput.scrollHeight, 150) + 'px';
         });
         this.lockPipelineBtn?.addEventListener('click', () => this.togglePipelineLock());
+        // Синхронизируем dataset при ручной смене селектора.
+        // Гарантирует консистентное состояние для togglePipelineLock
+        // даже если setupContextBar ещё не вызывался после смены.
+        this.pipelineSelect?.addEventListener('change', () => {
+            if (this.pipelineSelect) {
+                this.pipelineSelect.dataset.selectedPipelineId = this.pipelineSelect.value;
+            }
+        });
     }
 
     async loadChat(chatId) {
@@ -693,6 +706,13 @@ class ChatManager {
         if (!this.pipelineSelect) return;
         const pipelines = await chatAPI.getPipelines(chat.domain_id, chat.campaign_id || null);
         this.pipelineSelect.innerHTML = '<option value="">Авто</option>';
+
+        // Статическая опция «Без пайплайна» — всегда присутствует в селекторе
+        const noneOpt = document.createElement('option');
+        noneOpt.value = PIPELINE_NONE_ID;
+        noneOpt.textContent = 'Без пайплайна';
+        this.pipelineSelect.appendChild(noneOpt);
+
         for (const pipeline of (pipelines || []).filter(p => p.is_active)) {
             const option = document.createElement('option');
             option.value = pipeline.pipeline_id;
@@ -712,7 +732,10 @@ class ChatManager {
             }
         }
 
-        if (lockedId && !lockedOptionExists) {
+        // Для обычных пайплайнов: если заблокированный пайплайн стал неактивным —
+        // добавляем скрытую опцию чтобы select мог его отобразить.
+        // Для PIPELINE_NONE_ID этот guard не нужен — опция уже добавлена статически выше.
+        if (lockedId && lockedId !== PIPELINE_NONE_ID && !lockedOptionExists) {
             const hiddenOpt = document.createElement('option');
             hiddenOpt.value = lockedId;
             hiddenOpt.textContent = lockedId;
@@ -723,7 +746,9 @@ class ChatManager {
 
         const effectiveLocked = lockedId && lockedOptionExists ? lockedId : '';
 
-        this.pipelineSelect.dataset.selectedPipelineId = effectiveLocked;
+        // Инициализируем dataset явно — '' вместо undefined, чтобы change-listener
+        // и togglePipelineLock всегда получали консистентное значение.
+        this.pipelineSelect.dataset.selectedPipelineId = effectiveLocked || '';
         this.pipelineSelect.value = effectiveLocked;
         this.pipelineSelect.disabled = Boolean(effectiveLocked);
 
@@ -731,9 +756,15 @@ class ChatManager {
             this.lockPipelineBtn.classList.toggle('is-locked', Boolean(effectiveLocked));
             this.lockPipelineBtn.setAttribute('aria-label', effectiveLocked ? 'Разблокировать пайплайн' : 'Зафиксировать пайплайн');
             this.lockPipelineBtn.setAttribute('title', effectiveLocked ? 'Пайплайн зафиксирован. Нажмите, чтобы отменить.' : 'Нажмите, чтобы зафиксировать выбранный пайплайн');
-            this.lockPipelineBtn.innerHTML = effectiveLocked
-                ? `${LOCK_ICON_CLOSED}<span>Авто: выкл</span>`
-                : `${LOCK_ICON_OPEN}<span>Авто</span>`;
+            // Три состояния кнопки:
+            // __none__ заблокирован → «Без пайплайна»
+            // обычный заблокирован  → «Авто: выкл»
+            // не заблокировано      → «Авто»
+            this.lockPipelineBtn.innerHTML = effectiveLocked === PIPELINE_NONE_ID
+                ? `${LOCK_ICON_CLOSED}<span>Без пайплайна</span>`
+                : effectiveLocked
+                    ? `${LOCK_ICON_CLOSED}<span>Авто: выкл</span>`
+                    : `${LOCK_ICON_OPEN}<span>Авто</span>`;
         }
 
         // Запускаем / переключаем polling баннера (step-07)
@@ -747,10 +778,10 @@ class ChatManager {
 
         const currentlyLocked = Boolean(this.currentChat?.locked_pipeline_id);
 
-        const selectedPipelineId =
-            this.pipelineSelect.dataset.selectedPipelineId ||
-            this.pipelineSelect.value ||
-            null;
+        // Читаем напрямую из .value — единственный достоверный источник текущего выбора.
+        // dataset.selectedPipelineId синхронизируется через change-listener и setupContextBar,
+        // но .value всегда актуален, в том числе при первом нажатии до любой блокировки.
+        const selectedPipelineId = this.pipelineSelect.value || null;
 
         if (!currentlyLocked && !selectedPipelineId) return;
 

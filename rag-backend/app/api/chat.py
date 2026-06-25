@@ -52,6 +52,9 @@ config_for_vault = VaultConfigService()
 # Срок действия confirm-токена (концепт: 1 час)
 _CONFIRM_TTL = timedelta(hours=1)
 
+# Специальное значение-сентинел: пайплайны отключены, чат работает только через plain RAG
+PIPELINE_NONE_ID = "__none__"
+
 _AUTO_TITLE_PROMPT = """\
 Придумай короткое название (3–7 слов) для чата по первому вопросу пользователя.
 Название должно отражать суть вопроса, быть на том же языке что и вопрос.
@@ -364,11 +367,19 @@ async def send_message(
             domain_description=domain_description,
         )
 
-    pipeline_router = PipelineRouter(db)
-    pipeline = await pipeline_router.select(
-        context,
-        locked_pipeline_id=chat.locked_pipeline_id,
-    )
+    # Режим «Без пайплайна»: пропускаем роутер, сразу plain RAG
+    if chat.locked_pipeline_id == PIPELINE_NONE_ID:
+        pipeline = None
+        logger.info(
+            "Pipeline disabled (__none__ sentinel) — skipping router, plain RAG; chat_id=%s",
+            chat.id,
+        )
+    else:
+        pipeline_router = PipelineRouter(db)
+        pipeline = await pipeline_router.select(
+            context,
+            locked_pipeline_id=chat.locked_pipeline_id,
+        )
 
     if pipeline is None:
         logger.info(
@@ -584,12 +595,20 @@ async def send_message_stream(
             )
 
         # ── 2. Pipeline routing ────────────────────────────────────────────────
-        yield _step("Анализирую контекст запроса...")
-        _pipeline_router = PipelineRouter(db)
-        pipeline = await _pipeline_router.select(
-            context,
-            locked_pipeline_id=_locked_pipeline_id,
-        )
+        # Режим «Без пайплайна»: пропускаем роутер, сразу plain RAG
+        if _locked_pipeline_id == PIPELINE_NONE_ID:
+            pipeline = None
+            logger.info(
+                "Pipeline disabled (__none__ sentinel) — skipping router, plain RAG; chat_id=%s",
+                _chat.id,
+            )
+        else:
+            yield _step("Анализирую контекст запроса...")
+            _pipeline_router = PipelineRouter(db)
+            pipeline = await _pipeline_router.select(
+                context,
+                locked_pipeline_id=_locked_pipeline_id,
+            )
 
         # ── 2a. Pipeline found — сохраняем confirm и завершаем стрим ──────────
         if pipeline is not None:
