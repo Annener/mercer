@@ -93,8 +93,8 @@ class SettingsManager {
         if (tab === 'pipelines' && typeof this._attachPipelinesTabListeners === 'function') {
             this._attachPipelinesTabListeners(this._tabContent);
         }
-        if (tab === 'params' && typeof this.bindSidecarActions === 'function') {
-            this.bindSidecarActions();
+        if (tab === 'params' && typeof this._loadSidecarStatus === 'function') {
+            this._loadSidecarStatus();
         }
     }
 
@@ -200,15 +200,18 @@ class SettingsManager {
         } else if (action === 'sidecar-install') {
             this._openInstallModal();
         } else if (action === 'sidecar-start') {
+            if (btn.disabled) return;
             await this._sidecarAction('start');
         } else if (action === 'sidecar-stop') {
+            if (btn.disabled) return;
             await this._sidecarAction('stop');
         } else if (action === 'sidecar-restart') {
+            if (btn.disabled) return;
             await this._sidecarAction('restart');
         }
     }
 
-    // ─── Generation Models (legacy — для обратной совместимости пока жива вкладка gen-models) ──
+    // ─── Generation Models ──────────────────────────────────────────────────────────────────
 
     async handleGenModelsAction(action, id, btn) {
         if (action === 'new-gen') {
@@ -297,9 +300,9 @@ class SettingsManager {
     async handleModelsAction(action, id, btn) {
         const type = btn?.dataset.modelType;
         if (!type) return;
-        if (type === 'gen')    return this.handleGenModelsAction(action.replace(/-gen$/, '-gen'), id, btn);
-        if (type === 'emb')    return this.handleEmbModelsAction(action.replace(/-emb$/, '-emb'), id, btn);
-        if (type === 'rerank') return this.handleRerankModelsAction(action.replace(/-rerank$/, '-rerank'), id, btn);
+        if (type === 'gen')    return this.handleGenModelsAction(action, id, btn);
+        if (type === 'emb')    return this.handleEmbModelsAction(action, id, btn);
+        if (type === 'rerank') return this.handleRerankModelsAction(action, id, btn);
     }
 
     // ─── Vaults ────────────────────────────────────────────────────────────────────────────

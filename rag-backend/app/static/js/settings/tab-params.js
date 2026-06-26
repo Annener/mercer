@@ -298,11 +298,11 @@
         },
 
         // ─────────────────────────────────────────────────────────────
-        // Bind sidecar actions (вызывается из _attachTabListeners)
+        // Load initial sidecar status (called from _attachTabListeners)
         // ─────────────────────────────────────────────────────────────
-        bindSidecarActions() {
-            // Обработка кликов перенесена в handleParamsAction через _dispatch.
-            // Метод оставлен для обратной совместимости — выполняет только загрузку статуса.
+        _loadSidecarStatus() {
+            // Клики обрабатываются через _dispatch → handleParamsAction.
+            // Метод загружает начальный статус сразу при открытии вкладки.
             this.api.getSidecarStatus()
                 .then(s => this._updateSidecarStatus(s))
                 .catch(() => this._updateSidecarStatus({ agent_unavailable: true }));
