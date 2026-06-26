@@ -6,7 +6,7 @@ class SettingsManager {
         this._activeVaultId = null;
         this._activeDomainId = null;
         this._tabContent = document.getElementById('settings-content');
-        this._tabNav = document.getElementById('settings-tab-nav');
+        this._tabNav = document.querySelector('.settings-tabs');
     }
 
     async init() {
@@ -366,3 +366,33 @@ class SettingsManager {
 }
 
 const settingsManager = new SettingsManager();
+
+// ─── Bootstrap ────────────────────────────────────────────────────────────────────────────
+// Вешаем обработчики на кнопки открытия/закрытия настроек и на таб-навигацию.
+// Селекторы соответствуют реальному HTML (index.html):
+//   #settings-btn        — кнопка "Настройки платформы" в сайдбаре
+//   #back-to-chat-btn    — кнопка "← Назад к чатам" в шапке настроек
+//   #settings-page       — <main> страницы настроек (class="settings-page hidden")
+//   .app-container       — основной контейнер чата
+//   .settings-tabs       — <nav> с кнопками data-tab (нет id!)
+document.addEventListener('DOMContentLoaded', () => {
+    const openBtn      = document.getElementById('settings-btn');
+    const backBtn      = document.getElementById('back-to-chat-btn');
+    const settingsPage = document.getElementById('settings-page');
+    const mainApp      = document.querySelector('.app-container');
+
+    if (openBtn && settingsPage) {
+        openBtn.addEventListener('click', async () => {
+            settingsPage.classList.remove('hidden');
+            if (mainApp) mainApp.style.display = 'none';
+            await settingsManager.init();
+        });
+    }
+
+    if (backBtn && settingsPage) {
+        backBtn.addEventListener('click', () => {
+            settingsPage.classList.add('hidden');
+            if (mainApp) mainApp.style.display = '';
+        });
+    }
+});
