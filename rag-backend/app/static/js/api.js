@@ -707,6 +707,22 @@ class ChatAPI {
         return response.json();
     }
 
+    async activateRerankModel(modelId) {
+        const response = await fetch(`${this.baseUrl}/api/settings/models/rerank/${encodeURIComponent(modelId)}/activate`, {
+            method: 'POST',
+        });
+        if (!response.ok) throw new Error(`Failed to activate rerank model: ${response.statusText}`);
+        return response.json();
+    }
+
+    async deactivateRerankModel(modelId) {
+        const response = await fetch(`${this.baseUrl}/api/settings/models/rerank/${encodeURIComponent(modelId)}/deactivate`, {
+            method: 'POST',
+        });
+        if (!response.ok) throw new Error(`Failed to deactivate rerank model: ${response.statusText}`);
+        return response.json();
+    }
+
     // === Documents ===
 
     async getDocuments(vaultId = null, domainId = null) {
