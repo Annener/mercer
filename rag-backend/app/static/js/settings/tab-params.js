@@ -271,27 +271,27 @@
                     <span id="watchdog-message" class="settings-note" style="display:block;margin-top:6px;min-height:1.2em;"></span>
                 </div>
 
+                <div class="sidecar-block" id="sidecar-block">
+                    <div class="sidecar-block-title">PDF Sidecar</div>
+                    <div class="sidecar-status-row">
+                        <span class="sidecar-status-label">Статус:</span>
+                        <span class="sidecar-status-badge sidecar-status--loading" id="sidecar-status-badge">загрузка...</span>
+                        <span class="sidecar-pid" id="sidecar-pid"></span>
+                    </div>
+                    <div class="sidecar-actions">
+                        <button class="btn btn-primary btn-sm" id="sidecar-btn-start"   data-action="sidecar-start"   disabled>Запустить</button>
+                        <button class="btn btn-secondary btn-sm" id="sidecar-btn-stop"  data-action="sidecar-stop"   disabled>Остановить</button>
+                        <button class="btn btn-secondary btn-sm" id="sidecar-btn-restart" data-action="sidecar-restart" disabled>Перезапустить</button>
+                        <button class="btn btn-outline btn-sm" id="sidecar-btn-install" data-action="sidecar-install">Установить / Переустановить</button>
+                    </div>
+                    <div class="sidecar-action-msg" id="sidecar-action-msg"></div>
+                </div>
+
                 <div class="settings-actions">
                     <button type="button" class="btn btn-primary" data-action="save-params">Сохранить</button>
                     <button type="button" class="btn btn-outline" data-action="reset-params">Сбросить к умолчаниям</button>
                 </div>
             </form>
-
-            <div class="sidecar-block" id="sidecar-block">
-                <div class="sidecar-block-title">PDF Sidecar</div>
-                <div class="sidecar-status-row">
-                    <span class="sidecar-status-label">Статус:</span>
-                    <span class="sidecar-status-badge sidecar-status--loading" id="sidecar-status-badge">загрузка...</span>
-                    <span class="sidecar-pid" id="sidecar-pid"></span>
-                </div>
-                <div class="sidecar-actions">
-                    <button class="btn btn-primary btn-sm" id="sidecar-btn-start"   data-action="sidecar-start"   disabled>Запустить</button>
-                    <button class="btn btn-secondary btn-sm" id="sidecar-btn-stop"  data-action="sidecar-stop"   disabled>Остановить</button>
-                    <button class="btn btn-secondary btn-sm" id="sidecar-btn-restart" data-action="sidecar-restart" disabled>Перезапустить</button>
-                    <button class="btn btn-outline btn-sm" id="sidecar-btn-install" data-action="sidecar-install">Установить / Переустановить</button>
-                </div>
-                <div class="sidecar-action-msg" id="sidecar-action-msg"></div>
-            </div>
 
             <div class="sidecar-install-modal hidden" id="sidecar-install-modal" role="dialog" aria-modal="true" aria-hidden="true">
                 <div class="sidecar-install-modal-box">
