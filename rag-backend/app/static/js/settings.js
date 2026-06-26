@@ -195,6 +195,16 @@ class SettingsManager {
             }
             if (input) input.value = '';
             if (msgEl) { msgEl.textContent = ''; msgEl.className = ''; }
+
+        // ─── Sidecar actions ─────────────────────────────────────────
+        } else if (action === 'sidecar-install') {
+            this._openInstallModal();
+        } else if (action === 'sidecar-start') {
+            await this._sidecarAction('start');
+        } else if (action === 'sidecar-stop') {
+            await this._sidecarAction('stop');
+        } else if (action === 'sidecar-restart') {
+            await this._sidecarAction('restart');
         }
     }
 
@@ -218,22 +228,15 @@ class SettingsManager {
             } catch (e) { alert('Ошибка активации: ' + e.message); }
         } else if (action === 'toggle-gen') {
             try {
-                await this.api.toggleGenerationModel(id);
+                const card = btn.closest('[data-id]');
+                const currentEnabled = card?.dataset.enabled === 'true';
+                await this.api.toggleGenerationModel(id, !currentEnabled);
                 await this.loadTab('gen-models');
-            } catch (e) { alert('Ошибка: ' + e.message); }
-        } else if (action === 'check-gen') {
-            try {
-                const result = await this.api.checkGenerationModel(id);
-                if (result?.ok) {
-                    alert(`✅ Модель доступна (${result.latency_ms} мс)`);
-                } else {
-                    alert('❌ ' + (result?.error || 'Недоступна'));
-                }
-            } catch (e) { alert('Ошибка проверки: ' + e.message); }
+            } catch (e) { alert('Ошибка переключения: ' + e.message); }
         }
     }
 
-    // ─── Embedding Models (legacy — для обратной совместимости пока жива вкладка emb-models) ──
+    // ─── Embedding Models ──────────────────────────────────────────────────────────────────
 
     async handleEmbModelsAction(action, id, btn) {
         if (action === 'new-emb') {
@@ -241,109 +244,62 @@ class SettingsManager {
         } else if (action === 'edit-emb') {
             await this.showEmbeddingModelModal(id);
         } else if (action === 'delete-emb') {
-            if (!confirm('Удалить embedding-модель?')) return;
+            if (!confirm('Удалить модель?')) return;
             try {
                 await this.api.deleteEmbeddingModel(id);
                 await this.loadTab('emb-models');
             } catch (e) { alert('Ошибка: ' + e.message); }
-        } else if (action === 'check-emb') {
+        } else if (action === 'activate-emb') {
             try {
-                const result = await this.api.checkEmbeddingModel(id);
-                if (result?.ok) {
-                    alert(`✅ Модель доступна (${result.latency_ms} мс)`);
-                } else {
-                    alert('❌ ' + (result?.error || 'Недоступна'));
-                }
-            } catch (e) { alert('Ошибка проверки: ' + e.message); }
+                await this.api.setActiveEmbeddingModel(id);
+                await this.loadTab('emb-models');
+            } catch (e) { alert('Ошибка активации: ' + e.message); }
+        } else if (action === 'toggle-emb') {
+            try {
+                const card = btn.closest('[data-id]');
+                const currentEnabled = card?.dataset.enabled === 'true';
+                await this.api.toggleEmbeddingModel(id, !currentEnabled);
+                await this.loadTab('emb-models');
+            } catch (e) { alert('Ошибка переключения: ' + e.message); }
         }
     }
 
-    // ─── Models unified (gen + emb + rerank) ──────────────────────────────────────────────
+    // ─── Rerank Models ──────────────────────────────────────────────────────────────────────
 
-    async handleModelsAction(action, id, btn) {
-        // ── Генеративные ─────────────────────────────────────────
-        if (action === 'new-gen') {
-            await this.showGenerationModelModal();
-        } else if (action === 'edit-gen') {
-            await this.showGenerationModelModal(id);
-        } else if (action === 'delete-gen') {
-            if (!confirm('Удалить модель?')) return;
-            try {
-                await this.api.deleteGenerationModel(id);
-                await this.loadTab('models');
-            } catch (e) { alert('Ошибка: ' + e.message); }
-        } else if (action === 'activate-gen') {
-            try {
-                await this.api.setActiveGenerationModel(id);
-                await this.loadTab('models');
-            } catch (e) { alert('Ошибка активации: ' + e.message); }
-        } else if (action === 'toggle-gen') {
-            try {
-                await this.api.toggleGenerationModel(id);
-                await this.loadTab('models');
-            } catch (e) { alert('Ошибка: ' + e.message); }
-        } else if (action === 'check-gen') {
-            try {
-                const result = await this.api.checkGenerationModel(id);
-                if (result?.ok) {
-                    alert(`✅ Модель доступна (${result.latency_ms} мс)`);
-                } else {
-                    alert('❌ ' + (result?.error || 'Недоступна'));
-                }
-            } catch (e) { alert('Ошибка проверки: ' + e.message); }
-
-        // ── Embedding ─────────────────────────────────────────────
-        } else if (action === 'new-emb') {
-            await this.showEmbeddingModelModal();
-        } else if (action === 'edit-emb') {
-            await this.showEmbeddingModelModal(id);
-        } else if (action === 'delete-emb') {
-            if (!confirm('Удалить embedding-модель?')) return;
-            try {
-                await this.api.deleteEmbeddingModel(id);
-                await this.loadTab('models');
-            } catch (e) { alert('Ошибка: ' + e.message); }
-        } else if (action === 'check-emb') {
-            try {
-                const result = await this.api.checkEmbeddingModel(id);
-                if (result?.ok) {
-                    alert(`✅ Модель доступна (${result.latency_ms} мс)`);
-                } else {
-                    alert('❌ ' + (result?.error || 'Недоступна'));
-                }
-            } catch (e) { alert('Ошибка проверки: ' + e.message); }
-
-        // ── Reranker ──────────────────────────────────────────────
-        } else if (action === 'new-rerank') {
+    async handleRerankModelsAction(action, id, btn) {
+        if (action === 'new-rerank') {
             await this.showRerankModelModal();
         } else if (action === 'edit-rerank') {
-            await this.showRerankModelEditModal(id);
-        } else if (action === 'activate-rerank') {
-            try {
-                await this.api.activateRerankModel(id);
-                await this.loadTab('models');
-            } catch (e) { alert('Ошибка активации: ' + e.message); }
-        } else if (action === 'deactivate-rerank') {
-            try {
-                await this.api.deactivateRerankModel(id);
-                await this.loadTab('models');
-            } catch (e) { alert('Ошибка деактивации: ' + e.message); }
-        } else if (action === 'check-rerank') {
-            try {
-                const result = await this.api.checkRerankModel(id);
-                if (result?.ok) {
-                    alert(`✅ Reranker доступен (${result.latency_ms} мс)`);
-                } else {
-                    alert('❌ ' + (result?.error || 'Недоступен'));
-                }
-            } catch (e) { alert('Ошибка проверки: ' + e.message); }
+            await this.showRerankModelModal(id);
         } else if (action === 'delete-rerank') {
-            if (!confirm('Удалить reranker-модель?')) return;
+            if (!confirm('Удалить модель?')) return;
             try {
                 await this.api.deleteRerankModel(id);
-                await this.loadTab('models');
+                await this.loadTab('rerank-models');
             } catch (e) { alert('Ошибка: ' + e.message); }
+        } else if (action === 'activate-rerank') {
+            try {
+                await this.api.setActiveRerankModel(id);
+                await this.loadTab('rerank-models');
+            } catch (e) { alert('Ошибка активации: ' + e.message); }
+        } else if (action === 'toggle-rerank') {
+            try {
+                const card = btn.closest('[data-id]');
+                const currentEnabled = card?.dataset.enabled === 'true';
+                await this.api.toggleRerankModel(id, !currentEnabled);
+                await this.loadTab('rerank-models');
+            } catch (e) { alert('Ошибка переключения: ' + e.message); }
         }
+    }
+
+    // ─── Combined Models tab ───────────────────────────────────────────────────────────────
+
+    async handleModelsAction(action, id, btn) {
+        const type = btn?.dataset.modelType;
+        if (!type) return;
+        if (type === 'gen')    return this.handleGenModelsAction(action.replace(/-gen$/, '-gen'), id, btn);
+        if (type === 'emb')    return this.handleEmbModelsAction(action.replace(/-emb$/, '-emb'), id, btn);
+        if (type === 'rerank') return this.handleRerankModelsAction(action.replace(/-rerank$/, '-rerank'), id, btn);
     }
 
     // ─── Vaults ────────────────────────────────────────────────────────────────────────────
@@ -354,99 +310,56 @@ class SettingsManager {
         } else if (action === 'edit-vault') {
             await this.showVaultModal(id);
         } else if (action === 'delete-vault') {
-            if (!confirm('Удалить vault?')) return;
+            if (!confirm('Удалить хранилище?')) return;
             try {
                 await this.api.deleteVault(id);
                 await this.loadTab('vaults');
             } catch (e) { alert('Ошибка: ' + e.message); }
-        } else if (action === 'toggle-vault') {
-            try {
-                await this.api.toggleVault(id);
-                await this.loadTab('vaults');
-            } catch (e) { alert('Ошибка: ' + e.message); }
         }
     }
 
-    // ─── Pipelines ──────────────────────────────────────────────────────────────────────────
+    // ─── Documents ────────────────────────────────────────────────────────────────────────
 
-    async handlePipelinesAction(action, id, btn) {
-        if (action === 'new-pipeline') {
-            await this.showPipelineModal();
-        } else if (action === 'edit-pipeline') {
-            await this.showPipelineEditModal(id);
-        } else if (action === 'delete-pipeline') {
-            if (!confirm('Удалить pipeline?')) return;
+    async handleDocumentsAction(action, btn) {
+        if (action === 'delete-document') {
+            const id = btn?.dataset.id;
+            if (!id) return;
+            if (!confirm('Удалить документ? Это действие необратимо.')) return;
             try {
-                await this.api.deletePipeline(id);
-                await this.loadTab('pipelines');
+                await this.api.deleteDocument(id);
+                await this.loadDocumentsData();
             } catch (e) { alert('Ошибка: ' + e.message); }
-        } else if (action === 'activate-pipeline') {
+        } else if (action === 'reindex-document') {
+            const id = btn?.dataset.id;
+            if (!id) return;
             try {
-                await this.api.activatePipeline(id);
-                await this.loadTab('pipelines');
-            } catch (e) { alert('Ошибка активации: ' + e.message); }
-        } else if (action === 'deactivate-pipeline') {
-            try {
-                await this.api.deactivatePipeline(id);
-                await this.loadTab('pipelines');
-            } catch (e) { alert('Ошибка деактивации: ' + e.message); }
+                await this.api.reindexDocument(id);
+                await this.loadDocumentsData();
+            } catch (e) { alert('Ошибка: ' + e.message); }
+        } else if (action === 'filter-documents') {
+            await this.loadDocumentsData();
+        } else if (action === 'clear-filter') {
+            const vaultSel = this._tabContent.querySelector('#filter-vault');
+            const domainSel = this._tabContent.querySelector('#filter-domain');
+            const statusSel = this._tabContent.querySelector('#filter-status');
+            if (vaultSel) vaultSel.value = '';
+            if (domainSel) domainSel.value = '';
+            if (statusSel) statusSel.value = '';
+            await this.loadDocumentsData();
         }
     }
 
-    // ─── Utils ─────────────────────────────────────────────────────────────────────────────
+    // ─── Utility ───────────────────────────────────────────────────────────────────────────
 
     escapeHtml(str) {
-        if (str == null) return '';
+        if (str === null || str === undefined) return '';
         return String(str)
             .replace(/&/g, '&amp;')
             .replace(/</g, '&lt;')
             .replace(/>/g, '&gt;')
             .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#039;');
+            .replace(/'/g, '&#39;');
     }
 }
 
-window.settingsManager = new SettingsManager();
-
-// S22 fix: DOMContentLoaded использовал несуществующие id:
-//   'open-settings-btn'   → реальный id: 'settings-btn'
-//   'settings-back-btn'   → реальный id: 'back-to-chat-btn'
-//   'main-app'            → реальный селектор: '.app-container'
-//   'settings-tab-nav'    → реальный селектор: '.settings-tabs' (nav без id)
-// Итог: все 4 getElementById возвращали null → обработчики не цеплялись → кнопка не работала.
-document.addEventListener('DOMContentLoaded', async () => {
-    const openBtn      = document.getElementById('settings-btn');
-    const backBtn      = document.getElementById('back-to-chat-btn');
-    const settingsPage = document.getElementById('settings-page');
-    const mainApp      = document.querySelector('.app-container');
-
-    if (openBtn && settingsPage) {
-        openBtn.addEventListener('click', async () => {
-            settingsPage.classList.remove('hidden');
-            if (mainApp) mainApp.style.display = 'none';
-            await window.settingsManager.init();
-        });
-    }
-
-    const tabNav = document.querySelector('.settings-tabs');
-    if (tabNav) {
-        tabNav.querySelectorAll('[data-tab]').forEach(btn => {
-            btn.addEventListener('click', async () => {
-                tabNav.querySelectorAll('[data-tab]').forEach(b => b.classList.remove('active'));
-                btn.classList.add('active');
-                // fix: синхронизируем currentTab при клике, иначе _onSave-коллбэки
-                // из PipelineBuilder/модалей после сохранения вызывают
-                // loadTab(this.currentTab) с устаревшим значением 'domains'.
-                window.settingsManager.currentTab = btn.dataset.tab;
-                await window.settingsManager.loadTab(btn.dataset.tab);
-            });
-        });
-    }
-
-    if (backBtn && settingsPage) {
-        backBtn.addEventListener('click', () => {
-            settingsPage.classList.add('hidden');
-            if (mainApp) mainApp.style.display = '';
-        });
-    }
-});
+const settingsManager = new SettingsManager();
