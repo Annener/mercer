@@ -1,34 +1,36 @@
 """
-pdf-sidecar — FastAPI HTTP-сервер для парсинга PDF через unstructured (hi_res)
-и реранжирования через CrossEncoder.
+pdf-sidecar — FastAPI HTTP-сервер для парсинга PDF через unstructured (hi_res),
+реранжирования через CrossEncoder и эмбеддинга через SentenceTransformer.
 
 /parse         — синхронный, возвращает JSON после полного завершения
 /parse/stream  — NDJSON-поток с прогресс-событиями по страницам и финальным результатом
 /rerank        — реранжирование документов через CrossEncoder (BAAI/bge-reranker-v2-m3)
+/embed         — эмбеддинг текстов через SentenceTransformer (BAAI/bge-m3)
+               Доверен выносу bge-m3 из Ollama в этот сервис для:
+               - батчинг за один forward pass вместо N HTTP-запросов к Ollama
+               - изоляция нагрузки индексации от LLM-запросов пользователей
+               - детерминированные вектора (те же веса, не зависящие от версии Ollama)
+               Ответ совместим с OpenAI /embeddings API:
+               {"data": [{"index": 0, "embedding": [...]}, ...]}
 
 FIX v3:
   - Логирование через dictConfig (нет дублей)
   - Прогрев моделей при старте (lifespan hook)
-  - streaming адаптирован под параллельный батч-парсинг:
-    прогресс приходит из дочерних процессов через thread-safe callback
+  - streaming адаптирован под параллельный батч-парсинг
 
 FIX v3.1:
-  - _generate() переписан: asyncio.Queue вместо queue.SimpleQueue+run_in_executor.
-    Старая схема приводила к утечке потоков при TimeoutError: каждая истёкшая
-    итерация оставляла висячий поток заблокированный на progress_q.get().
-    Один из этих потоков перехватывал sentinel None раньше основного цикла,
-    и цикл уже никогда не получал сигнал завершения → зависание на 50+ минут.
+  - _generate() переписан: asyncio.Queue вместо queue.SimpleQueue+run_in_executor
 
 FIX v3.2:
-  - В _generate() при логировании ошибки парсинга передаём exc_info=exc
-    (объект исключения) вместо exc_info=True.
-    exc_info=True читает sys.exc_info() из текущего контекста, но вне блока
-    except переменная exc не определена → UnboundLocalError:
-    "cannot access local variable 'exc' where it is not associated with a value".
-    Передача объекта напрямую позволяет logging извлечь трейбек из него.
+  - Передача exc_info=exc (объект) вместо exc_info=True
 
 v4.0:
   - Добавлен эндпоинт POST /rerank и прогрев CrossEncoder в lifespan.
+
+v5.0:
+  - Добавлен эндпоинт POST /embed (OpenAI-compatible) и прогрев SentenceTransformer (bge-m3) в lifespan.
+  - bge-m3 вынесен из Ollama в этот сервис.
+  - /health дополнен флагом embedder_loaded.
 """
 from __future__ import annotations
 
@@ -49,7 +51,8 @@ from pydantic import BaseModel
 
 from parser import parse_pdf_unstructured, warmup_models
 from preprocessor import preprocess
-from reranker import load_reranker, rerank, is_loaded
+from reranker import load_reranker, rerank, is_loaded as reranker_is_loaded
+from embedder import load_embedder, embed as _embed, is_loaded as embedder_is_loaded
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 PORT = int(os.getenv("PDF_SIDECAR_PORT", "8765"))
@@ -116,12 +119,19 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.warning("Reranker warmup failed (non-fatal): %s", exc)
 
+    # Прогрев embedder — загрузка SentenceTransformer (bge-m3) один раз при старте
+    try:
+        await asyncio.to_thread(load_embedder)
+        logger.info("Embedder warmup complete")
+    except Exception as exc:
+        logger.warning("Embedder warmup failed (non-fatal): %s", exc)
+
     logger.info("=== Warmup complete — ready to accept requests ===")
     yield
     logger.info("=== PDF Sidecar shutting down ===")
 
 
-app = FastAPI(title="PDF Sidecar", version="4.0.0", lifespan=lifespan)
+app = FastAPI(title="PDF Sidecar", version="5.0.0", lifespan=lifespan)
 
 
 # ---------------------------------------------------------------------------
@@ -133,7 +143,8 @@ async def health() -> dict[str, str]:
     return {
         "status": "ok",
         "service": "pdf-sidecar",
-        "reranker_loaded": str(is_loaded()),
+        "reranker_loaded": str(reranker_is_loaded()),
+        "embedder_loaded": str(embedder_is_loaded()),
     }
 
 
@@ -295,12 +306,12 @@ class RerankRequest(BaseModel):
 @app.post("/rerank")
 async def rerank_documents(req: RerankRequest) -> JSONResponse:
     """
-    Реранжирует документы относительно запроса через CrossEncoder.
+    Реранжирует документы релятивно запроса через CrossEncoder.
 
     Формат ответа совместим с openai_compatible /rerank провайдерами:
       {"results": [{"index": 0, "relevance_score": 0.92}, ...]}
     """
-    if not is_loaded():
+    if not reranker_is_loaded():
         raise HTTPException(status_code=503, detail="Reranker model is not loaded yet.")
     if not req.documents:
         return JSONResponse(content={"results": []})
@@ -321,6 +332,55 @@ async def rerank_documents(req: RerankRequest) -> JSONResponse:
         results[0]["relevance_score"] if results else 0.0,
     )
     return JSONResponse(content={"results": results})
+
+
+class EmbedRequest(BaseModel):
+    model: str = "BAAI/bge-m3"
+    input: list[str] | str
+
+
+@app.post("/embeddings")
+async def embed_texts(req: EmbedRequest) -> JSONResponse:
+    """
+    Вычисляет эмбеддинги через SentenceTransformer (bge-m3).
+
+    Принимает как строку (один текст), так и список строк —
+    совместимо с OpenAI POST /embeddings:
+      - вход: {"model": "...", "input": "text"} или {"input": ["t1", "t2"]}
+      - выход: {"data": [{"index": 0, "embedding": [...]}, ...], "model": "..."}
+
+    Такой формат позволяет rag-indexer и rag-backend использовать
+    существующий OpenAICompatibleProvider без изменения кода:
+    достаточно сменить provider=openai_compatible + base_url=http://pdf-sidecar:8765
+    в настройках модели vault'a.
+
+    Батч обрабатывается за ОДИН forward pass — главное преимущество
+    перед Ollama (который делает N HTTP-запросов последовательно / с semaphore).
+    """
+    if not embedder_is_loaded():
+        raise HTTPException(status_code=503, detail="Embedder model is not loaded yet.")
+
+    texts = [req.input] if isinstance(req.input, str) else req.input
+    if not texts:
+        return JSONResponse(content={"data": [], "model": req.model})
+
+    logger.info("EMBED texts=%d model=%s", len(texts), req.model)
+
+    try:
+        vectors = await asyncio.to_thread(_embed, texts)
+    except Exception as exc:
+        logger.error("Embed failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Embed error: {exc}") from exc
+
+    logger.info("EMBED done: texts=%d dim=%d", len(vectors), len(vectors[0]) if vectors else 0)
+
+    return JSONResponse(content={
+        "data": [
+            {"index": i, "embedding": v}
+            for i, v in enumerate(vectors)
+        ],
+        "model": req.model,
+    })
 
 
 if __name__ == "__main__":
