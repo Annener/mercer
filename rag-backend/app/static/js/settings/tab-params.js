@@ -52,6 +52,126 @@
             return boolKeys.includes(key) ? 'bool' : 'string';
         },
 
+        // ─────────────────────────────────────────────────────────────
+        // Sidecar helpers
+        // ─────────────────────────────────────────────────────────────
+
+        /** Обновляет блок статуса sidecar в DOM. */
+        _updateSidecarStatus(status) {
+            const badge = document.getElementById('sidecar-status-badge');
+            const pidEl = document.getElementById('sidecar-pid');
+            if (!badge) return;
+
+            badge.className = 'sidecar-status-badge';
+            if (status.agent_unavailable) {
+                badge.classList.add('sidecar-status--unavailable');
+                badge.textContent = 'agent недоступен';
+            } else if (!status.installed) {
+                badge.classList.add('sidecar-status--not-installed');
+                badge.textContent = 'не установлен';
+            } else if (status.running) {
+                badge.classList.add('sidecar-status--running');
+                badge.textContent = 'запущен';
+            } else {
+                badge.classList.add('sidecar-status--stopped');
+                badge.textContent = 'остановлен';
+            }
+
+            if (pidEl) {
+                pidEl.textContent = status.running && status.pid ? `PID ${status.pid}` : '';
+            }
+
+            // Обновляем состояние кнопок
+            const btnStart   = document.getElementById('sidecar-btn-start');
+            const btnStop    = document.getElementById('sidecar-btn-stop');
+            const btnRestart = document.getElementById('sidecar-btn-restart');
+            const canControl = !status.agent_unavailable && status.installed;
+            if (btnStart)   btnStart.disabled   = !canControl || status.running;
+            if (btnStop)    btnStop.disabled    = !canControl || !status.running;
+            if (btnRestart) btnRestart.disabled = !canControl || !status.running;
+        },
+
+        async _sidecarAction(action) {
+            const msgEl = document.getElementById('sidecar-action-msg');
+            const setMsg = (text, cls) => {
+                if (!msgEl) return;
+                msgEl.textContent = text;
+                msgEl.className = `sidecar-action-msg sidecar-msg--${cls}`;
+            };
+
+            setMsg('Выполняется...', 'loading');
+            try {
+                let result;
+                if (action === 'start')   result = await this.api.sidecarStart();
+                if (action === 'stop')    result = await this.api.sidecarStop();
+                if (action === 'restart') result = await this.api.sidecarRestart();
+                setMsg(result.message || 'Готово', 'ok');
+            } catch (err) {
+                setMsg(`Ошибка: ${err.message}`, 'error');
+            } finally {
+                // Обновляем статус после действия
+                try {
+                    const status = await this.api.getSidecarStatus();
+                    this._updateSidecarStatus(status);
+                } catch (_) {}
+            }
+        },
+
+        /** Открывает модальное окно и запускает SSE-поток install.sh. */
+        _openInstallModal() {
+            const modal = document.getElementById('sidecar-install-modal');
+            const output = document.getElementById('sidecar-install-output');
+            const closeBtn = document.getElementById('sidecar-install-modal-close');
+            const title = document.getElementById('sidecar-install-modal-title');
+            if (!modal || !output) return;
+
+            output.textContent = '';
+            title.textContent = 'Установка PDF Sidecar';
+            modal.classList.remove('hidden');
+            modal.setAttribute('aria-hidden', 'false');
+
+            // Закрытие
+            const closeModal = () => {
+                modal.classList.add('hidden');
+                modal.setAttribute('aria-hidden', 'true');
+                if (this._installEventSource) {
+                    this._installEventSource.close();
+                    this._installEventSource = null;
+                }
+            };
+            if (closeBtn) closeBtn.onclick = closeModal;
+            modal.onclick = (e) => { if (e.target === modal) closeModal(); };
+
+            // SSE поток
+            const url = this.api.getSidecarInstallStreamUrl();
+            const es = new EventSource(url);
+            this._installEventSource = es;
+
+            es.onmessage = (ev) => {
+                const line = ev.data;
+                output.textContent += line + '\n';
+                output.scrollTop = output.scrollHeight;
+
+                if (line.startsWith('[DONE]')) {
+                    es.close();
+                    this._installEventSource = null;
+                    title.textContent = 'Установка завершена';
+                    // Обновляем статус после установки
+                    this.api.getSidecarStatus().then(s => this._updateSidecarStatus(s)).catch(() => {});
+                }
+            };
+
+            es.onerror = () => {
+                output.textContent += '\n[Соединение прервано]\n';
+                es.close();
+                this._installEventSource = null;
+            };
+        },
+
+        // ─────────────────────────────────────────────────────────────
+        // Main render
+        // ─────────────────────────────────────────────────────────────
+
         async renderParamsTab() {
             const params = await this.api.getSettingsParams();
 
@@ -132,7 +252,7 @@
             </label>
         `).join('');
 
-            // Render ungrouped keys (fallback, shouldn't normally show)
+            // Ungrouped keys fallback
             const ungroupedRows = ungroupedKeys.map(k => renderParamRow(k)).filter(Boolean).join('');
 
             return `
@@ -161,9 +281,67 @@
                 <div id="watchdog-message" style="min-height: 1.2em; margin-top: 6px; font-size: 12px;"></div>
             </div>
 
+            <!-- ═══════════════════════════════════════════ -->
+            <!-- PDF Sidecar — управление сервисом          -->
+            <!-- ═══════════════════════════════════════════ -->
+            <div class="sidecar-block" id="sidecar-block">
+                <h3 class="sidecar-block-title">PDF Sidecar</h3>
+                <p class="settings-param-desc">Вспомогательный сервис для извлечения текста из PDF-файлов. Запускается на хосте, вне Docker.</p>
+
+                <div class="sidecar-status-row">
+                    <span class="sidecar-status-label">Статус:</span>
+                    <span class="sidecar-status-badge sidecar-status--loading" id="sidecar-status-badge">загрузка…</span>
+                    <span class="sidecar-pid" id="sidecar-pid"></span>
+                </div>
+
+                <div class="sidecar-actions">
+                    <button class="btn btn-primary btn-sm" id="sidecar-btn-start"   data-action="sidecar-start"   disabled>Запустить</button>
+                    <button class="btn btn-secondary btn-sm" id="sidecar-btn-stop"  data-action="sidecar-stop"   disabled>Остановить</button>
+                    <button class="btn btn-secondary btn-sm" id="sidecar-btn-restart" data-action="sidecar-restart" disabled>Перезапустить</button>
+                    <button class="btn btn-outline btn-sm" id="sidecar-btn-install" data-action="sidecar-install">Установить / Переустановить</button>
+                </div>
+
+                <div class="sidecar-action-msg" id="sidecar-action-msg"></div>
+            </div>
+
+            <!-- Модальное окно: вывод install.sh -->
+            <div class="sidecar-install-modal hidden" id="sidecar-install-modal" role="dialog" aria-modal="true" aria-hidden="true">
+                <div class="sidecar-install-modal-box">
+                    <div class="sidecar-install-modal-header">
+                        <span id="sidecar-install-modal-title">Установка PDF Sidecar</span>
+                        <button class="docs-modal-close" id="sidecar-install-modal-close" aria-label="Закрыть">✕</button>
+                    </div>
+                    <pre class="sidecar-install-output" id="sidecar-install-output"></pre>
+                </div>
+            </div>
+
             <div class="settings-params-footer">
                 <button class="btn btn-primary" data-action="save-params">Сохранить параметры</button>
             </div>`;
+        },
+
+        // ─────────────────────────────────────────────────────────────
+        // Bind sidecar actions (вызывается из bindParamsTab или вручную)
+        // ─────────────────────────────────────────────────────────────
+        bindSidecarActions() {
+            const container = document.getElementById('sidecar-block');
+            if (!container) return;
+
+            container.addEventListener('click', async (e) => {
+                const action = e.target.closest('[data-action]')?.dataset.action;
+                if (!action || !action.startsWith('sidecar-')) return;
+                if (action === 'sidecar-install') {
+                    this._openInstallModal();
+                } else if (['sidecar-start', 'sidecar-stop', 'sidecar-restart'].includes(action)) {
+                    const op = action.replace('sidecar-', '');
+                    await this._sidecarAction(op);
+                }
+            });
+
+            // Загружаем начальный статус
+            this.api.getSidecarStatus()
+                .then(s => this._updateSidecarStatus(s))
+                .catch(() => this._updateSidecarStatus({ agent_unavailable: true }));
         },
     };
 
