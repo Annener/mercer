@@ -93,6 +93,9 @@ class SettingsManager {
         if (tab === 'pipelines' && typeof this._attachPipelinesTabListeners === 'function') {
             this._attachPipelinesTabListeners(this._tabContent);
         }
+        if (tab === 'params' && typeof this.bindSidecarActions === 'function') {
+            this.bindSidecarActions();
+        }
     }
 
     async _dispatch(tab, action, id, btn) {
