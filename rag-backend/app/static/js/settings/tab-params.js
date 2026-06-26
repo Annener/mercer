@@ -109,7 +109,6 @@
             } catch (err) {
                 setMsg(`Ошибка: ${err.message}`, 'error');
             } finally {
-                // Обновляем статус после действия
                 try {
                     const status = await this.api.getSidecarStatus();
                     this._updateSidecarStatus(status);
@@ -130,7 +129,6 @@
             modal.classList.remove('hidden');
             modal.setAttribute('aria-hidden', 'false');
 
-            // Закрытие
             const closeModal = () => {
                 modal.classList.add('hidden');
                 modal.setAttribute('aria-hidden', 'true');
@@ -142,7 +140,6 @@
             if (closeBtn) closeBtn.onclick = closeModal;
             modal.onclick = (e) => { if (e.target === modal) closeModal(); };
 
-            // SSE поток
             const url = this.api.getSidecarInstallStreamUrl();
             const es = new EventSource(url);
             this._installEventSource = es;
@@ -156,7 +153,6 @@
                     es.close();
                     this._installEventSource = null;
                     title.textContent = 'Установка завершена';
-                    // Обновляем статус после установки
                     this.api.getSidecarStatus().then(s => this._updateSidecarStatus(s)).catch(() => {});
                 }
             };
@@ -173,7 +169,14 @@
         // ─────────────────────────────────────────────────────────────
 
         async renderParamsTab() {
-            const params = await this.api.getSettingsParams();
+            const raw = await this.api.getSettingsParams();
+
+            // Backend may return [{key, value, ...}, ...] or {key: value}.
+            // Normalise to a plain {key: value} map so the rest of the code
+            // can use params[key] uniformly.
+            const params = Array.isArray(raw)
+                ? Object.fromEntries(raw.map(p => [p.key, p.value]))
+                : (raw && typeof raw === 'object' ? raw : {});
 
             const descriptions = {
                 'retrieval.enabled':                { label: 'RAG включён',                        desc: 'Включает поиск по базе знаний при ответе. Если выключить — ИИ отвечает только из своей памяти.' },
@@ -189,7 +192,6 @@
                 'pdf_sidecar.fallback_to_pdfminer': { label: 'Fallback на PDF-miner',               desc: 'Если PDF-Sidecar недоступен — использовать встроенный pdfminer.' },
             };
 
-            // Collect all keyed params so we don't lose any not listed in PARAM_GROUPS
             const allFilteredKeys = new Set(
                 Object.keys(params).filter(k => !PARAMS_EXCLUDED_KEYS.has(k))
             );
@@ -301,8 +303,6 @@
         // Load initial sidecar status (called from _attachTabListeners)
         // ─────────────────────────────────────────────────────────────
         _loadSidecarStatus() {
-            // Клики обрабатываются через _dispatch → handleParamsAction.
-            // Метод загружает начальный статус сразу при открытии вкладки.
             this.api.getSidecarStatus()
                 .then(s => this._updateSidecarStatus(s))
                 .catch(() => this._updateSidecarStatus({ agent_unavailable: true }));
