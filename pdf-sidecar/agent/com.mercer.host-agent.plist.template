@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.mercer.host-agent</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>{{VENV_PYTHON}}</string>
+    <string>{{AGENT_PY}}</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>{{AGENT_DIR}}</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOST_AGENT_PORT</key>
+    <string>9090</string>
+    <key>SIDECAR_DIR</key>
+    <string>{{SIDECAR_DIR}}</string>
+    <!-- Раскомментируйте и задайте токен для защиты агента: -->
+    <!-- <key>HOST_AGENT_TOKEN</key> -->
+    <!-- <string>changeme</string> -->
+  </dict>
+
+  <!-- Запускать автоматически при логине пользователя -->
+  <key>RunAtLoad</key>
+  <true/>
+
+  <!-- Перезапускать при падении -->
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>{{AGENT_DIR}}/logs/agent.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>{{AGENT_DIR}}/logs/agent.err</string>
+</dict>
+</plist>
