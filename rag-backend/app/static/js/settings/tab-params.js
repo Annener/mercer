@@ -213,98 +213,79 @@
                         <span class="settings-param-label-row">
                             <strong>${this.escapeHtml(info.label)}</strong>${tooltipHtml}
                         </span>
+                        ${info.desc ? `<span class="settings-param-desc">${this.escapeHtml(info.desc)}</span>` : ''}
                     </div>
-                    <div class="settings-param-control">
-                        ${inputHtml}
-                    </div>
+                    ${inputHtml}
                 </div>`;
             };
 
-            const renderGroup = (group) => {
-                const rows = group.keys.map(k => renderParamRow(k)).filter(Boolean).join('');
-                if (!rows) return '';
+            const groupsHtml = PARAM_GROUPS.map(group => {
+                const rowsHtml = group.keys.map(renderParamRow).filter(Boolean).join('');
+                if (!rowsHtml) return '';
                 return `
-                <div class="settings-param-group">
-                    <h3 class="settings-param-group-title">${this.escapeHtml(group.title)}</h3>
-                    ${rows}
+                <div class="settings-group" id="group-${group.id}">
+                    <h3 class="settings-group-title">${this.escapeHtml(group.title)}</h3>
+                    ${rowsHtml}
                 </div>`;
-            };
+            }).join('');
 
-            // Load current watchdog extensions
-            let currentExtensions = [];
-            try {
-                const watchdogData = await this.api.getWatchdogExtensions();
-                currentExtensions = watchdogData.auto_index_extensions || [];
-            } catch (e) {
-                console.error('Failed to load watchdog extensions', e);
-            }
-            const selectedSet = new Set(currentExtensions);
-            const allExtensions = [
-                ...WATCHDOG_KNOWN_EXTENSIONS,
-                ...currentExtensions.filter(e => !WATCHDOG_KNOWN_EXTENSIONS.includes(e)),
-            ];
-            const watchdogCheckboxesHtml = allExtensions.map(ext => `
-            <label class="indexing-ext-row">
-                <input type="checkbox"
-                       data-ext="${this.escapeHtml(ext)}"
-                       ${selectedSet.has(ext) ? 'checked' : ''}>
-                <span>${this.escapeHtml(ext)}</span>
-            </label>
-        `).join('');
+            const ungroupedHtml = ungroupedKeys.length
+                ? `<div class="settings-group" id="group-other">
+                    <h3 class="settings-group-title">Прочие параметры</h3>
+                    ${ungroupedKeys.map(renderParamRow).filter(Boolean).join('')}
+                   </div>`
+                : '';
 
-            // Ungrouped keys fallback
-            const ungroupedRows = ungroupedKeys.map(k => renderParamRow(k)).filter(Boolean).join('');
+            // Watchdog extensions
+            const watchdogExts = await this.api.getWatchdogExtensions().catch(() => []);
+            const enabledExts = new Set(watchdogExts);
+            const allExts = [...new Set([...WATCHDOG_KNOWN_EXTENSIONS, ...watchdogExts])].sort();
+            const extRowsHtml = allExts.map(ext => `
+                <label class="settings-param-row indexing-ext-row">
+                    <input type="checkbox" data-ext="${this.escapeHtml(ext)}" ${enabledExts.has(ext) ? 'checked' : ''}>
+                    <span>${this.escapeHtml(ext)}</span>
+                </label>`).join('');
 
             return `
-            <div class="settings-toolbar">
-                <button class="btn btn-secondary" data-action="reset-params">Сбросить все параметры</button>
-            </div>
-            <form id="params-form" class="settings-params-fullwidth">
-                ${PARAM_GROUPS.map(g => renderGroup(g)).join('')}
-                ${ungroupedRows ? `<div class="settings-param-group">${ungroupedRows}</div>` : ''}
+            <form id="params-form" onsubmit="return false;">
+                ${groupsHtml}
+                ${ungroupedHtml}
+
+                <div class="settings-group" id="group-watchdog">
+                    <h3 class="settings-group-title">Watchdog — отслеживаемые расширения</h3>
+                    <p class="settings-param-desc">Файлы с этими расширениями будут автоматически индексироваться при добавлении в хранилище.</p>
+                    <div id="watchdog-ext-list" class="watchdog-ext-list">
+                        ${extRowsHtml}
+                    </div>
+                    <div class="watchdog-add-row">
+                        <input id="watchdog-custom-ext" type="text" placeholder=".ext" class="watchdog-ext-input">
+                        <button type="button" class="btn btn-secondary" data-action="add-watchdog-ext">Добавить</button>
+                    </div>
+                    <span id="watchdog-message" class="watchdog-message"></span>
+                </div>
+
+                <div class="params-actions">
+                    <button type="button" class="btn btn-primary" data-action="save-params">Сохранить</button>
+                    <button type="button" class="btn btn-outline" data-action="reset-params">Сбросить к умолчаниям</button>
+                </div>
             </form>
 
-            <div class="settings-watchdog-block">
-                <h3 class="settings-watchdog-title">Настройки Vault Watchdog</h3>
-                <p class="settings-param-desc">
-                    Файлы этих типов будут переиндексированы автоматически при изменении в vault-директории.
-                </p>
-                <div id="watchdog-ext-list" class="indexing-ext-list">
-                    ${watchdogCheckboxesHtml}
-                </div>
-                <div class="indexing-custom-input">
-                    <input type="text"
-                           id="watchdog-custom-ext"
-                           placeholder=".epub">
-                    <button class="btn btn-secondary" data-action="add-watchdog-ext">Добавить</button>
-                </div>
-                <div id="watchdog-message" style="min-height: 1.2em; margin-top: 6px; font-size: 12px;"></div>
-            </div>
-
-            <!-- ═══════════════════════════════════════════ -->
-            <!-- PDF Sidecar — управление сервисом          -->
-            <!-- ═══════════════════════════════════════════ -->
             <div class="sidecar-block" id="sidecar-block">
                 <h3 class="sidecar-block-title">PDF Sidecar</h3>
-                <p class="settings-param-desc">Вспомогательный сервис для извлечения текста из PDF-файлов. Запускается на хосте, вне Docker.</p>
-
                 <div class="sidecar-status-row">
                     <span class="sidecar-status-label">Статус:</span>
-                    <span class="sidecar-status-badge sidecar-status--loading" id="sidecar-status-badge">загрузка…</span>
+                    <span class="sidecar-status-badge sidecar-status--unknown" id="sidecar-status-badge">загрузка...</span>
                     <span class="sidecar-pid" id="sidecar-pid"></span>
                 </div>
-
-                <div class="sidecar-actions">
+                <div class="sidecar-actions-row">
                     <button class="btn btn-primary btn-sm" id="sidecar-btn-start"   data-action="sidecar-start"   disabled>Запустить</button>
                     <button class="btn btn-secondary btn-sm" id="sidecar-btn-stop"  data-action="sidecar-stop"   disabled>Остановить</button>
                     <button class="btn btn-secondary btn-sm" id="sidecar-btn-restart" data-action="sidecar-restart" disabled>Перезапустить</button>
                     <button class="btn btn-outline btn-sm" id="sidecar-btn-install" data-action="sidecar-install">Установить / Переустановить</button>
                 </div>
-
                 <div class="sidecar-action-msg" id="sidecar-action-msg"></div>
             </div>
 
-            <!-- Модальное окно: вывод install.sh -->
             <div class="sidecar-install-modal hidden" id="sidecar-install-modal" role="dialog" aria-modal="true" aria-hidden="true">
                 <div class="sidecar-install-modal-box">
                     <div class="sidecar-install-modal-header">
@@ -313,32 +294,15 @@
                     </div>
                     <pre class="sidecar-install-output" id="sidecar-install-output"></pre>
                 </div>
-            </div>
-
-            <div class="settings-params-footer">
-                <button class="btn btn-primary" data-action="save-params">Сохранить параметры</button>
             </div>`;
         },
 
         // ─────────────────────────────────────────────────────────────
-        // Bind sidecar actions (вызывается из bindParamsTab или вручную)
+        // Bind sidecar actions (вызывается из _attachTabListeners)
         // ─────────────────────────────────────────────────────────────
         bindSidecarActions() {
-            const container = document.getElementById('sidecar-block');
-            if (!container) return;
-
-            container.addEventListener('click', async (e) => {
-                const action = e.target.closest('[data-action]')?.dataset.action;
-                if (!action || !action.startsWith('sidecar-')) return;
-                if (action === 'sidecar-install') {
-                    this._openInstallModal();
-                } else if (['sidecar-start', 'sidecar-stop', 'sidecar-restart'].includes(action)) {
-                    const op = action.replace('sidecar-', '');
-                    await this._sidecarAction(op);
-                }
-            });
-
-            // Загружаем начальный статус
+            // Обработка кликов перенесена в handleParamsAction через _dispatch.
+            // Метод оставлен для обратной совместимости — выполняет только загрузку статуса.
             this.api.getSidecarStatus()
                 .then(s => this._updateSidecarStatus(s))
                 .catch(() => this._updateSidecarStatus({ agent_unavailable: true }));
