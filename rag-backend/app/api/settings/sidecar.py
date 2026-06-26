@@ -42,6 +42,14 @@ def _agent_headers() -> dict[str, str]:
     return headers
 
 
+def _safe_json(resp: httpx.Response) -> dict:
+    """Парсит JSON из ответа; при ошибке возвращает dict с raw-текстом."""
+    try:
+        return resp.json()
+    except Exception:
+        return {"error": resp.text}
+
+
 # ---------------------------------------------------------------------------
 # Эндпоинты
 # ---------------------------------------------------------------------------
@@ -55,7 +63,7 @@ async def sidecar_status() -> JSONResponse:
                 f"{HOST_AGENT_URL}/sidecar/status",
                 headers=_agent_headers(),
             )
-        return JSONResponse(content=resp.json(), status_code=resp.status_code)
+        return JSONResponse(content=_safe_json(resp), status_code=resp.status_code)
     except httpx.ConnectError:
         # Агент не запущен — возвращаем 503 с признаком agent_unavailable
         return JSONResponse(
@@ -78,9 +86,9 @@ async def sidecar_start() -> JSONResponse:
             )
         if resp.status_code >= 500:
             raise HTTPException(status_code=502, detail=resp.text)
-        return JSONResponse(content=resp.json(), status_code=resp.status_code)
-    except httpx.ConnectError:
-        raise HTTPException(status_code=503, detail=_AGENT_UNAVAILABLE)
+        return JSONResponse(content=_safe_json(resp), status_code=resp.status_code)
+    except httpx.ConnectError as exc:
+        raise HTTPException(status_code=503, detail=_AGENT_UNAVAILABLE) from exc
 
 
 @router.post("/stop")
@@ -92,9 +100,11 @@ async def sidecar_stop() -> JSONResponse:
                 f"{HOST_AGENT_URL}/sidecar/stop",
                 headers=_agent_headers(),
             )
-        return JSONResponse(content=resp.json(), status_code=resp.status_code)
-    except httpx.ConnectError:
-        raise HTTPException(status_code=503, detail=_AGENT_UNAVAILABLE)
+        if resp.status_code >= 500:
+            raise HTTPException(status_code=502, detail=resp.text)
+        return JSONResponse(content=_safe_json(resp), status_code=resp.status_code)
+    except httpx.ConnectError as exc:
+        raise HTTPException(status_code=503, detail=_AGENT_UNAVAILABLE) from exc
 
 
 @router.post("/restart")
@@ -108,9 +118,9 @@ async def sidecar_restart() -> JSONResponse:
             )
         if resp.status_code >= 500:
             raise HTTPException(status_code=502, detail=resp.text)
-        return JSONResponse(content=resp.json(), status_code=resp.status_code)
-    except httpx.ConnectError:
-        raise HTTPException(status_code=503, detail=_AGENT_UNAVAILABLE)
+        return JSONResponse(content=_safe_json(resp), status_code=resp.status_code)
+    except httpx.ConnectError as exc:
+        raise HTTPException(status_code=503, detail=_AGENT_UNAVAILABLE) from exc
 
 
 @router.get("/install/stream")
@@ -128,10 +138,10 @@ async def sidecar_install_stream() -> StreamingResponse:
                     async for chunk in response.aiter_bytes(1024):
                         yield chunk
         except httpx.ConnectError:
-            yield b"data: ERROR: host-agent недоступен\n\n"
+            yield "data: ERROR: host-agent недоступен\n\n".encode("utf-8")
         except Exception as exc:
             logger.exception("install stream error")
-            yield f"data: ERROR: {exc}\n\n".encode()
+            yield f"data: ERROR: {exc}\n\n".encode("utf-8")
 
     return StreamingResponse(
         _proxy_stream(),
