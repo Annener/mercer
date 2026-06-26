@@ -217,7 +217,7 @@
                         </span>
                         ${info.desc ? `<span class="settings-param-desc">${this.escapeHtml(info.desc)}</span>` : ''}
                     </div>
-                    ${inputHtml}
+                    <div class="settings-param-control">${inputHtml}</div>
                 </div>`;
             };
 
@@ -225,16 +225,16 @@
                 const rowsHtml = group.keys.map(renderParamRow).filter(Boolean).join('');
                 if (!rowsHtml) return '';
                 return `
-                <div class="settings-group" id="group-${group.id}">
-                    <h3 class="settings-group-title">${this.escapeHtml(group.title)}</h3>
-                    ${rowsHtml}
+                <div class="settings-param-group" id="group-${group.id}">
+                    <div class="settings-param-group-title">${this.escapeHtml(group.title)}</div>
+                    <div class="settings-params-fullwidth">${rowsHtml}</div>
                 </div>`;
             }).join('');
 
             const ungroupedHtml = ungroupedKeys.length
-                ? `<div class="settings-group" id="group-other">
-                    <h3 class="settings-group-title">Прочие параметры</h3>
-                    ${ungroupedKeys.map(renderParamRow).filter(Boolean).join('')}
+                ? `<div class="settings-param-group" id="group-other">
+                    <div class="settings-param-group-title">Прочие параметры</div>
+                    <div class="settings-params-fullwidth">${ungroupedKeys.map(renderParamRow).filter(Boolean).join('')}</div>
                    </div>`
                 : '';
 
@@ -248,7 +248,7 @@
             const enabledExts = new Set(watchdogExts);
             const allExts = [...new Set([...WATCHDOG_KNOWN_EXTENSIONS, ...watchdogExts])].sort();
             const extRowsHtml = allExts.map(ext => `
-                <label class="settings-param-row indexing-ext-row">
+                <label class="indexing-ext-row">
                     <input type="checkbox" data-ext="${this.escapeHtml(ext)}" ${enabledExts.has(ext) ? 'checked' : ''}>
                     <span>${this.escapeHtml(ext)}</span>
                 </label>`).join('');
@@ -258,33 +258,33 @@
                 ${groupsHtml}
                 ${ungroupedHtml}
 
-                <div class="settings-group" id="group-watchdog">
-                    <h3 class="settings-group-title">Watchdog — отслеживаемые расширения</h3>
+                <div class="settings-watchdog-block" id="group-watchdog">
+                    <div class="settings-watchdog-title">Watchdog — отслеживаемые расширения</div>
                     <p class="settings-param-desc">Файлы с этими расширениями будут автоматически индексироваться при добавлении в хранилище.</p>
-                    <div id="watchdog-ext-list" class="watchdog-ext-list">
+                    <div id="watchdog-ext-list" class="indexing-ext-list">
                         ${extRowsHtml}
                     </div>
-                    <div class="watchdog-add-row">
-                        <input id="watchdog-custom-ext" type="text" placeholder=".ext" class="watchdog-ext-input">
+                    <div class="indexing-custom-input">
+                        <input id="watchdog-custom-ext" type="text" placeholder=".ext">
                         <button type="button" class="btn btn-secondary" data-action="add-watchdog-ext">Добавить</button>
                     </div>
-                    <span id="watchdog-message" class="watchdog-message"></span>
+                    <span id="watchdog-message" class="settings-note" style="display:block;margin-top:6px;min-height:1.2em;"></span>
                 </div>
 
-                <div class="params-actions">
+                <div class="settings-actions">
                     <button type="button" class="btn btn-primary" data-action="save-params">Сохранить</button>
                     <button type="button" class="btn btn-outline" data-action="reset-params">Сбросить к умолчаниям</button>
                 </div>
             </form>
 
             <div class="sidecar-block" id="sidecar-block">
-                <h3 class="sidecar-block-title">PDF Sidecar</h3>
+                <div class="sidecar-block-title">PDF Sidecar</div>
                 <div class="sidecar-status-row">
                     <span class="sidecar-status-label">Статус:</span>
-                    <span class="sidecar-status-badge sidecar-status--unknown" id="sidecar-status-badge">загрузка...</span>
+                    <span class="sidecar-status-badge sidecar-status--loading" id="sidecar-status-badge">загрузка...</span>
                     <span class="sidecar-pid" id="sidecar-pid"></span>
                 </div>
-                <div class="sidecar-actions-row">
+                <div class="sidecar-actions">
                     <button class="btn btn-primary btn-sm" id="sidecar-btn-start"   data-action="sidecar-start"   disabled>Запустить</button>
                     <button class="btn btn-secondary btn-sm" id="sidecar-btn-stop"  data-action="sidecar-stop"   disabled>Остановить</button>
                     <button class="btn btn-secondary btn-sm" id="sidecar-btn-restart" data-action="sidecar-restart" disabled>Перезапустить</button>
