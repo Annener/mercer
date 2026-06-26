@@ -15,6 +15,8 @@ from .schemas import EmbeddingModelCreateRequest, EmbeddingModelUpdateRequest
 
 router = APIRouter()
 
+SUPPORTED_PROVIDERS = ["ollama", "openai_compatible", "sidecar"]
+
 
 async def _get_embedding_model_by_model_id(model_id: str, db: AsyncSession) -> EmbeddingModel | None:
     """Lookup EmbeddingModel by model_id (string), not by PK (UUID)."""
@@ -29,8 +31,8 @@ async def list_embedding_models(db: AsyncSession = Depends(get_db)) -> list[dict
 
 @router.post("/models/embedding", status_code=status.HTTP_201_CREATED)
 async def create_embedding_model(req: EmbeddingModelCreateRequest, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
-    if req.provider not in ["ollama", "openai_compatible"]:
-        raise HTTPException(status_code=422, detail="Unsupported embedding provider")
+    if req.provider not in SUPPORTED_PROVIDERS:
+        raise HTTPException(status_code=422, detail=f"Unsupported embedding provider: {req.provider!r}. Supported: {SUPPORTED_PROVIDERS}")
     if await _get_embedding_model_by_model_id(req.model_id, db) is not None:
         raise HTTPException(status_code=409, detail="Embedding model already exists")
     return await settings_service.create_embedding_model(req.model_dump(exclude_none=True), db)
@@ -38,9 +40,6 @@ async def create_embedding_model(req: EmbeddingModelCreateRequest, db: AsyncSess
 
 @router.post("/models/embedding/{model_id:path}/check")
 async def check_embedding_model(model_id: str, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
-    # E-CHK01 fix: был db.get(EmbeddingModel, model_id) — ищет по PK (UUID), падает
-    # с asyncpg.DataError когда model_id — строка вида "vendor/model:tag".
-    # Правильный lookup — по полю model_id (String), не по id (UUID).
     model = await _get_embedding_model_by_model_id(model_id, db)
     if model is None:
         raise HTTPException(status_code=404, detail="Embedding model not found")
@@ -57,8 +56,8 @@ async def update_embedding_model(
     model_id: str, req: EmbeddingModelUpdateRequest, db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     payload = req.model_dump(exclude_unset=True)
-    if payload.get("provider") is not None and payload["provider"] not in ["ollama", "openai_compatible"]:
-        raise HTTPException(status_code=422, detail="Unsupported embedding provider")
+    if payload.get("provider") is not None and payload["provider"] not in SUPPORTED_PROVIDERS:
+        raise HTTPException(status_code=422, detail=f"Unsupported embedding provider: {payload['provider']!r}. Supported: {SUPPORTED_PROVIDERS}")
     try:
         return await settings_service.update_embedding_model(model_id, payload, db)
     except KeyError as exc:
