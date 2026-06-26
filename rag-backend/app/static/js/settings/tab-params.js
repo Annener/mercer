@@ -239,7 +239,12 @@
                 : '';
 
             // Watchdog extensions
-            const watchdogExts = await this.api.getWatchdogExtensions().catch(() => []);
+            // API returns {auto_index_extensions: string[]}, not a raw array.
+            // Normalise to array to avoid "object is not iterable" on spread.
+            const watchdogRaw = await this.api.getWatchdogExtensions().catch(() => []);
+            const watchdogExts = Array.isArray(watchdogRaw)
+                ? watchdogRaw
+                : (watchdogRaw?.auto_index_extensions ?? []);
             const enabledExts = new Set(watchdogExts);
             const allExts = [...new Set([...WATCHDOG_KNOWN_EXTENSIONS, ...watchdogExts])].sort();
             const extRowsHtml = allExts.map(ext => `
