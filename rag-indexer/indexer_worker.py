@@ -45,6 +45,10 @@ CHUNK_PROGRESS_REPORT_INTERVAL = 10
 _PARSING_HEARTBEAT_INTERVAL = 3.0
 CHECK_CANCEL_INTERVAL = 10  # проверять отмену каждые N чанков при эмбеддинге
 
+# Размер батча для batch-оптимизированных провайдеров (openai_compatible, sidecar).
+# Для Ollama остаётся поперечное выполнение (N запросов с semaphore).
+_BATCH_EMBED_SIZE = int(os.getenv("EMBED_BATCH_SIZE", "64"))
+
 
 async def run() -> None:
     raise NotImplementedError("Use run_indexing(task_id, vault_id, force_reindex) from the API service.")
@@ -57,7 +61,7 @@ async def run_indexing(
     db_client: IndexerDBClient,
     state_manager: RedisStateManager,
 ) -> None:
-    """\u041e\u0441\u043d\u043e\u0432\u043d\u043e\u0439 \u0432\u043e\u0440\u043a\u0435\u0440 \u0438\u043d\u0434\u0435\u043a\u0441\u0430\u0446\u0438\u0438. \u0418\u0441\u043f\u043e\u043b\u044c\u0437\u0443\u0435\u0442 RedisStateManager \u0434\u043b\u044f \u0445\u0440\u0430\u043d\u0435\u043d\u0438\u044f \u0441\u043e\u0441\u0442\u043e\u044f\u043d\u0438\u044f."""
+    """Основной воркер индексации. Использует RedisStateManager для хранения состояния."""
     try:
         settings = await db_client.get_platform_settings()
         vault = await db_client.get_vault(vault_id)
@@ -236,7 +240,7 @@ async def _delete_chunks_from_lancedb(
     vault_id: str,
     storage_client: StorageClient,
 ) -> None:
-    """\u0423\u0434\u0430\u043b\u044f\u0435\u0442 \u0432\u0441\u0435 \u0447\u0430\u043d\u043a\u0438 \u0434\u043e\u043a\u0443\u043c\u0435\u043d\u0442\u0430 \u0438\u0437 LanceDB \u043f\u0435\u0440\u0435\u0434 \u043f\u0435\u0440\u0435\u0438\u043d\u0434\u0435\u043a\u0441\u0430\u0446\u0438\u0435\u0439."""
+    """Удаляет все чанки документа из LanceDB перед переиндексацией."""
     try:
         await storage_client.delete_document(document_id, vault_id)
         logger.info("Deleted LanceDB chunks for document_id=%s vault_id=%s", document_id, vault_id)
@@ -261,7 +265,7 @@ async def _process_file(
     state_manager: RedisStateManager,
     db_client: IndexerDBClient,
 ) -> tuple[int, str]:
-    """\u041e\u0431\u0440\u0430\u0431\u0430\u0442\u044b\u0432\u0430\u0435\u0442 \u043e\u0434\u0438\u043d \u0444\u0430\u0439\u043b. \u0412\u043e\u0437\u0432\u0440\u0430\u0449\u0430\u0435\u0442 (chunks_count, pg_document_id)."""
+    """Обрабатывает один файл. Возвращает (chunks_count, pg_document_id)."""
     absolute_path = str(file_info["path"])
     relative_path = str(file_info.get("relative_path", ""))
     pg_document_id = str(doc["id"])
@@ -322,14 +326,10 @@ async def _process_file(
                                                 indexed_at=datetime.now(tz=timezone.utc))
         return 0, pg_document_id
 
-    # pre-clean всего текста ДО передачи в SemanticChunker.
-    # preprocess идемпотентна — повторный вызов на чанках ничего не сломает.
-    # Без этого PDF-артефакты (U+FFFD, мягкие переносы) зашумят cosine similarity.
     logger.info("Preprocessing text for chunking: %s chars=%d", relative_path, len(text_for_chunking))
     cleaned_for_chunking = await asyncio.to_thread(preprocess, text_for_chunking, relative_path)
     logger.info("Preprocessing complete: %s chars=%d", relative_path, len(cleaned_for_chunking))
 
-    # Семантический чанкинг (единственный путь для всех документов)
     semantic_threshold = float(vault.get("semantic_threshold", 0.3))
     logger.info(
         "SemanticChunker start: %s threshold=%.2f",
@@ -345,7 +345,6 @@ async def _process_file(
         relative_path, len(raw_chunks), semantic_threshold,
     )
 
-    # Собираем ChunkRecord из сырых текстовых чанков
     chunks: list[ChunkRecord] = _build_chunk_records(
         raw_chunks=raw_chunks,
         document_id=pg_document_id,
@@ -448,12 +447,6 @@ def _build_chunk_records(
     vault_id: str,
     base_metadata: dict[str, Any],
 ) -> list[ChunkRecord]:
-    """
-    \u0421\u043e\u0431\u0438\u0440\u0430\u0435\u0442 list[ChunkRecord] \u0438\u0437 \u0441\u044b\u0440\u044b\u0445 \u0442\u0435\u043a\u0441\u0442\u043e\u0432\u044b\u0445 \u0447\u0430\u043d\u043a\u043e\u0432 SemanticChunker.
-
-    word_start / word_end \u0432\u044b\u0447\u0438\u0441\u043b\u044f\u044e\u0442\u0441\u044f \u043d\u0430\u043a\u043e\u043f\u043b\u0435\u043d\u043d\u044b\u043c \u0441\u0447\u0451\u0442\u0447\u0438\u043a\u043e\u043c \u0441\u043b\u043e\u0432 \u2014
-    \u043d\u0435\u043e\u0431\u0445\u043e\u0434\u0438\u043c\u044b \u0434\u043b\u044f _assign_page_numbers_and_headers \u043f\u0440\u0438 \u0438\u043d\u0434\u0435\u043a\u0441\u0430\u0446\u0438\u0438 PDF.
-    """
     records: list[ChunkRecord] = []
     global_word_offset = 0
 
@@ -530,13 +523,21 @@ async def _parse_file_with_progress(
                 if await state_manager.is_cancelled(task_id):
                     parse_task.cancel()
                     raise asyncio.CancelledError
-                # heartbeat — просто ждём дальше
             except asyncio.CancelledError:
                 parse_task.cancel()
                 raise
             except Exception:
                 break
     return await parse_task
+
+
+def _uses_batch_api(provider: EmbeddingProvider) -> bool:
+    """
+    Возвращает True для провайдеров с нативным батч-эндпоинтом (OpenAI-compatible, sidecar).
+    Для таких провайдеров _embed_chunks использует embed_batch() —
+    весь батч за один HTTP-запрос. Ollama остаётся почанково.
+    """
+    return isinstance(provider, OpenAICompatibleProvider)
 
 
 async def _embed_chunks(
@@ -547,53 +548,91 @@ async def _embed_chunks(
     file_path: str | None = None,
     state_manager: RedisStateManager | None = None,
 ) -> list[list[float]]:
-    vectors: list[list[float]] = []
-
     logger.info(
         "Embedding start: file=%s total_chunks=%d model=%s",
         file_path or "?", len(chunks), embedding_model.model_id,
     )
     embed_start_time = asyncio.get_event_loop().time()
 
-    for index, chunk in enumerate(chunks):
-        # Проверяем отмену каждые CHECK_CANCEL_INTERVAL чанков
-        if state_manager is not None and task_id is not None and index % CHECK_CANCEL_INTERVAL == 0:
-            if await state_manager.is_cancelled(task_id):
-                raise asyncio.CancelledError
+    embedding_texts = [
+        chunk.metadata.get("embedding_text", chunk.text)
+        for chunk in chunks
+    ]
 
-        embedding_text = chunk.metadata.get("embedding_text", chunk.text)
+    if _uses_batch_api(provider):
+        # --- Батч-путь: один HTTP-запрос на батч (openai_compatible / sidecar) ---
+        # Весь список отправляется за один forward pass.
+        # Для очень больших документов (ярлыки десятки страниц) батч делится
+        # на куски по _BATCH_EMBED_SIZE чтобы не превысить memory budget sidecar'a.
+        vectors: list[list[float]] = []
+        total = len(embedding_texts)
+        for batch_start in range(0, total, _BATCH_EMBED_SIZE):
+            if state_manager is not None and task_id is not None:
+                if await state_manager.is_cancelled(task_id):
+                    raise asyncio.CancelledError
 
-        result = await provider.embed([embedding_text])
-        vector = result[0] if result else []
-        if not vector:
-            logger.error(
-                "Embedding provider returned empty vector: file=%s chunk_index=%d model=%s",
-                file_path or "?", index, embedding_model.model_id,
-            )
-            raise ValueError(
-                f"Embedding provider returned empty vector for chunk {index} "
-                f"(file={file_path!r}, model={embedding_model.model_id!r}). "
-                "Check model availability, dimension settings, and provider logs."
-            )
+            batch = embedding_texts[batch_start: batch_start + _BATCH_EMBED_SIZE]
+            batch_vectors = await provider.embed_batch(batch)
 
-        vectors.append(vector)
+            for i, vector in enumerate(batch_vectors):
+                if not vector:
+                    chunk_idx = batch_start + i
+                    logger.error(
+                        "Embedding provider returned empty vector: file=%s chunk_index=%d model=%s",
+                        file_path or "?", chunk_idx, embedding_model.model_id,
+                    )
+                    raise ValueError(
+                        f"Embedding provider returned empty vector for chunk {chunk_idx} "
+                        f"(file={file_path!r}, model={embedding_model.model_id!r}). "
+                        "Check model availability, dimension settings, and provider logs."
+                    )
+            vectors.extend(batch_vectors)
 
-        processed_count = index + 1
-        if processed_count % CHUNK_PROGRESS_REPORT_INTERVAL == 0 or processed_count == len(chunks):
+            done = min(batch_start + _BATCH_EMBED_SIZE, total)
             elapsed = asyncio.get_event_loop().time() - embed_start_time
-            rate = processed_count / elapsed if elapsed > 0 else 0
-            eta = (len(chunks) - processed_count) / rate if rate > 0 else 0
+            rate = done / elapsed if elapsed > 0 else 0
+            eta = (total - done) / rate if rate > 0 else 0
             logger.info(
-                "Embedding progress: file=%s %d/%d chunks (%.1f c/s, ETA ~%.0fs)",
-                file_path or "?", processed_count, len(chunks), rate, eta,
+                "Embedding progress (batch): file=%s %d/%d chunks (%.1f c/s, ETA ~%.0fs)",
+                file_path or "?", done, total, rate, eta,
             )
+    else:
+        # --- Почанковый путь: Ollama — N параллельных HTTP-запросов с semaphore ---
+        vectors = []
+        for index, embedding_text in enumerate(embedding_texts):
+            if state_manager is not None and task_id is not None and index % CHECK_CANCEL_INTERVAL == 0:
+                if await state_manager.is_cancelled(task_id):
+                    raise asyncio.CancelledError
+
+            result = await provider.embed([embedding_text])
+            vector = result[0] if result else []
+            if not vector:
+                logger.error(
+                    "Embedding provider returned empty vector: file=%s chunk_index=%d model=%s",
+                    file_path or "?", index, embedding_model.model_id,
+                )
+                raise ValueError(
+                    f"Embedding provider returned empty vector for chunk {index} "
+                    f"(file={file_path!r}, model={embedding_model.model_id!r}). "
+                    "Check model availability, dimension settings, and provider logs."
+                )
+            vectors.append(vector)
+
+            processed_count = index + 1
+            if processed_count % CHUNK_PROGRESS_REPORT_INTERVAL == 0 or processed_count == len(chunks):
+                elapsed = asyncio.get_event_loop().time() - embed_start_time
+                rate = processed_count / elapsed if elapsed > 0 else 0
+                eta = (len(chunks) - processed_count) / rate if rate > 0 else 0
+                logger.info(
+                    "Embedding progress: file=%s %d/%d chunks (%.1f c/s, ETA ~%.0fs)",
+                    file_path or "?", processed_count, len(chunks), rate, eta,
+                )
 
     logger.info(
         "Embedding complete: file=%s %d chunks embedded in %.1fs",
         file_path or "?", len(chunks),
         asyncio.get_event_loop().time() - embed_start_time,
     )
-
     return vectors
 
 
@@ -611,6 +650,16 @@ def _embedding_model_config(model: dict[str, Any]) -> EmbeddingModelConfig:
 
 
 def _build_provider(embedding_model: EmbeddingModelConfig, api_key: str = "") -> EmbeddingProvider:
+    """
+    Фабрика провайдера эмбеддинга.
+
+    Поддерживаемые значения provider:
+      - "ollama"            — Ollama POST /api/embeddings (один текст за запрос)
+      - "openai_compatible" — OpenAI-совместимый POST /embeddings (нативный батч)
+      - "sidecar"           — pdf-sidecar POST /embeddings (OpenAI-совместимый,
+                              нативный батч через sentence-transformers).
+                              api_key не требуется — sidecar работает без автентификации.
+    """
     if embedding_model.provider == "ollama":
         return OllamaEmbeddingProvider(
             base_url=embedding_model.base_url,
@@ -619,7 +668,7 @@ def _build_provider(embedding_model: EmbeddingModelConfig, api_key: str = "") ->
             timeout=embedding_model.timeout_seconds,
             max_retries=embedding_model.max_retries,
         )
-    if embedding_model.provider == "openai_compatible":
+    if embedding_model.provider in ("openai_compatible", "sidecar"):
         return OpenAICompatibleProvider(
             base_url=embedding_model.base_url,
             model_name=embedding_model.model_name,
