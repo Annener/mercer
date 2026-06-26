@@ -1,122 +1,95 @@
 """
-embedder.py — sentence-transformers embedding для pdf-sidecar.
+embedder.py — загрузка BAAI/bge-m3 через sentence-transformers
+и вычисление нормализованных L2-эмбеддингов.
 
-Загружает SentenceTransformer (BAAI/bge-m3) один раз при старте и держит в памяти.
-Вызывается из lifespan-хука app.py.
+Аналог reranker.py: модель загружается один раз в lifespan,
+все вызовы потокобезопасны (GIL + torch без состояния).
 
-Device-автоопределение (аналогично reranker.py):
-  - EMBEDDER_FORCE_CPU=1  → всегда cpu (рекомендуется для macOS — MPS-оверхед на
-                            передаче данных может быть хуже чистого CPU)
-  - Apple Silicon (MPS)   → torch.backends.mps.is_available()
-  - CUDA                  → torch.cuda.is_available()
-  - Фоллбэк              → cpu
-
-Эндпоинт POST /embed принимает список текстов и возвращает ответ в формате,
-совместимом с OpenAI /embeddings API:
-  {"data": [{"index": 0, "embedding": [...]}, ...]}
-
-Это позволяет rag-indexer и rag-backend использовать существующий
-OpenAICompatibleProvider без каких-либо изменений кода — достаточно
-указать base_url=http://pdf-sidecar:8765 в конфиге модели.
-
-Ключевое преимущество перед Ollama:
-  - SentenceTransformer.encode(texts) обрабатывает весь батч за ОДИН forward pass
-    вместо N последовательных HTTP-запросов → значительно быстрее при индексации
-    больших документов.
-  - Модель всегда горячая — нет cold start как у Ollama (OLLAMA_KEEP_ALIVE таймаут).
+Environment variables:
+  EMBEDDER_MODEL_ID    — HuggingFace model id (default: BAAI/bge-m3)
+  EMBEDDER_FORCE_CPU   — "1" чтобы принудительно использовать CPU
+  EMBED_BATCH_SIZE     — размер батча при encode() (default: 32)
 """
 from __future__ import annotations
 
 import logging
 import os
-from typing import Any
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL_ID = os.getenv("EMBEDDER_MODEL_ID", "BAAI/bge-m3")
-
-_model: Any = None
-_loaded_model_id: str | None = None
+_model = None  # SentenceTransformer instance
 
 
-def _detect_device() -> str:
-    if os.getenv("EMBEDDER_FORCE_CPU", "0") == "1":
-        logger.info("Embedder device: CPU (forced via EMBEDDER_FORCE_CPU=1)")
+def _resolve_device() -> str:
+    if os.getenv("EMBEDDER_FORCE_CPU", "") in ("1", "true", "yes"):
+        logger.info("Embedder: forcing CPU (EMBEDDER_FORCE_CPU is set)")
         return "cpu"
-
     try:
         import torch
         if torch.backends.mps.is_available():
-            logger.info(
-                "Embedder device: MPS (Apple Silicon) — "
-                "set EMBEDDER_FORCE_CPU=1 if performance is unexpectedly low."
-            )
+            logger.info("Embedder: using MPS (Apple Silicon)")
             return "mps"
         if torch.cuda.is_available():
-            name = torch.cuda.get_device_name(0)
-            mem_gb = torch.cuda.get_device_properties(0).total_memory // 1024 ** 3
-            logger.info("Embedder device: CUDA — %s (%d GB VRAM)", name, mem_gb)
+            logger.info("Embedder: using CUDA")
             return "cuda"
-    except Exception as exc:
-        logger.warning("Embedder device detection failed: %s", exc)
-
-    logger.warning("⚠️  Embedder running on CPU — no GPU device detected")
+    except Exception:
+        pass
+    logger.info("Embedder: using CPU")
     return "cpu"
 
 
-def load_embedder(model_id: str | None = None) -> None:
+def load_embedder() -> None:
     """
-    Загружает SentenceTransformer в глобальный _model.
-    Повторные вызовы игнорируются если model_id не изменился.
+    Загружает модель в память. Вызывается один раз из lifespan FastAPI.
+    Повторный вызов — no-op.
     """
-    global _model, _loaded_model_id
-
-    target_id = model_id or DEFAULT_MODEL_ID
-    if _model is not None and _loaded_model_id == target_id:
-        logger.info("Embedder already loaded: %s", target_id)
+    global _model
+    if _model is not None:
         return
 
-    device = _detect_device()
-
-    if device == "mps":
-        os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
-        logger.info("PYTORCH_ENABLE_MPS_FALLBACK=1 set for MPS device")
-
-    logger.info("Loading embedder model '%s' on device='%s'", target_id, device)
-
     from sentence_transformers import SentenceTransformer
-    _model = SentenceTransformer(target_id, device=device)
-    _loaded_model_id = target_id
 
-    # Верифицируем реальное устройство параметров модели
-    try:
-        import torch  # noqa: F401
-        actual_device = next(_model.parameters()).device
-        logger.info(
-            "Embedder model loaded: %s | parameters on device: %s",
-            target_id, actual_device,
-        )
-    except Exception:
-        logger.info("Embedder model loaded: %s", target_id)
+    model_id = os.getenv("EMBEDDER_MODEL_ID", "BAAI/bge-m3")
+    device = _resolve_device()
+
+    logger.info("Loading embedder model: %s on device=%s", model_id, device)
+    _model = SentenceTransformer(model_id, device=device)
+    logger.info(
+        "Embedder ready: model=%s dim=%d device=%s",
+        model_id, _model.get_sentence_embedding_dimension(), device,
+    )
 
 
-def embed(texts: list[str], batch_size: int = 32) -> list[list[float]]:
+def is_loaded() -> bool:
+    return _model is not None
+
+
+def embed(texts: list[str]) -> list[list[float]]:
     """
-    Вычисляет эмбеддинги для списка текстов.
+    Вычисляет нормализованные L2-эмбеддинги для списка текстов.
 
-    Возвращает list[list[float]] — по одному вектору на каждый текст.
-    Порядок сохраняется. При пустом inputs возвращает [].
+    Весь батч обрабатывается за ОДИН forward pass — главное
+    преимущество перед Ollama, который делает N HTTP-запросов.
 
-    batch_size=32 — хороший баланс между throughput и пиковым потреблением памяти
-    для bge-m3 (1024-мерный вектор, ~570 MB модель).
-    normalize_embeddings=True обязателен для корректного cosine similarity в LanceDB.
+    Args:
+        texts: список строк (не пустой)
+
+    Returns:
+        list[list[float]] — по одному вектору на текст
+
+    Raises:
+        RuntimeError: если модель не загружена
+        ValueError: если texts пустой
     """
     if _model is None:
         raise RuntimeError("Embedder model is not loaded. Call load_embedder() first.")
     if not texts:
-        return []
+        raise ValueError("texts must not be empty")
 
-    import numpy as np
+    batch_size = int(os.getenv("EMBED_BATCH_SIZE", "32"))
+
+    # normalize_embeddings=True → L2-norm, совместимо с cosine-similarity
+    # и с тем, как bge-m3 индексировался через Ollama
     vectors = _model.encode(
         texts,
         batch_size=batch_size,
@@ -124,9 +97,4 @@ def embed(texts: list[str], batch_size: int = 32) -> list[list[float]]:
         show_progress_bar=False,
         convert_to_numpy=True,
     )
-    # numpy array → list[list[float]]
-    return vectors.tolist() if isinstance(vectors, np.ndarray) else [v.tolist() for v in vectors]
-
-
-def is_loaded() -> bool:
-    return _model is not None
+    return vectors.tolist()
