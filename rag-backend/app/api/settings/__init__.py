@@ -11,6 +11,7 @@ from .pipelines import router as pipelines_router
 from .tags import router as tags_router
 from .documents import router as documents_router
 from .campaigns import router as campaigns_router
+from .sidecar import router as sidecar_router
 
 router = APIRouter()
 
@@ -25,3 +26,4 @@ router.include_router(pipelines_router)
 router.include_router(tags_router)
 router.include_router(documents_router)
 router.include_router(campaigns_router)
+router.include_router(sidecar_router)

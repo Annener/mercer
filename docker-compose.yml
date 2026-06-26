@@ -109,6 +109,8 @@ services:
       INDEXER_API_URL: ${INDEXER_API_URL:-http://rag-indexer:9000}
       SERVICE_PORT: "8000"
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      HOST_AGENT_URL: ${HOST_AGENT_URL:-http://host.docker.internal:9090}
+      HOST_AGENT_TOKEN: ${HOST_AGENT_TOKEN:-}
     ports:
       - "8000:8000"
     volumes:
@@ -124,6 +126,10 @@ services:
         condition: service_healthy
     networks:
       - rag-net
+    # Linux: extra_hosts добавляет запись host.docker.internal -> host-gateway
+    # macOS/Windows Docker Desktop: работает автоматически, запись безвредна
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
