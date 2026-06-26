@@ -10,6 +10,7 @@
 # Запуск: chmod +x install.sh && ./install.sh
 #         PYTHON=/usr/local/bin/python3.13 ./install.sh  # указать явно если нужно
 #         SKIP_RERANKER=1 ./install.sh                   # пропустить загрузку reranker-модели
+#         SKIP_EMBEDDER=1 ./install.sh                   # пропустить загрузку embedder-модели
 
 set -euo pipefail
 
@@ -17,6 +18,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV_DIR="${SCRIPT_DIR}/.venv"
 PYTHON="${PYTHON:-python3.13}"
 SKIP_RERANKER="${SKIP_RERANKER:-0}"
+SKIP_EMBEDDER="${SKIP_EMBEDDER:-0}"
 
 # Проверяем что Python существует, иначе пробуем python3
 if ! command -v "${PYTHON}" &>/dev/null; then
@@ -57,15 +59,15 @@ echo "Python ${PYTHON_VERSION} — OK"
 if [[ -d "${VENV_DIR}" ]]; then
     VENV_PYTHON_VER=$("${VENV_DIR}/bin/python" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "unknown")
     if [[ "${VENV_PYTHON_VER}" != "${PYTHON_VERSION}" ]]; then
-        echo "[1/7] venv существует но использует Python ${VENV_PYTHON_VER}."
+        echo "[1/8] venv существует но использует Python ${VENV_PYTHON_VER}."
         echo "      Пересоздаём с Python ${PYTHON_VERSION}…"
         rm -rf "${VENV_DIR}"
         "${PYTHON}" -m venv "${VENV_DIR}"
     else
-        echo "[1/7] venv уже существует (Python ${VENV_PYTHON_VER}) — пропускаем"
+        echo "[1/8] venv уже существует (Python ${VENV_PYTHON_VER}) — пропускаем"
     fi
 else
-    echo "[1/7] Создаём venv в ${VENV_DIR}…"
+    echo "[1/8] Создаём venv в ${VENV_DIR}…"
     "${PYTHON}" -m venv "${VENV_DIR}"
 fi
 
@@ -73,14 +75,14 @@ fi
 source "${VENV_DIR}/bin/activate"
 echo "      Active Python: $(python --version) at $(command -v python)"
 
-echo "[2/7] Upgrading pip…"
+echo "[2/8] Upgrading pip…"
 pip install --upgrade pip --quiet
 
-echo "[3/7] Installing requirements.txt…"
+echo "[3/8] Installing requirements.txt…"
 pip install -r "${SCRIPT_DIR}/requirements.txt"
 
 # 4. detectron2 — нет wheel для arm64/PyPI, нужна сборка из исходников
-echo "[4/7] Installing detectron2…"
+echo "[4/8] Installing detectron2…"
 if python -c "import detectron2" 2>/dev/null; then
     echo "      detectron2 already installed — OK"
 else
@@ -97,7 +99,7 @@ else
 fi
 
 # 5. Системные зависимости
-echo "[5/7] Checking system dependencies…"
+echo "[5/8] Checking system dependencies…"
 ALL_OK=true
 
 if ! command -v gs &>/dev/null; then
@@ -128,15 +130,15 @@ else
 fi
 
 # 6. Проверка GPU/акселерации
-echo "[6/7] Checking GPU/acceleration…"
+echo "[6/8] Checking GPU/acceleration…"
 python - << 'PYCHECK'
 import sys
 
-# PyTorch MPS (Table Transformer + Reranker)
+# PyTorch MPS (Table Transformer + Reranker + Embedder)
 try:
     import torch
     mps = torch.backends.mps.is_available()
-    print(f"{'\u2713' if mps else '\u2717'} PyTorch MPS (Table Transformer + Reranker GPU): {'\u0434\u043e\u0441\u0442\u0443\u043f\u0435\u043d' if mps else '\u043d\u0435\u0434\u043e\u0441\u0442\u0443\u043f\u0435\u043d'}")
+    print(f"{'✓' if mps else '✗'} PyTorch MPS (Table Transformer + Reranker + Embedder GPU): {'доступен' if mps else 'недоступен'}")
     print(f"  torch version: {torch.__version__}")
 except ImportError:
     print("  PyTorch не установлен")
@@ -146,7 +148,7 @@ try:
     import onnxruntime as ort
     providers = ort.get_available_providers()
     has_coreml = 'CoreMLExecutionProvider' in providers
-    print(f"{'\u2713' if has_coreml else '\u25cb'} ONNX CoreML (YOLO GPU): {'\u0434\u043e\u0441\u0442\u0443\u043f\u0435\u043d' if has_coreml else '\u043d\u0435\u0434\u043e\u0441\u0442\u0443\u043f\u0435\u043d (\u0431\u0443\u0434\u0435\u0442 CPU)'}")
+    print(f"{'✓' if has_coreml else '○'} ONNX CoreML (YOLO GPU): {'доступен' if has_coreml else 'недоступен (будет CPU)'}")
     print(f"  onnxruntime version: {ort.__version__}")
     print(f"  available providers: {providers}")
     if not has_coreml:
@@ -158,10 +160,10 @@ PYCHECK
 
 # 7. Загрузка reranker-модели (pre-download)
 if [[ "${SKIP_RERANKER}" == "1" ]]; then
-    echo "[7/7] Reranker model download — пропущено (SKIP_RERANKER=1)"
+    echo "[7/8] Reranker model download — пропущено (SKIP_RERANKER=1)"
 else
     RERANKER_MODEL_ID="${RERANKER_MODEL_ID:-BAAI/bge-reranker-v2-m3}"
-    echo "[7/7] Pre-downloading reranker model '${RERANKER_MODEL_ID}'…"
+    echo "[7/8] Pre-downloading reranker model '${RERANKER_MODEL_ID}'…"
     echo "      (первая загрузка — ~1.1 GB, последующие берутся из кэша)"
     if python - << PYRERANKER
 import sys, os
@@ -186,6 +188,39 @@ PYRERANKER
     fi
 fi
 
+# 8. Загрузка embedder-модели (pre-download)
+# sentence-transformers кэширует в ~/.cache/huggingface/hub — скачивается один раз.
+# bge-m3 весит ~570 MB.
+if [[ "${SKIP_EMBEDDER}" == "1" ]]; then
+    echo "[8/8] Embedder model download — пропущено (SKIP_EMBEDDER=1)"
+else
+    EMBEDDER_MODEL_ID="${EMBEDDER_MODEL_ID:-BAAI/bge-m3}"
+    echo "[8/8] Pre-downloading embedder model '${EMBEDDER_MODEL_ID}'…"
+    echo "      (первая загрузка — ~570 MB, последующие берутся из кэша HuggingFace)"
+    if python - << PYEMBEDDER
+import sys, os
+os.environ.setdefault("EMBEDDER_MODEL_ID", "${EMBEDDER_MODEL_ID}")
+try:
+    from sentence_transformers import SentenceTransformer
+    model_id = os.environ["EMBEDDER_MODEL_ID"]
+    print(f"  Loading {model_id}...")
+    m = SentenceTransformer(model_id, device="cpu")
+    dim = m.get_sentence_embedding_dimension()
+    print(f"  ✓ Embedder model ready: {model_id} dim={dim}")
+except Exception as e:
+    print(f"  ✗ Embedder model download failed: {e}", file=sys.stderr)
+    sys.exit(1)
+PYEMBEDDER
+    then
+        echo "      Embedder — OK"
+    else
+        echo "      WARNING: не удалось загрузить embedder-модель."
+        echo "      Проверьте интернет и HuggingFace Hub."
+        echo "      /embeddings endpoint будет возвращать 503 пока модель не загружена."
+        ALL_OK=false
+    fi
+fi
+
 echo ""
 if [[ "${ALL_OK}" == "true" ]]; then
     echo "=== Установка завершена успешно ==="
@@ -201,3 +236,8 @@ echo "Проверка reranker endpoint:"
 echo "  curl -X POST http://localhost:8765/rerank \\"
 echo "    -H 'Content-Type: application/json' \\"
 echo "    -d '{\"query\": \"тест\", \"documents\": [\"doc1\", \"doc2\"]}'"
+echo ""
+echo "Проверка embedder endpoint:"
+echo "  curl -X POST http://localhost:8765/embeddings \\"
+echo "    -H 'Content-Type: application/json' \\"
+echo "    -d '{\"model\": \"BAAI/bge-m3\", \"input\": \"тестовый текст\"}'"
