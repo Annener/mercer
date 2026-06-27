@@ -1,0 +1,487 @@
+/* ======================================================
+   Tab Params — styles for the "Параметры" settings tab
+   Extracted from settings.css
+   ====================================================== */
+
+/* ── Param list & groups ── */
+.settings-param-list {
+    display: grid;
+    gap: 8px;
+    max-width: 760px;
+}
+
+.settings-params-fullwidth {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    max-width: 640px;
+}
+
+/* Each named group: same visual style as watchdog block */
+.settings-param-group {
+    margin-bottom: 20px;
+    background: #fff;
+    border: 1px solid #b8cfe0;
+    border-radius: 10px;
+    padding: 18px 20px 14px;
+    box-shadow: 0 1px 4px rgba(52, 120, 180, 0.06);
+}
+
+.settings-param-group-title {
+    font-size: 14px;
+    font-weight: 650;
+    color: #1f4e6e;
+    margin-bottom: 12px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.settings-param-group-title::before {
+    content: '';
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #3498db;
+    flex-shrink: 0;
+}
+
+/* ── Param row ── */
+
+/* Row inside a fullwidth group (2-col: label | control) */
+.settings-params-fullwidth .settings-param-row {
+    display: grid;
+    grid-template-columns: minmax(180px, 1fr) auto;
+    align-items: center;
+    gap: 10px 16px;
+    background: transparent;
+    border: none;
+    border-top: 1px solid #eaf0f6;
+    border-radius: 0;
+    padding: 9px 2px;
+    max-width: none;
+}
+
+.settings-params-fullwidth .settings-param-row:first-of-type {
+    border-top: none;
+}
+
+/* Standalone row (3-col: label | input | save) */
+.settings-param-row {
+    display: grid;
+    grid-template-columns: minmax(220px, 1fr) minmax(180px, 260px) auto;
+    align-items: center;
+    gap: 12px;
+    background: #fff;
+    border: 1px solid #dfe6ee;
+    border-radius: 6px;
+    padding: 10px 12px;
+}
+
+.settings-param-row input {
+    border: 1px solid #d4dde7;
+    border-radius: 5px;
+    padding: 7px 9px;
+    font: inherit;
+    font-size: 14px;
+}
+
+/* ── Param info (label + description + key) ── */
+.settings-param-info {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+
+.settings-param-label-row {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    flex-wrap: wrap;
+}
+
+.settings-param-info strong {
+    font-size: 13px;
+    font-weight: 600;
+    color: #2c3e50;
+}
+
+.settings-param-desc {
+    font-size: 12px;
+    color: #7a8d9d;
+    line-height: 1.4;
+}
+
+.settings-param-key {
+    font-size: 11px;
+    color: #aab5bf;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+}
+
+/* ── Param control (input / checkbox) ── */
+.settings-param-control {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+}
+
+.settings-param-control input[type="text"],
+.settings-param-control input[type="number"] {
+    border: 1px solid #d4dde7;
+    border-radius: 5px;
+    padding: 6px 9px;
+    font: inherit;
+    font-size: 13px;
+    width: 180px;
+}
+
+.settings-param-control input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    cursor: pointer;
+}
+
+.settings-params-footer {
+    margin-top: 8px;
+    margin-bottom: 8px;
+}
+
+/* ======================================================
+   Tooltip (? badge) — hover shows tooltip,
+   click/focus pins it until blur or second click
+   ====================================================== */
+.param-help {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 15px;
+    height: 15px;
+    border-radius: 50%;
+    background: #c8d9e8;
+    color: #3a6080;
+    font-size: 10px;
+    font-weight: 700;
+    font-style: normal;
+    cursor: pointer;
+    flex-shrink: 0;
+    position: relative;
+    user-select: none;
+    transition: background 0.15s;
+    outline: none;
+}
+
+.param-help:hover,
+.param-help:focus {
+    background: #3498db;
+    color: #fff;
+}
+
+/* Tooltip bubble */
+.param-help::after {
+    content: attr(data-tooltip);
+    position: absolute;
+    left: 50%;
+    bottom: calc(100% + 7px);
+    transform: translateX(-50%);
+    width: max-content;
+    max-width: 260px;
+    background: #1f3d52;
+    color: #e8f1f8;
+    font-size: 12px;
+    font-weight: 400;
+    line-height: 1.45;
+    padding: 7px 10px;
+    border-radius: 6px;
+    box-shadow: 0 4px 14px rgba(0,0,0,0.18);
+    white-space: pre-wrap;
+    pointer-events: none;
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.15s, visibility 0.15s;
+    z-index: 200;
+}
+
+/* Arrow */
+.param-help::before {
+    content: '';
+    position: absolute;
+    left: 50%;
+    bottom: calc(100% + 1px);
+    transform: translateX(-50%);
+    border: 5px solid transparent;
+    border-top-color: #1f3d52;
+    pointer-events: none;
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.15s, visibility 0.15s;
+    z-index: 201;
+}
+
+.param-help:hover::after,
+.param-help:hover::before,
+.param-help:focus::after,
+.param-help:focus::before,
+.param-help.pinned::after,
+.param-help.pinned::before {
+    opacity: 1;
+    visibility: visible;
+}
+
+/* ======================================================
+   Watchdog block
+   ====================================================== */
+.settings-watchdog-block {
+    margin-top: 0;
+    max-width: 640px;
+    background: #fff;
+    border: 1px solid #b8cfe0;
+    border-radius: 10px;
+    padding: 18px 20px 14px;
+    box-shadow: 0 1px 4px rgba(52, 120, 180, 0.06);
+    margin-bottom: 20px;
+}
+
+.settings-watchdog-title {
+    font-size: 14px;
+    font-weight: 650;
+    color: #1f4e6e;
+    margin-bottom: 4px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.settings-watchdog-title::before {
+    content: '';
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #3498db;
+    flex-shrink: 0;
+}
+
+.settings-watchdog-block .settings-param-desc {
+    margin-bottom: 12px;
+    font-size: 12px;
+    color: #6b7d8f;
+}
+
+/* Compact checkbox grid for extensions */
+.indexing-ext-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+    gap: 4px 8px;
+    margin-bottom: 12px;
+}
+
+.indexing-ext-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 8px;
+    border-radius: 5px;
+    font-size: 13px;
+    color: #2c3e50;
+    cursor: pointer;
+    transition: background 0.12s;
+    white-space: nowrap;
+    border: none;
+    background: none;
+    grid-template-columns: unset !important;
+    min-height: unset !important;
+}
+
+.indexing-ext-row:hover {
+    background: #eef4fb;
+}
+
+.indexing-ext-row input[type="checkbox"] {
+    width: 14px;
+    height: 14px;
+    flex-shrink: 0;
+    cursor: pointer;
+    accent-color: #3498db;
+}
+
+/* Add-extension row */
+.indexing-custom-input {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 4px;
+    margin-bottom: 0;
+    padding-top: 10px;
+    border-top: 1px solid #e4edf5;
+}
+
+.indexing-custom-input input[type="text"] {
+    width: 120px;
+    padding: 5px 8px;
+    border: 1px solid #d4dde7;
+    border-radius: 5px;
+    font: inherit;
+    font-size: 13px;
+}
+
+.indexing-custom-input .btn {
+    padding: 5px 12px;
+    font-size: 12px;
+}
+
+/* ======================================================
+   PDF Sidecar block
+   ====================================================== */
+.sidecar-block {
+    max-width: 640px;
+    background: #fff;
+    border: 1px solid #b8cfe0;
+    border-radius: 10px;
+    padding: 18px 20px 16px;
+    box-shadow: 0 1px 4px rgba(52, 120, 180, 0.06);
+    margin-bottom: 20px;
+}
+
+.sidecar-block-title {
+    font-size: 14px;
+    font-weight: 650;
+    color: #1f4e6e;
+    margin-bottom: 4px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.sidecar-block-title::before {
+    content: '';
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #3498db;
+    flex-shrink: 0;
+}
+
+.sidecar-block .settings-param-desc {
+    margin-bottom: 12px;
+    color: #6b7d8f;
+}
+
+/* Status row */
+.sidecar-status-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+}
+
+.sidecar-status-label {
+    font-size: 12px;
+    color: #7a8d9d;
+    font-weight: 500;
+}
+
+.sidecar-status-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 10px;
+    border-radius: 999px;
+    font-size: 11.5px;
+    font-weight: 500;
+    letter-spacing: 0.02em;
+    border: 1px solid transparent;
+    transition: background 0.2s, color 0.2s;
+}
+
+.sidecar-status--loading     { background: #eef2f6; color: #7a8d9d;  border-color: #dfe6ee; }
+.sidecar-status--running     { background: #e6f5ee; color: #1a6e42;  border-color: #b4dfc7; }
+.sidecar-status--stopped     { background: #fef3e2; color: #8a5800;  border-color: #f0d49a; }
+.sidecar-status--not-installed { background: #f5f7fa; color: #95a5a6; border-color: #d9e1ea; }
+.sidecar-status--unavailable   { background: #fdecea; color: #a12c3c; border-color: #f5bdc5; }
+
+.sidecar-pid {
+    font-size: 11px;
+    color: #aab5bf;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+}
+
+/* Action buttons row */
+.sidecar-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 10px;
+}
+
+/* Message under buttons */
+.sidecar-action-msg {
+    min-height: 1.4em;
+    font-size: 12px;
+    border-radius: 5px;
+    padding: 0 2px;
+    transition: color 0.15s;
+}
+
+.sidecar-msg--loading { color: #7a8d9d; }
+.sidecar-msg--ok      { color: #1a6e42; }
+.sidecar-msg--error   { color: #a12c3c; }
+
+/* ======================================================
+   Install modal
+   ====================================================== */
+.sidecar-install-modal {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.48);
+    z-index: 1100;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+}
+
+.sidecar-install-modal.hidden {
+    display: none;
+}
+
+.sidecar-install-modal-box {
+    background: #fff;
+    border: 1px solid #dfe6ee;
+    border-radius: 10px;
+    width: 100%;
+    max-width: 680px;
+    max-height: 80vh;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.14);
+    overflow: hidden;
+}
+
+.sidecar-install-modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 13px 18px;
+    border-bottom: 1px solid #e4eaf0;
+    flex-shrink: 0;
+    font-size: 14px;
+    font-weight: 600;
+    color: #2c3e50;
+}
+
+.sidecar-install-output {
+    flex: 1;
+    overflow-y: auto;
+    padding: 14px 18px;
+    margin: 0;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 12px;
+    line-height: 1.6;
+    color: #2c3e50;
+    background: #f8fbff;
+    white-space: pre-wrap;
+    word-break: break-all;
+    min-height: 260px;
+}
