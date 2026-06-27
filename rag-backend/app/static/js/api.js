@@ -743,19 +743,22 @@ class ChatAPI {
         // 204 No Content
     }
 
-    // === Watchdog: расширения для авто-индексации ===
+    // === Watchdog settings ===
 
-    async getWatchdogExtensions() {
+    async getWatchdogSettings() {
         const res = await fetch('/api/v1/settings/watchdog');
         if (!res.ok) throw new Error('Failed to load watchdog settings');
-        return res.json(); // { auto_index_extensions: string[] }
+        return res.json(); // { auto_index_extensions: string[], interval_sec: number }
     }
 
-    async saveWatchdogExtensions(extensions) {
+    async saveWatchdogSettings(extensions, intervalSec) {
         const res = await fetch('/api/v1/settings/watchdog', {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ auto_index_extensions: extensions }),
+            body: JSON.stringify({
+                auto_index_extensions: extensions,
+                interval_sec: intervalSec,
+            }),
         });
         if (!res.ok) throw new Error('Failed to save watchdog settings');
         return res.json();
