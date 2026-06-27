@@ -2,6 +2,8 @@
 # Mercer — Makefile
 # =============================================================================
 # Цели:
+#   make setup           — полный первичный деплой: init-env + agent-setup + up + seed
+#   make init-env        — создать/дополнить .env интерактивно (идемпотентно)
 #   make agent-setup     — полная первичная настройка host-agent (venv + launchd)
 #   make agent-install   — только установить/обновить launchd plist (без venv)
 #   make agent-uninstall — выгрузить агент из launchd и удалить plist
@@ -12,7 +14,6 @@
 #   make up              — docker compose up -d
 #   make down            — docker compose down
 #   make seed            — создать дефолтные embedding и rerank модели в БД
-#   make setup           — полный первичный деплой: agent-setup + up + seed
 #   make help            — этот экран
 # =============================================================================
 
@@ -39,14 +40,16 @@ GREEN  := \033[0;32m
 YELLOW := \033[0;33m
 RESET  := \033[0m
 
-.PHONY: help agent-setup agent-install agent-uninstall agent-start agent-stop \
-        agent-status agent-logs up down seed setup
+.PHONY: help init-env agent-setup agent-install agent-uninstall agent-start agent-stop \
+        agent-status agent-logs up down seed setup _check-macos _venv-create \
+        _logs-dir _render-plist _agent-setup-dispatch
 
 help:
 	@echo ""
 	@echo "$(GREEN)Mercer — доступные команды:$(RESET)"
 	@echo ""
-	@echo "  $(YELLOW)make setup$(RESET)            Полный первичный деплой: agent-setup + up + seed"
+	@echo "  $(YELLOW)make setup$(RESET)            Полный первичный деплой: init-env + agent-setup + up + seed"
+	@echo "  $(YELLOW)make init-env$(RESET)         Создать/дополнить .env интерактивно (идемпотентно)"
 	@echo "  $(YELLOW)make agent-setup$(RESET)      Первичная настройка: venv + launchd (запускать один раз)"
 	@echo "  $(YELLOW)make agent-install$(RESET)    Переустановить launchd plist (после изменения путей)"
 	@echo "  $(YELLOW)make agent-uninstall$(RESET)  Выгрузить агент из launchd и удалить plist"
@@ -61,9 +64,15 @@ help:
 	@echo ""
 
 # =============================================================================
+# init-env: создать/дополнить .env (первый шаг в setup)
+# =============================================================================
+init-env:
+	@python3 scripts/generate_env.py
+
+# =============================================================================
 # setup: полный первичный деплой одной командой
 # =============================================================================
-setup: agent-setup up seed
+setup: init-env agent-setup up seed
 	@echo ""
 	@echo "$(GREEN)✓ Mercer готов к работе.$(RESET)"
 	@echo "  UI: http://localhost:8000"
