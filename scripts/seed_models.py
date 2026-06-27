@@ -132,7 +132,7 @@ def main() -> None:
     print("=== Embedding model ===")
     create_model(
         base,
-        "/api/settings/models/embedding/",
+        "/api/settings/models/embedding",
         EMBEDDING_MODEL,
         f"Embedding [{EMBEDDING_MODEL['model_id']}]",
     )
@@ -141,7 +141,7 @@ def main() -> None:
     print("=== Rerank model ===")
     result = create_model(
         base,
-        "/api/settings/models/rerank/",
+        "/api/settings/models/rerank",
         RERANK_MODEL,
         f"Reranker [{RERANK_MODEL['model_id']}]",
     )

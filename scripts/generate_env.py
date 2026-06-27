@@ -71,11 +71,21 @@ def set_env_value(content: str, key: str, value: str) -> str:
 # Логика «переменная уже задана»
 # ---------------------------------------------------------------------------
 
+# Переменные, которые compute_env.py вычисляет автоматически —
+# их наличие любого значения не считается «уже заданным» для диалога.
+_AUTO_KEYS = {"INSTALL_MODE", "AGENT_MODE", "COMPOSE_PROFILES", "HOST_AGENT_URL"}
+
 def is_set(key: str, val: str) -> bool:
     """True если значение считается «уже заданным» (не placeholder)."""
     if not val:
         return False
-    placeholders = {"changeme", "<generate with: python -c \"import base64, secrets; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())\">"}
+    # Авто-ключи: любое значение считается placeholder'ом — всегда вычисляются заново,
+    # кроме INSTALL_MODE, который задаётся интерактивно один раз.
+    # Для прочих авто-ключей пропускаем проверку здесь (обрабатываются в compute-блоке).
+    placeholders = {
+        "changeme",
+        "<generate with: python -c \"import base64, secrets; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())\">"  # noqa: E501
+    }
     if val in placeholders:
         return False
     if val.startswith("<") and val.endswith(">"):
@@ -206,6 +216,7 @@ def main() -> None:
     current = read_env(ENV_FILE)
 
     # 3. Проверяем: все ли интерактивные переменные уже заданы?
+    # INSTALL_MODE всегда проверяем через is_set — пустая строка запустит диалог.
     interactive_keys = ["INSTALL_MODE", "POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DB"]
     needs_dialog = any(not is_set(k, current.get(k, "")) for k in interactive_keys)
 
@@ -227,9 +238,9 @@ def main() -> None:
 
     # 4. Интерактивный диалог
     if needs_dialog:
-        # INSTALL_MODE
+        # INSTALL_MODE — спрашиваем всегда когда не задан (пустая строка = не задан)
         if not is_set("INSTALL_MODE", current.get("INSTALL_MODE", "")):
-            install_mode = ask_install_mode(current.get("INSTALL_MODE", "full"))
+            install_mode = ask_install_mode(current.get("INSTALL_MODE", ""))
         else:
             install_mode = current["INSTALL_MODE"]
         content = set_env_value(content, "INSTALL_MODE", install_mode)
@@ -271,7 +282,7 @@ def main() -> None:
         content = set_env_value(content, "HOST_AGENT_TOKEN", token)
         cprint(COLOR_GREEN, "  ✓ HOST_AGENT_TOKEN сгенерирован")
 
-    # AGENT_MODE
+    # AGENT_MODE — всегда вычисляется из текущей ОС
     agent_mode = compute_agent_mode()
     content = set_env_value(content, "AGENT_MODE", agent_mode)
 
