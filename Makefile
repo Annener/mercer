@@ -40,8 +40,55 @@ GREEN  := \033[0;32m
 YELLOW := \033[0;33m
 RESET  := \033[0m
 
+# =============================================================================
+# _find_python: найти максимальную установленную версию Python из диапазона 3.11–3.13
+#
+# Проверяет кандидатов в порядке убывания: python3.13, python3.12, python3.11,
+# затем python3 / python3 как fallback с проверкой версии.
+# Экспортирует MERCER_PYTHON для использования в рецептах.
+# Завершает make с ошибкой если подходящий интерпретатор не найден.
+# =============================================================================
+export MERCER_PYTHON := $(shell \
+	for candidate in python3.13 python3.12 python3.11; do \
+		if command -v $$candidate >/dev/null 2>&1; then \
+			echo $$candidate; \
+			exit 0; \
+		fi; \
+	done; \
+	for candidate in python3 python; do \
+		if command -v $$candidate >/dev/null 2>&1; then \
+			minor=$$($$candidate -c 'import sys; print(sys.version_info.minor)' 2>/dev/null); \
+			major=$$($$candidate -c 'import sys; print(sys.version_info.major)' 2>/dev/null); \
+			if [ "$$major" = "3" ] && [ "$$minor" -ge 11 ] && [ "$$minor" -le 13 ] 2>/dev/null; then \
+				echo $$candidate; \
+				exit 0; \
+			fi; \
+		fi; \
+	done \
+)
+
+# Проверка: MERCER_PYTHON найден — иначе hard-fail при первом использовании
+_check_python:
+	@if [ -z "$(MERCER_PYTHON)" ]; then \
+		echo ""; \
+		echo "$(YELLOW)ERROR: Python 3.11–3.13 не найден.$(RESET)"; \
+		echo ""; \
+		echo "Установлены кандидаты:"; \
+		for v in python3.13 python3.12 python3.11 python3; do \
+			path=$$(command -v $$v 2>/dev/null || echo ''); \
+			if [ -n "$$path" ]; then \
+				echo "  $$v  →  $$($$v --version 2>&1)"; \
+			fi; \
+		done; \
+		echo ""; \
+		echo "Установите Python 3.13:  brew install python@3.13"; \
+		echo ""; \
+		exit 1; \
+	fi
+	@echo "$(GREEN)✓ Python: $(MERCER_PYTHON) ($$($(MERCER_PYTHON) --version))$(RESET)"
+
 .PHONY: help init-env agent-setup agent-install agent-uninstall agent-start agent-stop \
-        agent-status agent-logs up down seed setup _check-macos _venv-create \
+        agent-status agent-logs up down seed setup _check-macos _check_python _venv-create \
         _logs-dir _render-plist _agent-setup-dispatch _agent-setup-launchd
 
 help:
@@ -66,8 +113,8 @@ help:
 # =============================================================================
 # init-env: создать/дополнить .env (первый шаг в setup)
 # =============================================================================
-init-env:
-	@python3 scripts/generate_env.py
+init-env: _check_python
+	@$(MERCER_PYTHON) scripts/generate_env.py
 
 # =============================================================================
 # setup: полный первичный деплой одной командой
@@ -80,9 +127,9 @@ setup: init-env _agent-setup-dispatch up seed
 # =============================================================================
 # seed: создать дефолтные модели в rag-backend
 # =============================================================================
-seed:
+seed: _check_python
 	@echo "$(YELLOW)→ Provisioning default models (backend: $(BACKEND_URL))...$(RESET)"
-	@python3 scripts/seed_models.py --base-url "$(BACKEND_URL)"
+	@$(MERCER_PYTHON) scripts/seed_models.py --base-url "$(BACKEND_URL)"
 
 # =============================================================================
 # agent-setup: публичный алиас — диспетчеризует по AGENT_MODE
@@ -147,7 +194,7 @@ agent-status: _check-macos
 	@echo "--- launchctl ---"
 	@launchctl list | grep mercer || echo "(не зарегистрирован в launchd)"
 	@echo "--- /health ---"
-	@curl -sf http://localhost:9090/health | python3 -m json.tool || echo "(агент не отвечает)"
+	@curl -sf http://localhost:9090/health | $(MERCER_PYTHON) -m json.tool || echo "(агент не отвечает)"
 
 agent-logs:
 	@tail -f "$(LOGS_DIR)/agent.log" "$(LOGS_DIR)/agent.err" 2>/dev/null || \
@@ -174,7 +221,7 @@ _check-macos:
 _venv-create:
 	@if [ ! -d "$(VENV_DIR)" ]; then \
 		echo "$(YELLOW)Создаю venv для host-agent...$(RESET)"; \
-		python3 -m venv "$(VENV_DIR)"; \
+		$(MERCER_PYTHON) -m venv "$(VENV_DIR)"; \
 	fi
 	@echo "$(YELLOW)Устанавливаю зависимости host-agent...$(RESET)"
 	@$(VENV_PYTHON) -m pip install -q --upgrade pip

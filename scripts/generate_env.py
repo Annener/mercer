@@ -2,15 +2,11 @@
 """Mercer — интерактивный генератор .env при первом make setup.
 
 Только stdlib. Идемпотентен: спрашивает только пустые/placeholder переменные.
+
+Запускается через Makefile с уже найденным совместимым интерпретатором
+(Python 3.11–3.13). Собственная проверка версии здесь не нужна.
 """
 import sys
-
-if not (3, 11) <= sys.version_info < (3, 14):
-    sys.exit(
-        f"ERROR: требуется Python 3.11–3.13, "
-        f"запущен {sys.version_info.major}.{sys.version_info.minor}"
-    )
-
 import base64
 import getpass
 import os
