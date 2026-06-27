@@ -72,7 +72,7 @@ make setup
   └─ _agent-setup-dispatch   → диспетчер по AGENT_MODE
        ├─ AGENT_MODE=host    → _agent-setup-launchd (macOS, текущий agent-setup)
        ├─ AGENT_MODE=docker  → no-op (Linux, агент в compose)
-       └─ AGENT_MODE=host-win → инструкция по ручной установке (Windows, отложено)
+       └─ AGENT_MODE=host-win → предупреждение, выход без ошибки (Windows, не реализовано)
   └─ up                      → docker compose up -d
   └─ seed                    → scripts/seed_models.py
 ```
@@ -109,27 +109,44 @@ DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-raguser}:${POSTGRES_PASSWORD
 
 ### A3. `docker-compose.yml` — добавить `profiles` для `INSTALL_MODE`
 
-Для поддержки режима `no-db-api` (разнесённый деплой):
-```yaml
-db-api-server:
-  profiles: ["with-db-api"]
+**Все сервисы получают профили.** Это означает, что `docker compose up` без `COMPOSE_PROFILES`
+не поднимет ничего — это ожидаемое поведение. Запуск всегда производится через `make setup`
+или с явно заданным `COMPOSE_PROFILES`.
 
-rag-db:
-  profiles: ["with-db-api"]
+```yaml
+services:
+  rag-backend:
+    profiles: ["with-db-api", "core"]
+
+  rag-indexer:
+    profiles: ["with-db-api", "core"]
+
+  redis:
+    profiles: ["with-db-api", "core"]
+
+  rag-db:
+    profiles: ["with-db-api", "core"]
+
+  db-api-server:
+    profiles: ["with-db-api", "db-api-only"]
 ```
 
-`COMPOSE_PROFILES` в `.env` читается Docker Compose автоматически — изменений в Makefile не требует.
+Маппинг `INSTALL_MODE` → `COMPOSE_PROFILES`:
 
-> **Открытый вопрос:** При `profiles: ["with-db-api"]` на `db-api-server` + `rag-db` — сервисы без
-> профиля (`rag-backend`, `rag-indexer`, `redis`) всё равно поднимаются при `docker compose up`.
-> Для сценария `db-api-only` нужна отдельная compose-команда или второй профиль. Решить при реализации.
+| `INSTALL_MODE` | `COMPOSE_PROFILES` | Что поднимается |
+|---|---|---|
+| `full` | `with-db-api` | `rag-backend` + `rag-indexer` + `redis` + `rag-db` + `db-api-server` |
+| `no-db-api` | `core` | `rag-backend` + `rag-indexer` + `redis` + `rag-db` |
+| `db-api-only` | `db-api-only` | только `db-api-server` |
+
+`COMPOSE_PROFILES` в `.env` читается Docker Compose автоматически — изменений в Makefile не требует.
 
 ### A4. Файлы под удаление
 
 - `rag-indexer/parser/state/state_manager.py` — DEPRECATED, ни один production-файл не импортирует
 - `rag-indexer/embedding/cache.py` — no-op стаб
 
-  Перед удалением проверить отсутствие импортов:
+  Перед удалением проверить отсутствие импортов (выполняет ИИ-агент при реализации плана):
   ```bash
   grep -r "from embedding.cache\|import cache" rag-indexer/
   grep -r "state_manager" rag-indexer/ | grep -v "redis_state_manager"
@@ -147,10 +164,24 @@ rag-db:
 
 Интерактивный Python-скрипт (только stdlib) для подготовки `.env` при первом `make setup`.
 
+### Требования к версии Python
+
+**Требуется Python 3.11–3.13.** Python 3.14+ несовместим с `unstructured-inference` (pdf-sidecar).
+Добавить guard в начало скрипта:
+
+```python
+import sys
+if not (3, 11) <= sys.version_info < (3, 14):
+    sys.exit(
+        f"ERROR: требуется Python 3.11–3.13, "
+        f"запущен {sys.version_info.major}.{sys.version_info.minor}"
+    )
+```
+
 ### Поведение
 
 **Идемпотентность:**
-- `.env` не существует → создать из `.env.example`, пройти диалог
+- `.env` не существует → проверить наличие `.env.example` (если отсутствует — завершить с понятной ошибкой), создать из `.env.example`, пройти диалог
 - `.env` существует, все переменные заполнены корректно → выйти молча
 - `.env` существует, часть переменных пустые/placeholder → спросить только недостающие
 
@@ -166,7 +197,7 @@ rag-db:
 | `ENCRYPTION_KEY` | Автоматический | Fernet-ключ через stdlib; не перезаписывать если уже 44 символа |
 | `HOST_AGENT_TOKEN` | Автоматический | `secrets.token_urlsafe(32)`; не перезаписывать если не `changeme` и не пусто |
 | `AGENT_MODE` | Автоматический | `platform.system()`: Darwin→`host`, Linux→`docker`, Windows→`host-win` |
-| `COMPOSE_PROFILES` | Вычисляется | `full`/`db-api-only` → `with-db-api`; `no-db-api` → пусто |
+| `COMPOSE_PROFILES` | Вычисляется | `full`→`with-db-api`; `no-db-api`→`core`; `db-api-only`→`db-api-only` |
 | `HOST_AGENT_URL` | Вычисляется | `host`/`host-win` → `http://host.docker.internal:9090`; `docker` → `http://host-agent:9090` |
 
 **Генерация секретов (только stdlib):**
@@ -178,7 +209,7 @@ def generate_fernet_key() -> str:
     return base64.urlsafe_b64encode(secrets.token_bytes(32)).decode()
 
 def generate_token() -> str:
-    return secrets.token_urlsafe(32)  # ~43 символа
+    return secrets.token_urlsafe(32)  # ~43 символа, alphanumeric-safe
 
 def generate_password() -> str:
     return secrets.token_urlsafe(16)  # ~22 символа
@@ -223,12 +254,16 @@ _agent-setup-dispatch:
 	elif [ "$$AGENT_MODE" = "docker" ]; then \
 	    echo "Linux: host-agent запускается в Docker, пропускаю agent-setup"; \
 	else \
-	    echo "Windows: запустите scripts/install-service.ps1 вручную"; \
+	    echo "WARNING: AGENT_MODE=host-win — установка Windows-сервиса не реализована."; \
+	    echo "Продолжаю без установки host-agent."; \
 	fi
 
 # Переименовать текущий agent-setup в:
 _agent-setup-launchd: _venv-create agent-install
 ```
+
+**Примечание:** `scripts/install-service.ps1` не существует. При `AGENT_MODE=host-win`
+диспетчер печатает предупреждение и завершается без ошибки (`exit 0`).
 
 ### C2. Прокинуть `HOST_AGENT_TOKEN` в plist
 
@@ -242,7 +277,10 @@ _agent-setup-launchd: _venv-create agent-install
 <string>{{HOST_AGENT_TOKEN}}</string>
 ```
 
-**В `_render-plist`** добавить подстановку токена:
+**В `_render-plist`** добавить подстановку токена.
+Токен генерируется через `secrets.token_urlsafe(32)` — содержит только alphanumeric и `-_`,
+разделитель `|` в `sed` безопасен:
+
 ```makefile
 _render-plist:
 	@HOST_AGENT_TOKEN=$$(grep '^HOST_AGENT_TOKEN=' .env | cut -d= -f2); \
@@ -276,6 +314,19 @@ _render-plist:
 
 Текущий `setup: agent-setup up seed` работает на macOS. После Блока C будет заменён на
 `setup: init-env _agent-setup-dispatch up seed`.
+
+Если `up` упал — `seed` отработает корректно: внутри реализован health-check
+с 15 ретраями по 2 сек перед обращением к API.
+
+### Миграции БД ✓
+
+Миграции применяются автоматически при старте `rag-backend` (entrypoint). Отдельный шаг
+в `make setup` не требуется.
+
+### `pdf-sidecar` на Linux ✓
+
+При `AGENT_MODE=docker` весь sidecar (embedding + reranker + host-agent) запускается
+в контейнерах в составе Docker Compose. Установка через `install.sh` не требуется.
 
 ---
 
@@ -320,16 +371,31 @@ Backend (`rag-backend/app/services/settings_service.py`) и indexer
 (`rag-indexer/app/db_client.py`) передают ключ в `Fernet(key.encode("utf-8"))`.
 Ключ обязан быть urlsafe base64 от ровно 32 байт → всегда 44 символа.
 
+### Версия Python (pdf-sidecar)
+
+**Требуется Python 3.11–3.13.** Python 3.14+ явно заблокирован в `pdf-sidecar/install.sh`
+с `exit 1` из-за несовместимости `unstructured-inference`. По умолчанию используется
+`python3.13`; можно переопределить: `PYTHON=/path/to/python3.12 ./install.sh`.
+
+Системные зависимости (macOS):
+```bash
+brew install ghostscript tesseract tesseract-lang poppler
+```
+
+Флаги установки:
+- `SKIP_RERANKER=1 ./install.sh` — пропустить загрузку reranker (~1.1 GB)
+- `SKIP_EMBEDDER=1 ./install.sh` — пропустить загрузку embedder (~570 MB)
+
 ### Режимы деплоя
 
-| `INSTALL_MODE` | Что поднимается | Сценарий |
-|---|---|---|
-| `full` | Все сервисы | Один хост, всё вместе |
-| `db-api-only` | `db-api-server` + `rag-db` | Выделенный хост под хранилище |
-| `no-db-api` | Всё кроме `db-api-server` | Основной хост при разнесённом деплое |
+| `INSTALL_MODE` | `COMPOSE_PROFILES` | Что поднимается | Сценарий |
+|---|---|---|---|
+| `full` | `with-db-api` | Все сервисы | Один хост, всё вместе |
+| `db-api-only` | `db-api-only` | только `db-api-server` | Выделенный хост под LanceDB |
+| `no-db-api` | `core` | Всё кроме `db-api-server` | Основной хост при разнесённом деплое |
 
 | `AGENT_MODE` | Где агент | ОС |
 |---|---|---|
 | `host` | Процесс на хосте (venv + launchd) | macOS |
 | `docker` | Контейнер в compose | Linux |
-| `host-win` | Процесс на хосте (venv + Task Scheduler) | Windows (отложено) |
+| `host-win` | Не реализовано, предупреждение | Windows |
