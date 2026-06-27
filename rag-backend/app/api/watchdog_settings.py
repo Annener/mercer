@@ -8,7 +8,7 @@ from typing import Annotated
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,7 +18,8 @@ router = APIRouter(prefix="/api/v1", tags=["watchdog"])
 
 logger = logging.getLogger(__name__)
 
-SETTING_KEY = "watchdog_auto_index_extensions"
+SETTING_KEY_EXTENSIONS = "watchdog_auto_index_extensions"
+SETTING_KEY_INTERVAL = "watchdog.interval_sec"
 INDEXER_API_URL = os.getenv("INDEXER_API_URL", "http://rag-indexer:9000")
 
 
@@ -29,7 +30,10 @@ INDEXER_API_URL = os.getenv("INDEXER_API_URL", "http://rag-indexer:9000")
 class WatchdogSettings(BaseModel):
     """Payload and response for watchdog settings."""
     auto_index_extensions: list[str]
-    """Ордеред лист расширений, e.g. [".md", ".pdf"]"""
+    """Ordered list of extensions, e.g. [".md", ".pdf"]"""
+
+    interval_sec: int = Field(default=60, ge=10)
+    """Scan interval in seconds. Minimum 10."""
 
     @field_validator("auto_index_extensions", mode="before")
     @classmethod
@@ -39,7 +43,7 @@ class WatchdogSettings(BaseModel):
             return [ext.strip() for ext in v.split(",") if ext.strip()]
         return [str(e).strip() for e in v if str(e).strip()]
 
-    def to_db_value(self) -> str:
+    def extensions_to_db(self) -> str:
         return ",".join(self.auto_index_extensions)
 
 
@@ -68,14 +72,23 @@ class IndexResponse(BaseModel):
 async def get_watchdog_settings(
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> WatchdogSettings:
-    """Returns current watchdog auto-index extensions from PostgreSQL."""
+    """Returns current watchdog settings from PostgreSQL."""
     result = await db.execute(
-        text("SELECT value FROM platform_settings WHERE key = :key"),
-        {"key": SETTING_KEY},
+        text(
+            "SELECT key, value FROM platform_settings"
+            " WHERE key IN (:key_ext, :key_interval)"
+        ),
+        {"key_ext": SETTING_KEY_EXTENSIONS, "key_interval": SETTING_KEY_INTERVAL},
     )
-    row = result.fetchone()
-    raw: str = row[0] if row else ".md,.pdf"
-    return WatchdogSettings(auto_index_extensions=raw)
+    rows = {row[0]: row[1] for row in result.fetchall()}
+
+    raw_ext: str = rows.get(SETTING_KEY_EXTENSIONS, ".md,.pdf")
+    raw_interval: str = rows.get(SETTING_KEY_INTERVAL, "60")
+
+    return WatchdogSettings(
+        auto_index_extensions=raw_ext,
+        interval_sec=int(raw_interval),
+    )
 
 
 # ------------------------------------------------------------------
@@ -87,10 +100,10 @@ async def update_watchdog_settings(
     payload: WatchdogSettings,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> WatchdogSettings:
-    """Упсертит watchdog setting в PostgreSQL.
+    """Upserts watchdog settings into PostgreSQL.
 
-    Пустой список допустим — означает «не отслеживать ничего».
-    Extension must start with '.'
+    Empty extensions list is valid — means «no auto-indexing».
+    Each extension must start with '.'
     """
     for ext in payload.auto_index_extensions:
         if not ext.startswith("."):
@@ -103,11 +116,21 @@ async def update_watchdog_settings(
         text(
             """
             INSERT INTO platform_settings (key, value, value_type, group_name, label, hint)
-            VALUES (:key, :value, 'str', 'indexing', 'Авто-индексация расширений', '')
+            VALUES (:key, :value, 'str', 'watchdog', 'Авто-индексация расширений', '')
             ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
             """
         ),
-        {"key": SETTING_KEY, "value": payload.to_db_value()},
+        {"key": SETTING_KEY_EXTENSIONS, "value": payload.extensions_to_db()},
+    )
+    await db.execute(
+        text(
+            """
+            INSERT INTO platform_settings (key, value, value_type, group_name, label, hint)
+            VALUES (:key, :value, 'int', 'watchdog', 'Интервал сканирования (сек)', '')
+            ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+            """
+        ),
+        {"key": SETTING_KEY_INTERVAL, "value": str(payload.interval_sec)},
     )
     await db.commit()
     return payload
@@ -122,11 +145,7 @@ async def get_pending_files(
     vault_id: str,
     request: Request,
 ) -> PendingFilesResponse:
-    """Returns files with index_status='pending' from Redis vault cache.
-
-    Reads vault:{vault_id}:files HASH directly via request.app.state.redis.
-    Does NOT call rag-indexer.
-    """
+    """Returns files with index_status='pending' from Redis vault cache."""
     r = request.app.state.redis
     raw: dict[str, str] = await r.hgetall(f"vault:{vault_id}:files")
 
@@ -158,12 +177,7 @@ async def get_domain_pending_files(
     request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> DomainPendingFilesResponse:
-    """Aggregates pending files across ALL vaults of a domain.
-
-    Fetches vault_ids for the domain from PostgreSQL,
-    then reads each vault's Redis cache and sums pending counts.
-    Used by the frontend pending-files banner in the chat.
-    """
+    """Aggregates pending files across ALL vaults of a domain."""
     result = await db.execute(
         text("SELECT vault_id FROM vaults WHERE domain_id = :domain_id"),
         {"domain_id": domain_id},
@@ -206,15 +220,7 @@ async def trigger_domain_index(
     domain_id: str,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> IndexResponse:
-    """Triggers indexing for all vaults of a domain via rag-indexer HTTP API.
-
-    For each vault in the domain sends:
-        POST {INDEXER_API_URL}/api/v1/tasks
-        {"vault_id": "<id>", "force_reindex": false}
-
-    Returns the number of successfully queued tasks.
-    Does NOT wait for indexing to complete — fire-and-forget.
-    """
+    """Triggers indexing for all vaults of a domain via rag-indexer HTTP API."""
     result = await db.execute(
         text("SELECT vault_id FROM vaults WHERE domain_id = :domain_id"),
         {"domain_id": domain_id},
