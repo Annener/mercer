@@ -21,6 +21,10 @@
     <string>9090</string>
     <key>SIDECAR_DIR</key>
     <string>{{SIDECAR_DIR}}</string>
+    <!-- PATH захватывается из окружения пользователя при make agent-setup -->
+    <!-- чтобы launchd-демон видел Homebrew, pyenv и прочие менеджеры версий -->
+    <key>PATH</key>
+    <string>{{PATH}}</string>
     <!-- Раскомментируйте и задайте токен для защиты агента: -->
     <!-- <key>HOST_AGENT_TOKEN</key> -->
     <!-- <string>changeme</string> -->

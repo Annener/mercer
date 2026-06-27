@@ -137,5 +137,6 @@ _render-plist:
 		-e 's|{{AGENT_PY}}|$(AGENT_PY)|g' \
 		-e 's|{{AGENT_DIR}}|$(AGENT_DIR)|g' \
 		-e 's|{{SIDECAR_DIR}}|$(SIDECAR_DIR)|g' \
+		-e 's|{{PATH}}|$(PATH)|g' \
 		"$(PLIST_TEMPLATE)" > "$(PLIST_DST)"
 	@echo "$(GREEN)✓ plist сгенерирован: $(PLIST_DST)$(RESET)"
