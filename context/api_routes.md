@@ -10,14 +10,31 @@
 | `chat_router` | `/api/chat` | `api/chat.py` | Чаты, сообщения, стриминг |
 | `pipeline_resume_router` | `/api/pipeline` | `api/pipeline_resume.py` | Подтверждение/resume пайплайнов |
 | `config_router` | `/api/config` | `api/config_api.py` | Системные настройки |
-| `settings_router` | `/api/settings` | `api/settings/__init__.py` | Настройки платформы |
+| `settings_router` | `/api/settings` | `api/settings/__init__.py` | Настройки платформы (агрегирует все sub-роутеры ниже) |
 | `db_management_router` | `/api/db` | `api/db_management.py` | Управление БД, миграции |
 | `indexer_state_router` | `/api/indexer` | `api/indexer_state.py` | Статус индексатора |
 | `watchdog_router` | `/api/watchdog` | `api/watchdog_settings.py` | Настройки watchdog |
 
-## Chat API (`api/chat.py`, ~34KB)
+`settings_router` включает следующие sub-роутеры (все с префиксом `/api/settings`):
 
-Ключевые эндпоинты:
+| Sub-роутер | Файл |
+|---|---|
+| `status_router` | `settings/status.py` |
+| `params_router` | `settings/params.py` |
+| `domains_router` | `settings/domains.py` |
+| `gen_models_router` | `settings/gen_models.py` |
+| `emb_models_router` | `settings/emb_models.py` |
+| `rerank_models_router` | `settings/rerank_models.py` |
+| `vaults_router` | `settings/vaults.py` |
+| `pipelines_router` | `settings/pipelines.py` |
+| `tags_router` | `settings/tags.py` |
+| `documents_router` | `settings/documents.py` |
+| `campaigns_router` | `settings/campaigns.py` |
+| `sidecar_router` | `settings/sidecar.py` |
+
+---
+
+## Chat API (`api/chat.py`)
 
 ```
 POST   /api/chat/                           — создать чат
@@ -34,7 +51,29 @@ GET    /api/chat/{chat_id}/clarification    — состояние Clarification
 POST   /api/chat/{chat_id}/clarification/reset — сбросить уточнение
 ```
 
+---
+
 ## Settings API (`api/settings/`)
+
+### Статус платформы (`settings/status.py`)
+
+```
+GET    /api/settings/status    — агрегированный статус готовности платформы
+```
+
+Возвращает:
+```json
+{
+  "has_active_generation_model": true,
+  "has_active_embedding_model": true,
+  "pdf_sidecar_available": false,
+  "has_vaults": true
+}
+```
+
+Используется фронтендом для отображения предупреждений о незавершённой конфигурации.
+
+---
 
 ### Домены (`settings/domains.py`)
 ```
@@ -79,7 +118,7 @@ PATCH  /api/settings/models/generation/{model_id}
 DELETE /api/settings/models/generation/{model_id}
 POST   /api/settings/models/generation/{model_id}/activate
 
-# Embedding Models  
+# Embedding Models
 GET    /api/settings/models/embedding/
 POST   /api/settings/models/embedding/
 PATCH  /api/settings/models/embedding/{model_id}
@@ -124,6 +163,35 @@ GET    /api/settings/params/           — все параметры (сгруп
 PATCH  /api/settings/params/{key}      — обновить параметр
 ```
 
+### Управление Sidecar (`settings/sidecar.py`)
+
+Прокси-роутер к **host-agent** (`HOST_AGENT_URL`, порт 9090). Позволяет UI управлять
+процессом `pdf-sidecar` на хосте. При недоступности host-agent возвращает `503`
+(или `200` с `agent_unavailable: true` для `/status` — чтобы UI не считал это ошибкой).
+
+```
+GET    /api/settings/sidecar/status          — статус процесса sidecar и факт установки
+POST   /api/settings/sidecar/start           — запустить sidecar
+POST   /api/settings/sidecar/stop            — остановить sidecar
+POST   /api/settings/sidecar/restart         — перезапустить sidecar
+GET    /api/settings/sidecar/install/stream  — SSE-поток вывода install.sh (установка)
+```
+
+Пример ответа `GET /api/settings/sidecar/status` (agent доступен):
+```json
+{"running": true, "pid": 12345, "installed": true, "sidecar_dir": "/opt/mercer/pdf-sidecar"}
+```
+
+Пример ответа при недоступном agent:
+```json
+{"running": false, "installed": false, "agent_unavailable": true}
+```
+
+`GET /api/settings/sidecar/install/stream` проксирует SSE-поток напрямую из host-agent
+(`media_type: text/event-stream`), отключая nginx-буферизацию (`X-Accel-Buffering: no`).
+
+---
+
 ## Pipeline Resume API (`api/pipeline_resume.py`)
 
 ```
@@ -133,6 +201,8 @@ POST   /api/pipeline/{chat_id}/cancel          — отменить
 GET    /api/pipeline/{chat_id}/status          — статус пайплайна чата
 ```
 
+---
+
 ## Статика и SPA
 
 ```
@@ -141,12 +211,16 @@ GET    /static/*          — статические файлы фронтенд
 GET    /health            — {"status": "ok", "service": "rag-backend"}
 ```
 
+---
+
 ## Indexer State API (`api/indexer_state.py`)
 
 ```
 GET    /api/indexer/state/{vault_id}    — IndexState из Redis
 GET    /api/indexer/health             — проксирует к rag-indexer /health
 ```
+
+---
 
 ## Watchdog API (`api/watchdog_settings.py`)
 
