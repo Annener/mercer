@@ -9,3 +9,4 @@ state/
 vaults/
 pdf-sidecar/sidecar.pid
 .aider*
+pdf-sidecar/agent/__pycache__/
