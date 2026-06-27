@@ -6,14 +6,16 @@ Create Date: 2026-06-27
 """
 from __future__ import annotations
 
+from alembic import op
+
 revision = "0002_watchdog_interval"
 down_revision = "0001_initial"
 branch_labels = None
 depends_on = None
 
 
-def upgrade(conn) -> None:
-    conn.execute(
+def upgrade() -> None:
+    op.execute(
         """
         INSERT INTO platform_settings (key, value, value_type, group_name, label, hint)
         VALUES (
@@ -29,7 +31,5 @@ def upgrade(conn) -> None:
     )
 
 
-def downgrade(conn) -> None:
-    conn.execute(
-        "DELETE FROM platform_settings WHERE key = 'watchdog.interval_sec'"
-    )
+def downgrade() -> None:
+    op.execute("DELETE FROM platform_settings WHERE key = 'watchdog.interval_sec'")
