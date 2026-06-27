@@ -25,6 +25,9 @@ logger = logging.getLogger(__name__)
 
 VAULT_DATA_ROOT = os.getenv("VAULT_DATA_ROOT", "/data/vaults")
 WATCHDOG_SETTING_KEY = "watchdog_auto_index_extensions"
+WATCHDOG_INTERVAL_KEY = "watchdog.interval_sec"
+WATCHDOG_DEFAULT_INTERVAL = 60
+WATCHDOG_MIN_INTERVAL = 10
 
 
 async def watchdog_loop(
@@ -32,14 +35,13 @@ async def watchdog_loop(
     state_manager: RedisStateManager,
     indexer_service: "IndexerService",
     storage_client: StorageClient,
-    interval_sec: int = 60,
 ) -> None:
-    """Фоновый луп. Запускается через asyncio.create_task в lifespan.
+    """Background loop. Started via asyncio.create_task in lifespan.
 
-    storage_client передаётся снаружи (создаётся один раз в lifespan),
-    а не создаётся на каждой итерации.
+    Reads interval_sec from platform_settings on every iteration,
+    so changes made via UI take effect on the next cycle without restart.
     """
-    logger.info("Vault watchdog started (interval=%ds)", interval_sec)
+    logger.info("Vault watchdog started (interval from DB, key=%s)", WATCHDOG_INTERVAL_KEY)
     while True:
         try:
             await _run_once(db_client, state_manager, indexer_service, storage_client)
@@ -48,7 +50,25 @@ async def watchdog_loop(
             return
         except Exception:
             logger.exception("Vault watchdog iteration failed, will retry")
+
+        interval_sec = await _read_interval(db_client)
         await asyncio.sleep(interval_sec)
+
+
+async def _read_interval(db_client: "IndexerDBClient") -> int:
+    """Reads watchdog.interval_sec from DB. Falls back to default on any error."""
+    try:
+        raw = await db_client.get_setting(WATCHDOG_INTERVAL_KEY)
+        if raw is not None:
+            value = int(raw)
+            return max(value, WATCHDOG_MIN_INTERVAL)
+    except Exception:
+        logger.warning(
+            "Watchdog: failed to read interval from DB, using default=%d",
+            WATCHDOG_DEFAULT_INTERVAL,
+            exc_info=True,
+        )
+    return WATCHDOG_DEFAULT_INTERVAL
 
 
 async def _run_once(
@@ -96,9 +116,6 @@ async def _process_vault(
     if not os.path.isdir(vault_path):
         return
 
-    # Скан диска (в потоке — блокирующая операция)
-    # Отдельно перехватываем FS-ошибки: директория могла исчезнуть между
-    # проверкой isdir и вызовом scan_vault (race condition).
     try:
         disk_files: list[dict[str, Any]] = await asyncio.to_thread(scan_vault, vault_path)
     except (FileNotFoundError, NotADirectoryError) as exc:
@@ -110,10 +127,8 @@ async def _process_vault(
 
     disk_index = {f["relative_path"]: f for f in disk_files}
 
-    # Читаем весь vault-кэш за один HGETALL
     cache = await state_manager.get_all_vault_file_entries(vault_id)
 
-    # Обнаруживаем удалённые
     deleted_paths = [p for p in cache if p not in disk_index]
     for path in deleted_paths:
         await _handle_deleted(
@@ -124,21 +139,14 @@ async def _process_vault(
             storage_client=storage_client,
         )
 
-    # Обнаруживаем новые / изменённые
     changed: list[dict[str, Any]] = []
     for path, disk_file in disk_index.items():
         entry = cache.get(path)
         if entry is None:
-            # Новый файл
             changed.append(disk_file)
         elif disk_file["checksum"] != entry.get("indexed_md5", ""):
-            # Файл изменён.
-            # indexed_md5 — поле vault:{vault_id}:files HASH, пишется в
-            # mark_file_indexed и rebuild_vault_cache. Не путать с
-            # checksum_md5, которое живёт только в task:{task_id}:files.
             changed.append(disk_file)
 
-    # Нет изменений — выходим без лога
     if not changed:
         return
 
@@ -153,11 +161,8 @@ async def _process_vault(
         )
 
     if to_auto:
-        # is_vault_indexing использует Redis (переживает рестарт процесса),
-        # а не in-memory IndexerService.get_active_tasks()
         already_indexing = await state_manager.is_vault_indexing(vault_id)
         if not already_indexing:
-            # Логируем только когда реально запускаем задачу
             logger.info(
                 "Watchdog: vault_id=%s changed=%d files",
                 vault_id, len(changed),
@@ -200,7 +205,6 @@ async def _handle_deleted(
     doc = await db_client.get_document_by_path(vault_id, relative_path)
     if doc is not None:
         document_id = str(doc["id"])
-        # 1. LanceDB
         try:
             await storage_client.delete_document(document_id, vault_id)
         except Exception:
@@ -208,7 +212,6 @@ async def _handle_deleted(
                 "Watchdog: failed to delete LanceDB chunks document_id=%s",
                 document_id, exc_info=True,
             )
-        # 2. PostgreSQL
         try:
             await db_client.delete_document(document_id)
         except Exception:
@@ -216,8 +219,5 @@ async def _handle_deleted(
                 "Watchdog: failed to delete PG document document_id=%s",
                 document_id, exc_info=True,
             )
-    # else: файл никогда не был проиндексирован (нет записи в documents) —
-    # LanceDB и PG пропускаем, очищаем только Redis-кэш (шаг 3).
 
-    # 3. Redis cache (всегда, даже если doc not in PG)
     await state_manager.remove_file_from_vault_cache(vault_id, relative_path)
