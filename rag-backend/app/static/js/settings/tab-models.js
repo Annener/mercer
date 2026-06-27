@@ -1,13 +1,14 @@
 const ModelsTabMixin = {
 
     // ─── Единый рендерер карточки ─────────────────────────────────────────────
-    // config: { id, title, subtitle, subInfo?, badge: {text, class}, isActive, menuItems[] }
+    // config: { id, title, subtitle, subInfo?, badge: {text, class}, isActive, modelType, menuItems[] }
     // menuItem: { action, label, disabled?, danger? }
     renderModelCard(config) {
         const menuItemsHtml = config.menuItems.map(item => `
             <button class="card-menu-item${item.danger ? ' card-menu-danger' : ''}"
                     data-action="${this.escapeHtml(item.action)}"
                     data-id="${this.escapeHtml(config.id)}"
+                    data-model-type="${this.escapeHtml(config.modelType)}"
                     ${item.disabled ? 'disabled' : ''}>
                 ${item.label}
             </button>`).join('');
@@ -29,13 +30,14 @@ const ModelsTabMixin = {
     },
 
     // ─── Обёртка секции ───────────────────────────────────────────────────────
-    _renderModelsSection(title, addAction, bodyHtml) {
+    _renderModelsSection(title, addAction, modelType, bodyHtml) {
         return `
         <div class="models-section">
             <div class="models-section-header">
                 <h3 class="models-section-title">${title}</h3>
                 <button class="btn btn-primary btn-sm"
-                        data-action="${addAction}">+ Добавить модель</button>
+                        data-action="${addAction}"
+                        data-model-type="${modelType}">+ Добавить модель</button>
             </div>
             <div class="models-section-body">
                 ${bodyHtml}
@@ -64,7 +66,7 @@ const ModelsTabMixin = {
                 ${modelsArr.map(m => this.renderModelCard(this._genModelConfig(m))).join('')}
                </div>`;
 
-        return this._renderModelsSection('Генеративные', 'new-gen', bodyHtml);
+        return this._renderModelsSection('Генеративные', 'new-gen', 'gen', bodyHtml);
     },
 
     _genModelConfig(model) {
@@ -72,6 +74,7 @@ const ModelsTabMixin = {
         const isEnabled = model.enabled !== false;
         return {
             id: model.model_id,
+            modelType: 'gen',
             title: model.display_name || model.model_id,
             subtitle: model.provider || '',
             badge: isActive
@@ -106,13 +109,14 @@ const ModelsTabMixin = {
                 }).join('')}
                </div>`;
 
-        return this._renderModelsSection('Embedding', 'new-emb', bodyHtml);
+        return this._renderModelsSection('Embedding', 'new-emb', 'emb', bodyHtml);
     },
 
     _embModelConfig(model, connectedVaults = []) {
         const hasVaults = connectedVaults.length > 0;
         return {
             id: model.model_id,
+            modelType: 'emb',
             title: model.display_name || model.model_id,
             subtitle: `${model.provider || ''}${model.dimensions ? ` · ${model.dimensions}` : ''}`,
             subInfo: hasVaults ? `${connectedVaults.length} vault'ов` : undefined,
@@ -137,7 +141,7 @@ const ModelsTabMixin = {
                 ${modelsArr.map(m => this.renderModelCard(this._rerankModelConfig(m))).join('')}
                </div>`;
 
-        return this._renderModelsSection('Reranker', 'new-rerank', bodyHtml);
+        return this._renderModelsSection('Reranker', 'new-rerank', 'rerank', bodyHtml);
     },
 
     _rerankModelConfig(model) {
@@ -145,6 +149,7 @@ const ModelsTabMixin = {
         const isEnabled = model.enabled !== false;
         return {
             id: model.model_id,
+            modelType: 'rerank',
             title: model.display_name || model.model_id,
             subtitle: `${model.base_url || ''} · ${model.provider || ''}`,
             badge: isActive && isEnabled
