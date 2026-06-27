@@ -7,49 +7,49 @@
 
 ## Блок A — Чистка мёртвого кода
 
-- [ ] **A1** — Удалены мёртвые volumes `./state` и `./cache/embeddings` из `docker-compose.yml`
-  - Дата: 
-  - Заметки: 
+- [x] **A1** — Удалены мёртвые volumes `./state` и `./cache/embeddings` из `docker-compose.yml`
+  - Дата: 2026-06-27
+  - Заметки: Применено через push_files в сессии 1
 
-- [ ] **A2** — `DATABASE_URL` в `docker-compose.yml` заменён на составной из `POSTGRES_*`
-  - Дата: 
-  - Заметки: 
+- [x] **A2** — `DATABASE_URL` в `docker-compose.yml` заменён на составной из `POSTGRES_*`
+  - Дата: 2026-06-27
+  - Заметки: Применено через push_files в сессии 1
 
-- [ ] **A3** — Добавлены `profiles` в `docker-compose.yml` для всех сервисов
-  - Дата: 
-  - Заметки: 
+- [x] **A3** — Добавлены `profiles` в `docker-compose.yml` для всех сервисов
+  - Дата: 2026-06-27
+  - Заметки: with-db-api / core / db-api-only; применено через push_files в сессии 1
 
-- [ ] **A4** — Удалены файлы: `state_manager.py` и `embedding/cache.py` (после проверки импортов)
-  - Дата: 
-  - Заметки: 
+- [x] **A4** — Удалены файлы: `state_manager.py` и `embedding/cache.py` (после проверки импортов)
+  - Дата: 2026-06-27
+  - Заметки: grep подтвердил — оба файла не импортируются. Файлы отсутствовали в репо ещё до сессии 2 (уже были удалены ранее)
 
-- [ ] **A5** — `.env.example` приведён к целевому виду (удалены устаревшие переменные, добавлены новые)
-  - Дата: 
-  - Заметки: 
+- [x] **A5** — `.env.example` приведён к целевому виду (удалены устаревшие переменные, добавлены новые)
+  - Дата: 2026-06-27
+  - Заметки: INSTALL_MODE / AGENT_MODE / COMPOSE_PROFILES добавлены; применено через push_files в сессии 1
 
 ---
 
 ## Блок B — `scripts/generate_env.py`
 
-- [ ] **B1** — Добавлен guard на версию Python (3.11–3.13)
-  - Дата: 
-  - Заметки: 
+- [x] **B1** — Добавлен guard на версию Python (3.11–3.13)
+  - Дата: 2026-06-28
+  - Заметки: `if not (3, 11) <= sys.version_info < (3, 14): sys.exit(...)` в начале скрипта
 
-- [ ] **B2** — Реализована идемпотентность (3 сценария: нет `.env`, полный, частичный)
-  - Дата: 
-  - Заметки: 
+- [x] **B2** — Реализована идемпотентность (3 сценария: нет `.env`, полный, частичный)
+  - Дата: 2026-06-28
+  - Заметки: Молчаливый выход если все переменные заполнены; спрашивает только пустые/placeholder
 
-- [ ] **B3** — Реализован интерактивный диалог (`INSTALL_MODE`, `POSTGRES_*`, `STORAGE_API_URL`)
-  - Дата: 
-  - Заметки: 
+- [x] **B3** — Реализован интерактивный диалог (`INSTALL_MODE`, `POSTGRES_*`, `STORAGE_API_URL`)
+  - Дата: 2026-06-28
+  - Заметки: STORAGE_API_URL — только при no-db-api; POSTGRES_PASSWORD через getpass или авто-генерацию
 
-- [ ] **B4** — Реализована автоматическая генерация секретов (`ENCRYPTION_KEY`, `HOST_AGENT_TOKEN`, `AGENT_MODE`, `COMPOSE_PROFILES`, `HOST_AGENT_URL`)
-  - Дата: 
-  - Заметки: 
+- [x] **B4** — Реализована автоматическая генерация секретов (`ENCRYPTION_KEY`, `HOST_AGENT_TOKEN`, `AGENT_MODE`, `COMPOSE_PROFILES`, `HOST_AGENT_URL`)
+  - Дата: 2026-06-28
+  - Заметки: ENCRYPTION_KEY — 44 символа urlsafe base64; TOKEN не перезаписывается если не changeme; AGENT_MODE из platform.system()
 
-- [ ] **B5** — `init-env` добавлен в Makefile как первый шаг `setup`
-  - Дата: 
-  - Заметки: 
+- [x] **B5** — `init-env` добавлен в Makefile как первый шаг `setup`
+  - Дата: 2026-06-28
+  - Заметки: `setup: init-env agent-setup up seed`; коммит 80f2555
 
 ---
 

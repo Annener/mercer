@@ -10,35 +10,33 @@
 - A1: удалены мёртвые volumes `./state` и `./cache/embeddings` у `rag-indexer`
 - A2: `DATABASE_URL` в `rag-indexer` и `rag-backend` теперь собирается из компонентов
 - A3: добавлены `profiles` (with-db-api / core / db-api-only) во все сервисы
-- A4: удалены `rag-indexer/parser/state/state_manager.py` и `rag-indexer/embedding/cache.py` — **требует ручного выполнения** (см. заметки)
-- A5: `.env.example` приведён к целевому виду — удалены устаревшие переменные, добавлены `INSTALL_MODE`/`AGENT_MODE`/`COMPOSE_PROFILES`, исправлен генератор `ENCRYPTION_KEY`
+- A4: `state_manager.py` и `embedding/cache.py` — подтверждено отсутствие в репо (grep пустой, файлы уже не существовали)
+- A5: `.env.example` приведён к целевому виду
+- B1–B5: `scripts/generate_env.py` реализован полностью; `init-env` добавлен в Makefile первым шагом `setup` (коммит 80f2555)
 
 ## В работе
 
-- Ожидание подтверждения A4 (удаление файлов — отдельные коммиты через API)
+Ничего.
 
 ## Ещё не начато
 
-- B1, B2, B3, B4, B5
 - C1, C2
 - D1, D2, D3
 
-## Задача на эту сессию
+## Задача на следующую сессию
 
-Блок A выполнен (A1–A3, A5 применены через push_files).
-Следующий шаг: подтвердить A4 (удаление мёртвых файлов), затем переходить к Блоку B.
+Блок C — мультиплатформенный `agent-setup` в Makefile:
+- C1: диспетчер `_agent-setup-dispatch`; текущий `agent-setup` → `_agent-setup-launchd`; Linux → Docker Compose; Windows → предупреждение
+- C2: `HOST_AGENT_TOKEN` из `.env` подставляется в plist-шаблон через `_render-plist`
+
+Перед началом прочитать `plan-install/block-C.md`.
 
 ## Заметки / контекст
 
-### A4 — удаление мёртвых файлов
+### block-C.md — что ожидается
 
-Файлы для удаления:
-- `rag-indexer/parser/state/state_manager.py` (SHA: dbfd3f0ccca0d9c693ce85fe872ae7897472d630)
-- `rag-indexer/embedding/cache.py` (SHA: eda0f69cf779d409d2cef31f3b790a4f94769b53)
-
-Перед удалением проверить локально:
-```bash
-grep -r "from embedding.cache\|import cache" rag-indexer/
-grep -r "state_manager" rag-indexer/ | grep -v "redis_state_manager"
-```
-Если вывод пуст — удалять безопасно. Подтверди, и удалю через API.
+См. `plan-install/block-C.md`. Ключевые детали:
+- macOS: launchd (текущая логика, переименовать цель)
+- Linux: host-agent запускается в Docker Compose (отдельный сервис или отдельный compose-файл)
+- Windows: только `echo` с предупреждением, exit 0
+- `HOST_AGENT_TOKEN` должен читаться из `.env` и подставляться в plist через sed в `_render-plist`
