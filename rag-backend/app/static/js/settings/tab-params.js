@@ -3,6 +3,7 @@
 (function () {
     const PARAMS_EXCLUDED_KEYS = new Set([
         'watchdog_auto_index_extensions',
+        'watchdog.interval_sec',  // exclude from «Прочие параметры» — rendered in watchdog block
     ]);
 
     const WATCHDOG_KNOWN_EXTENSIONS = ['.md', '.pdf', '.docx', '.txt', '.rst', '.html'];
@@ -260,19 +261,21 @@
                 <div class="settings-watchdog-block" id="group-watchdog">
                     <div class="settings-watchdog-title">Vault Watchdog</div>
 
-                    <div class="settings-param-row">
-                        <div class="settings-param-info">
-                            <span class="settings-param-label-row">
-                                <strong>Интервал сканирования (сек)</strong>
-                                <span class="param-help" tabindex="0"
-                                    aria-label="Как часто watchdog проверяет изменения в vault-директориях. Минимум 10 секунд."
-                                    data-tooltip="Как часто watchdog проверяет изменения в vault-директориях. Минимум 10 секунд.">?</span>
-                            </span>
-                            <span class="settings-param-desc">Изменение применяется на следующем цикле без перезапуска.</span>
-                        </div>
-                        <div class="settings-param-control">
-                            <input id="watchdog-interval" type="number" min="10" step="1"
-                                value="${watchdogInterval}">
+                    <div class="settings-params-fullwidth">
+                        <div class="settings-param-row">
+                            <div class="settings-param-info">
+                                <span class="settings-param-label-row">
+                                    <strong>Интервал сканирования (сек)</strong>
+                                    <span class="param-help" tabindex="0"
+                                        aria-label="Как часто watchdog проверяет изменения в vault-директориях. Минимум 10 секунд."
+                                        data-tooltip="Как часто watchdog проверяет изменения в vault-директориях. Минимум 10 секунд.">?</span>
+                                </span>
+                                <span class="settings-param-desc">Изменение применяется на следующем цикле без перезапуска.</span>
+                            </div>
+                            <div class="settings-param-control">
+                                <input id="watchdog-interval" type="number" min="10" step="1"
+                                    value="${watchdogInterval}">
+                            </div>
                         </div>
                     </div>
 
