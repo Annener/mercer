@@ -4,8 +4,8 @@
 # Цели:
 #   make setup           — полный первичный деплой: init-env + agent-setup + up + seed
 #   make init-env        — создать/дополнить .env интерактивно (идемпотентно)
-#   make agent-setup     — полная первичная настройка host-agent (venv + launchd)
-#   make agent-install   — только установить/обновить launchd plist (без venv)
+#   make agent-setup     — полная первичная настройка host-agent (venv + launchd/docker)
+#   make agent-install   — только установить/обновить launchd plist (без venv, macOS)
 #   make agent-uninstall — выгрузить агент из launchd и удалить plist
 #   make agent-start     — запустить агент вручную (без launchd)
 #   make agent-stop      — остановить агент вручную
@@ -42,7 +42,7 @@ RESET  := \033[0m
 
 .PHONY: help init-env agent-setup agent-install agent-uninstall agent-start agent-stop \
         agent-status agent-logs up down seed setup _check-macos _venv-create \
-        _logs-dir _render-plist _agent-setup-dispatch
+        _logs-dir _render-plist _agent-setup-dispatch _agent-setup-launchd
 
 help:
 	@echo ""
@@ -50,8 +50,8 @@ help:
 	@echo ""
 	@echo "  $(YELLOW)make setup$(RESET)            Полный первичный деплой: init-env + agent-setup + up + seed"
 	@echo "  $(YELLOW)make init-env$(RESET)         Создать/дополнить .env интерактивно (идемпотентно)"
-	@echo "  $(YELLOW)make agent-setup$(RESET)      Первичная настройка: venv + launchd (запускать один раз)"
-	@echo "  $(YELLOW)make agent-install$(RESET)    Переустановить launchd plist (после изменения путей)"
+	@echo "  $(YELLOW)make agent-setup$(RESET)      Первичная настройка: venv + launchd (macOS) / Docker (Linux)"
+	@echo "  $(YELLOW)make agent-install$(RESET)    Переустановить launchd plist (после изменения путей, macOS)"
 	@echo "  $(YELLOW)make agent-uninstall$(RESET)  Выгрузить агент из launchd и удалить plist"
 	@echo "  $(YELLOW)make agent-start$(RESET)      Запустить агент вручную (без launchd)"
 	@echo "  $(YELLOW)make agent-stop$(RESET)       Остановить агент"
@@ -72,7 +72,7 @@ init-env:
 # =============================================================================
 # setup: полный первичный деплой одной командой
 # =============================================================================
-setup: init-env agent-setup up seed
+setup: init-env _agent-setup-dispatch up seed
 	@echo ""
 	@echo "$(GREEN)✓ Mercer готов к работе.$(RESET)"
 	@echo "  UI: http://localhost:8000"
@@ -85,9 +85,28 @@ seed:
 	@python3 scripts/seed_models.py --base-url "$(BACKEND_URL)"
 
 # =============================================================================
-# agent-setup: venv + deps + launchd
+# agent-setup: публичный алиас — диспетчеризует по AGENT_MODE
 # =============================================================================
-agent-setup: _check-macos _venv-create agent-install
+agent-setup: _agent-setup-dispatch
+
+# =============================================================================
+# _agent-setup-dispatch: диспетчер по AGENT_MODE из .env
+# =============================================================================
+_agent-setup-dispatch:
+	@AGENT_MODE=$$(grep '^AGENT_MODE=' .env | cut -d= -f2); \
+	if [ "$$AGENT_MODE" = "host" ]; then \
+		$(MAKE) _agent-setup-launchd; \
+	elif [ "$$AGENT_MODE" = "docker" ]; then \
+		echo "Linux: host-agent запускается в Docker, пропускаю agent-setup"; \
+	else \
+		echo "WARNING: AGENT_MODE=host-win — установка Windows-сервиса не реализована."; \
+		echo "Продолжаю без установки host-agent."; \
+	fi
+
+# =============================================================================
+# _agent-setup-launchd: venv + deps + launchd (macOS only)
+# =============================================================================
+_agent-setup-launchd: _venv-create agent-install
 	@echo "$(GREEN)✓ host-agent готов.$(RESET)"
 	@echo "  Агент запустится автоматически при следующем логине."
 	@echo "  Запустить сейчас: launchctl start $(PLIST_LABEL)"
@@ -166,11 +185,13 @@ _logs-dir:
 	@mkdir -p "$(LOGS_DIR)"
 
 _render-plist:
-	@sed \
+	@HOST_AGENT_TOKEN=$$(grep '^HOST_AGENT_TOKEN=' .env | cut -d= -f2); \
+	sed \
 		-e 's|{{VENV_PYTHON}}|$(VENV_PYTHON)|g' \
 		-e 's|{{AGENT_PY}}|$(AGENT_PY)|g' \
 		-e 's|{{AGENT_DIR}}|$(AGENT_DIR)|g' \
 		-e 's|{{SIDECAR_DIR}}|$(SIDECAR_DIR)|g' \
 		-e 's|{{PATH}}|$(PATH)|g' \
+		-e "s|{{HOST_AGENT_TOKEN}}|$$HOST_AGENT_TOKEN|g" \
 		"$(PLIST_TEMPLATE)" > "$(PLIST_DST)"
 	@echo "$(GREEN)✓ plist сгенерирован: $(PLIST_DST)$(RESET)"
