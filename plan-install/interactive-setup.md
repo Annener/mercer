@@ -42,7 +42,7 @@ PostgreSQL
   → Сгенерирован: xK9mP2qR...
   База данных [ragplatform]: ▌
 
-[mercer] ENCRYPTION_KEY  — сгенерирован автоматически
+[mercer] ENCRYPTION_KEY   — сгенерирован автоматически
 [mercer] HOST_AGENT_TOKEN — сгенерирован автоматически
 
 [mercer] ✓ .env создан
@@ -145,23 +145,83 @@ setup: init-env agent-setup up seed
 
 ---
 
+## HOST_AGENT_TOKEN: проверенный вывод
+
+Проверка кода показала, что `HOST_AGENT_TOKEN` **реально используется** и на стороне
+backend, и на стороне host-agent.
+
+### Как работает проверка токена
+
+В `pdf-sidecar/agent/agent.py` (и дублирующем `host-agent/agent.py`) есть логика:
+
+```python
+AGENT_TOKEN: str | None = os.getenv("HOST_AGENT_TOKEN")
+
+def check_token(x_agent_token: str | None = Header(default=None)) -> None:
+    if AGENT_TOKEN and x_agent_token != AGENT_TOKEN:
+        raise HTTPException(status_code=401, detail="Invalid agent token")
+```
+
+Это означает:
+- если `HOST_AGENT_TOKEN` **не задан** у агента — авторизация отключена
+- если `HOST_AGENT_TOKEN` **задан** — агент требует совпадение заголовка `X-Agent-Token`
+
+### Как токен проходит по системе
+
+```
+.env (HOST_AGENT_TOKEN)
+    ↓
+docker-compose.yml → environment для rag-backend
+    ↓
+rag-backend/app/api/settings/sidecar.py → os.getenv("HOST_AGENT_TOKEN")
+    ↓
+HTTP-запрос к host-agent с заголовком X-Agent-Token
+    ↓
+pdf-sidecar/agent/agent.py → check_token(...)
+```
+
+### Проблема текущей реализации
+
+В `docker-compose.yml` `HOST_AGENT_TOKEN` уже пробрасывается в `rag-backend`:
+
+```yaml
+HOST_AGENT_TOKEN: ${HOST_AGENT_TOKEN:-}
+```
+
+Но в `pdf-sidecar/agent/com.mercer.host-agent.plist.template` токен сейчас
+**закомментирован**:
+
+```xml
+<!-- <key>HOST_AGENT_TOKEN</key> -->
+<!-- <string>changeme</string> -->
+```
+
+Следствие:
+- backend **может** отправлять токен
+- host-agent, запущенный через launchd, **может не иметь токена в окружении**
+- тогда auth на агенте фактически отключена, даже если `.env` уже содержит секрет
+
+### Практический вывод
+
+`HOST_AGENT_TOKEN` нужно:
+1. **Генерировать автоматически** в `scripts/generate_env.py`
+2. **Передавать в launchd plist** при `agent-setup`
+3. Обеспечить порядок `init-env -> agent-setup`, чтобы plist рендерился уже с финальным токеном
+
+### Что нужно учесть при реализации
+
+- `_render-plist` в `Makefile` сейчас подставляет только пути (`VENV_PYTHON`, `AGENT_PY`, `AGENT_DIR`, `SIDECAR_DIR`, `PATH`)
+- в шаблон `com.mercer.host-agent.plist.template` нужно добавить placeholder `{{HOST_AGENT_TOKEN}}`
+- `_render-plist` должен подставлять значение токена из `.env`
+- если токен пустой — нужно явно решить политику:
+  - либо не добавлять ключ в plist и тем самым оставить auth отключённой
+  - либо считать пустой токен ошибкой для production setup
+
+**Рекомендация для текущего setup-потока:** токен всегда генерировать автоматически и всегда прокидывать в plist. Это согласует backend и host-agent.
+
+---
+
 ## Открытые вопросы
-
-### HOST_AGENT_TOKEN: нужна ли генерация?
-
-Токен используется для авторизации запросов docker → host-agent.  
-Текущее значение в `.env.example`: `changeme` — security-риск на реальном деплое.
-
-**Нужно проверить** `pdf-sidecar/agent/agent.py`:
-- Как токен валидируется на стороне агента?
-- Есть ли механизм передачи нового токена в launchd plist?
-
-Если токен прописывается только в `.env` и пробрасывается в контейнер через
-`docker-compose.yml` — генерация безопасна и не требует дополнительных действий.
-
-Если токен также используется в `launchd plist` или конфиге агента —
-нужно убедиться что `agent-setup` запускается **после** `init-env` (уже так и есть),
-чтобы агент стартовал с правильным токеном.
 
 ### `_check-macos` в agent-setup
 
