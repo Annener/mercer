@@ -153,12 +153,13 @@ class SettingsManager {
                     await this.api.updateSettingsParam(u.key, u.value);
                 }
 
-                // Сохраняем watchdog-расширения — всегда, даже если список пуст
-                // (бэкенд вернёт 422 при пустом списке, что корректно)
+                // Сохраняем watchdog настройки — расширения + интервал
                 const checkedExts = [...this._tabContent.querySelectorAll('#watchdog-ext-list [data-ext]')]
                     .filter(cb => cb.checked)
                     .map(cb => cb.dataset.ext);
-                await this.api.saveWatchdogExtensions(checkedExts);
+                const intervalInput = this._tabContent.querySelector('#watchdog-interval');
+                const intervalSec = Math.max(10, parseInt(intervalInput?.value ?? '60', 10) || 60);
+                await this.api.saveWatchdogSettings(checkedExts, intervalSec);
 
                 alert('Параметры сохранены');
             } catch (e) { alert('Ошибка: ' + e.message); }
@@ -242,7 +243,8 @@ class SettingsManager {
     // ─── Embedding Models ──────────────────────────────────────────────────────────────────
 
     async handleEmbModelsAction(action, id, btn) {
-        if (action === 'new-emb') {
+tml = await this.showEmbeddingModelModal();
+        } else if (action === 'new-emb') {
             await this.showEmbeddingModelModal();
         } else if (action === 'edit-emb') {
             await this.showEmbeddingModelModal(id);
