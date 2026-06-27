@@ -71,14 +71,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         state_manager=state_manager,
     )
 
-    # Watchdog
-    watchdog_interval = int(os.getenv("WATCHDOG_INTERVAL_SEC", "60"))
+    # Watchdog — interval_sec читается из platform_settings на каждой итерации
     storage_client = StorageClient(
         os.getenv("STORAGE_API_URL", "http://db-api-server:8080")
     )
-    # watchdog_task инициализируется None перед create_task:
-    # если исключение возникнет между IndexerService(...) и create_task,
-    # finally не упадёт с NameError.
     watchdog_task: asyncio.Task[None] | None = None
     watchdog_task = asyncio.create_task(
         watchdog_loop(
@@ -86,18 +82,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             state_manager=state_manager,
             indexer_service=app.state.indexer_service,
             storage_client=storage_client,
-            interval_sec=watchdog_interval,
         ),
         name="vault-watchdog",
     )
-    logger.info("Vault watchdog scheduled (interval=%ds)", watchdog_interval)
+    logger.info("Vault watchdog scheduled (interval from platform_settings)")
     logger.info("Service started. DB client connected. Redis ready.")
 
     try:
         yield
     finally:
         logger.info("Service shutdown requested. Cancelling active indexer tasks.")
-        # Отменяем watchdog
         if watchdog_task is not None:
             watchdog_task.cancel()
             try:
@@ -169,10 +163,7 @@ async def cancel_index_task(task_id: str, request: Request) -> dict[str, bool | 
 
 @app.get("/api/v1/tasks/{task_id}/state")
 async def get_task_state(task_id: str, request: Request) -> dict[str, Any]:
-    """Polling endpoint: возвращает состояние задачи из Redis.
-
-    Используется rag-backend вместо WebSocket-потока.
-    """
+    """Polling endpoint: возвращает состояние задачи из Redis."""
     state_manager: RedisStateManager = request.app.state.state_manager
     raw = await state_manager.get_task_state(task_id)
     if raw is None:
