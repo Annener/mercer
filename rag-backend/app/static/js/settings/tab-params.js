@@ -52,9 +52,9 @@
             return boolKeys.includes(key) ? 'bool' : 'string';
         },
 
-        // ─────────────────────────────────────────────────────────────
+        // ─────────────────────────────────────────────────────────────────
         // Sidecar helpers
-        // ─────────────────────────────────────────────────────────────
+        // ─────────────────────────────────────────────────────────────────
 
         /** Обновляет блок статуса sidecar в DOM. */
         _updateSidecarStatus(status) {
@@ -164,9 +164,9 @@
             };
         },
 
-        // ─────────────────────────────────────────────────────────────
+        // ─────────────────────────────────────────────────────────────────
         // Main render
-        // ─────────────────────────────────────────────────────────────
+        // ─────────────────────────────────────────────────────────────────
 
         async renderParamsTab() {
             const raw = await this.api.getSettingsParams();
@@ -238,13 +238,12 @@
                    </div>`
                 : '';
 
-            // Watchdog extensions
-            // API returns {auto_index_extensions: string[]}, not a raw array.
-            // Normalise to array to avoid "object is not iterable" on spread.
-            const watchdogRaw = await this.api.getWatchdogExtensions().catch(() => []);
-            const watchdogExts = Array.isArray(watchdogRaw)
-                ? watchdogRaw
-                : (watchdogRaw?.auto_index_extensions ?? []);
+            // Vault Watchdog settings
+            const watchdogRaw = await this.api.getWatchdogSettings().catch(() => ({}));
+            const watchdogExts = Array.isArray(watchdogRaw?.auto_index_extensions)
+                ? watchdogRaw.auto_index_extensions
+                : [];
+            const watchdogInterval = watchdogRaw?.interval_sec ?? 60;
             const enabledExts = new Set(watchdogExts);
             const allExts = [...new Set([...WATCHDOG_KNOWN_EXTENSIONS, ...watchdogExts])].sort();
             const extRowsHtml = allExts.map(ext => `
@@ -259,8 +258,28 @@
                 ${ungroupedHtml}
 
                 <div class="settings-watchdog-block" id="group-watchdog">
-                    <div class="settings-watchdog-title">Watchdog — отслеживаемые расширения</div>
-                    <p class="settings-param-desc">Файлы с этими расширениями будут автоматически индексироваться при добавлении в хранилище.</p>
+                    <div class="settings-watchdog-title">Vault Watchdog</div>
+
+                    <div class="settings-param-row">
+                        <div class="settings-param-info">
+                            <span class="settings-param-label-row">
+                                <strong>Интервал сканирования (сек)</strong>
+                                <span class="param-help" tabindex="0"
+                                    aria-label="Как часто watchdog проверяет изменения в vault-директориях. Минимум 10 секунд."
+                                    data-tooltip="Как часто watchdog проверяет изменения в vault-директориях. Минимум 10 секунд.">?</span>
+                            </span>
+                            <span class="settings-param-desc">Изменение применяется на следующем цикле без перезапуска.</span>
+                        </div>
+                        <div class="settings-param-control">
+                            <input id="watchdog-interval" type="number" min="10" step="1"
+                                value="${watchdogInterval}">
+                        </div>
+                    </div>
+
+                    <div class="settings-param-info" style="margin-top:var(--space-4)">
+                        <strong>Отслеживаемые расширения</strong>
+                        <span class="settings-param-desc">Файлы с этими расширениями будут автоматически индексироваться при добавлении в хранилище.</span>
+                    </div>
                     <div id="watchdog-ext-list" class="indexing-ext-list">
                         ${extRowsHtml}
                     </div>
@@ -304,9 +323,9 @@
             </div>`;
         },
 
-        // ─────────────────────────────────────────────────────────────
+        // ─────────────────────────────────────────────────────────────────
         // Load initial sidecar status (called from _attachTabListeners)
-        // ─────────────────────────────────────────────────────────────
+        // ─────────────────────────────────────────────────────────────────
         _loadSidecarStatus() {
             this.api.getSidecarStatus()
                 .then(s => this._updateSidecarStatus(s))
