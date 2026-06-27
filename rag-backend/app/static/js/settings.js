@@ -243,8 +243,7 @@ class SettingsManager {
     // ─── Embedding Models ──────────────────────────────────────────────────────────────────
 
     async handleEmbModelsAction(action, id, btn) {
-tml = await this.showEmbeddingModelModal();
-        } else if (action === 'new-emb') {
+        if (action === 'new-emb') {
             await this.showEmbeddingModelModal();
         } else if (action === 'edit-emb') {
             await this.showEmbeddingModelModal(id);
@@ -370,13 +369,6 @@ tml = await this.showEmbeddingModelModal();
 const settingsManager = new SettingsManager();
 
 // ─── Bootstrap ────────────────────────────────────────────────────────────────────────────
-// Вешаем обработчики на кнопки открытия/закрытия настроек и на таб-навигацию.
-// Селекторы соответствуют реальному HTML (index.html):
-//   #settings-btn        — кнопка "Настройки платформы" в сайдбаре
-//   #back-to-chat-btn    — кнопка "← Назад к чатам" в шапке настроек
-//   #settings-page       — <main> страницы настроек (class="settings-page hidden")
-//   .app-container       — основной контейнер чата
-//   .settings-tabs       — <nav> с кнопками data-tab (нет id!)
 document.addEventListener('DOMContentLoaded', () => {
     const openBtn      = document.getElementById('settings-btn');
     const backBtn      = document.getElementById('back-to-chat-btn');
