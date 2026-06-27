@@ -20,10 +20,69 @@ PYTHON="${PYTHON:-python3.13}"
 SKIP_RERANKER="${SKIP_RERANKER:-0}"
 SKIP_EMBEDDER="${SKIP_EMBEDDER:-0}"
 
-# Проверяем что Python существует, иначе пробуем python3
+# ---------------------------------------------------------------------------
+# Статусы шагов для итоговой таблицы
+# Возможные значения: OK | WARN | ERROR | SKIP
+# ---------------------------------------------------------------------------
+STEP_PYTHON="OK"
+STEP_VENV="OK"
+STEP_DEPS="OK"
+STEP_DETECTRON="OK"
+STEP_SYSTEM="OK"
+STEP_GPU="OK"
+STEP_RERANKER="OK"
+STEP_EMBEDDER="OK"
+
+STEP_PYTHON_NOTE=""
+STEP_VENV_NOTE=""
+STEP_DEPS_NOTE=""
+STEP_DETECTRON_NOTE=""
+STEP_SYSTEM_NOTE=""
+STEP_GPU_NOTE=""
+STEP_RERANKER_NOTE=""
+STEP_EMBEDDER_NOTE=""
+
+# ---------------------------------------------------------------------------
+# Вспомогательные функции
+# ---------------------------------------------------------------------------
+
+# Иконка для итоговой таблицы
+step_icon() {
+    case "$1" in
+        OK)    echo "✅ OK   " ;;
+        WARN)  echo "⚠️  WARN " ;;
+        ERROR) echo "❌ ERROR" ;;
+        SKIP)  echo "⏩ SKIP " ;;
+        *)     echo "?      " ;;
+    esac
+}
+
+# Печатаем итоговую таблицу
+print_summary() {
+    echo ""
+    echo "┌─────────────────────────────────────────────────────────────┐"
+    echo "│  Итог установки pdf-sidecar                              │"
+    echo "├─────────────────────────────────────────────────────────────┤"
+    printf "│  [1/8] Python          %s  %s\n" "$(step_icon "${STEP_PYTHON}")" "${STEP_PYTHON_NOTE}"
+    printf "│  [2/8] venv            %s  %s\n" "$(step_icon "${STEP_VENV}")" "${STEP_VENV_NOTE}"
+    printf "│  [3/8] requirements    %s  %s\n" "$(step_icon "${STEP_DEPS}")" "${STEP_DEPS_NOTE}"
+    printf "│  [4/8] detectron2      %s  %s\n" "$(step_icon "${STEP_DETECTRON}")" "${STEP_DETECTRON_NOTE}"
+    printf "│  [5/8] system deps     %s  %s\n" "$(step_icon "${STEP_SYSTEM}")" "${STEP_SYSTEM_NOTE}"
+    printf "│  [6/8] GPU/accel       %s  %s\n" "$(step_icon "${STEP_GPU}")" "${STEP_GPU_NOTE}"
+    printf "│  [7/8] reranker model  %s  %s\n" "$(step_icon "${STEP_RERANKER}")" "${STEP_RERANKER_NOTE}"
+    printf "│  [8/8] embedder model  %s  %s\n" "$(step_icon "${STEP_EMBEDDER}")" "${STEP_EMBEDDER_NOTE}"
+    echo "└─────────────────────────────────────────────────────────────┘"
+}
+
+# ---------------------------------------------------------------------------
+# Проверка Python
+# ---------------------------------------------------------------------------
+
 if ! command -v "${PYTHON}" &>/dev/null; then
     echo "WARNING: ${PYTHON} not found, falling back to python3"
     PYTHON="python3"
+    STEP_PYTHON="WARN"
+    STEP_PYTHON_NOTE="фоллбэк на python3"
 fi
 
 PYTHON_VERSION=$("${PYTHON}" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
@@ -33,7 +92,6 @@ PYTHON_MINOR=$("${PYTHON}" -c "import sys; print(sys.version_info.minor)")
 echo "=== pdf-sidecar install ==="
 echo "Python: $("${PYTHON}" --version) at $(command -v "${PYTHON}")"
 
-# Проверяем совместимость версии Python
 if [[ "${PYTHON_MAJOR}" -eq 3 && "${PYTHON_MINOR}" -ge 14 ]]; then
     echo ""
     echo "ERROR: Python ${PYTHON_VERSION} не поддерживается."
@@ -46,16 +104,26 @@ if [[ "${PYTHON_MAJOR}" -eq 3 && "${PYTHON_MINOR}" -ge 14 ]]; then
     echo "    PYTHON=python3.13 ./install.sh"
     echo "  или:"
     echo "    PYTHON=/opt/homebrew/bin/python3.13 ./install.sh"
+    STEP_PYTHON="ERROR"
+    STEP_PYTHON_NOTE="Python ${PYTHON_VERSION} не поддерживается (3.11–3.13 требуется)"
+    STEP_VENV="SKIP" ; STEP_DEPS="SKIP" ; STEP_DETECTRON="SKIP"
+    STEP_SYSTEM="SKIP" ; STEP_GPU="SKIP" ; STEP_RERANKER="SKIP" ; STEP_EMBEDDER="SKIP"
+    print_summary
     exit 1
 fi
 
 if [[ "${PYTHON_MAJOR}" -eq 3 && "${PYTHON_MINOR}" -lt 11 ]]; then
     echo "WARNING: Python ${PYTHON_VERSION} < 3.11, могут быть проблемы совместимости."
+    STEP_PYTHON="WARN"
+    STEP_PYTHON_NOTE="Python ${PYTHON_VERSION} < 3.11, могут быть проблемы"
 fi
 
+[[ "${STEP_PYTHON}" == "OK" ]] && STEP_PYTHON_NOTE="Python ${PYTHON_VERSION}"
 echo "Python ${PYTHON_VERSION} — OK"
 
-# 1. Создаём или пересоздаём venv
+# ---------------------------------------------------------------------------
+# [1/8] venv
+# ---------------------------------------------------------------------------
 if [[ -d "${VENV_DIR}" ]]; then
     VENV_PYTHON_VER=$("${VENV_DIR}/bin/python" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "unknown")
     if [[ "${VENV_PYTHON_VER}" != "${PYTHON_VERSION}" ]]; then
@@ -63,62 +131,82 @@ if [[ -d "${VENV_DIR}" ]]; then
         echo "      Пересоздаём с Python ${PYTHON_VERSION}…"
         rm -rf "${VENV_DIR}"
         "${PYTHON}" -m venv "${VENV_DIR}"
+        STEP_VENV_NOTE="пересоздан (${VENV_PYTHON_VER} → ${PYTHON_VERSION})"
     else
         echo "[1/8] venv уже существует (Python ${VENV_PYTHON_VER}) — пропускаем"
+        STEP_VENV_NOTE="существует (Python ${VENV_PYTHON_VER})"
     fi
 else
     echo "[1/8] Создаём venv в ${VENV_DIR}…"
     "${PYTHON}" -m venv "${VENV_DIR}"
+    STEP_VENV_NOTE="создан (Python ${PYTHON_VERSION})"
 fi
 
 # shellcheck disable=SC1091
 source "${VENV_DIR}/bin/activate"
 echo "      Active Python: $(python --version) at $(command -v python)"
 
+# ---------------------------------------------------------------------------
+# [2/8] pip upgrade (отдельного шага нет, входит в venv)
+# ---------------------------------------------------------------------------
 echo "[2/8] Upgrading pip…"
 pip install --upgrade pip --quiet
 
+# ---------------------------------------------------------------------------
+# [3/8] requirements.txt
+# ---------------------------------------------------------------------------
 echo "[3/8] Installing requirements.txt…"
-pip install -r "${SCRIPT_DIR}/requirements.txt"
+if pip install -r "${SCRIPT_DIR}/requirements.txt"; then
+    STEP_DEPS_NOTE="requirements.txt"
+else
+    STEP_DEPS="ERROR"
+    STEP_DEPS_NOTE="ошибка установки"
+fi
 
-# 4. detectron2 — нет wheel для arm64/PyPI, нужна сборка из исходников.
-#    --no-build-isolation: setup.py detectron2 требует torch во время сборки,
-#    поэтому передаём ему уже установленный torch из venv (без изолированного build env).
+# ---------------------------------------------------------------------------
+# [4/8] detectron2
+# ---------------------------------------------------------------------------
 echo "[4/8] Installing detectron2…"
 if python -c "import detectron2" 2>/dev/null; then
     echo "      detectron2 already installed — OK"
+    STEP_DETECTRON_NOTE="already installed"
 else
     echo "      Compiling from GitHub source (займёт 3–5 минут)…"
     if pip install --no-build-isolation 'git+https://github.com/facebookresearch/detectron2.git'; then
         echo "      detectron2 installed OK"
+        STEP_DETECTRON_NOTE="установлен"
     else
         echo "      WARNING: detectron2 не установился."
         echo "      unstructured hi_res требует detectron2 или yolox."
         echo "      yolox (ONNX-based) используется по умолчанию — продолжаем."
         echo "      Если нужен detectron2, запустите вручную:"
         echo "        pip install --no-build-isolation 'git+https://github.com/facebookresearch/detectron2.git'"
+        STEP_DETECTRON="WARN"
+        STEP_DETECTRON_NOTE="не установился, используется yolox"
     fi
 fi
 
-# 5. Системные зависимости
+# ---------------------------------------------------------------------------
+# [5/8] Системные зависимости
+# ---------------------------------------------------------------------------
 echo "[5/8] Checking system dependencies…"
-ALL_OK=true
+SYSTEM_MISSING=()
 
 if ! command -v gs &>/dev/null; then
     echo "      ✗ ghostscript не найден. Установите: brew install ghostscript"
-    ALL_OK=false
+    SYSTEM_MISSING+=("ghostscript")
 else
     echo "      ✓ ghostscript: $(gs --version 2>/dev/null || echo unknown)"
 fi
 
 if ! command -v tesseract &>/dev/null; then
     echo "      ✗ tesseract не найден. Установите: brew install tesseract tesseract-lang"
-    ALL_OK=false
+    SYSTEM_MISSING+=("tesseract")
 else
     echo "      ✓ tesseract: $(tesseract --version 2>&1 | head -1)"
     if ! tesseract --list-langs 2>/dev/null | grep -q "rus"; then
         echo "      ✗ Русский язык OCR отсутствует. Установите: brew install tesseract-lang"
-        ALL_OK=false
+        SYSTEM_MISSING+=("tesseract-rus")
     else
         echo "      ✓ Russian OCR: OK"
     fi
@@ -126,43 +214,73 @@ fi
 
 if ! command -v pdftoppm &>/dev/null; then
     echo "      ✗ poppler не найден. Установите: brew install poppler"
-    ALL_OK=false
+    SYSTEM_MISSING+=("poppler")
 else
     echo "      ✓ poppler: OK"
 fi
 
-# 6. Проверка GPU/акселерации
-echo "[6/8] Checking GPU/acceleration…"
-python - << 'PYCHECK'
-import sys
+if [[ ${#SYSTEM_MISSING[@]} -gt 0 ]]; then
+    STEP_SYSTEM="ERROR"
+    STEP_SYSTEM_NOTE="нет: $(IFS=', '; echo "${SYSTEM_MISSING[*]}")"
+else
+    STEP_SYSTEM_NOTE="ghostscript, tesseract+rus, poppler"
+fi
 
-# PyTorch MPS (Table Transformer + Reranker + Embedder)
+# ---------------------------------------------------------------------------
+# [6/8] GPU/акселерация
+# ---------------------------------------------------------------------------
+echo "[6/8] Checking GPU/acceleration…"
+GPU_RESULT=$(python - << 'PYCHECK'
+import sys, json
+result = {"mps": False, "coreml": False, "torch_ver": "", "ort_ver": ""}
+
 try:
     import torch
-    mps = torch.backends.mps.is_available()
-    print(f"{'✓' if mps else '✗'} PyTorch MPS (Table Transformer + Reranker + Embedder GPU): {'доступен' if mps else 'недоступен'}")
-    print(f"  torch version: {torch.__version__}")
+    result["mps"] = torch.backends.mps.is_available()
+    result["torch_ver"] = torch.__version__
+    print(f"  {'\u2713' if result['mps'] else '\u2717'} PyTorch MPS: {'\u0434\u043e\u0441\u0442\u0443\u043f\u0435\u043d' if result['mps'] else '\u043d\u0435\u0434\u043e\u0441\u0442\u0443\u043f\u0435\u043d'} (torch {result['torch_ver']})", file=sys.stderr)
 except ImportError:
-    print("  PyTorch не установлен")
+    print("  PyTorch не установлен", file=sys.stderr)
 
-# ONNX Runtime (YOLO layout detection)
 try:
     import onnxruntime as ort
     providers = ort.get_available_providers()
-    has_coreml = 'CoreMLExecutionProvider' in providers
-    print(f"{'✓' if has_coreml else '○'} ONNX CoreML (YOLO GPU): {'доступен' if has_coreml else 'недоступен (будет CPU)'}")
-    print(f"  onnxruntime version: {ort.__version__}")
-    print(f"  available providers: {providers}")
-    if not has_coreml:
-        print("  Для CoreML нужна кастомная сборка onnxruntime --use_coreml")
-        print("  (готовых wheel для Python 3.12/3.13 не существует)")
+    result["coreml"] = 'CoreMLExecutionProvider' in providers
+    result["ort_ver"] = ort.__version__
+    print(f"  {'\u2713' if result['coreml'] else '\u25cb'} ONNX CoreML: {'\u0434\u043e\u0441\u0442\u0443\u043f\u0435\u043d' if result['coreml'] else '\u043d\u0435\u0434\u043e\u0441\u0442\u0443\u043f\u0435\u043d (CPU)'} (ort {result['ort_ver']})", file=sys.stderr)
+    if not result["coreml"]:
+        print("  Для CoreML нужна кастомная сборка onnxruntime --use_coreml", file=sys.stderr)
 except ImportError:
-    print("  onnxruntime не установлен")
-PYCHECK
+    print("  onnxruntime не установлен", file=sys.stderr)
 
-# 7. Загрузка reranker-модели (pre-download)
+import json
+print(json.dumps(result))
+PYCHECK
+)
+
+MPS=$(echo "${GPU_RESULT}" | python3 -c "import sys,json; d=json.load(sys.stdin); print('yes' if d.get('mps') else 'no')" 2>/dev/null || echo "no")
+COREML=$(echo "${GPU_RESULT}" | python3 -c "import sys,json; d=json.load(sys.stdin); print('yes' if d.get('coreml') else 'no')" 2>/dev/null || echo "no")
+
+if [[ "${MPS}" == "yes" && "${COREML}" == "yes" ]]; then
+    STEP_GPU_NOTE="MPS ✓  CoreML ✓"
+elif [[ "${MPS}" == "yes" ]]; then
+    STEP_GPU_NOTE="MPS ✓  CoreML — (CPU)"
+    STEP_GPU="WARN"
+elif [[ "${COREML}" == "yes" ]]; then
+    STEP_GPU_NOTE="MPS —  CoreML ✓"
+    STEP_GPU="WARN"
+else
+    STEP_GPU_NOTE="MPS —  CoreML — (всё CPU)"
+    STEP_GPU="WARN"
+fi
+
+# ---------------------------------------------------------------------------
+# [7/8] reranker-модель
+# ---------------------------------------------------------------------------
 if [[ "${SKIP_RERANKER}" == "1" ]]; then
     echo "[7/8] Reranker model download — пропущено (SKIP_RERANKER=1)"
+    STEP_RERANKER="SKIP"
+    STEP_RERANKER_NOTE="SKIP_RERANKER=1"
 else
     RERANKER_MODEL_ID="${RERANKER_MODEL_ID:-BAAI/bge-reranker-v2-m3}"
     echo "[7/8] Pre-downloading reranker model '${RERANKER_MODEL_ID}'…"
@@ -182,19 +300,23 @@ except Exception as e:
 PYRERANKER
     then
         echo "      Reranker — OK"
+        STEP_RERANKER_NOTE="${RERANKER_MODEL_ID}"
     else
         echo "      WARNING: не удалось загрузить reranker-модель."
         echo "      Проверьте интернет и HuggingFace Hub."
         echo "      /rerank endpoint будет возвращать 503 пока модель не загружена."
-        ALL_OK=false
+        STEP_RERANKER="WARN"
+        STEP_RERANKER_NOTE="не загрузилась, /rerank вернёт 503"
     fi
 fi
 
-# 8. Загрузка embedder-модели (pre-download)
-# sentence-transformers кэширует в ~/.cache/huggingface/hub — скачивается один раз.
-# bge-m3 весит ~570 MB.
+# ---------------------------------------------------------------------------
+# [8/8] embedder-модель
+# ---------------------------------------------------------------------------
 if [[ "${SKIP_EMBEDDER}" == "1" ]]; then
     echo "[8/8] Embedder model download — пропущено (SKIP_EMBEDDER=1)"
+    STEP_EMBEDDER="SKIP"
+    STEP_EMBEDDER_NOTE="SKIP_EMBEDDER=1"
 else
     EMBEDDER_MODEL_ID="${EMBEDDER_MODEL_ID:-BAAI/bge-m3}"
     echo "[8/8] Pre-downloading embedder model '${EMBEDDER_MODEL_ID}'…"
@@ -215,21 +337,23 @@ except Exception as e:
 PYEMBEDDER
     then
         echo "      Embedder — OK"
+        STEP_EMBEDDER_NOTE="${EMBEDDER_MODEL_ID}"
     else
         echo "      WARNING: не удалось загрузить embedder-модель."
         echo "      Проверьте интернет и HuggingFace Hub."
         echo "      /embeddings endpoint будет возвращать 503 пока модель не загружена."
-        ALL_OK=false
+        STEP_EMBEDDER="WARN"
+        STEP_EMBEDDER_NOTE="не загрузилась, /embeddings вернёт 503"
     fi
 fi
 
-echo ""
-if [[ "${ALL_OK}" == "true" ]]; then
-    echo "=== Установка завершена успешно ==="
-else
-    echo "=== Установка завершена с предупреждениями (см. выше) ==="
-fi
-echo ""
+# ---------------------------------------------------------------------------
+# Итоговая таблица
+# ---------------------------------------------------------------------------
+print_summary
+
+# Дополнительная инфо
+ echo ""
 echo "Запуск:  ./start.sh"
 echo "Статус:  ./status.sh"
 echo "Логи:    tail -f logs/sidecar.log"
