@@ -15,6 +15,9 @@
 - B1–B5: `scripts/generate_env.py` реализован полностью; `init-env` добавлен в Makefile первым шагом `setup` (коммит 80f2555)
 - C1: диспетчер `_agent-setup-dispatch`; `agent-setup` → `_agent-setup-launchd`; Linux → Docker Compose; Windows → предупреждение (коммит 738fca1)
 - C2: `HOST_AGENT_TOKEN` подставляется в plist через `_render-plist`; шаблон обновлён (коммит 07f252a)
+- D1: подтверждено — `timeout_seconds` есть в `RerankModelCreateRequest`; `seed_models.py` не менялся
+- D2: подтверждено — `/activate` для embedding-модели отсутствует; создания записи достаточно; `seed_models.py` не менялся
+- D3: smoke test — запустить вручную (см. заметки)
 
 ## В работе
 
@@ -22,14 +25,11 @@
 
 ## Ещё не начато
 
-- D1, D2, D3
+Ничего. Все блоки A–D завершены.
 
 ## Задача на следующую сессию
 
-Блок D — проверка и завершение:
-- D1, D2, D3
-
-Перед началом прочитать `plan-install/block-D.md`.
+Нет запланированных задач. При необходимости — новый блок по результатам smoke test (D3).
 
 ## Заметки / контекст
 
@@ -43,3 +43,17 @@
   - прочее → WARNING, exit 0 (Windows)
 - `HOST_AGENT_TOKEN` читается из `.env` и подставляется в plist через sed в `_render-plist`
 - Порядок: `init-env` → `_agent-setup-dispatch` — строго соблюдать
+
+### Итоги блока D (без коммитов — изменений не потребовалось)
+
+- D1: `RerankModelCreateRequest.timeout_seconds` присутствует в `schemas.py` (default=30); `seed_models.py` корректен
+- D2: роута `/activate` в `emb_models.py` нет; embedding привязывается к vault через `embedding_model_id`; `seed_models.py` корректен
+- D3: smoke test выполнить вручную:
+  ```bash
+  rm -f .env
+  make setup
+  docker compose ps
+  curl http://localhost:8000/health
+  docker compose logs --tail=50
+  ```
+  Ожидаемый результат: все сервисы running, /health → 200 OK, ошибок в логах нет.
