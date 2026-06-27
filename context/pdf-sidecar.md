@@ -2,234 +2,133 @@
 
 ## Назначение
 
-Автономный HTTP-сервис (FastAPI, версия 4.0.0) для высококачественного парсинга PDF-документов
-и реранжирования текстовых фрагментов. Работает как отдельный процесс (sidecar) рядом с
-`rag-indexer` и `rag-backend`. Намеренно не зависит от других компонентов Mercer — все
-зависимости самодостаточны.
+Автономный HTTP-сервис (FastAPI, **версия 5.0**) для высококачественного парсинга PDF, реранжирования
+и эмбеддинга текстовых фрагментов. Работает как отдельный процесс (sidecar) на хосте, **вне Docker**.
+Намеренно не зависит от других компонентов Mercer — все зависимости самодостаточны.
 
 **Точка запуска:** `python app.py` или `./start.sh`  
-**Порт по умолчанию:** `8765` (переопределяется через `PDF_SIDECAR_PORT`)  
-**Требуемый Python:** 3.11–3.13 (unstructured-inference несовместим с 3.14+)
+**Порт по умолчанию:** `8765` (`PDF_SIDECAR_PORT`)  
+**Запросы поступают** от `rag-indexer` и `rag-backend` (sidecar-прокси) через `PDF_SIDECAR_URL`.
 
 ---
 
-## Файловая структура
+## Структура файлов
 
 ```
 pdf-sidecar/
-├── app.py           — FastAPI-приложение, эндпоинты, lifespan-хук
-├── parser.py        — Парсинг PDF через unstructured hi_res, параллельный батч-парсинг
-├── preprocessor.py  — Постобработка текста (нормализация Unicode, пробелы, переносы)
-├── reranker.py      — CrossEncoder-реранкер (BAAI/bge-reranker-v2-m3)
-├── requirements.txt — Python-зависимости
-├── install.sh       — Установка системных зависимостей (Tesseract, Ghostscript, venv)
-├── start.sh         — Запуск сервиса
-├── stop.sh          — Остановка сервиса
-├── status.sh        — Проверка статуса
-└── logs/
-    └── sidecar.log  — Файл логов
+├── app.py             — FastAPI-сервер (основной файл)
+├── parser.py          — unstructured hi_res + yolox (парсинг PDF, OCR)
+├── preprocessor.py    — постобработка текста
+├── reranker.py        — CrossEncoder (BAAI/bge-reranker-v2-m3) через sentence-transformers
+├── embedder.py        — SentenceTransformer (BAAI/bge-m3), OpenAI-compatible API
+├── requirements.txt
+├── install.sh         — установка зависимостей + моделей
+├── start.sh / stop.sh / status.sh
+├── logs/              — sidecar.log
+└── agent/             — host-agent для macOS (launchd)
+    ├── agent.py
+    ├── com.mercer.host-agent.plist.template
+    └── requirements.txt
 ```
 
 ---
 
-## HTTP API
+## Стек технологий
+
+| Компонент | Технология | Назначение |
+|---|---|---|
+| Парсер PDF | `unstructured` + `unstructured-inference`, стратегия `hi_res`, модель layout `yolox` | Парсинг, OCR, извлечение заголовков и таблиц |
+| Реранкер | `sentence-transformers` — `CrossEncoder(BAAI/bge-reranker-v2-m3)` | Реранжирование |
+| Эмбеддер | `sentence-transformers` — `SentenceTransformer(BAAI/bge-m3)` | Эмбеддинг (L2-normализован, OpenAI-compatible) |
+| HTTP-сервер | FastAPI 5.0 + Uvicorn | Асинхронный сервер |
+
+Все модели загружаются **один раз при старте** (lifespan-хук FastAPI), держатся в памяти все время работы.
+
+**Преимущество выноса bge-m3 из Ollama в sidecar:**
+- Батчинг: весь батч за один forward pass вместо N HTTP-запросов к Ollama
+- Изоляция: нагрузка индексации не мешает LLM-запросам пользователей
+- Детерминированность: те же веса, не зависящие от версии Ollama
+
+---
+
+## Эндпоинты
 
 ### `GET /health`
-
-Проверка работоспособности. Возвращает статус сервиса и флаг загруженности reranker-модели.
-
+Проверка жизнеспособности. Возвращает статус всех трёх моделей:
 ```json
-{"status": "ok", "service": "pdf-sidecar", "reranker_loaded": "True"}
+{
+  "status": "ok",
+  "service": "pdf-sidecar",
+  "reranker_loaded": "True",
+  "embedder_loaded": "True"
+}
 ```
-
----
 
 ### `POST /parse`
+Синхронный парсинг PDF. Принимает `multipart/form-data` (field `file`), возвращает JSON.
 
-Синхронный парсинг PDF. Принимает `multipart/form-data` с полем `file` (`.pdf`).
-Блокирует соединение до полного завершения парсинга. Возвращает `application/json`.
-
-**Формат ответа:**
+Пример ответа:
 ```json
 {
+  "page_count": 12,
+  "headings": ["Overview", "Chapter 1"],
   "pages": [
-    {"text": "...", "page_number": 1}
-  ],
-  "headings": [
-    {"text": "Раздел 1", "page_number": 1, "y0": 45.2, "font_size": 0.0}
-  ],
-  "metadata": {"source": "file.pdf", "parser": "unstructured-hi_res/yolox"},
-  "page_count": 10
-}
-```
-
-После парсинга каждая страница дополнительно прогоняется через `preprocessor.preprocess()`.
-
----
-
-### `POST /parse/stream`
-
-Стриминговый парсинг PDF. Принимает тот же формат что `/parse`.  
-Возвращает `application/x-ndjson` — поток JSON-объектов, по одному на строку.
-
-**Типы событий в потоке:**
-
-| Тип события | Поля | Описание |
-|---|---|---|
-| `progress` | `page`, `total`, `elapsed`, `elements`, `has_table` | Прогресс по завершению каждой страницы |
-| `result` | все поля ответа + `"type": "result"` | Финальный результат (последнее сообщение при успехе) |
-| `error` | `detail` | Ошибка парсинга |
-
-Прогресс-события поступают через `asyncio.Queue` — thread-safe callback из дочерних процессов.
-Раз в 5 секунд (при отсутствии событий) отправляется keepalive `\n`.
-
----
-
-### `POST /rerank`
-
-Реранжирование документов через CrossEncoder.
-
-**Тело запроса:**
-```json
-{
-  "model": "BAAI/bge-reranker-v2-m3",
-  "query": "вопрос пользователя",
-  "documents": ["фрагмент 1", "фрагмент 2", "..."]
-}
-```
-
-**Формат ответа** (совместим с openai_compatible `/rerank` провайдерами):
-```json
-{
-  "results": [
-    {"index": 2, "relevance_score": 0.921},
-    {"index": 0, "relevance_score": 0.743}
+    {"page_number": 1, "text": "...", "has_table": false}
   ]
 }
 ```
 
-Возвращает `503` если модель ещё не загружена при старте.
+### `POST /parse/stream`
+CTSTREAMING. Возвращает NDJSON-поток (`Content-Type: application/x-ndjson`).
 
----
-
-## Архитектура парсера (`parser.py`)
-
-### Стратегия hi_res
-
-Используется `unstructured.partition_pdf` со стратегией `hi_res`:
-- **YOLO (yolox FP32)** — детекция layout (заголовки, параграфы, таблицы, списки)
-- **Table Transformer** — распознавание структуры таблиц  
-- **Tesseract OCR** — извлечение текста из изображений и при необходимости из страниц
-
-> **Почему yolox FP32, не yolox_quantized?**  
-> `yolox_quantized` деградирует на русских PDF: все элементы классифицируются как
-> `UncategorizedText`, заголовки и таблицы теряются. FP32-модель обязательна.
-
-### Параллельный батч-парсинг
-
-Документ разрезается на батчи, каждый батч запускается в отдельном **процессе**
-через `ProcessPoolExecutor` (не в потоке), потому что:
-- unstructured/ONNX Runtime держат GIL во время inference
-- процессы дают настоящий параллелизм
-
-**Расчёт размера батча:**
+Прогресс-событие для каждой страницы:
+```json
+{"type": "progress", "page": 3, "total": 12, "elapsed": 4.2, "elements": 18, "has_table": false}
 ```
-batch_size = clamp(ceil(total_pages / min(MAX_WORKERS, cpu_count)), MIN=8, MAX=30)
+Финальное событие:
+```json
+{"type": "result", "page_count": 12, "headings": [...], "pages": [...]}
+```
+Или при ошибке:
+```json
+{"type": "error", "detail": "..."}
 ```
 
-Пример: 98 страниц, 4 воркера → batch=25 → 4 батча.
+### `POST /rerank`
+Реранжирование документов через CrossEncoder (`BAAI/bge-reranker-v2-m3`).
 
-**Параметры:**
-- `PDF_SIDECAR_MAX_WORKERS` — максимум параллельных процессов (по умолчанию: 4)
-- `PDF_RENDER_DPI` — DPI рендеринга страниц (по умолчанию: 200; стандартный 350 избыточен)
+Запрос:
+```json
+{"query": "...", "documents": ["doc1", "doc2", "doc3"]}
+```
+Ответ (отсортирован по убыванию релевантности):
+```json
+[
+  {"index": 2, "relevance_score": 0.94},
+  {"index": 0, "relevance_score": 0.71},
+  {"index": 1, "relevance_score": 0.33}
+]
+```
+Sortable by `relevance_score` desc. Параметр `batch_size=8` — оптимизация памяти для MPS/CPU.
 
-При одном батче (маленький документ) process overhead исключается — используется single-pass.
+### `POST /embed`  *(добавлено в v5.0)*
+Эмбеддинг текстов через SentenceTransformer (`BAAI/bge-m3`). **OpenAI-совместимый формат ответа.**
 
-### GPU-поддержка (Apple Silicon)
-
-Monkey-patches применяются при старте каждого воркер-процесса:
-- **Table Transformer** → device `mps` (через `_patched_load_agent`)
-- **YOLO** → `CoreMLExecutionProvider` + `CPUExecutionProvider` (если CoreML доступен)
-
-### Ghostscript fallback
-
-Если PDFium не смог открыть PDF (`Data format error`), парсер:
-1. Нормализует файл через `gs -sDEVICE=pdfwrite` во временный файл
-2. Повторяет `hi_res` парсинг на нормализованном файле
-3. Удаляет временный файл в `finally`-блоке
-4. Если и после нормализации PDFium падает — пробрасывает исключение в `app.py`
-
-### Фильтрация элементов
-
-Элементы типа `Image` и `FigureCaption` **намеренно отбрасываются** — не нужны для RAG.
-
-Включаемые категории:
-- **Heading-категории** (→ поле `headings`): `Title`, `Header`, `SectionHeader`
-- **Text-категории** (→ поле `pages[].text`): `NarrativeText`, `Text`, `ListItem`, `Table`, `Footer`, `EmailAddress`, `UncategorizedText`, `Formula`
-
-### Фикс OCR-переносов
-
-Tesseract возвращает переносы строк внутри элементов: `«выва-\nливается»`.  
-Фиксируется на двух уровнях:
-1. `parser.py` — сразу после получения raw_text (regex: `(\w+)-\s*\n\s*(\w)` → `\1\2`)
-2. `preprocessor.py` — шаг 4a, для случаев где `\n` уже заменён пробелом (`«выва- ливается»`)
-
----
-
-## Препроцессор (`preprocessor.py`)
-
-Постобработка текста после парсинга. Версия V3.0. Применяется к каждой странице в `app.py`
-после завершения парсинга.
-
-**Шаги обработки:**
-1. NFC-нормализация Unicode (`unicodedata.normalize`)
-2. Замена проблемных символов по `CHAR_MAP` (U+FFFD → пробел, U+2014 → дефис и др.)
-3. Удаление строк состоящих только из цифры (номера страниц)
-4. Склейка OCR-переносов строк (`\w+-\n\w` → слитно)
-5. Сохранение двойных `\n\n` (абзацы), схлопывание одиночных `\n` в пробел
-6. Нормализация пробелов и trailing whitespace
-
-Файл намеренно **дублируется** из `rag-indexer/parser/preprocessing/preprocessor.py`
-для сохранения автономности sidecar. При изменении оригинала — синхронизировать.
-
-**Детектор подозрительных символов:** логирует первое появление символов вне разрешённых
-диапазонов (Latin, Cyrillic, пунктуация, математика). Помогает диагностировать кодировочные
-проблемы PDF.
-
----
-
-## Reranker (`reranker.py`)
-
-CrossEncoder-реранкер на базе `sentence-transformers`.
-
-**Модель по умолчанию:** `BAAI/bge-reranker-v2-m3` (переопределяется через `RERANKER_MODEL_ID`)
-
-**Device-автоопределение:**
-| Условие | Устройство |
-|---|---|
-| `RERANKER_FORCE_CPU=1` | CPU (рекомендуется для macOS) |
-| Apple Silicon, MPS доступен | MPS + `PYTORCH_ENABLE_MPS_FALLBACK=1` |
-| CUDA доступна | CUDA |
-| Фоллбэк | CPU |
-
-> На macOS MPS для bge-reranker даёт тихий CPU-fallback для большинства операций
-> с оверхедом на передачу данных. `RERANKER_FORCE_CPU=1` часто быстрее.
-
-Модель загружается **один раз** при старте (`lifespan` хук → `load_reranker()`).
-`rerank()` вызывает `CrossEncoder.predict()` с `batch_size=8`.
-Ответ совместим с openai_compatible `/rerank` провайдерами (`retrieval.py` в rag-backend).
-
----
-
-## Жизненный цикл приложения (Lifespan)
-
-При старте (FastAPI `lifespan` hook) последовательно выполняется прогрев:
-
-1. **`warmup_models()`** (parser.py) — загружает spaCy tokenizer, YOLO, Table Transformer
-2. **`load_reranker()`** (reranker.py) — загружает CrossEncoder в память
-
-Ошибки прогрева **не фатальны** — логируются как `WARNING`, сервис стартует.
-Прогрев устраняет cold start на первом реальном запросе.
+Запрос:
+```json
+{"texts": ["text one", "text two", "text three"]}
+```
+Ответ:
+```json
+{
+  "data": [
+    {"index": 0, "embedding": [0.021, -0.043, ...]},
+    {"index": 1, "embedding": [...]},
+    {"index": 2, "embedding": [...]}
+  ]
+}
+```
+Векторы L2-нормализованы, совместимы с cosine-similarity. Батчинг: весь список — один forward pass.
 
 ---
 
@@ -237,52 +136,62 @@ CrossEncoder-реранкер на базе `sentence-transformers`.
 
 | Переменная | По умолчанию | Описание |
 |---|---|---|
-| `PDF_SIDECAR_PORT` | `8765` | Порт HTTP-сервера |
+| `PDF_SIDECAR_PORT` | `8765` | Порт uvicorn |
 | `LOG_LEVEL` | `INFO` | Уровень логирования |
-| `PDF_SIDECAR_MAX_WORKERS` | `4` | Максимум параллельных воркер-процессов |
-| `PDF_RENDER_DPI` | `200` | DPI рендеринга страниц PDF |
-| `UNSTRUCTURED_HI_RES_MODEL_NAME` | `yolox` | Модель YOLO для layout detection |
-| `PDF_GS_TIMEOUT` | `120` | Таймаут Ghostscript нормализации (секунды) |
-| `RERANKER_MODEL_ID` | `BAAI/bge-reranker-v2-m3` | Модель CrossEncoder для /rerank |
-| `RERANKER_FORCE_CPU` | `0` | Принудительный CPU для reranker (`1` рекомендуется на macOS) |
+| `RERANKER_MODEL_ID` | `BAAI/bge-reranker-v2-m3` | HuggingFace model id реранкера |
+| `RERANKER_FORCE_CPU` | `0` | `1` — принудительно CPU (рекомендуется на macOS) |
+| `EMBEDDER_MODEL_ID` | `BAAI/bge-m3` | HuggingFace model id эмбеддера |
+| `EMBEDDER_FORCE_CPU` | `0` | `1` — принудительно CPU |
+| `EMBED_BATCH_SIZE` | `32` | Размер батча при эмбеддинге |
 
 ---
 
-## Ключевые зависимости
+## Модули
 
-| Пакет | Назначение |
+### `parser.py`
+Парсинг через `unstructured` (стратегия `hi_res`, модель layout `yolox`). OCR-режим автоматический. Поддерживает `progress_callback(page_num, total, n_elements, has_table)` для streaming-режима. Прогрев моделей при старте: `warmup_models()`.
+
+### `preprocessor.py`
+Постобработка текста: удаление артефактов парсера, нормализация unicode, убрание лишних переносов.
+
+### `reranker.py`
+`CrossEncoder(BAAI/bge-reranker-v2-m3)` через `sentence-transformers`. Device-автоопределение: CUDA > MPS > CPU. На macOS рекомендуется `RERANKER_FORCE_CPU=1` — MPS даёт тихий CPU-fallback для большинства ops без изменения выходного. `PYTORCH_ENABLE_MPS_FALLBACK=1` выставляется автоматически при `device=mps`.
+
+### `embedder.py`  *(v5.0)*
+`SentenceTransformer(BAAI/bge-m3)` через `sentence-transformers`. L2-нормализация (`normalize_embeddings=True`). Device-автоопределение: MPS > CUDA > CPU. Весь батч за один forward pass. `EMBEDDER_FORCE_CPU=1` — принудительно CPU. Функции: `load_embedder()`, `embed(texts)`, `is_loaded()`.
+
+---
+
+## поддиректория `agent/`
+
+Для мачин на macOS: **launchd**-вариант host-agent (аналог `systemd` для Linux).
+
+| Файл | Назначение |
 |---|---|
-| `fastapi`, `uvicorn` | HTTP-сервер |
-| `unstructured[pdf]>=0.14.0` | Парсинг PDF (hi_res strategy) |
-| `onnxruntime>=1.17.0` | YOLO inference (ONNX Runtime) |
-| `torch>=2.2.0` | Table Transformer MPS, Reranker device |
-| `sentence-transformers>=3.0.0` | CrossEncoder для reranker |
-| `ghostscript>=0.7` | Fallback нормализация битых PDF |
-| `pypdfium2` | Быстрый счётчик страниц и разрезка батчей |
-| `lxml>=5.0.0` | Ускоренный парсинг HTML-таблиц из unstructured |
-| `pytesseract` | OCR (системный Tesseract, устанавливается через install.sh) |
+| `agent.py` | Тот же host-agent (`pdf-sidecar/agent/agent.py` = `host-agent/agent.py`), настроен на `SIDECAR_DIR` = родительская директория |
+| `com.mercer.host-agent.plist.template` | Шаблон launchd plist (автозапуск при логине). Инсталлируется в `~/Library/LaunchAgents/` |
+| `requirements.txt` | Зависимости host-agent (FastAPI, uvicorn) |
+
+Для Linux используется `host-agent/mercer-host-agent.service` (проект `host-agent/` в корне репозитория).
+
+> См. также: `context/host-agent.md`
 
 ---
 
-## Интеграция с Mercer
+## Запуск и управление
 
-`pdf-sidecar` вызывается из **`rag-indexer`** при индексации PDF-документов:
-- `/parse` или `/parse/stream` — для извлечения текста и структуры документа
-- `/rerank` — вызывается из `rag-backend` (retrieval pipeline) для финального ранжирования
+```bash
+# Установка зависимостей и загрузка моделей
+bash install.sh
 
-Сервис **не имеет общих Python-пакетов** с другими компонентами — запускается в
-собственном virtualenv (`pdf-sidecar/.venv`). `preprocessor.py` дублируется из
-`rag-indexer` для сохранения этой автономности.
+# Запуск
+./start.sh
 
----
+# Статус
+./status.sh
 
-## Известные ограничения и решения
+# Останов
+./stop.sh
+```
 
-| Проблема | Решение |
-|---|---|
-| Утечка потоков при TimeoutError в streaming | asyncio.Queue вместо SimpleQueue+run_in_executor (v3.1) |
-| UnboundLocalError при логировании ошибки | `exc_info=exc` (объект) вместо `exc_info=True` (v3.2) |
-| Дублированный вывод логов от uvicorn | dictConfig с пустыми handlers у uvicorn-логгеров (propagate=True) |
-| yolox_quantized деградирует на русских PDF | Жёсткий дефолт на yolox FP32 |
-| MPS тихий fallback для reranker | `RERANKER_FORCE_CPU=1` рекомендуется на macOS |
-| Битые PDF (PDFium: Data format error) | Ghostscript нормализация перед повторным парсингом |
+Управление через UI: через host-agent (см. `GET/POST /api/settings/sidecar/*`).
