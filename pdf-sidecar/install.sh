@@ -81,20 +81,22 @@ pip install --upgrade pip --quiet
 echo "[3/8] Installing requirements.txt…"
 pip install -r "${SCRIPT_DIR}/requirements.txt"
 
-# 4. detectron2 — нет wheel для arm64/PyPI, нужна сборка из исходников
+# 4. detectron2 — нет wheel для arm64/PyPI, нужна сборка из исходников.
+#    --no-build-isolation: setup.py detectron2 требует torch во время сборки,
+#    поэтому передаём ему уже установленный torch из venv (без изолированного build env).
 echo "[4/8] Installing detectron2…"
 if python -c "import detectron2" 2>/dev/null; then
     echo "      detectron2 already installed — OK"
 else
     echo "      Compiling from GitHub source (займёт 3–5 минут)…"
-    if pip install 'git+https://github.com/facebookresearch/detectron2.git' 2>/dev/null; then
+    if pip install --no-build-isolation 'git+https://github.com/facebookresearch/detectron2.git'; then
         echo "      detectron2 installed OK"
     else
         echo "      WARNING: detectron2 не установился."
         echo "      unstructured hi_res требует detectron2 или yolox."
         echo "      yolox (ONNX-based) используется по умолчанию — продолжаем."
         echo "      Если нужен detectron2, запустите вручную:"
-        echo "        pip install 'git+https://github.com/facebookresearch/detectron2.git'"
+        echo "        pip install --no-build-isolation 'git+https://github.com/facebookresearch/detectron2.git'"
     fi
 fi
 
