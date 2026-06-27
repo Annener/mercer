@@ -89,13 +89,10 @@ async def update_watchdog_settings(
 ) -> WatchdogSettings:
     """Упсертит watchdog setting в PostgreSQL.
 
-    Validation: at least one extension must be provided.
+    Пустой список допустим — означает «не отслеживать ничего».
     Extension must start with '.'
     """
-    exts = payload.auto_index_extensions
-    if not exts:
-        raise HTTPException(status_code=422, detail="At least one extension required.")
-    for ext in exts:
+    for ext in payload.auto_index_extensions:
         if not ext.startswith("."):
             raise HTTPException(
                 status_code=422,
@@ -105,8 +102,8 @@ async def update_watchdog_settings(
     await db.execute(
         text(
             """
-            INSERT INTO platform_settings (key, value)
-            VALUES (:key, :value)
+            INSERT INTO platform_settings (key, value, value_type, group_name, label, hint)
+            VALUES (:key, :value, 'str', 'indexing', 'Авто-индексация расширений', '')
             ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
             """
         ),
