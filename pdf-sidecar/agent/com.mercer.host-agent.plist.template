@@ -25,9 +25,8 @@
     <!-- чтобы launchd-демон видел Homebrew, pyenv и прочие менеджеры версий -->
     <key>PATH</key>
     <string>{{PATH}}</string>
-    <!-- Раскомментируйте и задайте токен для защиты агента: -->
-    <!-- <key>HOST_AGENT_TOKEN</key> -->
-    <!-- <string>changeme</string> -->
+    <key>HOST_AGENT_TOKEN</key>
+    <string>{{HOST_AGENT_TOKEN}}</string>
   </dict>
 
   <!-- Запускать автоматически при логине пользователя -->
