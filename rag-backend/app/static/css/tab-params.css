@@ -17,14 +17,25 @@
     max-width: 640px;
 }
 
-/* Each named group: same visual style as watchdog block */
-.settings-param-group {
-    margin-bottom: 20px;
+/* ── Общие размеры для всех блоков-групп параметров ──
+   Применяется к: .settings-param-group, .settings-watchdog-block, .sidecar-block
+   Значения взяты из блока Watchdog как эталонные.
+   ====================================================== */
+.settings-param-group,
+.settings-watchdog-block,
+.sidecar-block {
+    max-width: 640px;
     background: #fff;
     border: 1px solid #b8cfe0;
     border-radius: 10px;
     padding: 18px 20px 14px;
     box-shadow: 0 1px 4px rgba(52, 120, 180, 0.06);
+    margin-bottom: 20px;
+}
+
+/* Each named group: same visual style as watchdog block */
+.settings-param-group {
+    /* размеры заданы выше в общем правиле */
 }
 
 .settings-param-group-title {
@@ -233,14 +244,8 @@
    Watchdog block
    ====================================================== */
 .settings-watchdog-block {
+    /* размеры заданы выше в общем правиле */
     margin-top: 0;
-    max-width: 640px;
-    background: #fff;
-    border: 1px solid #b8cfe0;
-    border-radius: 10px;
-    padding: 18px 20px 14px;
-    box-shadow: 0 1px 4px rgba(52, 120, 180, 0.06);
-    margin-bottom: 20px;
 }
 
 .settings-watchdog-title {
@@ -335,13 +340,7 @@
    PDF Sidecar block
    ====================================================== */
 .sidecar-block {
-    max-width: 640px;
-    background: #fff;
-    border: 1px solid #b8cfe0;
-    border-radius: 10px;
-    padding: 18px 20px 16px;
-    box-shadow: 0 1px 4px rgba(52, 120, 180, 0.06);
-    margin-bottom: 20px;
+    /* размеры заданы выше в общем правиле */
 }
 
 .sidecar-block-title {
