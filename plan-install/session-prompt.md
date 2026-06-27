@@ -1,6 +1,7 @@
 # Промт для новой сессии
 
-> Копируй весь блок ниже и вставляй в начало нового чата.
+> Копируй весь блок ниже целиком и вставляй в начало нового чата. Ничего не правь.
+> Перед новой сессией обнови только файл [session-state.md](./session-state.md).
 
 ---
 
@@ -18,26 +19,14 @@ RAG/LLM-платформа на Python/FastAPI. Репозиторий: https://
 - pdf-sidecar (embedding + reranker, порт 8765, на хосте)
 - pdf-sidecar/agent (host-agent FastAPI, порт 9090)
 
-## Контекст задачи
+## Документы проекта
 
 Полный контекст: https://github.com/Annener/mercer/blob/main/plan-install/context.md
-План работ: https://github.com/Annener/mercer/blob/main/plan-install/plan.md
-Статус выполнения: https://github.com/Annener/mercer/blob/main/plan-install/status.md
+План работ:      https://github.com/Annener/mercer/blob/main/plan-install/plan.md
+Статус шагов:    https://github.com/Annener/mercer/blob/main/plan-install/status.md
+Текущая сессия:  https://github.com/Annener/mercer/blob/main/plan-install/session-state.md
 
-## Текущий статус
-
-[ВСТАВЬ СЮДА АКТУАЛЬНЫЙ СТАТУС ИЗ status.md — какие шаги выполнены, что делаешь сейчас]
-
-Например:
-- Выполнено: A1, A2, A3, A4, A5
-- В работе: B1 — реализую generate_env.py
-- Ещё не начато: B2, B3, B4, B5, C1, C2, D1, D2, D3
-
-## Задача на эту сессию
-
-[ВСТАВЬ СЮДА ЧТО ИМЕННО НУЖНО СДЕЛАТЬ В ЭТОТ РАЗ]
-
-Например: «Реализовать шаги B1–B5: написать scripts/generate_env.py»
+Прочитай файл session-state.md — там текущий статус выполнения и задача на эту сессию.
 
 ## Стек и ограничения
 
