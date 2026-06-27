@@ -193,35 +193,96 @@ echo "[5/8] Checking system dependencies…"
 SYSTEM_MISSING=()
 
 if ! command -v gs &>/dev/null; then
-    echo "      ✗ ghostscript не найден. Установите: brew install ghostscript"
+    echo "      ✗ ghostscript не найден"
     SYSTEM_MISSING+=("ghostscript")
 else
     echo "      ✓ ghostscript: $(gs --version 2>/dev/null || echo unknown)"
 fi
 
 if ! command -v tesseract &>/dev/null; then
-    echo "      ✗ tesseract не найден. Установите: brew install tesseract tesseract-lang"
+    echo "      ✗ tesseract не найден"
     SYSTEM_MISSING+=("tesseract")
 else
     echo "      ✓ tesseract: $(tesseract --version 2>&1 | head -1)"
     if ! tesseract --list-langs 2>/dev/null | grep -q "rus"; then
-        echo "      ✗ Русский язык OCR отсутствует. Установите: brew install tesseract-lang"
-        SYSTEM_MISSING+=("tesseract-rus")
+        echo "      ✗ Русский язык OCR отсутствует (пакет tesseract-lang)"
+        SYSTEM_MISSING+=("tesseract-lang")
     else
         echo "      ✓ Russian OCR: OK"
     fi
 fi
 
 if ! command -v pdftoppm &>/dev/null; then
-    echo "      ✗ poppler не найден. Установите: brew install poppler"
+    echo "      ✗ poppler не найден"
     SYSTEM_MISSING+=("poppler")
 else
     echo "      ✓ poppler: OK"
 fi
 
 if [[ ${#SYSTEM_MISSING[@]} -gt 0 ]]; then
-    STEP_SYSTEM="ERROR"
-    STEP_SYSTEM_NOTE="нет: $(IFS=', '; echo "${SYSTEM_MISSING[*]}")"
+    echo ""
+    echo "      Отсутствуют системные зависимости: ${SYSTEM_MISSING[*]}"
+    echo ""
+
+    if command -v brew &>/dev/null; then
+        # Формируем список пакетов для brew
+        # tesseract-lang — это отдельный brew-пакет
+        BREW_PKGS=()
+        for pkg in "${SYSTEM_MISSING[@]}"; do
+            case "${pkg}" in
+                ghostscript)  BREW_PKGS+=("ghostscript") ;;
+                tesseract)    BREW_PKGS+=("tesseract") ;;
+                tesseract-lang) BREW_PKGS+=("tesseract-lang") ;;
+                poppler)      BREW_PKGS+=("poppler") ;;
+            esac
+        done
+
+        echo "      Установить через Homebrew?"
+        echo "        brew install ${BREW_PKGS[*]}"
+        echo ""
+        printf "      Продолжить установку? [y/N] "
+        # Читаем ответ даже если stdin не терминал (запуск из UI)
+        if [ -t 0 ]; then
+            read -r BREW_ANSWER
+        else
+            BREW_ANSWER="n"
+            echo "(не интерактивный режим — пропускаю)"
+        fi
+
+        if [[ "${BREW_ANSWER}" == "y" || "${BREW_ANSWER}" == "Y" ]]; then
+            echo "      → brew install ${BREW_PKGS[*]}"
+            if brew install "${BREW_PKGS[@]}"; then
+                echo "      ✓ Системные зависимости установлены."
+                STEP_SYSTEM_NOTE="ghostscript, tesseract+rus, poppler"
+                # Перепроверяем после установки
+                SYSTEM_MISSING=()
+                command -v gs &>/dev/null       || SYSTEM_MISSING+=("ghostscript")
+                command -v tesseract &>/dev/null || SYSTEM_MISSING+=("tesseract")
+                command -v pdftoppm &>/dev/null  || SYSTEM_MISSING+=("poppler")
+                if [[ ${#SYSTEM_MISSING[@]} -gt 0 ]]; then
+                    STEP_SYSTEM="WARN"
+                    STEP_SYSTEM_NOTE="всё ещё нет: ${SYSTEM_MISSING[*]}"
+                fi
+            else
+                echo "      ✗ brew install завершился с ошибкой."
+                echo "        Установите вручную и запустите install.sh повторно."
+                STEP_SYSTEM="ERROR"
+                STEP_SYSTEM_NOTE="brew install не удался"
+            fi
+        else
+            echo "      Пропускаю установку системных зависимостей."
+            echo "      Установите вручную и запустите install.sh повторно:"
+            echo "        brew install ${BREW_PKGS[*]}"
+            STEP_SYSTEM="ERROR"
+            STEP_SYSTEM_NOTE="нет: $(IFS=', '; echo "${SYSTEM_MISSING[*]}")"
+        fi
+    else
+        # brew недоступен — просто сообщаем что делать
+        echo "      Homebrew не найден. Установите зависимости вручную:"
+        echo "        ghostscript, tesseract, tesseract-lang, poppler"
+        STEP_SYSTEM="ERROR"
+        STEP_SYSTEM_NOTE="нет: $(IFS=', '; echo "${SYSTEM_MISSING[*]}")"
+    fi
 else
     STEP_SYSTEM_NOTE="ghostscript, tesseract+rus, poppler"
 fi
