@@ -71,10 +71,6 @@
     margin-top: 10px;
 }
 
-.world-card {
-    min-height: 116px;
-}
-
 .settings-note {
     color: #657789;
     margin-bottom: 14px;
@@ -93,7 +89,7 @@
 }
 
 /* ======================================================
-   Shared badge styles
+   Shared badge styles (базовые — общие для всех вкладок)
    ====================================================== */
 .badge {
     display: inline-flex;
@@ -138,25 +134,6 @@
     box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
 }
 
-.badge--panel {
-    padding: 5px 14px;
-    font-size: 12px;
-    width: 100%;
-    justify-content: center;
-}
-
-.badge--file {
-    padding: 2px 8px;
-    font-size: 11px;
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.07);
-}
-
-.badge--modal,
-.badge--dir {
-    padding: 4px 12px;
-    font-size: 12px;
-}
-
 .badge--removable,
 .badge--active,
 .badge--inactive,
@@ -188,204 +165,6 @@
     opacity: 0.75;
     transform: translateY(-1px);
     box-shadow: 0 2px 6px rgba(0, 0, 0, 0.12);
-}
-
-.docs-tag-row {
-    display: flex;
-    align-items: center;
-}
-
-.docs-file-tags {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px;
-    align-items: center;
-}
-
-.docs-modal-tag-badges {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-    flex: 1;
-    align-content: flex-start;
-}
-
-.docs-dir-tag-list {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-    min-height: 32px;
-    align-items: flex-start;
-    align-content: flex-start;
-}
-
-/* ── Domain / Vault lists ── */
-.domain-list,
-.vaults-list {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-    margin-bottom: 24px;
-}
-
-.domain-card,
-.vault-card {
-    background: #fff;
-    border: 1px solid #dfe6ee;
-    border-radius: 8px;
-    padding: 16px;
-}
-
-.domain-card-header,
-.vault-card-header {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    margin-bottom: 12px;
-}
-
-.domain-card-title,
-.vault-card-title {
-    font-weight: 600;
-    font-size: 15px;
-    flex: 1;
-}
-
-.domain-card-body,
-.vault-card-body {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-}
-
-.domain-field-row,
-.vault-field-row {
-    display: grid;
-    grid-template-columns: 120px 1fr;
-    align-items: center;
-    gap: 12px;
-}
-
-.domain-field-label,
-.vault-field-label {
-    font-size: 12px;
-    color: #7f8c8d;
-    font-weight: 500;
-}
-
-.domain-card-actions,
-.vault-card-actions {
-    display: flex;
-    gap: 8px;
-    margin-top: 12px;
-    justify-content: flex-end;
-}
-
-.domain-add-form,
-.vault-add-form {
-    background: #fff;
-    border: 1px dashed #dfe6ee;
-    border-radius: 8px;
-    padding: 16px;
-}
-
-.domain-add-form .domain-field-row,
-.vault-add-form .vault-field-row {
-    margin-bottom: 8px;
-}
-
-.domain-prompts-section,
-.vault-section {
-    margin-top: 12px;
-    padding-top: 12px;
-    border-top: 1px solid #edf2f7;
-}
-
-.domain-prompts-label,
-.vault-section-label {
-    font-size: 12px;
-    font-weight: 600;
-    color: #7f8c8d;
-    margin-bottom: 8px;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-}
-
-.domain-prompt-row {
-    display: grid;
-    grid-template-columns: 140px 1fr;
-    gap: 8px;
-    align-items: start;
-    margin-bottom: 8px;
-}
-
-.domain-prompt-label {
-    font-size: 12px;
-    color: #526579;
-    padding-top: 6px;
-}
-
-.domain-prompt-textarea {
-    width: 100%;
-    min-height: 72px;
-    padding: 7px 9px;
-    font: inherit;
-    font-size: 13px;
-    border: 1px solid #d4dde7;
-    border-radius: 5px;
-    resize: vertical;
-    color: #2c3e50;
-    background: #fafcfe;
-}
-
-.domain-prompt-textarea:focus {
-    outline: none;
-    border-color: #3498db;
-    box-shadow: 0 0 0 2px rgba(52, 152, 219, 0.15);
-}
-
-.domain-clarification-section {
-    margin-top: 12px;
-    padding-top: 12px;
-    border-top: 1px solid #edf2f7;
-}
-
-.clarification-field-row {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 6px 0;
-    border-bottom: 1px solid #f0f4f8;
-}
-
-.clarification-field-name {
-    flex: 1;
-    font-size: 13px;
-    color: #2c3e50;
-}
-
-.clarification-field-required {
-    font-size: 11px;
-    color: #95a5a6;
-    background: #f0f4f8;
-    padding: 2px 6px;
-    border-radius: 4px;
-}
-
-.clarification-add-row {
-    display: flex;
-    gap: 8px;
-    margin-top: 10px;
-    align-items: center;
-}
-
-.clarification-add-row input {
-    flex: 1;
-    padding: 6px 10px;
-    border: 1px solid #d4dde7;
-    border-radius: 5px;
-    font: inherit;
-    font-size: 13px;
 }
 
 /* ======================================================

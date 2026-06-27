@@ -1,0 +1,80 @@
+/* === Tab: Vaults === */
+
+.vaults-list {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin-bottom: 24px;
+}
+
+.vault-card {
+    background: #fff;
+    border: 1px solid #dfe6ee;
+    border-radius: 8px;
+    padding: 16px;
+}
+
+.vault-card-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 12px;
+}
+
+.vault-card-title {
+    font-weight: 600;
+    font-size: 15px;
+    flex: 1;
+}
+
+.vault-card-body {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.vault-field-row {
+    display: grid;
+    grid-template-columns: 120px 1fr;
+    align-items: center;
+    gap: 12px;
+}
+
+.vault-field-label {
+    font-size: 12px;
+    color: #7f8c8d;
+    font-weight: 500;
+}
+
+.vault-card-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 12px;
+    justify-content: flex-end;
+}
+
+.vault-add-form {
+    background: #fff;
+    border: 1px dashed #dfe6ee;
+    border-radius: 8px;
+    padding: 16px;
+}
+
+.vault-add-form .vault-field-row {
+    margin-bottom: 8px;
+}
+
+.vault-section {
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid #edf2f7;
+}
+
+.vault-section-label {
+    font-size: 12px;
+    font-weight: 600;
+    color: #7f8c8d;
+    margin-bottom: 8px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
