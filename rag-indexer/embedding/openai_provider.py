@@ -32,9 +32,15 @@ class OpenAICompatibleProvider(EmbeddingProvider):
     def dimensions(self) -> int:
         return self._dimensions
 
+    def _auth_headers(self) -> dict[str, str]:
+        """Возвращает заголовок Authorization только если api_key непустой.
+        Для локальных провайдеров (sidecar) без аутентификации возвращает {}."""
+        if self.api_key:
+            return {"Authorization": f"Bearer {self.api_key}"}
+        return {}
+
     async def embed(self, texts: list[str]) -> list[list[float]]:
-        headers = {"Authorization": f"Bearer {self.api_key}"}
-        async with httpx.AsyncClient(timeout=self.timeout, headers=headers) as client:
+        async with httpx.AsyncClient(timeout=self.timeout, headers=self._auth_headers()) as client:
             return [await self._embed_one(client, text) for text in texts]
 
     async def embed_batch(self, texts: list[str]) -> list[list[float]]:
@@ -48,10 +54,9 @@ class OpenAICompatibleProvider(EmbeddingProvider):
         if not texts:
             return []
 
-        headers = {"Authorization": f"Bearer {self.api_key}"}
         last_unavailable: Exception | None = None
 
-        async with httpx.AsyncClient(timeout=self.timeout, headers=headers) as client:
+        async with httpx.AsyncClient(timeout=self.timeout, headers=self._auth_headers()) as client:
             for attempt in range(self.max_retries):
                 try:
                     response = await client.post(
