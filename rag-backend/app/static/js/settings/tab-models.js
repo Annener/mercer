@@ -1,4 +1,8 @@
 // ─── Единая статусная модель ──────────────────────────────────────────────────
+// Возвращает { text, cssClass } для бейджа на карточке.
+//  active   — модель сейчас активна (используется системой)
+//  ready    — включена, но не активна
+//  disabled — явно выключена (enabled === false)
 function modelStatusBadge(isActive, isEnabled) {
     if (isActive)   return { text: 'active',   cssClass: 'badge--status-active' };
     if (!isEnabled) return { text: 'disabled', cssClass: 'badge--status-disabled' };
@@ -6,6 +10,13 @@ function modelStatusBadge(isActive, isEnabled) {
 }
 
 const ModelsTabMixin = {
+
+    // ─── Единый рендерер карточки ─────────────────────────────────────────────
+    // config: {
+    //   id, name, provider, badge: {text, cssClass},
+    //   isActive, isEnabled, modelType,
+    //   menuItems: Array<{ action, label, disabled?, danger? }>
+    // }
     renderModelCard(config) {
         const menuItemsHtml = config.menuItems.map(item => `
             <button class="card-menu-item${item.danger ? ' card-menu-danger' : ''}"
@@ -37,6 +48,7 @@ const ModelsTabMixin = {
         </article>`;
     },
 
+    // ─── Обёртка секции ───────────────────────────────────────────────────────
     _renderModelsSection(title, addAction, modelType, bodyHtml) {
         return `
         <div class="models-section">
@@ -52,6 +64,7 @@ const ModelsTabMixin = {
         </div>`;
     },
 
+    // ─── Главный рендерер вкладки ─────────────────────────────────────────────
     async renderModelsTab() {
         const [genHtml, embHtml, rerankHtml] = await Promise.all([
             this._renderGenSection(),
@@ -61,6 +74,7 @@ const ModelsTabMixin = {
         return genHtml + embHtml + rerankHtml;
     },
 
+    // ─── Секция: Генеративные ─────────────────────────────────────────────────
     async _renderGenSection() {
         const models = await this.api.getGenerationModels();
         const modelsArr = Array.isArray(models) ? models : [];
@@ -75,28 +89,31 @@ const ModelsTabMixin = {
     },
 
     _genModelConfig(m) {
-        const isActive = !!m.is_active;
+        const isActive  = !!m.is_active;
         const isEnabled = m.enabled !== false;
         return {
-            id: m.model_id,
+            id:        m.model_id,
             modelType: 'gen',
-            name: m.display_name || m.model_id,
-            provider: m.provider || '',
-            badge: modelStatusBadge(isActive, isEnabled),
+            name:      m.display_name || m.model_id,
+            provider:  m.provider || '',
+            badge:     modelStatusBadge(isActive, isEnabled),
             isActive,
             isEnabled,
             menuItems: [
+                { action: 'edit-gen',       label: '✏️ Изменить' },
+                { action: 'check-gen',      label: '🔍 Проверить' },
                 isActive
                     ? { action: 'deactivate-gen', label: '⏸️ Деактивировать' }
-                    : { action: 'activate-gen', label: '▶️ Активировать', disabled: !isEnabled },
-                { action: 'edit-gen', label: '✏️ Изменить' },
-                { action: 'check-gen', label: '🔍 Проверить' },
-                { action: 'toggle-gen', label: isEnabled ? '⏸️ Выключить' : '▶️ Включить' },
-                { action: 'delete-gen', label: '🗑️ Удалить', danger: true, disabled: isActive },
+                    : { action: 'activate-gen',   label: '▶️ Активировать', disabled: !isEnabled },
+                { action: 'toggle-gen',     label: isEnabled ? '🔴 Выключить' : '🟢 Включить' },
+                { action: 'delete-gen',     label: '🗑️ Удалить', danger: true, disabled: isActive },
             ],
         };
     },
 
+    // ─── Секция: Embedding ────────────────────────────────────────────────────
+    // Нет activate/deactivate — модель привязана к vault при создании.
+    // Только edit / check / delete.
     async _renderEmbSection() {
         const [models, vaults] = await Promise.all([
             this.api.getEmbeddingModels(),
@@ -118,24 +135,27 @@ const ModelsTabMixin = {
     },
 
     _embModelConfig(m, linkedVaults = []) {
-        const hasVaults = linkedVaults.length > 0;
-        const isEnabled = m.enabled !== false;
+        const hasVaults   = linkedVaults.length > 0;
+        const isEnabled   = m.enabled !== false;
+        const providerStr = [m.provider, m.dimensions ? `${m.dimensions}d` : null]
+            .filter(Boolean).join(' · ');
         return {
-            id: m.model_id,
+            id:        m.model_id,
             modelType: 'emb',
-            name: m.display_name || m.model_id,
-            provider: m.provider || '',
-            badge: modelStatusBadge(false, isEnabled),
-            isActive: false,
+            name:      m.display_name || m.model_id,
+            provider:  providerStr,
+            badge:     modelStatusBadge(false, isEnabled),
+            isActive:  false,
             isEnabled,
             menuItems: [
-                { action: 'edit-emb', label: '✏️ Изменить' },
-                { action: 'check-emb', label: '🔍 Проверить' },
+                { action: 'edit-emb',   label: '✏️ Изменить' },
+                { action: 'check-emb',  label: '🔍 Проверить' },
                 { action: 'delete-emb', label: '🗑️ Удалить', danger: true, disabled: hasVaults },
             ],
         };
     },
 
+    // ─── Секция: Reranker ─────────────────────────────────────────────────────
     async _renderRerankSection() {
         const models = await this.api.getRerankModels();
         const modelsArr = Array.isArray(models) ? models : [];
@@ -150,23 +170,23 @@ const ModelsTabMixin = {
     },
 
     _rerankModelConfig(m) {
-        const isActive = !!m.is_active;
+        const isActive  = !!m.is_active;
         const isEnabled = m.enabled !== false;
         return {
-            id: m.model_id,
+            id:        m.model_id,
             modelType: 'rerank',
-            name: m.display_name || m.model_id,
-            provider: m.provider || '',
-            badge: modelStatusBadge(isActive, isEnabled),
+            name:      m.display_name || m.model_id,
+            provider:  m.provider || '',
+            badge:     modelStatusBadge(isActive, isEnabled),
             isActive,
             isEnabled,
             menuItems: [
+                { action: 'edit-rerank',   label: '✏️ Изменить' },
+                { action: 'check-rerank',  label: '🔍 Проверить' },
                 isActive
                     ? { action: 'deactivate-rerank', label: '⏸️ Деактивировать' }
-                    : { action: 'activate-rerank', label: '▶️ Активировать', disabled: !isEnabled },
-                { action: 'edit-rerank', label: '✏️ Изменить' },
-                { action: 'check-rerank', label: '🔍 Проверить' },
-                { action: 'toggle-rerank', label: isEnabled ? '⏸️ Выключить' : '▶️ Включить' },
+                    : { action: 'activate-rerank',   label: '▶️ Активировать', disabled: !isEnabled },
+                { action: 'toggle-rerank', label: isEnabled ? '🔴 Выключить' : '🟢 Включить' },
                 { action: 'delete-rerank', label: '🗑️ Удалить', danger: true, disabled: isActive },
             ],
         };

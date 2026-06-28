@@ -18,6 +18,7 @@ router = APIRouter()
 
 
 async def _get_generation_model_by_model_id(model_id: str, db: AsyncSession) -> GenerationModel | None:
+    """Lookup GenerationModel by model_id (string), not by PK (UUID)."""
     result = await db.execute(select(GenerationModel).where(GenerationModel.model_id == model_id))
     return result.scalar_one_or_none()
 
@@ -47,14 +48,17 @@ async def activate_generation_model(model_id: str, db: AsyncSession = Depends(ge
 
 
 @router.post("/models/generation/{model_id:path}/deactivate")
-async def deactivate_generation_model(model_id: str, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+async def deactivate_generation_model(model_id: str, db: AsyncSession = Depends(get_db)) -> dict[str, str]:
     model = await _get_generation_model_by_model_id(model_id, db)
     if model is None:
         raise HTTPException(status_code=404, detail="Generation model not found")
-    model.is_active = False
-    await db.commit()
-    await db.refresh(model)
-    return settings_service._generation_model_dict(model)
+    if not model.is_active:
+        return {"status": "ok", "detail": "already inactive"}
+    try:
+        await settings_service.update_generation_model(model_id, {"is_active": False}, db)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Generation model not found") from exc
+    return {"status": "ok"}
 
 
 @router.post("/models/generation/{model_id:path}/toggle")

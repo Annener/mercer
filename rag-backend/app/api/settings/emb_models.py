@@ -9,30 +9,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import EmbeddingModel, Vault
 from app.db.session import get_db
-from app.providers.embeddings import get_embedding_provider
 from app.services.settings_service import settings_service
+from .helpers import _check_embedding_provider
 from .schemas import EmbeddingModelCreateRequest, EmbeddingModelUpdateRequest
 
 router = APIRouter()
-SUPPORTED_PROVIDERS = {"ollama", "openai_compatible", "openai", "lmstudio", "vllm", "huggingface"}
+
+SUPPORTED_PROVIDERS = ["ollama", "openai_compatible", "sidecar"]
 
 
 async def _get_embedding_model_by_model_id(model_id: str, db: AsyncSession) -> EmbeddingModel | None:
+    """Lookup EmbeddingModel by model_id (string), not by PK (UUID)."""
     result = await db.execute(select(EmbeddingModel).where(EmbeddingModel.model_id == model_id))
     return result.scalar_one_or_none()
-
-
-async def _check_embedding_provider(model: EmbeddingModel) -> list[float]:
-    api_key = settings_service.decrypt_api_key(model.encrypted_api_key) if model.encrypted_api_key else ""
-    provider = get_embedding_provider(
-        provider_name=model.provider,
-        model_id=model.model_id,
-        base_url=model.base_url,
-        api_key=api_key,
-        timeout_seconds=model.timeout_seconds,
-        dimensions=model.dimensions,
-    )
-    return await provider.embed_text("ping")
 
 
 @router.get("/models/embedding")
@@ -42,29 +31,11 @@ async def list_embedding_models(db: AsyncSession = Depends(get_db)) -> list[dict
 
 @router.post("/models/embedding", status_code=status.HTTP_201_CREATED)
 async def create_embedding_model(req: EmbeddingModelCreateRequest, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
-    if await _get_embedding_model_by_model_id(req.model_id, db) is not None:
-        raise HTTPException(status_code=409, detail="Embedding model already exists")
     if req.provider not in SUPPORTED_PROVIDERS:
         raise HTTPException(status_code=422, detail="Unsupported embedding provider")
-    try:
-        return await settings_service.create_embedding_model(req.model_dump(exclude_none=True), db)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-
-@router.post("/models/embedding/{model_id:path}/toggle")
-async def toggle_embedding_model(model_id: str, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
-    model = await _get_embedding_model_by_model_id(model_id, db)
-    if model is None:
-        raise HTTPException(status_code=404, detail="Embedding model not found")
-    if model.enabled:
-        result = await db.execute(select(func.count()).select_from(Vault).where(Vault.embedding_model_id == model_id))
-        if result.scalar_one() > 0:
-            raise HTTPException(status_code=409, detail="Cannot disable embedding model used by existing vaults")
-    try:
-        return await settings_service.update_embedding_model(model_id, {"enabled": not model.enabled}, db)
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail="Embedding model not found") from exc
+    if await _get_embedding_model_by_model_id(req.model_id, db) is not None:
+        raise HTTPException(status_code=409, detail="Embedding model already exists")
+    return await settings_service.create_embedding_model(req.model_dump(exclude_none=True), db)
 
 
 @router.post("/models/embedding/{model_id:path}/check")
@@ -78,6 +49,24 @@ async def check_embedding_model(model_id: str, db: AsyncSession = Depends(get_db
         return {"ok": True, "latency_ms": int((time.perf_counter() - started) * 1000), "dimensions": len(vector), "error": None}
     except Exception as exc:
         return {"ok": False, "latency_ms": int((time.perf_counter() - started) * 1000), "dimensions": None, "error": str(exc)}
+
+
+@router.post("/models/embedding/{model_id:path}/toggle")
+async def toggle_embedding_model(model_id: str, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+    """Toggle enabled/disabled state of an embedding model.
+    Note: does NOT affect vault data — only controls visibility for new vault creation.
+    """
+    model = await _get_embedding_model_by_model_id(model_id, db)
+    if model is None:
+        raise HTTPException(status_code=404, detail="Embedding model not found")
+    current_enabled = model.enabled if model.enabled is not None else True
+    try:
+        updated = await settings_service.update_embedding_model(
+            model_id, {"enabled": not current_enabled}, db
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Embedding model not found") from exc
+    return updated
 
 
 @router.put("/models/embedding/{model_id:path}")
