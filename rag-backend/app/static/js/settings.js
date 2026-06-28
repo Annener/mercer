@@ -64,6 +64,9 @@ class SettingsManager {
         if (tab === 'documents') {
             this._initDocumentsTab();
         }
+        if (tab === 'params') {
+            this._loadSidecarStatus();
+        }
     }
 
     _bindActions() {
@@ -132,7 +135,22 @@ class SettingsManager {
                 await this.api.updateConfig(updates);
                 await this.loadTab('params');
             } catch (e) { alert('Ошибка сохранения: ' + e.message); }
+            return;
         }
+
+        if (action === 'reset-params') {
+            if (!confirm('Сбросить все параметры к значениям по умолчанию?')) return;
+            try {
+                await this.api.resetConfig();
+                await this.loadTab('params');
+            } catch (e) { alert('Ошибка сброса: ' + e.message); }
+            return;
+        }
+
+        if (action === 'sidecar-start')   { await this._sidecarAction('start');   return; }
+        if (action === 'sidecar-stop')    { await this._sidecarAction('stop');    return; }
+        if (action === 'sidecar-restart') { await this._sidecarAction('restart'); return; }
+        if (action === 'sidecar-install') { this._openInstallModal();              return; }
     }
 
     // ─── Domains ────────────────────────────────────────────────────────────────────────────
