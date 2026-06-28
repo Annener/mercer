@@ -318,6 +318,52 @@ class SettingsManager {
         }
     }
 
+    // ─── Documents ────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Вызывается из _afterTabRender() сразу после того, как renderDocumentsTab()
+     * вставил HTML-скелет в DOM. Делегирует загрузку данных в DocumentsTabMixin.
+     */
+    _initDocumentsTab() {
+        if (typeof this.loadDocumentsData !== 'function') {
+            console.error('_initDocumentsTab: loadDocumentsData не найдена — DocumentsTabMixin не подмешан?');
+            if (this._tabContent) {
+                this._tabContent.innerHTML =
+                    '<div class="settings-error">Ошибка инициализации вкладки Documents: миксин не подключён.</div>';
+            }
+            return;
+        }
+        this.loadDocumentsData().catch(e => {
+            console.error('Documents tab init error:', e);
+            if (this._tabContent) {
+                this._tabContent.innerHTML =
+                    `<div class="settings-error">Ошибка загрузки: ${this.escapeHtml(e.message)}</div>`;
+            }
+        });
+    }
+
+    async handleDocumentsAction(action, btn) {
+        if (action === 'delete-document') {
+            const id = btn?.dataset.id;
+            if (!id || !confirm('Удалить документ?')) return;
+            try {
+                await this.api.deleteDocument(id);
+                await this.loadDocumentsData();
+            } catch (e) { alert('Ошибка: ' + e.message); }
+        } else if (action === 'reindex-document') {
+            const id = btn?.dataset.id;
+            if (!id) return;
+            try {
+                await this.api.reindexDocument(id);
+                await this.loadDocumentsData();
+            } catch (e) { alert('Ошибка переиндексации: ' + e.message); }
+        } else if (action === 'run-indexer') {
+            try {
+                await this._runIndexer();
+            } catch (e) { alert('Ошибка запуска индексации: ' + e.message); }
+        }
+    }
+
     // ─── Utility ───────────────────────────────────────────────────────────────────────────
 
     escapeHtml(str) {
