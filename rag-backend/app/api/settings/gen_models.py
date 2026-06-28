@@ -18,7 +18,6 @@ router = APIRouter()
 
 
 async def _get_generation_model_by_model_id(model_id: str, db: AsyncSession) -> GenerationModel | None:
-    """Lookup GenerationModel by model_id (string), not by PK (UUID)."""
     result = await db.execute(select(GenerationModel).where(GenerationModel.model_id == model_id))
     return result.scalar_one_or_none()
 
@@ -30,7 +29,6 @@ async def list_generation_models(db: AsyncSession = Depends(get_db)) -> list[dic
 
 @router.post("/models/generation", status_code=status.HTTP_201_CREATED)
 async def create_generation_model(req: GenerationModelCreateRequest, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
-    # E-CHK02 fix: db.get() искал по PK (UUID), падал с asyncpg.DataError на строковом model_id
     if await _get_generation_model_by_model_id(req.model_id, db) is not None:
         raise HTTPException(status_code=409, detail="Generation model already exists")
     try:
@@ -48,9 +46,19 @@ async def activate_generation_model(model_id: str, db: AsyncSession = Depends(ge
     return {"status": "ok"}
 
 
+@router.post("/models/generation/{model_id:path}/deactivate")
+async def deactivate_generation_model(model_id: str, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+    model = await _get_generation_model_by_model_id(model_id, db)
+    if model is None:
+        raise HTTPException(status_code=404, detail="Generation model not found")
+    model.is_active = False
+    await db.commit()
+    await db.refresh(model)
+    return settings_service._generation_model_dict(model)
+
+
 @router.post("/models/generation/{model_id:path}/toggle")
 async def toggle_generation_model(model_id: str, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
-    # E-CHK02 fix: db.get() искал по PK (UUID), падал с asyncpg.DataError
     model = await _get_generation_model_by_model_id(model_id, db)
     if model is None:
         raise HTTPException(status_code=404, detail="Generation model not found")
@@ -67,7 +75,6 @@ async def toggle_generation_model(model_id: str, db: AsyncSession = Depends(get_
 
 @router.post("/models/generation/{model_id:path}/check")
 async def check_generation_model(model_id: str, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
-    # E-CHK02 fix: db.get() искал по PK (UUID), падал с asyncpg.DataError
     model = await _get_generation_model_by_model_id(model_id, db)
     if model is None:
         raise HTTPException(status_code=404, detail="Generation model not found")
@@ -84,9 +91,6 @@ async def check_generation_model(model_id: str, db: AsyncSession = Depends(get_d
             ),
             api_key=api_key, max_retries=1,
         )
-        # FIX: generate() expects list[dict], not a bare dict.
-        # Passing a plain dict caused "messages" to be serialized as a JSON
-        # object instead of an array → OpenRouter: 'str' object has no attribute 'get'.
         await provider.generate([{"role": "user", "content": "ping"}])
         return {"ok": True, "latency_ms": int((time.perf_counter() - started) * 1000), "error": None}
     except Exception as exc:

@@ -32,7 +32,6 @@ class ChatAPI {
         return response.json();
     }
 
-    // Алиас для getChat — используется в новом коде
     async getChatHistory(chatId) {
         return this.getChat(chatId);
     }
@@ -47,7 +46,6 @@ class ChatAPI {
         return response.json();
     }
 
-    // Алиас для renameChat через PUT (новый роут /chat/{id}/title)
     async updateChatTitle(chatId, title) {
         const response = await fetch(`${this.baseUrl}/chat/${chatId}/title`, {
             method: 'PUT',
@@ -55,7 +53,6 @@ class ChatAPI {
             body: JSON.stringify({ title }),
         });
         if (!response.ok) {
-            // Fallback на старый роут если новый не существует
             return this.renameChat(chatId, title);
         }
         return response.json();
@@ -66,7 +63,6 @@ class ChatAPI {
             method: 'DELETE',
         });
         if (!response.ok) throw new Error(`Failed to delete chat: ${response.statusText}`);
-        // 204 No Content — не вызываем .json()
     }
 
     async lockPipeline(chatId, pipelineId) {
@@ -79,17 +75,10 @@ class ChatAPI {
         return response.json();
     }
 
-    /**
-     * @param {string} chatId
-     * @param {string} content
-     * @param {boolean} stream
-     * @param {AbortSignal|null} signal — опциональный сигнал для прерывания запроса
-     */
     async sendMessage(chatId, content, stream = true, signal = null) {
         const url = stream
             ? `${this.baseUrl}/chat/${chatId}/send_stream`
             : `${this.baseUrl}/chat/${chatId}/send`;
-        // C25-A fix: при stream=true добавляем stream:true в body (SendMessageRequest требует это поле)
         const body = stream ? { content, stream: true } : { content };
         const fetchOptions = {
             method: 'POST',
@@ -103,7 +92,7 @@ class ChatAPI {
             try {
                 const errData = await response.json();
                 errMsg = errData.detail || errData.message || errMsg;
-            } catch (_) { /* ignore */ }
+            } catch (_) {}
             const err = new Error(errMsg);
             err.status = response.status;
             throw err;
@@ -123,13 +112,12 @@ class ChatAPI {
             try {
                 const errData = await response.json();
                 errMsg = errData.detail || errData.message || errMsg;
-            } catch (_) { /* ignore */ }
+            } catch (_) {}
             throw new Error(errMsg);
         }
         return response.json();
     }
 
-    // Clarification FSM (новые методы)
     async getClarificationState(chatId) {
         const response = await fetch(`${this.baseUrl}/chat/${chatId}/clarification`);
         if (!response.ok) throw new Error(`Failed to get clarification state: ${response.statusText}`);
@@ -146,15 +134,6 @@ class ChatAPI {
         return response.json();
     }
 
-    // === Pipeline confirm / resume (Этап 10) ===
-
-    /**
-     * POST /chat/{chatId}/pipeline_confirm
-     * action: 'confirm' | 'cancel'
-     * confirmToken: строка из SSE-чанка pipeline_confirm_required
-     *
-     * fix: бэк ожидает {confirm_token, confirmed: bool}, не {confirm_token, action}
-     */
     async pipelineConfirm(chatId, confirmToken, action) {
         const response = await fetch(`${this.baseUrl}/chat/${chatId}/pipeline_confirm`, {
             method: 'POST',
@@ -169,23 +148,14 @@ class ChatAPI {
             try {
                 const errData = await response.json();
                 errMsg = errData.detail || errData.message || errMsg;
-            } catch (_) { /* ignore */ }
+            } catch (_) {}
             throw new Error(errMsg);
         }
-        // Ответ может быть StreamingResponse (SSE) или JSON в зависимости от бэка
         const ct = response.headers.get('content-type') || '';
         if (ct.includes('text/event-stream')) return response.body;
         return response.json();
     }
 
-    /**
-     * POST /chat/{chatId}/pipeline_resume
-     * action: 'resume' | 'cancel'
-     * resumeToken: строка из SSE-чанка validation_required
-     * feedback: выбранная пользователем опция (только для action='resume')
-     *
-     * fix: бэк ожидает {resume_token, cancelled: bool, user_feedback}, не {resume_token, action, feedback}
-     */
     async pipelineResume(chatId, resumeToken, action, feedback = null) {
         const response = await fetch(`${this.baseUrl}/chat/${chatId}/pipeline_resume`, {
             method: 'POST',
@@ -201,7 +171,7 @@ class ChatAPI {
             try {
                 const errData = await response.json();
                 errMsg = errData.detail || errData.message || errMsg;
-            } catch (_) { /* ignore */ }
+            } catch (_) {}
             throw new Error(errMsg);
         }
         const ct = response.headers.get('content-type') || '';
@@ -389,7 +359,6 @@ class ChatAPI {
             method: 'DELETE',
         });
         if (!response.ok) throw new Error(`Failed to delete pipeline: ${response.statusText}`);
-        // 204 No Content
     }
 
     // === Settings API ===
@@ -440,8 +409,6 @@ class ChatAPI {
         return response.json();
     }
 
-    // === Domains (Settings) ===
-
     async getSettingsDomains() {
         const response = await fetch(`${this.baseUrl}/api/settings/domains`);
         if (!response.ok) throw new Error(`Failed to get domains: ${response.statusText}`);
@@ -479,7 +446,6 @@ class ChatAPI {
             method: 'DELETE',
         });
         if (!response.ok) throw new Error(`Failed to delete domain: ${response.statusText}`);
-        // 204 No Content
     }
 
     async getDomainPrompts(domainId) {
@@ -514,8 +480,6 @@ class ChatAPI {
         return response.json();
     }
 
-    // === Vaults ===
-
     async getVaults(domainId = null) {
         const qs = domainId ? `?domain_id=${encodeURIComponent(domainId)}` : '';
         const response = await fetch(`${this.baseUrl}/api/settings/vaults${qs}`);
@@ -548,7 +512,6 @@ class ChatAPI {
             method: 'DELETE',
         });
         if (!response.ok) throw new Error(`Failed to delete vault: ${response.statusText}`);
-        // 204 No Content
     }
 
     async toggleVault(vaultId) {
@@ -592,7 +555,6 @@ class ChatAPI {
             method: 'DELETE',
         });
         if (!response.ok) throw new Error(`Failed to delete generation model: ${response.statusText}`);
-        // 204 No Content
     }
 
     async setActiveGenerationModel(modelId) {
@@ -600,6 +562,14 @@ class ChatAPI {
             method: 'POST',
         });
         if (!response.ok) throw new Error(`Failed to activate generation model: ${response.statusText}`);
+        return response.json();
+    }
+
+    async deactivateGenerationModel(modelId) {
+        const response = await fetch(`${this.baseUrl}/api/settings/models/generation/${encodeURIComponent(modelId)}/deactivate`, {
+            method: 'POST',
+        });
+        if (!response.ok) throw new Error(`Failed to deactivate generation model: ${response.statusText}`);
         return response.json();
     }
 
@@ -652,7 +622,14 @@ class ChatAPI {
             method: 'DELETE',
         });
         if (!response.ok) throw new Error(`Failed to delete embedding model: ${response.statusText}`);
-        // 204 No Content
+    }
+
+    async toggleEmbeddingModel(modelId) {
+        const response = await fetch(`${this.baseUrl}/api/settings/models/embedding/${encodeURIComponent(modelId)}/toggle`, {
+            method: 'POST',
+        });
+        if (!response.ok) throw new Error(`Failed to toggle embedding model: ${response.statusText}`);
+        return response.json();
     }
 
     async checkEmbeddingModel(modelId) {
@@ -696,7 +673,6 @@ class ChatAPI {
             method: 'DELETE',
         });
         if (!response.ok) throw new Error(`Failed to delete rerank model: ${response.statusText}`);
-        // 204 No Content
     }
 
     async checkRerankModel(modelId) {
@@ -707,12 +683,16 @@ class ChatAPI {
         return response.json();
     }
 
-    async activateRerankModel(modelId) {
+    async setActiveRerankModel(modelId) {
         const response = await fetch(`${this.baseUrl}/api/settings/models/rerank/${encodeURIComponent(modelId)}/activate`, {
             method: 'POST',
         });
         if (!response.ok) throw new Error(`Failed to activate rerank model: ${response.statusText}`);
         return response.json();
+    }
+
+    async activateRerankModel(modelId) {
+        return this.setActiveRerankModel(modelId);
     }
 
     async deactivateRerankModel(modelId) {
@@ -723,7 +703,12 @@ class ChatAPI {
         return response.json();
     }
 
-    // === Documents ===
+    async toggleRerankModel(modelId) {
+        const current = await this.getRerankModels();
+        const model = (Array.isArray(current) ? current : []).find(m => m.model_id === modelId);
+        if (!model) throw new Error('Rerank model not found');
+        return this.updateRerankModel(modelId, { enabled: !(model.enabled !== false) });
+    }
 
     async getDocuments(vaultId = null, domainId = null) {
         const params = new URLSearchParams();
@@ -740,15 +725,12 @@ class ChatAPI {
             method: 'DELETE',
         });
         if (!response.ok) throw new Error(`Failed to delete document: ${response.statusText}`);
-        // 204 No Content
     }
-
-    // === Watchdog settings ===
 
     async getWatchdogSettings() {
         const res = await fetch('/api/v1/settings/watchdog');
         if (!res.ok) throw new Error('Failed to load watchdog settings');
-        return res.json(); // { auto_index_extensions: string[], interval_sec: number }
+        return res.json();
     }
 
     async saveWatchdogSettings(extensions, intervalSec) {
@@ -764,9 +746,6 @@ class ChatAPI {
         return res.json();
     }
 
-    // === PDF Sidecar (управление через host-agent) ===
-
-    /** Статус sidecar-процесса. Никогда не бросает — возвращает { agent_unavailable: true } при недоступности агента. */
     async getSidecarStatus() {
         const res = await fetch(`${this.baseUrl}/api/settings/sidecar/status`);
         if (!res.ok) {
@@ -805,21 +784,10 @@ class ChatAPI {
         return res.json();
     }
 
-    /** Возвращает URL SSE-потока install.sh (используется через EventSource). */
     getSidecarInstallStreamUrl() {
         return `${this.baseUrl}/api/settings/sidecar/install/stream`;
     }
 
-    // === DB Management ===
-
-    /**
-     * Текстовый поиск по всем enabled vault'ам домена.
-     * Используется в db_management.js → doSearch().
-     *
-     * Backend: POST /api/db/search/domain
-     * Body:    { domain_id: string, query_text: string, limit: number }
-     * Returns: { results: SearchHit[] }
-     */
     async textSearchByDomain(domainId, queryText, limit = 20) {
         const response = await fetch(`${this.baseUrl}/api/db/search/domain`, {
             method: 'POST',
@@ -835,20 +803,16 @@ class ChatAPI {
             try {
                 const errData = await response.json();
                 errMsg = errData.detail || errData.message || errMsg;
-            } catch (_) { /* ignore */ }
+            } catch (_) {}
             throw new Error(`Text search failed: ${errMsg}`);
         }
-        return response.json(); // { results: SearchHit[] }
+        return response.json();
     }
 
-    // === Aliases & missing methods ===
-
-    // tab-documents.js вызывает getSettingsVaults — алиас на getVaults
     async getSettingsVaults() {
         return this.getVaults();
     }
 
-    // tab-documents.js вызывает getSettingsDocuments({vaultId, domainId, status, tagId})
     async getSettingsDocuments({ vaultId = null, domainId = null, status = null, tagId = null } = {}) {
         const params = new URLSearchParams();
         if (vaultId)  params.set('vault_id',  vaultId);
@@ -861,7 +825,6 @@ class ChatAPI {
         return response.json();
     }
 
-    // tab-documents.js: deleteDocumentById(id, vaultId?)
     async deleteDocumentById(documentId, vaultId = null) {
         const params = new URLSearchParams();
         if (vaultId) params.set('vault_id', vaultId);
@@ -870,10 +833,8 @@ class ChatAPI {
             method: 'DELETE',
         });
         if (!response.ok) throw new Error(`Failed to delete document: ${response.statusText}`);
-        // 204 No Content
     }
 
-    // tab-documents.js: updateDocumentLabels(docId, tagIds[])
     async updateDocumentLabels(documentId, tagIds) {
         const response = await fetch(`${this.baseUrl}/api/settings/documents/${encodeURIComponent(documentId)}/labels`, {
             method: 'PUT',
@@ -884,10 +845,7 @@ class ChatAPI {
         return response.json();
     }
 
-    // tab-documents.js: runIndexer() — триггерит индексацию активного домена
-    // POST /api/v1/domains/{domain_id}/index  (watchdog_settings router)
     async runIndexer(domainId = null) {
-        // Если domainId не передан — берём первый активный домен
         if (!domainId) {
             try {
                 const resp = await this.getDomains();
@@ -901,26 +859,18 @@ class ChatAPI {
             method: 'POST',
         });
         if (!response.ok) throw new Error(`Failed to run indexer: ${response.statusText}`);
-        return response.json(); // { task_id, ... }
+        return response.json();
     }
 
-    // tab-documents.js: getIndexTaskState(taskId)
     async getIndexTaskState(taskId) {
         const response = await fetch(`${this.baseUrl}/index-tasks/${encodeURIComponent(taskId)}/state`);
         if (!response.ok) throw new Error(`Failed to get index task state: ${response.statusText}`);
         return response.json();
     }
 
-    // tab-documents.js: cancelIndexTask(taskId)
-    // Нет dedicated endpoint — ставим cancelled через redis напрямую нельзя из фронта,
-    // поэтому делаем best-effort: просто помечаем локально (фронт уже закрывает WS/polling).
-    // Если появится POST /index-tasks/{id}/cancel — заменить тело.
     async cancelIndexTask(taskId) {
-        // Заглушка — реального cancel-endpoint пока нет
         return { cancelled: true, task_id: taskId };
     }
-
 }
 
-// Глобальный синглтон API-клиента
 window.chatAPI = new ChatAPI();

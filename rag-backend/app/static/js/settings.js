@@ -42,60 +42,24 @@ class SettingsManager {
                 case 'pipelines':     html = await this.renderPipelinesTab(); break;
                 case 'campaigns':     html = await this.renderCampaignsTab(); break;
                 case 'documents':     html = await this.renderDocumentsTab(); break;
-                default: html = '<div>Вкладка не найдена</div>';
+                default:              html = '<div class="settings-empty">Неизвестная вкладка</div>';
             }
             this._tabContent.innerHTML = html;
-            this._attachTabListeners(tab);
-            if (tab === 'documents') {
-                await this.loadDocumentsData();
-            }
+            this._bindActions();
         } catch (e) {
             this._tabContent.innerHTML = `<div class="error">Ошибка загрузки: ${this.escapeHtml(e.message)}</div>`;
         }
     }
 
-    // ─── Tab listeners ──────────────────────────────────────────────────────────────────
-
-    _attachTabListeners(tab) {
+    _bindActions() {
         if (!this._tabContent) return;
-
-        // card-menu toggle
-        this._tabContent.querySelectorAll('.card-menu-toggle').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                document.querySelectorAll('.card-menu').forEach(m => {
-                    if (m !== btn.nextElementSibling) m.classList.remove('open');
-                });
-                btn.nextElementSibling?.classList.toggle('open');
-            });
-        });
-        document.addEventListener('click', () => {
-            document.querySelectorAll('.card-menu').forEach(m => m.classList.remove('open'));
-        }, { capture: true, once: false });
-
-        // action buttons — единственное место подписки для всех вкладок
         this._tabContent.querySelectorAll('[data-action]').forEach(btn => {
             btn.addEventListener('click', async (e) => {
-                e.stopPropagation();
                 const action = btn.dataset.action;
                 const id = btn.dataset.id || null;
-                try {
-                    await this._dispatch(tab, action, id, btn);
-                } catch (err) {
-                    console.error('Action error:', action, err);
-                }
+                await this._dispatch(this.currentTab, action, id, btn);
             });
         });
-
-        if (tab === 'campaigns' && typeof this._attachCampaignsTabListeners === 'function') {
-            this._attachCampaignsTabListeners(this._tabContent);
-        }
-        if (tab === 'pipelines' && typeof this._attachPipelinesTabListeners === 'function') {
-            this._attachPipelinesTabListeners(this._tabContent);
-        }
-        if (tab === 'params' && typeof this._loadSidecarStatus === 'function') {
-            this._loadSidecarStatus();
-        }
     }
 
     async _dispatch(tab, action, id, btn) {
@@ -112,8 +76,6 @@ class SettingsManager {
             case 'documents':     await this.handleDocumentsAction(action, btn); break;
         }
     }
-
-    // ─── Domains ───────────────────────────────────────────────────────────────────────────
 
     async handleDomainsAction(action, id, btn) {
         if (action === 'new-domain') {
@@ -133,8 +95,6 @@ class SettingsManager {
         }
     }
 
-    // ─── Params ────────────────────────────────────────────────────────────────────────────
-
     async handleParamsAction(action, id, btn) {
         if (action === 'save-params') {
             const form = this._tabContent.querySelector('#params-form');
@@ -152,25 +112,20 @@ class SettingsManager {
                 for (const u of updates) {
                     await this.api.updateSettingsParam(u.key, u.value);
                 }
-
-                // Сохраняем watchdog настройки — расширения + интервал
                 const checkedExts = [...this._tabContent.querySelectorAll('#watchdog-ext-list [data-ext]')]
                     .filter(cb => cb.checked)
                     .map(cb => cb.dataset.ext);
                 const intervalInput = this._tabContent.querySelector('#watchdog-interval');
                 const intervalSec = Math.max(10, parseInt(intervalInput?.value ?? '60', 10) || 60);
                 await this.api.saveWatchdogSettings(checkedExts, intervalSec);
-
                 alert('Параметры сохранены');
             } catch (e) { alert('Ошибка: ' + e.message); }
-
         } else if (action === 'reset-params') {
             if (!confirm('Сбросить все параметры к значениям по умолчанию?')) return;
             try {
                 await this.api.resetSettingsParams();
                 await this.loadTab('params');
             } catch (e) { alert('Ошибка сброса: ' + e.message); }
-
         } else if (action === 'add-watchdog-ext') {
             const input = this._tabContent.querySelector('#watchdog-custom-ext');
             const msgEl = this._tabContent.querySelector('#watchdog-message');
@@ -196,8 +151,6 @@ class SettingsManager {
             }
             if (input) input.value = '';
             if (msgEl) { msgEl.textContent = ''; msgEl.className = ''; }
-
-        // ─── Sidecar actions ─────────────────────────────────────────
         } else if (action === 'sidecar-install') {
             this._openInstallModal();
         } else if (action === 'sidecar-start') {
@@ -212,8 +165,6 @@ class SettingsManager {
         }
     }
 
-    // ─── Generation Models ──────────────────────────────────────────────────────────────────
-
     async handleGenModelsAction(action, id, btn) {
         if (action === 'new-gen') {
             await this.showGenerationModelModal();
@@ -223,24 +174,30 @@ class SettingsManager {
             if (!confirm('Удалить модель?')) return;
             try {
                 await this.api.deleteGenerationModel(id);
-                await this.loadTab('gen-models');
+                await this.loadTab('models');
             } catch (e) { alert('Ошибка: ' + e.message); }
         } else if (action === 'activate-gen') {
             try {
                 await this.api.setActiveGenerationModel(id);
-                await this.loadTab('gen-models');
+                await this.loadTab('models');
             } catch (e) { alert('Ошибка активации: ' + e.message); }
+        } else if (action === 'deactivate-gen') {
+            try {
+                await this.api.deactivateGenerationModel(id);
+                await this.loadTab('models');
+            } catch (e) { alert('Ошибка деактивации: ' + e.message); }
         } else if (action === 'toggle-gen') {
             try {
-                const card = btn.closest('[data-id]');
-                const currentEnabled = card?.dataset.enabled === 'true';
-                await this.api.toggleGenerationModel(id, !currentEnabled);
-                await this.loadTab('gen-models');
+                await this.api.toggleGenerationModel(id);
+                await this.loadTab('models');
             } catch (e) { alert('Ошибка переключения: ' + e.message); }
+        } else if (action === 'check-gen') {
+            try {
+                const res = await this.api.checkGenerationModel(id);
+                alert(res.ok ? `Проверка успешна (${res.latency_ms} ms)` : `Ошибка проверки: ${res.error || 'unknown error'}`);
+            } catch (e) { alert('Ошибка проверки: ' + e.message); }
         }
     }
-
-    // ─── Embedding Models ──────────────────────────────────────────────────────────────────
 
     async handleEmbModelsAction(action, id, btn) {
         if (action === 'new-emb') {
@@ -251,24 +208,20 @@ class SettingsManager {
             if (!confirm('Удалить модель?')) return;
             try {
                 await this.api.deleteEmbeddingModel(id);
-                await this.loadTab('emb-models');
+                await this.loadTab('models');
             } catch (e) { alert('Ошибка: ' + e.message); }
-        } else if (action === 'activate-emb') {
-            try {
-                await this.api.setActiveEmbeddingModel(id);
-                await this.loadTab('emb-models');
-            } catch (e) { alert('Ошибка активации: ' + e.message); }
         } else if (action === 'toggle-emb') {
             try {
-                const card = btn.closest('[data-id]');
-                const currentEnabled = card?.dataset.enabled === 'true';
-                await this.api.toggleEmbeddingModel(id, !currentEnabled);
-                await this.loadTab('emb-models');
+                await this.api.toggleEmbeddingModel(id);
+                await this.loadTab('models');
             } catch (e) { alert('Ошибка переключения: ' + e.message); }
+        } else if (action === 'check-emb') {
+            try {
+                const res = await this.api.checkEmbeddingModel(id);
+                alert(res.ok ? `Проверка успешна (${res.latency_ms} ms)` : `Ошибка проверки: ${res.error || 'unknown error'}`);
+            } catch (e) { alert('Ошибка проверки: ' + e.message); }
         }
     }
-
-    // ─── Rerank Models ──────────────────────────────────────────────────────────────────────
 
     async handleRerankModelsAction(action, id, btn) {
         if (action === 'new-rerank') {
@@ -279,34 +232,38 @@ class SettingsManager {
             if (!confirm('Удалить модель?')) return;
             try {
                 await this.api.deleteRerankModel(id);
-                await this.loadTab('rerank-models');
+                await this.loadTab('models');
             } catch (e) { alert('Ошибка: ' + e.message); }
         } else if (action === 'activate-rerank') {
             try {
                 await this.api.setActiveRerankModel(id);
-                await this.loadTab('rerank-models');
+                await this.loadTab('models');
             } catch (e) { alert('Ошибка активации: ' + e.message); }
+        } else if (action === 'deactivate-rerank') {
+            try {
+                await this.api.deactivateRerankModel(id);
+                await this.loadTab('models');
+            } catch (e) { alert('Ошибка деактивации: ' + e.message); }
         } else if (action === 'toggle-rerank') {
             try {
-                const card = btn.closest('[data-id]');
-                const currentEnabled = card?.dataset.enabled === 'true';
-                await this.api.toggleRerankModel(id, !currentEnabled);
-                await this.loadTab('rerank-models');
+                await this.api.toggleRerankModel(id);
+                await this.loadTab('models');
             } catch (e) { alert('Ошибка переключения: ' + e.message); }
+        } else if (action === 'check-rerank') {
+            try {
+                const res = await this.api.checkRerankModel(id);
+                alert(res.ok ? `Проверка успешна (${res.latency_ms} ms)` : `Ошибка проверки: ${res.error || 'unknown error'}`);
+            } catch (e) { alert('Ошибка проверки: ' + e.message); }
         }
     }
 
-    // ─── Combined Models tab ───────────────────────────────────────────────────────────────
-
     async handleModelsAction(action, id, btn) {
-        const type = btn?.dataset.modelType;
+        const type = btn?.dataset.modelType || btn?.closest('[data-model-type]')?.dataset.modelType;
         if (!type) return;
-        if (type === 'gen')    return this.handleGenModelsAction(action, id, btn);
-        if (type === 'emb')    return this.handleEmbModelsAction(action, id, btn);
+        if (type === 'gen') return this.handleGenModelsAction(action, id, btn);
+        if (type === 'emb') return this.handleEmbModelsAction(action, id, btn);
         if (type === 'rerank') return this.handleRerankModelsAction(action, id, btn);
     }
-
-    // ─── Vaults ────────────────────────────────────────────────────────────────────────────
 
     async handleVaultsAction(action, id, btn) {
         if (action === 'new-vault') {
@@ -321,8 +278,6 @@ class SettingsManager {
             } catch (e) { alert('Ошибка: ' + e.message); }
         }
     }
-
-    // ─── Documents ────────────────────────────────────────────────────────────────────────
 
     async handleDocumentsAction(action, btn) {
         if (action === 'delete-document') {
@@ -353,8 +308,6 @@ class SettingsManager {
         }
     }
 
-    // ─── Utility ───────────────────────────────────────────────────────────────────────────
-
     escapeHtml(str) {
         if (str === null || str === undefined) return '';
         return String(str)
@@ -368,12 +321,11 @@ class SettingsManager {
 
 const settingsManager = new SettingsManager();
 
-// ─── Bootstrap ────────────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
-    const openBtn      = document.getElementById('settings-btn');
-    const backBtn      = document.getElementById('back-to-chat-btn');
+    const openBtn = document.getElementById('settings-btn');
+    const backBtn = document.getElementById('back-to-chat-btn');
     const settingsPage = document.getElementById('settings-page');
-    const mainApp      = document.querySelector('.app-container');
+    const mainApp = document.querySelector('.app-container');
 
     if (openBtn && settingsPage) {
         openBtn.addEventListener('click', async () => {
