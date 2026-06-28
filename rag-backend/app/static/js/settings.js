@@ -1,7 +1,7 @@
 class SettingsManager {
     constructor() {
         this.api = window.chatAPI;
-        this.currentTab = 'models';
+        this.currentTab = 'domains';
         this._tabContent = null;
     }
 
@@ -366,6 +366,14 @@ document.addEventListener('DOMContentLoaded', () => {
         openBtn.addEventListener('click', async () => {
             settingsPage.classList.remove('hidden');
             if (mainApp) mainApp.style.display = 'none';
+            // Сброс вкладки на domains при каждом открытии
+            settingsManager.currentTab = 'domains';
+            const nav = document.querySelector('.settings-tabs');
+            if (nav) {
+                nav.querySelectorAll('[data-tab]').forEach(b => {
+                    b.classList.toggle('active', b.dataset.tab === 'domains');
+                });
+            }
             await settingsManager.init();
         });
     }
