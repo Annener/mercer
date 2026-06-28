@@ -14,7 +14,7 @@ class VaultConfig(BaseModel):
 
 class EmbeddingModelConfig(BaseModel):
     model_id: str
-    provider: Literal["ollama", "openai_compatible"]
+    provider: Literal["ollama", "openai_compatible", "sidecar"]
     model_name: str
     base_url: str
     dimensions: int = Field(gt=0)
