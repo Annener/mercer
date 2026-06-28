@@ -1,6 +1,4 @@
 const DomainsTabMixin = {
-    // S5-A fix: вместо getDomains() (путь /config/domains, read-only sidebar)
-    // используем getSettingsDomains() (путь /api/settings/domains, CRUD)
     async renderDomainsTab() {
         const resp = await this.api.getSettingsDomains();
         const domains = Array.isArray(resp) ? resp : (resp.domains || []);
@@ -8,15 +6,18 @@ const DomainsTabMixin = {
         if (!domains.length) return toolbar + `<div class="empty-state">Нет доменов</div>`;
         return toolbar + `<div class="settings-grid">${domains.map(domain => `
             <article class="settings-card">
-                <div>
+                <div class="settings-card-body">
                     <h3>${this.escapeHtml(domain.display_name)}</h3>
-                    <p>${this.escapeHtml(domain.domain_id)}</p>
+                    <p class="settings-card-meta">${this.escapeHtml(domain.domain_id)}</p>
                 </div>
-                <div class="settings-actions">
-                    <button class="btn btn-sm btn-secondary" data-action="edit-domain" data-id="${this.escapeHtml(domain.domain_id)}">Изменить</button>
-                    <button class="btn btn-sm btn-secondary" data-action="manage-prompts" data-id="${this.escapeHtml(domain.domain_id)}">Промпты</button>
-                    <button class="btn btn-sm btn-secondary" data-action="manage-fields" data-id="${this.escapeHtml(domain.domain_id)}">Поля</button>
-                    <button class="btn btn-sm btn-danger" data-action="delete-domain" data-id="${this.escapeHtml(domain.domain_id)}"${domain.is_system ? ' disabled' : ''}>Удалить</button>
+                <div class="card-menu-container">
+                    <button class="card-menu-toggle" data-id="${this.escapeHtml(domain.domain_id)}" aria-label="Меню">⋮</button>
+                    <div class="card-menu">
+                        <button class="card-menu-item" data-action="edit-domain" data-id="${this.escapeHtml(domain.domain_id)}">✏️ Изменить</button>
+                        <button class="card-menu-item" data-action="manage-prompts" data-id="${this.escapeHtml(domain.domain_id)}">💬 Промпты</button>
+                        <button class="card-menu-item" data-action="manage-fields" data-id="${this.escapeHtml(domain.domain_id)}">🗂️ Поля</button>
+                        <button class="card-menu-item card-menu-danger" data-action="delete-domain" data-id="${this.escapeHtml(domain.domain_id)}"${domain.is_system ? ' disabled' : ''}>🗑️ Удалить</button>
+                    </div>
                 </div>
                 <div>
                     <span class="badge ${domain.enabled ? 'ok' : 'muted'}">${domain.enabled ? 'включён' : 'выключен'}</span>
@@ -24,7 +25,6 @@ const DomainsTabMixin = {
             </article>`).join('')}</div>`;
     },
 
-    // S5-A fix: в showDomainModal также заменяем getDomains на getSettingsDomains
     async showDomainModal(domainId = null) {
         let domain = null;
         if (domainId) {
@@ -149,7 +149,6 @@ const DomainsTabMixin = {
         }
     },
 
-    // S12-A: новый модал для управления DomainClarificationField
     async showFieldsModal(domainId) {
         let fields = [];
         try {
