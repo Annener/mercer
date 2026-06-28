@@ -6,14 +6,14 @@ class SettingsManager {
     }
 
     async init() {
-        this._tabContent = document.getElementById('settings-tab-content');
+        this._tabContent = document.getElementById('settings-content');
         await this.loadTab(this.currentTab);
         this._bindTabNav();
         this._bindActions();
     }
 
     _bindTabNav() {
-        const nav = document.getElementById('settings-tab-nav');
+        const nav = document.querySelector('.settings-tabs');
         if (!nav) return;
         nav.addEventListener('click', async (e) => {
             const btn = e.target.closest('[data-tab]');
