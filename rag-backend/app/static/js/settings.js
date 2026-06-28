@@ -3,13 +3,22 @@ class SettingsManager {
         this.api = window.chatAPI;
         this.currentTab = 'domains';
         this._tabContent = null;
+        this._bound = false;
     }
 
+    // setup() вызывается ОДИН раз — навешивает обработчики
+    setup() {
+        if (this._bound) return;
+        this._bound = true;
+        this._tabContent = document.getElementById('settings-content');
+        this._bindTabNav();
+        this._bindActions();
+    }
+
+    // init() вызывается при каждом открытии — только загружает активный таб
     async init() {
         this._tabContent = document.getElementById('settings-content');
         await this.loadTab(this.currentTab);
-        this._bindTabNav();
-        this._bindActions();
     }
 
     _bindTabNav() {
@@ -309,37 +318,6 @@ class SettingsManager {
         }
     }
 
-    // ─── Documents ────────────────────────────────────────────────────────────────────────
-
-    async handleDocumentsAction(action, btn) {
-        if (action === 'delete-document') {
-            const id = btn?.dataset.id;
-            if (!id) return;
-            if (!confirm('Удалить документ? Это действие необратимо.')) return;
-            try {
-                await this.api.deleteDocument(id);
-                await this.loadDocumentsData();
-            } catch (e) { alert('Ошибка: ' + e.message); }
-        } else if (action === 'reindex-document') {
-            const id = btn?.dataset.id;
-            if (!id) return;
-            try {
-                await this.api.reindexDocument(id);
-                await this.loadDocumentsData();
-            } catch (e) { alert('Ошибка: ' + e.message); }
-        } else if (action === 'filter-documents') {
-            await this.loadDocumentsData();
-        } else if (action === 'clear-filter') {
-            const vaultSel = this._tabContent.querySelector('#filter-vault');
-            const domainSel = this._tabContent.querySelector('#filter-domain');
-            const statusSel = this._tabContent.querySelector('#filter-status');
-            if (vaultSel) vaultSel.value = '';
-            if (domainSel) domainSel.value = '';
-            if (statusSel) statusSel.value = '';
-            await this.loadDocumentsData();
-        }
-    }
-
     // ─── Utility ───────────────────────────────────────────────────────────────────────────
 
     escapeHtml(str) {
@@ -361,6 +339,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const backBtn      = document.getElementById('back-to-chat-btn');
     const settingsPage = document.getElementById('settings-page');
     const mainApp      = document.querySelector('.app-container');
+
+    // Инициализируем обработчики один раз сразу после загрузки DOM
+    settingsManager.setup();
 
     if (openBtn && settingsPage) {
         openBtn.addEventListener('click', async () => {
