@@ -1,6 +1,6 @@
 class SettingsManager {
     constructor() {
-        this.api = new ApiClient();
+        this.api = window.chatAPI;
         this.currentTab = 'models';
         this._tabContent = null;
     }
@@ -68,7 +68,6 @@ class SettingsManager {
                 const menu = container?.querySelector('.card-menu');
                 if (menu) {
                     const isOpen = menu.classList.contains('open');
-                    // Close all open menus first
                     this._tabContent.querySelectorAll('.card-menu.open').forEach(m => m.classList.remove('open'));
                     if (!isOpen) menu.classList.add('open');
                 }
@@ -82,7 +81,6 @@ class SettingsManager {
             const action = btn.dataset.action;
             const id = btn.dataset.id || null;
 
-            // Close any open card menus
             this._tabContent.querySelectorAll('.card-menu.open').forEach(m => m.classList.remove('open'));
 
             const tab = this.currentTab;
@@ -104,7 +102,6 @@ class SettingsManager {
             }
         });
 
-        // Close menus on outside click
         document.addEventListener('click', () => {
             if (this._tabContent) {
                 this._tabContent.querySelectorAll('.card-menu.open').forEach(m => m.classList.remove('open'));
