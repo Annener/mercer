@@ -1,8 +1,22 @@
+// ─── Единая статусная модель ──────────────────────────────────────────────────
+// Возвращает { text, cssClass } для бейджа на карточке.
+//  active   — модель сейчас активна (используется системой)
+//  ready    — включена, но не активна
+//  disabled — явно выключена (enabled === false)
+function modelStatusBadge(isActive, isEnabled) {
+    if (isActive)   return { text: 'active',   cssClass: 'badge--status-active' };
+    if (!isEnabled) return { text: 'disabled', cssClass: 'badge--status-disabled' };
+    return               { text: 'ready',    cssClass: 'badge--status-ready' };
+}
+
 const ModelsTabMixin = {
 
     // ─── Единый рендерер карточки ─────────────────────────────────────────────
-    // config: { id, title, subtitle, subInfo?, badge: {text, class}, isActive, modelType, menuItems[] }
-    // menuItem: { action, label, disabled?, danger? }
+    // config: {
+    //   id, name, provider, badge: {text, cssClass},
+    //   isActive, modelType,
+    //   menuItems: Array<{ action, label, disabled?, danger? }>
+    // }
     renderModelCard(config) {
         const menuItemsHtml = config.menuItems.map(item => `
             <button class="card-menu-item${item.danger ? ' card-menu-danger' : ''}"
@@ -13,11 +27,14 @@ const ModelsTabMixin = {
                 ${item.label}
             </button>`).join('');
 
-        return `<article class="settings-card${config.isActive ? ' settings-card--active' : ''}">
+        return `
+        <article class="settings-card${config.isActive ? ' settings-card--active' : ''}">
             <div class="settings-card-body">
-                <h3>${this.escapeHtml(config.title)}</h3>
-                <p class="settings-card-meta">${this.escapeHtml(config.subtitle)}</p>
-                ${config.subInfo ? `<p class="settings-card-meta">${this.escapeHtml(config.subInfo)}</p>` : ''}
+                <div class="settings-card-name">${this.escapeHtml(config.name)}</div>
+                <div class="settings-card-provider">${this.escapeHtml(config.provider)}</div>
+            </div>
+            <div class="settings-card-badge">
+                <span class="badge ${config.badge.cssClass}">${config.badge.text}</span>
             </div>
             <div class="card-menu-container">
                 <button class="card-menu-toggle"
@@ -25,7 +42,6 @@ const ModelsTabMixin = {
                         aria-label="Меню модели">⋮</button>
                 <div class="card-menu">${menuItemsHtml}</div>
             </div>
-            <div><span class="badge ${config.badge.class}">${config.badge.text}</span></div>
         </article>`;
     },
 
@@ -37,7 +53,7 @@ const ModelsTabMixin = {
                 <h3 class="models-section-title">${title}</h3>
                 <button class="btn btn-primary btn-sm"
                         data-action="${addAction}"
-                        data-model-type="${modelType}">+ Добавить модель</button>
+                        data-model-type="${modelType}">+ Добавить</button>
             </div>
             <div class="models-section-body">
                 ${bodyHtml}
@@ -61,7 +77,7 @@ const ModelsTabMixin = {
         const modelsArr = Array.isArray(models) ? models : [];
 
         const bodyHtml = modelsArr.length === 0
-            ? '<div class="empty-state">Нет моделей</div>'
+            ? '<div class="settings-empty">Нет моделей</div>'
             : `<div class="settings-grid">
                 ${modelsArr.map(m => this.renderModelCard(this._genModelConfig(m))).join('')}
                </div>`;
@@ -69,17 +85,15 @@ const ModelsTabMixin = {
         return this._renderModelsSection('Генеративные', 'new-gen', 'gen', bodyHtml);
     },
 
-    _genModelConfig(model) {
-        const isActive = !!model.is_active;
-        const isEnabled = model.enabled !== false;
+    _genModelConfig(m) {
+        const isActive  = !!m.is_active;
+        const isEnabled = m.enabled !== false;
         return {
-            id: model.model_id,
+            id:        m.model_id,
             modelType: 'gen',
-            title: model.display_name || model.model_id,
-            subtitle: model.provider || '',
-            badge: isActive
-                ? { text: 'active', class: 'ok' }
-                : (!isEnabled ? { text: 'disabled', class: 'muted' } : { text: 'ready', class: 'muted' }),
+            name:      m.display_name || m.model_id,
+            provider:  m.provider || '',
+            badge:     modelStatusBadge(isActive, isEnabled),
             isActive,
             menuItems: [
                 { action: 'edit-gen',     label: '✏️ Изменить' },
@@ -92,6 +106,7 @@ const ModelsTabMixin = {
     },
 
     // ─── Секция: Embedding ────────────────────────────────────────────────────
+    // Нет activate/toggle — модель либо связана с vault, либо нет.
     async _renderEmbSection() {
         const [models, vaults] = await Promise.all([
             this.api.getEmbeddingModels(),
@@ -101,27 +116,28 @@ const ModelsTabMixin = {
         const vaultsArr = Array.isArray(vaults) ? vaults : [];
 
         const bodyHtml = modelsArr.length === 0
-            ? '<div class="empty-state">Нет моделей</div>'
+            ? '<div class="settings-empty">Нет моделей</div>'
             : `<div class="settings-grid">
                 ${modelsArr.map(m => {
-                    const connectedVaults = vaultsArr.filter(v => v.embedding_model_id === m.model_id);
-                    return this.renderModelCard(this._embModelConfig(m, connectedVaults));
+                    const linked = vaultsArr.filter(v => v.embedding_model_id === m.model_id);
+                    return this.renderModelCard(this._embModelConfig(m, linked));
                 }).join('')}
                </div>`;
 
         return this._renderModelsSection('Embedding', 'new-emb', 'emb', bodyHtml);
     },
 
-    _embModelConfig(model, connectedVaults = []) {
-        const hasVaults = connectedVaults.length > 0;
+    _embModelConfig(m, linkedVaults = []) {
+        const hasVaults  = linkedVaults.length > 0;
+        const providerStr = [m.provider, m.dimensions ? `${m.dimensions}d` : null]
+            .filter(Boolean).join(' · ');
         return {
-            id: model.model_id,
+            id:        m.model_id,
             modelType: 'emb',
-            title: model.display_name || model.model_id,
-            subtitle: `${model.provider || ''}${model.dimensions ? ` · ${model.dimensions}` : ''}`,
-            subInfo: hasVaults ? `${connectedVaults.length} vault'ов` : undefined,
-            badge: { text: 'ready', class: 'ok' },
-            isActive: false,
+            name:      m.display_name || m.model_id,
+            provider:  providerStr,
+            badge:     modelStatusBadge(false, true),   // всегда ready
+            isActive:  false,
             menuItems: [
                 { action: 'edit-emb',   label: '✏️ Изменить' },
                 { action: 'check-emb',  label: '🔍 Проверить' },
@@ -136,7 +152,7 @@ const ModelsTabMixin = {
         const modelsArr = Array.isArray(models) ? models : [];
 
         const bodyHtml = modelsArr.length === 0
-            ? '<div class="empty-state">Нет reranker-моделей</div>'
+            ? '<div class="settings-empty">Нет reranker-моделей</div>'
             : `<div class="settings-grid">
                 ${modelsArr.map(m => this.renderModelCard(this._rerankModelConfig(m))).join('')}
                </div>`;
@@ -144,25 +160,23 @@ const ModelsTabMixin = {
         return this._renderModelsSection('Reranker', 'new-rerank', 'rerank', bodyHtml);
     },
 
-    _rerankModelConfig(model) {
-        const isActive = !!model.is_active;
-        const isEnabled = model.enabled !== false;
+    _rerankModelConfig(m) {
+        const isActive  = !!m.is_active;
+        const isEnabled = m.enabled !== false;
         return {
-            id: model.model_id,
+            id:        m.model_id,
             modelType: 'rerank',
-            title: model.display_name || model.model_id,
-            subtitle: `${model.base_url || ''} · ${model.provider || ''}`,
-            badge: isActive && isEnabled
-                ? { text: 'АКТИВНА', class: 'ok' }
-                : (!isEnabled ? { text: 'отключена', class: 'muted' } : { text: 'неактивна', class: 'muted' }),
+            name:      m.display_name || m.model_id,
+            provider:  m.provider || '',
+            badge:     modelStatusBadge(isActive, isEnabled),
             isActive,
             menuItems: [
-                ...(isActive
-                    ? [{ action: 'deactivate-rerank', label: '⏸️ Деактивировать' }]
-                    : [{ action: 'activate-rerank',   label: '▶️ Активировать' }]
-                ),
-                { action: 'edit-rerank',   label: '✏️ Редактировать' },
+                isActive
+                    ? { action: 'deactivate-rerank', label: '⏸️ Деактивировать' }
+                    : { action: 'activate-rerank',   label: '▶️ Активировать', disabled: !isEnabled },
+                { action: 'edit-rerank',   label: '✏️ Изменить' },
                 { action: 'check-rerank',  label: '🔍 Проверить' },
+                { action: 'toggle-rerank', label: isEnabled ? '⏸️ Выключить' : '▶️ Включить' },
                 { action: 'delete-rerank', label: '🗑️ Удалить', danger: true, disabled: isActive },
             ],
         };
