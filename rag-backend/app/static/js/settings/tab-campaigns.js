@@ -7,31 +7,24 @@ const CampaignsTabMixin = {
             campaigns = Array.isArray(resp) ? resp : (resp.campaigns || []);
         } catch (e) { /* ignore */ }
 
-        // Загружаем домены для domain-selector в toolbar
+        // Загружаем домены для Domain Rail
         let domains = [];
         try {
             const dr = await this.api.getSettingsDomains();
             domains = Array.isArray(dr) ? dr : (dr.domains || []);
         } catch (_) {}
 
-        const domainSelector = `
-            <select id="campaigns-domain-select" class="input-field" style="max-width:200px;height:36px;">
-                <option value="">Все домены</option>
-                ${domains.map(d => {
-                    const did = this.escapeHtml(d.domain_id || d.id || '');
-                    const dname = this.escapeHtml(d.display_name || d.domain_id || d.id || '');
-                    const sel = (d.domain_id || d.id) === domainId ? ' selected' : '';
-                    return `<option value="${did}"${sel}>${dname}</option>`;
-                }).join('')}
-            </select>`;
+        const railHtml = window.DomainRail
+            ? window.DomainRail.render(domains, domainId, this.escapeHtml.bind(this))
+            : '';
 
         const toolbar = `<div class="settings-toolbar">
             <button class="btn btn-primary" data-action="new-campaign">+ Новая кампания</button>
-            ${domainSelector}
         </div>`;
-        if (!campaigns.length) return toolbar + '<div class="empty-state">Кампаний нет. Создайте первую.</div>';
 
-        return toolbar + `<div class="settings-grid">${campaigns.map(c => `
+        const cardsHtml = !campaigns.length
+            ? toolbar + '<div class="empty-state">Кампаний нет. Создайте первую.</div>'
+            : toolbar + `<div class="settings-grid">${campaigns.map(c => `
             <article class="settings-card" data-id="${this.escapeHtml(String(c.id))}">
                 <div>
                     <h3>${this.escapeHtml(c.name)}</h3>
@@ -40,18 +33,22 @@ const CampaignsTabMixin = {
                 <div class="card-menu-container">
                     <button class="card-menu-toggle" data-id="${this.escapeHtml(String(c.id))}" aria-label="Меню">⋮</button>
                     <div class="card-menu">
-                        <button class="card-menu-item" data-action="edit-campaign" data-id="${this.escapeHtml(String(c.id))}">✏️ Редактировать</button>
-                        <button class="card-menu-item card-menu-danger" data-action="delete-campaign" data-id="${this.escapeHtml(String(c.id))}">🗑️ Удалить</button>
+                        <button class="card-menu-item" data-action="edit-campaign" data-id="${this.escapeHtml(String(c.id))}">&#9999;&#65039; Редактировать</button>
+                        <button class="card-menu-item card-menu-danger" data-action="delete-campaign" data-id="${this.escapeHtml(String(c.id))}">&#128465;&#65039; Удалить</button>
                     </div>
                 </div>
             </article>`).join('')}</div>`;
+
+        return `<div class="domain-rail-layout">
+            ${railHtml}
+            <div class="domain-rail-pane">${cardsHtml}</div>
+        </div>`;
     },
 
     _attachCampaignsTabListeners(container) {
-        const sel = container.querySelector('#campaigns-domain-select');
-        if (sel) {
-            sel.addEventListener('change', () => {
-                this._activeDomainId = sel.value || null;
+        if (window.DomainRail) {
+            window.DomainRail.attach(container, (domainId) => {
+                this._activeDomainId = domainId || null;
                 this.loadTab('campaigns');
             });
         }
@@ -166,7 +163,6 @@ const CampaignsTabMixin = {
 
         let localCampTags = [...campaignTags];
 
-        // ── Теги кампании (собственные) ────────────────────────────────────
         const refreshTagsList = () => {
             const list = overlay.querySelector('#camp-tags-list');
             if (!list) return;
@@ -192,7 +188,6 @@ const CampaignsTabMixin = {
         };
         refreshTagsList();
 
-        // ── Глобальные теги домена ─────────────────────────────────────────
         let localLinkedGlobalTagIds = new Set(linkedGlobalTagIds);
 
         const refreshGlobalTagsList = () => {

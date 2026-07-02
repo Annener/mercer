@@ -4,30 +4,24 @@ const PipelinesTabMixin = {
         let pipelines = await this.api.getPipelines(domainId);
         if (!Array.isArray(pipelines)) pipelines = [];
 
-        // Загружаем домены для domain-selector
+        // Загружаем домены для Domain Rail
         let domains = [];
         try {
             const dr = await this.api.getSettingsDomains();
             domains = Array.isArray(dr) ? dr : (dr.domains || []);
         } catch (_) {}
 
-        const domainSelector = `
-            <select id="pipelines-domain-select" class="input-field" style="max-width:200px;height:36px;">
-                <option value="">Все домены</option>
-                ${domains.map(d => {
-                    const did = this.escapeHtml(d.domain_id || d.id || '');
-                    const dname = this.escapeHtml(d.display_name || d.domain_id || d.id || '');
-                    const sel = (d.domain_id || d.id) === domainId ? ' selected' : '';
-                    return `<option value="${did}"${sel}>${dname}</option>`;
-                }).join('')}
-            </select>`;
+        const railHtml = window.DomainRail
+            ? window.DomainRail.render(domains, domainId, this.escapeHtml.bind(this))
+            : '';
 
         const toolbar = `<div class="settings-toolbar">
             <button class="btn btn-primary" data-action="new-pipeline">+ Новый pipeline</button>
-            ${domainSelector}
         </div>`;
-        if (pipelines.length === 0) return toolbar + `<div class="empty-state">Pipeline'ов нет</div>`;
-        return toolbar + `<div class="settings-grid">${pipelines.map(pipeline => `
+
+        const cardsHtml = pipelines.length === 0
+            ? toolbar + `<div class="empty-state">Pipeline'ов нет</div>`
+            : toolbar + `<div class="settings-grid">${pipelines.map(pipeline => `
             <article class="settings-card">
                 <div>
                     <h3>${this.escapeHtml(pipeline.name)}</h3>
@@ -36,21 +30,25 @@ const PipelinesTabMixin = {
                 <div class="card-menu-container">
                     <button class="card-menu-toggle" data-id="${this.escapeHtml(String(pipeline.id))}" aria-label="Меню">⋮</button>
                     <div class="card-menu">
-                        <button class="card-menu-item" data-action="edit-pipeline" data-id="${this.escapeHtml(String(pipeline.id))}">✏️ Редактировать</button>
-                        <button class="card-menu-item" data-action="activate-pipeline" data-id="${this.escapeHtml(String(pipeline.id))}">▶️ Активировать</button>
-                        <button class="card-menu-item" data-action="deactivate-pipeline" data-id="${this.escapeHtml(String(pipeline.id))}">⏸️ Деактивировать</button>
-                        <button class="card-menu-item card-menu-danger" data-action="delete-pipeline" data-id="${this.escapeHtml(String(pipeline.id))}">🗑️ Удалить</button>
+                        <button class="card-menu-item" data-action="edit-pipeline" data-id="${this.escapeHtml(String(pipeline.id))}">&#9999;&#65039; Редактировать</button>
+                        <button class="card-menu-item" data-action="activate-pipeline" data-id="${this.escapeHtml(String(pipeline.id))}">&#9654;&#65039; Активировать</button>
+                        <button class="card-menu-item" data-action="deactivate-pipeline" data-id="${this.escapeHtml(String(pipeline.id))}">&#9208;&#65039; Деактивировать</button>
+                        <button class="card-menu-item card-menu-danger" data-action="delete-pipeline" data-id="${this.escapeHtml(String(pipeline.id))}">&#128465;&#65039; Удалить</button>
                     </div>
                 </div>
                 <div><span class="badge ${pipeline.is_active ? 'ok' : 'muted'}">${pipeline.is_active ? 'active' : 'inactive'}</span></div>
             </article>`).join('')}</div>`;
+
+        return `<div class="domain-rail-layout">
+            ${railHtml}
+            <div class="domain-rail-pane">${cardsHtml}</div>
+        </div>`;
     },
 
     _attachPipelinesTabListeners(container) {
-        const sel = container.querySelector('#pipelines-domain-select');
-        if (sel) {
-            sel.addEventListener('change', () => {
-                this._activeDomainId = sel.value || null;
+        if (window.DomainRail) {
+            window.DomainRail.attach(container, (domainId) => {
+                this._activeDomainId = domainId || null;
                 this.loadTab('pipelines');
             });
         }
