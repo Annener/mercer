@@ -1,5 +1,8 @@
 /* === Tab: Documents === */
 
+/* ======================================================
+   Badge size modifiers (docs-specific)
+   ====================================================== */
 .badge--panel {
     padding: 5px 14px;
     font-size: 12px;
@@ -19,9 +22,212 @@
     font-size: 12px;
 }
 
-.docs-tag-row {
+/* ======================================================
+   Toolbar
+   ====================================================== */
+.docs-toolbar {
     display: flex;
     align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 14px;
+    flex-wrap: wrap;
+}
+
+.docs-toolbar-left {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    flex: 1;
+}
+
+.docs-toolbar-btn {
+    flex-shrink: 0;
+}
+
+.docs-toolbar-input {
+    width: 200px;
+    padding: 6px 10px;
+    border: 1px solid #d4dde7;
+    border-radius: 5px;
+    font: inherit;
+    font-size: 13px;
+    color: #2c3e50;
+    background: #fff;
+    transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.docs-toolbar-input:focus {
+    outline: none;
+    border-color: #3498db;
+    box-shadow: 0 0 0 2px rgba(52, 152, 219, 0.15);
+}
+
+.docs-toolbar-select {
+    padding: 6px 10px;
+    border: 1px solid #d4dde7;
+    border-radius: 5px;
+    font: inherit;
+    font-size: 13px;
+    color: #2c3e50;
+    background: #fff;
+    cursor: pointer;
+    transition: border-color 0.15s;
+}
+
+.docs-toolbar-select:focus {
+    outline: none;
+    border-color: #3498db;
+    box-shadow: 0 0 0 2px rgba(52, 152, 219, 0.15);
+}
+
+/* ======================================================
+   Main layout: table + tags panel side by side
+   ====================================================== */
+.docs-layout {
+    display: flex;
+    gap: 18px;
+    align-items: flex-start;
+    min-height: 0;
+}
+
+.docs-table-wrap {
+    flex: 1;
+    min-width: 0;
+    overflow-x: auto;
+}
+
+/* ======================================================
+   Documents table
+   ====================================================== */
+.data-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+    color: #2c3e50;
+}
+
+.data-table td {
+    padding: 8px 10px;
+    border-bottom: 1px solid #eef2f6;
+    vertical-align: middle;
+}
+
+.data-table tbody tr:last-child td {
+    border-bottom: none;
+}
+
+.data-table .empty-state {
+    text-align: center;
+    color: #95a5a6;
+    padding: 32px 0;
+    font-size: 13px;
+}
+
+/* ======================================================
+   Directory rows
+   ====================================================== */
+.docs-dir-row {
+    background: #f7f9fc;
+}
+
+.docs-dir-row:hover .docs-dir-cell {
+    background: #eef4fb;
+}
+
+.docs-dir-cell {
+    font-size: 13px;
+    font-weight: 500;
+    color: #2c3e50;
+    user-select: none;
+}
+
+.docs-dir-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    cursor: pointer;
+    font-size: 13px;
+    color: #526579;
+    border-radius: 4px;
+    transition: background 0.12s, color 0.12s;
+    vertical-align: middle;
+    flex-shrink: 0;
+}
+
+.docs-dir-toggle:hover {
+    background: #dce8f5;
+    color: #1f6fa8;
+}
+
+.docs-dir-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    cursor: pointer;
+    vertical-align: middle;
+    border-radius: 4px;
+    padding: 2px 6px;
+    transition: background 0.12s, color 0.12s;
+}
+
+.docs-dir-label:hover {
+    background: #dce8f5;
+    color: #1f6fa8;
+    text-decoration: underline;
+}
+
+.docs-dir-icon {
+    font-size: 14px;
+    line-height: 1;
+}
+
+.docs-dir-name {
+    font-size: 13px;
+    font-weight: 500;
+}
+
+.docs-dir-count {
+    margin-left: 6px;
+    font-size: 11px;
+    color: #95a5a6;
+    font-weight: 400;
+    vertical-align: middle;
+}
+
+/* ======================================================
+   Document file rows
+   ====================================================== */
+.docs-row:hover td {
+    background: #f3f8fe;
+}
+
+.docs-file-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+}
+
+.docs-file-name {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 13px;
+    color: #2c3e50;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex-shrink: 1;
+    min-width: 0;
+}
+
+.docs-file-icon {
+    font-size: 13px;
+    flex-shrink: 0;
 }
 
 .docs-file-tags {
@@ -29,6 +235,226 @@
     flex-wrap: wrap;
     gap: 4px;
     align-items: center;
+    flex: 1;
+}
+
+/* ======================================================
+   Tags panel (right side)
+   ====================================================== */
+.docs-tags-panel {
+    flex-shrink: 0;
+    width: 260px;
+    min-width: 220px;
+    background: #fff;
+    border: 1px solid #dce5ef;
+    border-radius: 8px;
+    padding: 14px 16px 16px;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.05);
+    transition: width 0.2s ease;
+}
+
+.docs-tags-panel-header {
+    font-size: 12px;
+    font-weight: 600;
+    color: #526579;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 10px;
+}
+
+.docs-tags-panel-list {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    margin-bottom: 14px;
+    min-height: 24px;
+}
+
+.docs-tags-empty {
+    color: #95a5a6;
+    font-size: 12px;
+}
+
+.docs-tag-row {
+    display: flex;
+    align-items: center;
+}
+
+.docs-tags-panel-create {
+    border-top: 1px solid #eef2f6;
+    padding-top: 12px;
+}
+
+.docs-tag-create-row {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+}
+
+.docs-tag-name-input {
+    flex: 1;
+    min-width: 0;
+    padding: 5px 8px;
+    border: 1px solid #d4dde7;
+    border-radius: 5px;
+    font: inherit;
+    font-size: 12px;
+    color: #2c3e50;
+    background: #fff;
+    transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.docs-tag-name-input:focus {
+    outline: none;
+    border-color: #3498db;
+    box-shadow: 0 0 0 2px rgba(52, 152, 219, 0.15);
+}
+
+.docs-tag-color-input {
+    width: 34px;
+    height: 30px;
+    padding: 1px 2px;
+    border: 1px solid #d4dde7;
+    border-radius: 5px;
+    cursor: pointer;
+    flex-shrink: 0;
+    background: none;
+}
+
+.docs-tag-add-btn {
+    flex-shrink: 0;
+    padding: 5px 10px;
+}
+
+/* ======================================================
+   Modal backdrop (общий для всех docs-модалов)
+   ====================================================== */
+.docs-modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(30, 40, 55, 0.45);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+    padding: 16px;
+    backdrop-filter: blur(2px);
+    -webkit-backdrop-filter: blur(2px);
+}
+
+/* ======================================================
+   Document detail modal
+   ====================================================== */
+.docs-modal {
+    background: #fff;
+    border-radius: 10px;
+    width: 100%;
+    max-width: 700px;
+    max-height: 88vh;
+    overflow-y: auto;
+    box-shadow: 0 8px 36px rgba(0, 0, 0, 0.18);
+    display: flex;
+    flex-direction: column;
+}
+
+.docs-modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 18px 24px 14px;
+    border-bottom: 1px solid #eef2f6;
+    flex-shrink: 0;
+}
+
+.docs-modal-title {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+}
+
+.docs-modal-filename {
+    font-size: 15px;
+    font-weight: 600;
+    color: #1c2b3a;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 420px;
+}
+
+.docs-modal-close {
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 18px;
+    color: #7a8fa0;
+    border-radius: 5px;
+    padding: 4px 8px;
+    line-height: 1;
+    flex-shrink: 0;
+    transition: background 0.12s, color 0.12s;
+}
+
+.docs-modal-close:hover {
+    background: #f0f4f8;
+    color: #2c3e50;
+}
+
+.docs-modal-body {
+    display: flex;
+    gap: 24px;
+    padding: 20px 24px 24px;
+    flex: 1;
+    min-height: 0;
+}
+
+.docs-modal-left {
+    flex: 0 0 240px;
+    min-width: 0;
+}
+
+.docs-modal-right {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.docs-modal-section-title {
+    font-size: 11px;
+    font-weight: 600;
+    color: #7a8fa0;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 10px;
+}
+
+.docs-modal-meta {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+}
+
+.docs-modal-meta tr + tr td {
+    border-top: 1px solid #f0f4f8;
+}
+
+.docs-modal-meta-key {
+    color: #7a8fa0;
+    font-weight: 500;
+    padding: 5px 10px 5px 0;
+    white-space: nowrap;
+    vertical-align: top;
+}
+
+.docs-modal-meta-val {
+    color: #2c3e50;
+    padding: 5px 0;
+    word-break: break-all;
+    vertical-align: top;
 }
 
 .docs-modal-tag-badges {
@@ -37,13 +463,273 @@
     gap: 6px;
     flex: 1;
     align-content: flex-start;
+    min-height: 40px;
 }
 
-.docs-dir-tag-list {
+.docs-modal-footer-btns {
     display: flex;
+    gap: 8px;
+    margin-top: 14px;
     flex-wrap: wrap;
+    align-items: center;
+}
+
+.docs-modal-save-btn {
+    flex-shrink: 0;
+}
+
+.docs-modal-delete-btn {
+    flex-shrink: 0;
+    color: #c0392b;
+    border-color: #e8b4af;
+    background: #fff;
+}
+
+.docs-modal-delete-btn:hover {
+    background: #fdecea;
+    border-color: #e08080;
+}
+
+/* ======================================================
+   Domain tag edit modal
+   ====================================================== */
+.docs-domain-tag-modal {
+    max-width: 380px;
+}
+
+.docs-domain-tag-modal-body {
+    padding: 20px 24px 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+
+.docs-domain-tag-field {
+    display: flex;
+    flex-direction: column;
     gap: 6px;
-    min-height: 32px;
-    align-items: flex-start;
-    align-content: flex-start;
+}
+
+.docs-domain-tag-label {
+    font-size: 12px;
+    font-weight: 500;
+    color: #526579;
+}
+
+.docs-domain-tag-name {
+    padding: 7px 10px;
+    border: 1px solid #d4dde7;
+    border-radius: 5px;
+    font: inherit;
+    font-size: 13px;
+    color: #2c3e50;
+    background: #fff;
+    transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.docs-domain-tag-name:focus {
+    outline: none;
+    border-color: #3498db;
+    box-shadow: 0 0 0 2px rgba(52, 152, 219, 0.15);
+}
+
+.docs-domain-tag-color-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.docs-domain-tag-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 4px;
+}
+
+.docs-domain-tag-delete-btn {
+    color: #c0392b;
+    border-color: #e8b4af;
+    background: #fff;
+}
+
+.docs-domain-tag-delete-btn:hover {
+    background: #fdecea;
+    border-color: #e08080;
+}
+
+/* ======================================================
+   Directory modal
+   ====================================================== */
+.docs-dir-modal {
+    max-width: 560px;
+}
+
+.docs-dir-modal-count {
+    font-size: 12px;
+    color: #7a8fa0;
+    font-weight: 400;
+}
+
+.docs-dir-modal-body {
+    flex-direction: column;
+    gap: 0;
+    padding: 0 24px 24px;
+}
+
+.docs-dir-modal-section {
+    padding: 16px 0 12px;
+}
+
+.docs-dir-modal-divider {
+    height: 1px;
+    background: #eef2f6;
+    margin: 0;
+}
+
+.docs-dir-modal-status {
+    margin-top: 10px;
+    font-size: 12px;
+    padding: 6px 10px;
+    border-radius: 5px;
+}
+
+.docs-dir-modal-status--loading {
+    background: #eef4fb;
+    color: #1f6fa8;
+}
+
+.docs-dir-modal-status--ok {
+    background: #e6f5ee;
+    color: #206a43;
+}
+
+.docs-dir-modal-status--error {
+    background: #fdecea;
+    color: #a12c2b;
+}
+
+/* ======================================================
+   Indexer progress panel
+   ====================================================== */
+.docs-index-progress-panel {
+    margin-bottom: 14px;
+    background: #fff;
+    border: 1px solid #dce5ef;
+    border-radius: 8px;
+    overflow: hidden;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.05);
+}
+
+.idx-panel-inner {
+    padding: 14px 18px;
+}
+
+.idx-global-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 8px;
+    flex-wrap: wrap;
+}
+
+.idx-status-label {
+    font-size: 13px;
+    font-weight: 600;
+    color: #2c3e50;
+}
+
+.idx-global-count {
+    font-size: 12px;
+    color: #526579;
+}
+
+.idx-pct {
+    font-size: 12px;
+    font-weight: 600;
+    color: #3498db;
+}
+
+.idx-cancel-btn {
+    margin-left: auto;
+    color: #c0392b;
+    border-color: #e8b4af;
+    background: #fff;
+}
+
+.idx-cancel-btn:hover {
+    background: #fdecea;
+}
+
+.idx-global-bar-wrap {
+    height: 6px;
+    background: #eef2f6;
+    border-radius: 999px;
+    overflow: hidden;
+    margin-bottom: 12px;
+}
+
+.idx-bar {
+    height: 100%;
+    background: #3498db;
+    border-radius: 999px;
+    min-width: 4px;
+    transition: width 0.3s ease;
+}
+
+.idx-bar-anim {
+    background: linear-gradient(90deg, #3498db 0%, #5dade2 50%, #3498db 100%);
+    background-size: 200% 100%;
+    animation: idx-shimmer 1.4s infinite linear;
+}
+
+@keyframes idx-shimmer {
+    0%   { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+}
+
+.idx-files-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 240px;
+    overflow-y: auto;
+    margin-top: 4px;
+}
+
+.idx-file-row {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.idx-file-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+}
+
+.idx-file-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: #2c3e50;
+}
+
+.idx-file-chunks {
+    font-size: 11px;
+    color: #7a8fa0;
+    flex-shrink: 0;
+}
+
+.idx-file-bar-wrap {
+    height: 3px;
+    background: #eef2f6;
+    border-radius: 999px;
+    overflow: hidden;
+}
+
+.idx-bar-file {
+    background: #5dade2;
 }
