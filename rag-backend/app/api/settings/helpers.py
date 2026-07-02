@@ -107,9 +107,12 @@ def campaign_dict(campaign: Campaign) -> dict[str, Any]:
 
 
 def pipeline_dict(pipeline: Pipeline) -> dict[str, Any]:
+    # step-6: добавлен campaign_id в ответ — теперь фронтенд видит привязку
     return {
         "id": str(pipeline.id), "pipeline_id": pipeline.pipeline_id,
-        "domain_id": pipeline.domain_id, "version": pipeline.version,
+        "domain_id": pipeline.domain_id,
+        "campaign_id": str(pipeline.campaign_id) if pipeline.campaign_id else None,
+        "version": pipeline.version,
         "name": pipeline.name, "description": pipeline.description,
         "steps": pipeline.steps, "final_composition": pipeline.final_composition,
         "is_active": pipeline.is_active, "created_at": pipeline.created_at,

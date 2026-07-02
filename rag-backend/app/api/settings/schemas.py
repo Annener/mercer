@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -115,6 +116,9 @@ class CampaignTagCreateRequest(BaseModel):
 class PipelineCreateRequest(BaseModel):
     pipeline_id: str
     domain_id: str
+    # step-6: добавлен campaign_id — optional привязка к кампании.
+    # Если передан — backend проверяет campaign.domain_id == pipeline.domain_id.
+    campaign_id: uuid.UUID | None = None
     name: str
     description: str | None = None
     steps: list[PipelineStep]
@@ -124,6 +128,9 @@ class PipelineCreateRequest(BaseModel):
 
 class PipelineUpdateRequest(BaseModel):
     domain_id: str | None = None
+    # step-6: добавлен campaign_id — optional обновление привязки к кампании.
+    # Если передан — backend проверяет campaign.domain_id == effective_domain_id.
+    campaign_id: uuid.UUID | None = None
     name: str | None = None
     description: str | None = None
     steps: list[PipelineStep] | None = None

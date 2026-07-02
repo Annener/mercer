@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Domain, Pipeline, Tag
+from app.db.models import Campaign, Domain, Pipeline, Tag
 from app.db.session import get_db
 from .helpers import _get_pipeline_by_uuid, _increment_patch, pipeline_dict
 from .schemas import PipelineCreateRequest, PipelineUpdateRequest
@@ -47,12 +47,41 @@ async def list_pipelines(
     return [pipeline_dict(p) for p in result.scalars().all()]
 
 
+async def _check_campaign_domain(
+    campaign_id: uuid.UUID,
+    expected_domain_id: str,
+    db: AsyncSession,
+) -> None:
+    """Проверяет что кампания принадлежит указанному домену.
+
+    Raises:
+        HTTPException 404 — кампания не найдена.
+        HTTPException 400 — domain_id кампании не совпадает с ожидаемым.
+    """
+    campaign = await db.get(Campaign, campaign_id)
+    if campaign is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    if campaign.domain_id != expected_domain_id:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Campaign belongs to domain '{campaign.domain_id}', "
+                f"but pipeline domain is '{expected_domain_id}'"
+            ),
+        )
+
+
 @router.post("/pipelines", status_code=status.HTTP_201_CREATED)
 async def create_pipeline(req: PipelineCreateRequest, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
     if SLUG_RE.fullmatch(req.pipeline_id) is None:
         raise HTTPException(status_code=422, detail="pipeline_id must be a slug: 3-64 chars, a-z 0-9 _ -")
     if await db.get(Domain, req.domain_id) is None:
         raise HTTPException(status_code=404, detail="Domain not found")
+
+    # step-6: cross-domain валидация — campaign должна принадлежать тому же домену
+    if req.campaign_id is not None:
+        await _check_campaign_domain(req.campaign_id, req.domain_id, db)
+
     # Валидация шагов выполняется Pydantic (PipelineStep + FinalComposition из shared_contracts).
     # _validate_pipeline_json удалён — он проверял старое поле 'order' (pre-DAG схема).
     duplicate = await db.execute(select(Pipeline).where(Pipeline.pipeline_id == req.pipeline_id, Pipeline.version == "1.0.0"))
@@ -74,14 +103,22 @@ async def update_pipeline(
     payload = req.model_dump(exclude_unset=True)
     steps = payload.get("steps", pipeline.steps)
     final_composition = payload.get("final_composition", pipeline.final_composition)
+
+    # step-6: cross-domain валидация при обновлении campaign_id
+    # effective_domain_id — домен который будет у пайплайна после обновления
+    effective_domain_id = payload.get("domain_id", pipeline.domain_id)
+    new_campaign_id: uuid.UUID | None = payload.get("campaign_id", None)
+    if "campaign_id" in payload and new_campaign_id is not None:
+        await _check_campaign_domain(new_campaign_id, effective_domain_id, db)
+
     # Валидация шагов выполняется Pydantic (PipelineStep + FinalComposition из shared_contracts).
     # _validate_pipeline_json удалён — он проверял старое поле 'order' (pre-DAG схема).
     new_version = _increment_patch(pipeline.version)
     await db.execute(update(Pipeline).where(Pipeline.pipeline_id == pipeline.pipeline_id).values(is_active=False))
     new_pipeline = Pipeline(
         pipeline_id=pipeline.pipeline_id,
-        domain_id=payload.get("domain_id", pipeline.domain_id),
-        campaign_id=pipeline.campaign_id,
+        domain_id=effective_domain_id,
+        campaign_id=new_campaign_id if "campaign_id" in payload else pipeline.campaign_id,
         version=new_version,
         name=payload.get("name", pipeline.name),
         description=payload.get("description", pipeline.description),
