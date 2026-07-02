@@ -20,6 +20,7 @@ FileIndexState:
   status: pending|parsing|chunking|indexing|done|error|cancelled|empty|indexed
   chunks_total: int = 0
   chunks_processed: int = 0
+  progress_pct: int = 0          # deprecated, back-compat
   last_modified: datetime
   error: str | None
 
@@ -65,8 +66,30 @@ VaultBinding:
   embedding_model_id: str
   expected_dimensions: int  # > 0
   locked: bool = False
-  status: unbound|binding|bound|error
+  status: unbound|indexing|bound|error
   chunk_count: int
+```
+
+## Операции с LanceDB (db-api-server API)
+
+```python
+UpsertChunk:
+  chunk_id: str
+  document_id: str
+  vault_id: str
+  text: str
+  vector: list[float]
+  metadata: dict
+
+SearchRequest:
+  vault_id: str
+  query_vector: list[float]
+  top_k: int = 10
+  filter: dict | None
+
+SearchResponse:
+  results: list[ChunkRecord]
+  scores: list[float]
 ```
 
 ## Read/Create/Update схемы (API-контракты)
@@ -114,19 +137,101 @@ EmbeddingModelCreate: model_id, provider (ollama|openai_compatible), model_name,
 EmbeddingModelUpdate: все поля optional
 ```
 
+### RerankModel
+```python
+RerankModelRead(ORMModel): model_id, provider, display_name, base_url, timeout_seconds,
+                           is_active, enabled, has_api_key, created_at, updated_at
+RerankModelCreate: model_id, provider, display_name?, base_url, api_key?, timeout_seconds, enabled
+RerankModelUpdate: все поля optional
+```
+
 ### Vault
 ```python
 VaultRead(ORMModel): vault_id, domain_id, display_name, enabled, embedding_model_id,
                      expected_dimensions, chunk_size, overlap, entity_aware_mode,
                      binding_status, chunk_count, created_at, updated_at
+  # binding_status: unbound|indexing|bound|error
 VaultCreate: vault_id, domain_id, display_name?, embedding_model_id?, ...
 VaultUpdate: все поля optional
 ```
 
 ### Tag
 ```python
-TagRead(ORMModel): id, name, domain_id, campaign_id?, color?
+TagRead(ORMModel): id, name, domain_id, campaign_id?, color?, created_at
 # TagCreate / TagUpdate определены в api/settings/schemas.py
+```
+
+### Document
+```python
+DocumentRead(ORMModel): id, vault_id, source_path, title, md5, mtime, status,
+                        indexed_at, created_at
+  # status: pending|parsing|chunking|indexing|done|error|cancelled|empty
+```
+
+### Campaign
+```python
+CampaignRead(ORMModel): id, domain_id, name, description, system_prompt,
+                        last_session_at, created_at
+CampaignCreate: domain_id, name, description?, system_prompt?
+CampaignUpdate: name?, description?, system_prompt?
+```
+
+### Pipeline
+```python
+PipelineStep:
+  step_id: str
+  type: Literal["retrieval", "validation"]
+  depends_on: list[str] = []
+  params: dict = {}
+
+FinalComposition:
+  template: str
+  sources: list[str] = []
+
+PipelineRead(ORMModel): id, pipeline_id, domain_id, campaign_id?, version, name, description,
+                        steps: list[PipelineStep], final_composition: FinalComposition,
+                        is_active, created_at
+PipelineCreate: pipeline_id, domain_id, campaign_id?, version, name, description?,
+                steps, final_composition
+PipelineUpdate: name?, description?, steps?, final_composition?, is_active?
+```
+
+### Chat
+```python
+ChatRecord(ORMModel): id, title, domain_id, campaign_id?, vault_id?,
+                      locked_pipeline_id?, pipeline_versions?,
+                      pipeline_pause_state?, pending_pipeline_confirm?,
+                      created_at, updated_at
+CreateChatRequest: domain_id, campaign_id?
+CreateChatResponse: chat_id: str
+SendMessageRequest: text: str
+```
+
+### Message
+```python
+ChatMessage(ORMModel): id, chat_id, role, content, pipeline_id?, created_at
+  # role: user | assistant | system
+```
+
+### ClarificationState
+```python
+ClarificationState(ORMModel): chat_id, stage, missing_fields, collected, turn, next_question
+  # stage: idle | collecting | ready
+ClarificationResponse:
+  needs_clarification: bool
+  question: str | None
+ClarificationAnswer: answer: str
+```
+
+### PipelineDecision
+```python
+PipelineDecision(ORMModel): id, chat_id, message_id, selected_pipeline_id,
+                            confidence, reasoning, mode, created_at
+```
+
+### AuditLog
+```python
+AuditLogRead(ORMModel): id, action, entity_type, entity_id, details, created_at
 ```
 
 ## Важные замечания
@@ -139,3 +244,8 @@ TagRead(ORMModel): id, name, domain_id, campaign_id?, color?
 
 3. `vault_id` в Vault — строка-идентификатор (`"dnd-vault"`), не UUID.
    UUID хранится во внутреннем поле `id`, но во внешнем API используется `vault_id`.
+
+4. `VaultBinding.status` — используется значение `indexing` (не `binding`).
+
+5. `js/api/sidecar.js` — фронтенд-клиент для управления pdf-sidecar через host-agent
+   (запуск, остановка, установка, статус). Соответствует `api/settings/sidecar.py` в бэкенде.

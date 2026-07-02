@@ -24,22 +24,34 @@ rag-backend/app/static/
 │   ├── db-management.css       # Модальное окно поиска по хранилищу
 │   └── pipeline-cards.css      # Карточки/плитки pipeline_builder
 └── js/
-    ├── api.js                  # Все HTTP-запросы к backend (34KB)
-    ├── chat.js                 # Логика чата: сообщения, стриминг, FSM (40KB)
-    ├── sidebar.js              # Боковая панель: список чатов, домен, кампания (21KB)
-    ├── settings.js             # Орчестратор страницы настроек, переключение табов (22KB)
+    ├── api.js                  # Главный HTTP-клиент — агрегирует все api/*.js (35KB)
+    ├── api/                    # Модули HTTP-клиента по доменам
+    │   ├── index.js            # Сборка window.MercerAPI из модулей
+    │   ├── chat.js             # Чаты, сообщения, стриминг, pipeline-статус
+    │   ├── campaigns.js        # CRUD кампаний
+    │   ├── documents.js        # Документы, reindex
+    │   ├── domains.js          # Домены, промпты, clarification fields
+    │   ├── models.js           # Generation / Embedding / Rerank модели
+    │   ├── pipeline.js         # Pipeline confirm/resume/cancel/status
+    │   ├── search.js           # Поиск по LanceDB (db search)
+    │   ├── settings.js         # PlatformSettings (params)
+    │   ├── sidecar.js          # Управление pdf-sidecar через host-agent
+    │   └── vaults.js           # Vaults, bind/unbind
+    ├── chat.js                 # Логика чата: сообщения, стриминг, FSM (45KB)
+    ├── sidebar.js              # Боковая панель: список чатов, домен, кампания (24KB)
+    ├── settings.js             # Орчестратор страницы настроек, переключение табов (21KB)
     ├── pipeline_builder.js     # DAG-редактор пайплайнов (40KB)
     ├── pending-banner.js       # Баннер ожидания/паузы пайплайна (7KB)
     ├── db_management.js        # Модальный поиск по LanceDB (11KB)
     └── settings/               # Табы страницы настроек
         ├── tab-domains.js          # Таб Домены (15KB)
-        ├── tab-vaults.js           # Таб Vault'ы (5KB)
-        ├── tab-models.js           # Оркестратор подтабов моделей (8KB)
+        ├── tab-vaults.js           # Таб Vault'ы (5.8KB)
+        ├── tab-models.js           # Оркестратор подтабов моделей (9.8KB)
         ├── tab-gen-models.js       # Подтаб Generation (5KB)
-        ├── tab-emb-models.js       # Подтаб Embedding (4.5KB)
+        ├── tab-emb-models.js       # Подтаб Embedding (7.8KB)
         ├── tab-rerank-models.js    # Подтаб Rerank (14KB)
-        ├── tab-params.js           # Таб Параметры платформы (9.8KB)
-        ├── tab-pipelines.js        # Таб Pipelines (список) (4.5KB)
+        ├── tab-params.js           # Таб Параметры платформы (20KB)
+        ├── tab-pipelines.js        # Таб Pipelines (список) (4.3KB)
         ├── tab-campaigns.js        # Таб Кампании (16KB)
         ├── tab-documents.js        # Таб Documents (самый большой, 49KB)
         └── tag-badge.js            # Шард тега (загружать ДО кампаний/документов!)
@@ -94,75 +106,81 @@ main#settings-page
 
 ## JS-модули — ответственность и главные объекты
 
-### `api.js` — HTTP-клиент (34KB)
+### `api.js` + `api/` — HTTP-клиент
 
-Единая точка взаимодействия с backend. Все другие модули используют только `api.js`, не `fetch()` напрямую.
+Единая точка взаимодействия с backend. `api.js` — агрегатор, подключает все модули из `js/api/`.
+Все другие модули используют только `window.MercerAPI`, не `fetch()` напрямую.
+
+Модули в `js/api/` разбиты по доменам:
 
 ```javascript
-// Главный объект:
+// Главный объект (собирается в api/index.js):
 window.MercerAPI = {
-  // Чаты
+  // Чаты (api/chat.js)
   getChats(), createChat(domainId, campaignId?), deleteChat(chatId),
   renameChat(chatId, title), updateChat(chatId, data),
 
-  // Сообщения
+  // Сообщения (api/chat.js)
   getMessages(chatId), clearMessages(chatId),
 
   // Отправка — стриминг через fetch() + ReadableStream
   sendMessage(chatId, text, onChunk, onDone, onError),
 
-  // Pipeline
+  // Pipeline (api/pipeline.js)
   getChatPipelineStatus(chatId),
   confirmPipeline(chatId, token),
   resumePipeline(chatId, token, answer),
   cancelPipeline(chatId),
 
-  // Clarification
+  // Clarification (api/chat.js)
   getClarificationState(chatId),
   resetClarification(chatId),
 
-  // Домены
+  // Домены (api/domains.js)
   getDomains(), createDomain(), updateDomain(), deleteDomain(),
   getDomainPrompts(), updateDomainPrompt(),
   getClarificationFields(), createClarificationField(), deleteClarificationField(),
 
-  // Vaults
+  // Vaults (api/vaults.js)
   getVaults(), createVault(), updateVault(), deleteVault(),
   bindVault(vaultId, embModelId), unbindVault(vaultId),
 
-  // Documents
+  // Documents (api/documents.js)
   getDocuments(filters?), deleteDocument(), reindexDocuments(),
 
-  // Модели
+  // Модели (api/models.js)
   getGenerationModels(), createGenModel(), updateGenModel(), deleteGenModel(), activateGenModel(),
   getEmbeddingModels(), createEmbModel(), updateEmbModel(), deleteEmbModel(),
   getRerankModels(), createRerankModel(), updateRerankModel(), deleteRerankModel(), activateRerankModel(),
 
-  // Настройки
+  // Настройки (api/settings.js)
   getParams(), updateParam(key, value),
 
-  // Pipelines
+  // Pipelines (api/pipeline.js)
   getPipelines(), createPipeline(), updatePipeline(), deletePipeline(),
 
-  // Кампании
+  // Кампании (api/campaigns.js)
   getCampaigns(), createCampaign(), updateCampaign(), deleteCampaign(),
 
-  // Теги
+  // Теги (api/domains.js или отдельный модуль)
   getTags(domainId?), createTag(), deleteTag(),
 
-  // Indexer
+  // Indexer (api/chat.js)
   getIndexerState(vaultId), triggerWatchdog(),
 
-  // DB search
+  // DB search (api/search.js)
   searchDb(domainId, query, limit),
+
+  // Sidecar (api/sidecar.js)
+  getSidecarStatus(), startSidecar(), stopSidecar(), restartSidecar(), installSidecarStream(),
 }
 ```
 
-Стриминг реализован через `fetch()` + `ReadableStream`, постеповое чтение SSE-подобных кусков.
+Стриминг реализован через `fetch()` + `ReadableStream`, постепенное чтение SSE-подобных кусков.
 
 ---
 
-### `chat.js` — логика чата (40KB)
+### `chat.js` — логика чата (45KB)
 
 Главный модуль. Инициализирует всё приложение (`initApp()` в `DOMContentLoaded`).
 
@@ -182,7 +200,7 @@ window.MercerAPI = {
 
 ---
 
-### `sidebar.js` — боковая панель (21KB)
+### `sidebar.js` — боковая панель (24KB)
 
 **Ответственность:**
 - Загрузка доменов в `#domain-select`
@@ -194,7 +212,7 @@ window.MercerAPI = {
 
 ---
 
-### `settings.js` — оркестратор настроек (22KB)
+### `settings.js` — оркестратор настроек (21KB)
 
 **Ответственность:**
 - Переключение между страницей чата и страницей настроек
@@ -205,7 +223,7 @@ window.MercerAPI = {
 **Порядок загрузки `<script>` в `index.html` критичен!**
 Таб-модули зависят от `api.js` и `settings.js`, поэтому загружаются в таком порядке:
 ```
-api.js → pipeline_builder.js → settings.js → tab-*.js → tag-badge.js → tab-campaigns.js → tab-documents.js
+api/index.js → api/*.js → api.js → pipeline_builder.js → settings.js → tab-*.js → tag-badge.js → tab-campaigns.js → tab-documents.js
 → pending-banner.js → chat.js → sidebar.js → db_management.js
 ```
 
@@ -213,10 +231,10 @@ api.js → pipeline_builder.js → settings.js → tab-*.js → tag-badge.js →
 
 ### `pipeline_builder.js` — DAG-редактор (40KB)
 
-Визуальный редактор пайплайнов. Используется в вкладке "Pipelines" страницы настроек.
+Визуальный редактор пайплайнов. Используется во вкладке "Pipelines" страницы настроек.
 
-- Рендерит шаги пайплайна как дрег карточек (CSS-грид/стрелки)
-- Отредактировать шаг: тип (`retrieval`, `generation`, `validation`, `planner`), параметры, `depends_on`
+- Рендерит шаги пайплайна как drag-карточки (CSS-грид/стрелки)
+- Отредактировать шаг: тип (`retrieval`, `validation`), параметры, `depends_on`
 - Добавить/удалить шаг, изменить `final_composition`
 - Сериализует пайплайн в JSON и отправляет через `api.js`
 - Использует `pipeline-cards.css`
@@ -267,7 +285,7 @@ api.js → pipeline_builder.js → settings.js → tab-*.js → tag-badge.js →
 
 | Переменная | Тип | Источник |
 |---|---|---|
-| `window.MercerAPI` | Object | `api.js` — весь HTTP-клиент |
+| `window.MercerAPI` | Object | `api.js` + `api/*.js` — весь HTTP-клиент |
 | `window.currentChatId` | string/null | `chat.js` |
 | `window.currentDomainId` | string | `sidebar.js` |
 | `window.currentCampaignId` | string/null | `sidebar.js` |
@@ -277,7 +295,7 @@ api.js → pipeline_builder.js → settings.js → tab-*.js → tag-badge.js →
 
 1. **Нет роутера** — переключение страниц = toggle `.hidden` на DOM-элементах.
 2. **Нет стейта** — данные хранятся в `window.*` и передаются через них между модулями.
-3. **Один CSS-файл / один JS-файл** — тематическое разделение по зонам приложения.
+3. **Тематическое разделение** — CSS и JS по зонам приложения; API-слой разбит на отдельные файлы в `js/api/`.
 4. **Стриминг** — `fetch()` + `ReadableStream`, не `EventSource`. Ответ читается постепенно.
 5. **Сборка не нужна** — добавление нового JS/CSS = подключить в `index.html` + обязательно соблюдать порядок загрузки.
 6. **`tag-badge.js`** должен быть загружен ДО `tab-campaigns.js` и `tab-documents.js` — они импортируют его функции.

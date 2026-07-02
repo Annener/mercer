@@ -1,9 +1,12 @@
 # База данных — схема PostgreSQL
 
 Файл ORM-моделей: `rag-backend/app/db/models.py`  
-Миграции: **Alembic** — `rag-backend/migrations/versions/0001_initial.py`  
+Миграции: **Alembic** — `rag-backend/migrations/versions/`  
 Запуск: `run_migrations()` в `rag-backend/app/db/migrations.py` — вызывает `alembic upgrade head` через `asyncio.to_thread` при старте сервиса.  
-Текущая миграция: `0001_initial` — чистая стартовая, полная схема (содержит seed-данные).
+
+Текущие миграции:
+- `0001_initial` — чистая стартовая, полная схема (содержит seed-данные)
+- `0002_watchdog_interval` — добавляет `watchdog.interval_sec` в `platform_settings`
 
 ## Ключевые сущности и связи
 
@@ -54,6 +57,24 @@ Chat (1) ──► (N) PipelineDecision
 - `group_name`, `label`, `hint`
 - Десериализация: `SettingsService.deserialize_value()`
 - Загружаются в память при старте: `settings_service.load_settings()`
+
+Сид-записи (добавляются при миграции):
+
+| key | group_name | value_type |
+|---|---|---|
+| `retrieval.enabled` | retrieval | bool |
+| `retrieval.top_k` | retrieval | int |
+| `chunking.chunk_size` | chunking | int |
+| `chunking.overlap` | chunking | int |
+| `chunking.entity_aware_mode` | chunking | bool |
+| `chat.max_clarification_turns` | chat | int |
+| `chat.stream_answers` | chat | bool |
+| `chat.auto_title` | chat | bool |
+| `pdf_sidecar.url` | sidecar | str |
+| `pdf_sidecar.timeout_seconds` | sidecar | int |
+| `pdf_sidecar.fallback_to_pdfminer` | sidecar | bool |
+| `watchdog_auto_index_extensions` | indexing | str |
+| `watchdog.interval_sec` | watchdog | int |
 
 ### GenerationModel
 - PK: `id` (UUID). `model_id` (String, UNIQUE) — идентификатор модели
@@ -150,6 +171,7 @@ Chat (1) ──► (N) PipelineDecision
 | `generation_models` | `idx_generation_models_active` (partial `WHERE is_active`) | гарантирует одну активную модель |
 | `rerank_models` | `idx_rerank_models_active` (partial) | аналогично |
 | `vaults` | `idx_vaults_domain` | по domain_id |
+| `vaults` | `idx_vaults_enabled` | по enabled |
 | `documents` | `idx_documents_vault`, `idx_documents_status` | по vault_id; по (vault_id, status) |
 | `tags` | `idx_tags_domain`, `idx_tags_campaign` | по domain_id; по campaign_id |
 | `document_labels` | `idx_document_labels_tag` | по tag_id |

@@ -7,7 +7,7 @@
 | Web framework | FastAPI (async) |
 | ORM | SQLAlchemy 2.x (async, mapped_column) |
 | DB driver | asyncpg |
-| Migrations | Кастомные SQL-скрипты (не Alembic) |
+| Migrations | **Alembic** (`rag-backend/migrations/`, запуск через `run_migrations()` при старте) |
 | Vector DB | LanceDB (через HTTP db-api-server) |
 | Cache/State | Redis (aioredis) |
 | Validation | Pydantic v2 |
@@ -76,11 +76,12 @@ obj.messages  # MissingGreenlet!
 Пайплайны — это DAG шагов, хранящийся в `Pipeline.steps` (JSONB).
 Орхестратор: `services/pipeline_dag.py` + `services/pipeline_executor.py`
 
-Типы шагов (приблизительно):
+Типы шагов (`PipelineStep.type`):
 - `retrieval` — поиск в LanceDB
-- `generation` — вызов LLM
 - `validation` — пауза на проверку результата (пользователь подтверждает)
-- `planner` — формирование многошагового плана
+
+> Примечание: типы `generation` и `planner` **не** являются самостоятельными шагами DAG.
+> Генерация и планирование — встроенная логика оркестратора, не конфигурируемые шаги.
 
 При паузе на `validation`:
 - Состояние сохраняется в `Chat.pipeline_pause_state`
@@ -99,9 +100,10 @@ obj.messages  # MissingGreenlet!
 
 ## Фронтенд
 
-- SPA на Vue (предположительно), собирается отдельно
-- Собранный билд кладётся в `rag-backend/app/static/`
-- Монтируется как `/static/`, `index.html` отдаётся на `/`
+- Ванильный JavaScript SPA (без фреймворков — не Vue, не React)
+- Раздаётся FastAPI напрямую из `rag-backend/app/static/`
+- Сборка не нужна — все файлы подключаются через `<script src>` в `index.html`
+- Подробная документация: `context/frontend.md`
 
 ## Тесты
 
