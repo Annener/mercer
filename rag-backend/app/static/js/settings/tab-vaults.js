@@ -4,31 +4,27 @@ const VaultsTabMixin = {
         let vaults = await this.api.getSettingsVaults(domainId);
         if (!Array.isArray(vaults)) vaults = [];
 
-        // Загружаем домены для domain-selector в тулбаре
+        // Загружаем домены для Domain Rail
         let domains = [];
         try {
             const dr = await this.api.getSettingsDomains();
             domains = Array.isArray(dr) ? dr : (dr.domains || []);
         } catch (_) {}
 
-        const domainSelector = `
-            <select id="vaults-domain-select" class="input-field" style="max-width:200px;height:36px;">
-                <option value="">Все домены</option>
-                ${domains.map(d => {
-                    const did = this.escapeHtml(d.domain_id || d.id || '');
-                    const dname = this.escapeHtml(d.display_name || d.domain_id || d.id || '');
-                    const sel = (d.domain_id || d.id) === domainId ? ' selected' : '';
-                    return `<option value="${did}"${sel}>${dname}</option>`;
-                }).join('')}
-            </select>`;
+        // --- Domain Rail ---
+        const railHtml = window.DomainRail
+            ? window.DomainRail.render(domains, domainId, this.escapeHtml.bind(this))
+            : '';
 
+        // --- Toolbar (без старого select) ---
         const toolbar = `<div class="settings-toolbar">
             <button class="btn btn-primary" data-action="new-vault">+ Новый vault</button>
-            ${domainSelector}
         </div>`;
 
-        if (vaults.length === 0) return toolbar + `<div class="empty-state">Vault'ов нет</div>`;
-        return toolbar + `<div class="settings-grid">${vaults.map(vault => `
+        // --- Карточки vault'ов ---
+        const cardsHtml = vaults.length === 0
+            ? `<div class="empty-state">Vault'ов нет</div>`
+            : `<div class="settings-grid">${vaults.map(vault => `
             <article class="settings-card">
                 <div>
                     <h3>${this.escapeHtml(vault.display_name || vault.vault_id)}</h3>
@@ -46,13 +42,20 @@ const VaultsTabMixin = {
                     <span class="badge ${vault.enabled ? 'ok' : 'muted'}">${this.escapeHtml(vault.binding_status)}</span>
                 </div>
             </article>`).join('')}</div>`;
+
+        // --- Итоговая разметка: domain-rail-layout ---
+        const paneHtml = toolbar + cardsHtml;
+
+        return `<div class="domain-rail-layout">
+            ${railHtml}
+            <div class="domain-rail-pane">${paneHtml}</div>
+        </div>`;
     },
 
     _attachVaultsTabListeners(container) {
-        const sel = container.querySelector('#vaults-domain-select');
-        if (sel) {
-            sel.addEventListener('change', () => {
-                this._activeDomainId = sel.value || null;
+        if (window.DomainRail) {
+            window.DomainRail.attach(container, (domainId) => {
+                this._activeDomainId = domainId || null;
                 this.loadTab('vaults');
             });
         }

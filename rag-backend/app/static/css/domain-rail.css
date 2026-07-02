@@ -1,0 +1,135 @@
+/* ======================================================
+   Domain Rail — левый узкий сайдбар выбора домена
+   Используется (пилот): вкладка Vault'ы в настройках.
+   Будущие вкладки: Pipelines, Campaigns, Documents.
+   ====================================================== */
+
+/* Layout: обёртка вкладки, разделённая на rail + основной pane */
+.domain-rail-layout {
+    display: grid;
+    grid-template-columns: 180px 1fr;
+    gap: 0;
+    align-items: start;
+    min-height: 0;
+}
+
+/* --- Rail (левая колонка) --- */
+.domain-rail {
+    width: 180px;
+    flex-shrink: 0;
+    background: #fff;
+    border: 1px solid #dce5ef;
+    border-radius: 8px;
+    overflow: hidden;
+    /* Прилипаем к верху при скролле основного pane */
+    position: sticky;
+    top: 0;
+    align-self: start;
+}
+
+.domain-rail__item {
+    display: block;
+    width: 100%;
+    box-sizing: border-box;
+    padding: 11px 14px;
+    background: none;
+    border: none;
+    text-align: left;
+    font: inherit;
+    font-size: 13px;
+    color: #2c3e50;
+    cursor: pointer;
+    transition: background 0.13s, color 0.13s;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    /* Разделитель между кнопками */
+    border-bottom: 1px solid rgba(255, 255, 255, 0.55);
+    /* Дополнительный тонкий разделитель снизу в пределах rail */
+    box-shadow: inset 0 -1px 0 rgba(180, 200, 220, 0.35);
+}
+
+.domain-rail__item:last-child {
+    border-bottom: none;
+    box-shadow: none;
+}
+
+.domain-rail__item:hover {
+    background: #eef4fb;
+    color: #1f6fa8;
+}
+
+/* Кнопка «Все домены» — чуть отличается по весу */
+.domain-rail__item--all {
+    font-weight: 600;
+    color: #526579;
+}
+
+.domain-rail__item--all:hover {
+    color: #1f6fa8;
+}
+
+/* Активный домен */
+.domain-rail__item--active {
+    background: #eef4fb;
+    color: #1565c0;
+    font-weight: 600;
+    border-left: 3px solid #3498db;
+    padding-left: 11px; /* компенсируем border-left 3px */
+}
+
+.domain-rail__item--active:hover {
+    background: #ddeaf7;
+    color: #1a56a0;
+}
+
+/* --- Основной pane (правая колонка) --- */
+.domain-rail-pane {
+    min-width: 0;
+    padding-left: 18px;
+}
+
+/* ======================================================
+   Responsive: на мобильных rail схлопывается в горизонтальный
+   скроллируемый список сверху
+   ====================================================== */
+@media (max-width: 640px) {
+    .domain-rail-layout {
+        grid-template-columns: 1fr;
+        grid-template-rows: auto 1fr;
+    }
+
+    .domain-rail {
+        width: 100%;
+        position: static;
+        display: flex;
+        flex-direction: row;
+        overflow-x: auto;
+        border-radius: 8px 8px 0 0;
+        border-bottom: 1px solid #dce5ef;
+    }
+
+    .domain-rail__item {
+        flex-shrink: 0;
+        border-bottom: none;
+        box-shadow: none;
+        border-right: 1px solid rgba(180, 200, 220, 0.35);
+        padding: 10px 14px;
+    }
+
+    .domain-rail__item:last-child {
+        border-right: none;
+    }
+
+    .domain-rail__item--active {
+        border-left: none;
+        border-bottom: 3px solid #3498db;
+        padding-left: 14px;
+        padding-bottom: 7px;
+    }
+
+    .domain-rail-pane {
+        padding-left: 0;
+        padding-top: 14px;
+    }
+}

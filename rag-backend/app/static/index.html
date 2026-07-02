@@ -10,6 +10,8 @@
     <link rel="stylesheet" href="/static/css/markdown.css">
     <!-- settings.css: общие стили страницы настроек (layout, tabs, buttons, forms, badges) -->
     <link rel="stylesheet" href="/static/css/settings.css">
+    <!-- domain-rail.css: layout grid (rail + pane), стили сайдбара доменов -->
+    <link rel="stylesheet" href="/static/css/domain-rail.css">
     <!-- Per-tab CSS: стили конкретной вкладки изолированы в отдельном файле -->
     <link rel="stylesheet" href="/static/css/tab-domains.css">
     <link rel="stylesheet" href="/static/css/tab-vaults.css">
@@ -157,6 +159,8 @@
     <script defer src="/static/js/pipeline_builder.js"></script>
     <script defer src="/static/js/settings.js"></script>
     <script defer src="/static/js/settings/tab-domains.js"></script>
+    <!-- domain-rail.js должен быть загружен ДО tab-vaults.js — он использует window.DomainRail -->
+    <script defer src="/static/js/settings/domain-rail.js"></script>
     <script defer src="/static/js/settings/tab-vaults.js"></script>
     <script defer src="/static/js/settings/tab-gen-models.js"></script>
     <script defer src="/static/js/settings/tab-emb-models.js"></script>
