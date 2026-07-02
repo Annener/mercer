@@ -14,7 +14,7 @@
 ## Архитектурная позиция
 
 ```
-Browser → Frontend (Vue)
+Browser → Frontend (ванильный JS SPA)
                ↓ HTTP
          rag-backend  (Docker :8000)
                ↓ HTTP  →  host.docker.internal:9090

@@ -32,6 +32,8 @@
 | `campaigns_router` | `settings/campaigns.py` |
 | `sidecar_router` | `settings/sidecar.py` |
 
+> Вспомогательные файлы без роутеров: `settings/helpers.py` (общие хелперы), `settings/schemas.py` (Pydantic-схемы для этого пакета).
+
 ---
 
 ## Chat API (`api/chat.py`)
@@ -206,7 +208,7 @@ GET    /api/pipeline/{chat_id}/status          — статус пайплайн
 ## Статика и SPA
 
 ```
-GET    /                  — возвращает index.html (SPA Vue)
+GET    /                  — возвращает index.html (ванильный JS SPA)
 GET    /static/*          — статические файлы фронтенда
 GET    /health            — {"status": "ok", "service": "rag-backend"}
 ```

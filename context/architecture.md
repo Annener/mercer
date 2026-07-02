@@ -37,7 +37,7 @@ Mercer — мультидоменная RAG-платформа для работ
 - Проксирует запросы к rag-indexer через внутренний HTTP
 - Проксирует запросы управления pdf-sidecar к host-agent через `api/settings/sidecar.py`
 - Хранит состояние в PostgreSQL, сессии чатов в Redis
-- Раздаёт SPA-фронтенд из `app/static/`
+- Раздаёт SPA-фронтенд из `app/static/` (ванильный JS, без фреймворков)
 
 ### rag-indexer
 - **Роль**: асинхронный воркер индексации документов
@@ -100,7 +100,7 @@ mercer/
 │       ├── providers/   # Провайдеры генерации (OpenAI-compatible)
 │       ├── domains/     # Домены (dnd, work, default) + registry
 │       ├── pipelines/   # Pipeline registry
-│       └── static/      # SPA-фронтенд (Vue)
+│       └── static/      # SPA-фронтенд (ванильный JS, без фреймворков)
 ├── rag-indexer/         # Индексатор
 │   ├── app/             # FastAPI app + db_client
 │   ├── api/             # API роутеры индексатора
