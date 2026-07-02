@@ -11,6 +11,8 @@
     gap: 0;
     align-items: start;
     min-height: 0;
+    /* Поднимаем вплотную к линии .settings-tabs (margin-bottom: 18px) */
+    margin-top: -18px;
 }
 
 /* --- Rail (левая колонка) --- */
@@ -32,11 +34,12 @@
 /* Заголовок рейла — некликабельный лейбл */
 .domain-rail__heading {
     display: block;
-    padding: 10px 14px 8px;
-    font-size: 10px;
+    padding: 10px 14px 9px;
+    font-size: 12px;
     font-weight: 700;
-    letter-spacing: 0.1em;
+    letter-spacing: 0.08em;
     text-transform: uppercase;
+    text-align: center;
     color: #8fa8c0;
     border-bottom: 1px solid #dce5ef;
     user-select: none;
@@ -50,9 +53,9 @@
     justify-content: center;
     gap: 6px;
     width: 100%;
-    height: 180px;
+    height: 120px;
     box-sizing: border-box;
-    padding: 16px 10px;
+    padding: 12px 10px;
     background: #fff;
     border: none;
     text-align: center;
@@ -151,6 +154,8 @@
 .domain-rail-pane {
     min-width: 0;
     padding-left: 18px;
+    /* Компенсируем margin-top: -18px на layout — контент начинается на той же высоте */
+    padding-top: 18px;
 }
 
 /* ======================================================
@@ -161,6 +166,7 @@
     .domain-rail-layout {
         grid-template-columns: 1fr;
         grid-template-rows: auto 1fr;
+        margin-top: 0;
     }
 
     .domain-rail {
@@ -169,7 +175,7 @@
         display: flex;
         flex-direction: row;
         overflow-x: auto;
-        border-radius: 0 0 0 0;
+        border-radius: 0;
         border-bottom: 1px solid #dce5ef;
     }
 
@@ -179,8 +185,8 @@
 
     .domain-rail__item {
         flex-shrink: 0;
-        width: 100px;
-        height: 100px;
+        width: 90px;
+        height: 90px;
         border-bottom: none;
         border-right: 1px solid #dce5ef;
         padding: 10px 8px;
