@@ -71,6 +71,9 @@ class SettingsManager {
         if (tab === 'campaigns') {
             this._attachCampaignsTabListeners(this._tabContent);
         }
+        if (tab === 'pipelines') {
+            this._attachPipelinesTabListeners(this._tabContent);
+        }
     }
 
     _bindActions() {
