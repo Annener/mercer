@@ -89,21 +89,43 @@ const DocumentsTabMixin = {
     },
 
     async loadDocumentsData() {
-        const vaultId  = await this._resolveVaultId();
-        const domainId = this._activeDomainId || await this._resolveDomainId();
         const tbody = document.getElementById('docs-tbody');
 
-        if (!vaultId && !domainId) {
+        // --- Приоритеты фильтрации ---
+        // 1. Явно выбранный домен (_activeDomainId) → передаём только domain_id,
+        //    vault не резолвим вообще, чтобы не «перебить» фильтр.
+        // 2. Явно выбранный vault (_activeVaultId) → передаём vault_id.
+        // 3. Ни то ни другое → резолвим vault как fallback (старое поведение).
+
+        let requestVaultId  = null;
+        let requestDomainId = null;
+
+        if (this._activeDomainId) {
+            // Домен выбран явно — фильтруем по нему
+            requestDomainId = this._activeDomainId;
+        } else if (this._activeVaultId) {
+            // Vault выбран явно
+            requestVaultId = this._activeVaultId;
+        } else {
+            // Fallback: резолвим vault (старое поведение для первой загрузки)
+            requestVaultId = await this._resolveVaultId();
+            if (!requestVaultId) {
+                // Vault не нашли — пробуем domain
+                requestDomainId = await this._resolveDomainId();
+            }
+        }
+
+        if (!requestVaultId && !requestDomainId) {
             if (tbody) tbody.innerHTML = '<tr><td colspan="1" class="empty-state">Vault не найден. Добавьте vault в настройках.</td></tr>';
             return;
         }
 
         try {
             const docs = await this.api.getSettingsDocuments({
-                vaultId:  vaultId  || null,
-                domainId: vaultId  ? null : domainId,
-                status:   this._docsFilterStatus  || null,
-                tagId:    this._docsFilterTagId   || null,
+                vaultId:  requestVaultId  || null,
+                domainId: requestDomainId || null,
+                status:   this._docsFilterStatus || null,
+                tagId:    this._docsFilterTagId  || null,
             });
 
             this._docsAllDocs = Array.isArray(docs) ? docs : (docs.documents || []);
@@ -118,13 +140,26 @@ const DocumentsTabMixin = {
                 statusSel.onchange = () => { this._docsFilterStatus = statusSel.value; this.loadDocumentsData(); };
             }
 
-            if (domainId) {
-                await this._loadTagFilterOptions(domainId);
-                await this._refreshTagsPanel(domainId);
+            // Теги панель и фильтр — только если знаем домен
+            const effectiveDomainId = requestDomainId || await this._resolveDomainIdForVault(requestVaultId);
+            if (effectiveDomainId) {
+                await this._loadTagFilterOptions(effectiveDomainId);
+                await this._refreshTagsPanel(effectiveDomainId);
             }
         } catch (e) {
             if (tbody) tbody.innerHTML = `<tr><td colspan="1" class="empty-state" style="color:var(--color-error)">Ошибка: ${this.escapeHtml(e.message)}</td></tr>`;
         }
+    },
+
+    /** Резолвит domain_id по известному vault_id (для тегов-панели при fallback). */
+    async _resolveDomainIdForVault(vaultId) {
+        if (!vaultId) return null;
+        try {
+            const resp = await this.api.getSettingsVaults();
+            const list = Array.isArray(resp) ? resp : [];
+            const vault = list.find(v => (v.vault_id || v.id) === vaultId);
+            return vault?.domain_id || null;
+        } catch (_) { return null; }
     },
 
     async _loadTagFilterOptions(domainId) {
@@ -1001,7 +1036,6 @@ const DocumentsTabMixin = {
             const runBtn = document.querySelector('[data-action="run-indexer"]');
             if (runBtn) { runBtn.disabled = true; runBtn.textContent = '⏳ Запуск…'; }
             try {
-                // Передаём явно выбранный домен в runIndexer
                 const result = await this.api.runIndexer(this._activeDomainId || null);
                 const taskId = result?.task_id || result?.id || null;
                 this._docsIndexTaskId = taskId;
