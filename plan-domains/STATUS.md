@@ -10,8 +10,8 @@
 |---|---|---|---|---|
 | 1 | Domain-selector Campaigns (frontend) | DONE | 2026-07-02 | Добавлен _activeDomainId в constructor, вызов _attachCampaignsTabListeners в _afterTabRender |
 | 2 | Domain-selector Pipelines (frontend) | DONE | 2026-07-02 | Добавлен вызов _attachPipelinesTabListeners в _afterTabRender; shared _activeDomainId подтверждён |
-| 3 | Domain-фильтр Vaults (frontend) | DONE | 2026-07-02 | domain-selector в тулбаре, _attachVaultsTabListeners, getSettingsVaults(domainId) |
-| 4 | Domain_id параметр Vaults (backend) | TODO | — | — |
+| 3 | Domain-фильтр Vaults (frontend) | DONE | 2026-07-02 | runtime-fix в api/vaults.js |
+| 4 | Domain_id параметр Vaults (backend) | DONE | 2026-07-02 | Уже реализован в app/api/settings/vaults.py; ревью/план устарели |
 | 5 | Domain-selector Documents (новый UI) | TODO | — | — |
 | 6 | Cross-domain валидация Pipeline↔Campaign (backend) | TODO | — | — |
 | 7 | Chat.vault_id domain-check (backend) | TODO | — | — |
@@ -95,3 +95,27 @@
 
 #### Заметка: фронтенд vs backend для Шага 3
 Шаг 3 — фронтендовый. Backend-эндпоинт `GET /api/settings/vaults` сейчас принимает параметр `domain_id` или нет — не верифицировано в рамках этого шага. Шаг 4 (следующий) добавит фильтрацию на стороне бекенда — только тогда цепочка замкнется полностью.
+
+### Шаг 3 (уточнение runtime) — 2026-07-02
+- При ручной проверке выяснилось, что domain-selector на Vaults обновляет
+  _activeDomainId, но список не фильтруется.
+- Причина: реальное приложение использует модульный API-клиент через
+  /static/js/api/index.js, а не legacy api.js.
+- Исправлен runtime-файл rag-backend/app/static/js/api/vaults.js:
+  getSettingsVaults(domainId = null) теперь пробрасывает domainId в
+  getVaults(domainId).
+- Тесты: backend pytest rag-backend/app/tests/test_vaults_domain_filter.py -v
+  ранее прогнан, результат 5 passed; для фронтенда нужна ручная проверка
+  Network/DOM.
+- Следующий шаг: Шаг 5 (Documents) — backend Vaults API дополнительного
+  фикса не требует.
+
+### Шаг 4 — 2026-07-02
+- Проверен текущий backend-код rag-backend/app/api/settings/vaults.py.
+- Установлено, что GET /api/settings/vaults уже принимает domain_id и
+  применяет фильтр where(Vault.domain_id == domain_id).
+- Код backend не менялся: шаг закрыт как DONE, проблема из ревью уже была
+  решена к текущему состоянию репозитория.
+- Заметка: план/ревью устарели для этого шага; фактический баг находился во
+  frontend runtime API-клиенте (api/vaults.js), а не в backend.
+- Следующий шаг: Шаг 5.
