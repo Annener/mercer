@@ -809,8 +809,9 @@ class ChatAPI {
         return response.json();
     }
 
-    async getSettingsVaults() {
-        return this.getVaults();
+    // Алиас с поддержкой domain-фильтра (Шаг 3)
+    async getSettingsVaults(domainId = null) {
+        return this.getVaults(domainId);
     }
 
     async getSettingsDocuments({ vaultId = null, domainId = null, status = null, tagId = null } = {}) {
