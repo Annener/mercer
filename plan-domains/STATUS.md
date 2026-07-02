@@ -13,7 +13,7 @@
 | 3 | Domain-фильтр Vaults (frontend) | DONE | 2026-07-02 | runtime-fix в api/vaults.js |
 | 4 | Domain_id параметр Vaults (backend) | DONE | 2026-07-02 | Уже реализован в app/api/settings/vaults.py; ревью/план устарели |
 | 5 | Domain-selector Documents (новый UI) | DONE | 2026-07-03 | Добавлен #docs-domain-select, _attachDocumentsTabListeners, runIndexer принимает _activeDomainId |
-| 6 | Cross-domain валидация Pipeline↔Campaign (backend) | TODO | — | — |
+| 6 | Cross-domain валидация Pipeline↔Campaign (backend) | DONE | 2026-07-03 | _check_campaign_domain helper + валидация в create/update + campaign_id в схемах и pipeline_dict |
 | 7 | Chat.vault_id domain-check (backend) | TODO | — | — |
 | 8 | GET /api/chat/ domain_id параметр | TODO | — | — |
 | 9 | Исследование Vault.domain_id nullable | TODO | — | — |
@@ -88,8 +88,8 @@
 #### Ручной сценарий проверки Шаг 3
 1. Открыть Settings → перейти на вкладку **Vaults**.
 2. Убедиться что `#vaults-domain-select` присутствует в DOM рядом с кнопкой "+ Новый vault".
-3. Выбрать домен — список vault’ов должен обновиться и показывать только vault’ы выбранного домена.
-4. Выбрать "Все домены" — должны показаться все vault’ы.
+3. Выбрать домен — список vault'ов должен обновиться и показывать только vault'ы выбранного домена.
+4. Выбрать "Все домены" — должны показаться все vault'ы.
 5. Переключиться на другую вкладку и обратно на Vaults — `_activeDomainId` сохраняется (shared state).
 6. В DevTools: в запросе к Network → фильтр по "vaults" — URL должен содержать `?domain_id=<id>` при выбранном домене.
 
@@ -139,10 +139,41 @@
 #### Ручной сценарий проверки Шаг 5
 1. Открыть Settings → перейти на вкладку **Documents**.
 2. Убедиться, что `#docs-domain-select` присутствует в DOM рядом с кнопкой "▶ Запустить индексацию".
-3. Выбрать домен — список документов должен обновиться (только дерево vault’а этого домена).
+3. Выбрать домен — список документов должен обновиться (только дерево vault'а этого домена).
 4. Теги в панели справа должны относиться к выбранному домену.
 5. Фильтр тегов в `#docs-tag-filter` должен обновиться (показывать теги выбранного домена).
-6. Выбрать "Все домены" — документы всех vault’ов/доменов.
+6. Выбрать "Все домены" — документы всех vault'ов/доменов.
 7. В DevTools: `settingsManager._activeDomainId` — совпадает с выбранным доменом.
 8. Нажать "▶ Запустить индексацию" с выбранным доменом:
    в Network должен уйти POST `/api/v1/domains/<id>/index` (не для первого попавшегося домена).
+
+### Шаг 6 — 2026-07-03
+- `schemas.py`:
+  - `PipelineCreateRequest`: добавлен `campaign_id: uuid.UUID | None = None`.
+  - `PipelineUpdateRequest`: добавлен `campaign_id: uuid.UUID | None = None`.
+- `pipelines.py`:
+  - Добавлена async-функция `_check_campaign_domain(campaign_id, expected_domain_id, db)`:
+    подгружает Campaign из БД, сравнивает `campaign.domain_id` с ожидаемым,
+    возвращает 404 если кампания не найдена, 400 если домены не совпадают.
+  - `create_pipeline`: если `req.campaign_id is not None` — вызывает `_check_campaign_domain`.
+  - `update_pipeline`: если `campaign_id` присутствует в payload и не None —
+    вызывает `_check_campaign_domain` с `effective_domain_id` (учитывает смену domain_id в том же запросе).
+    `campaign_id` теперь корректно проставляется в новую версию пайплайна из payload.
+- `helpers.py`:
+  - `pipeline_dict`: добавлен `campaign_id` в возвращаемый словарь (был скрыт, фронтенд не видел привязку).
+- `tests/test_pipeline_cross_domain.py`: 5 unit-тестов для `_check_campaign_domain` без БД (AsyncMock):
+  - test_cross_domain_raises_400
+  - test_same_domain_no_exception
+  - test_campaign_not_found_raises_404
+  - test_cross_domain_error_message_contains_both_domains
+  - test_db_get_called_with_correct_uuid
+- Тесты: запустить вручную: `pytest rag-backend/app/tests/test_pipeline_cross_domain.py -v`
+- Commit: 70b2975e
+- Следующий шаг: Шаг 7 (Chat.vault_id domain-check, backend).
+
+#### Ручной сценарий проверки Шаг 6
+1. Создать кампанию в домене A (через Settings → Campaigns).
+2. Попытаться создать пайплайн с `domain_id=B, campaign_id=<id кампании из A>` через API:
+   `POST /api/settings/pipelines` — ожидать HTTP 400 с сообщением о несовпадении доменов.
+3. Создать пайплайн с корректным `domain_id=A, campaign_id=<id кампании из A>` — ожидать HTTP 201.
+4. В ответе пайплайна убедиться что `campaign_id` присутствует (раньше его не было в pipeline_dict).
