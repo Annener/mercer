@@ -15,7 +15,7 @@
 | 5 | Domain-selector Documents (новый UI) | DONE | 2026-07-03 | Добавлен #docs-domain-select, _attachDocumentsTabListeners, runIndexer принимает _activeDomainId |
 | 6 | Cross-domain валидация Pipeline↔Campaign (backend) | DONE | 2026-07-03 | _check_campaign_domain helper + валидация в create/update + campaign_id в схемах и pipeline_dict |
 | 7 | Chat.vault_id domain-check (backend) | DONE | 2026-07-03 | _check_vault_domain helper + вызов в create_chat; Vault добавлен в импорты chat.py |
-| 8 | GET /api/chat/ domain_id параметр | TODO | — | — |
+| 8 | GET /api/chat/ domain_id параметр | DONE | 2026-07-03 | Уже реализован — list_chats принимает domain_id; ревью устарело |
 | 9 | Исследование Vault.domain_id nullable | TODO | — | — |
 
 ## Легенда статусов
@@ -209,3 +209,19 @@
 В `chat.py` нет эндпоинта `update_chat` (кроме rename_chat, который меняет только title,
 и lock_pipeline). Проверка `_check_vault_domain` нужна только в `create_chat`.
 Если в будущем появится полноценный PATCH/PUT — добавить проверку туда же.
+
+### Шаг 8 — 2026-07-03
+- Проверен текущий backend-код `rag-backend/app/api/chat.py`, функция `list_chats`.
+- Установлено: `GET /api/chat/list` уже принимает `domain_id: str | None = Query(default=None)`
+  и применяет `stmt = stmt.where(Chat.domain_id == domain_id)` при наличии параметра.
+- Код не менялся: шаг закрыт как DONE, проблема из исходного ревью уже была
+  решена к текущему состоянию репозитория (аналогично Шагу 4 для Vaults).
+- Тесты: код не изменялся — новые тесты не добавлялись. При желании покрыть регрессионно:
+  `pytest rag-backend/app/tests/ -k "chat" -v` (если соответствующие тесты существуют).
+- Следующий шаг: Шаг 9 (исследование Vault.domain_id nullable).
+
+#### Ручная проверка (опциональная, для убеждения)
+1. `GET /api/chat/list` без параметров → возвращает все чаты.
+2. `GET /api/chat/list?domain_id=<uuid>` → возвращает только чаты данного домена.
+3. `sidebar.js`: убедиться что `chatAPI.listChats(this.currentDomain)` передаёт правильный domain_id
+   в query-string (Network DevTools).
