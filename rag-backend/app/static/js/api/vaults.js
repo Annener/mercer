@@ -32,7 +32,7 @@ export const vaultsMixin = {
     },
 
     async deleteVault(vaultId) {
-raphael        const response = await fetch(`${this.baseUrl}/api/settings/vaults/${vaultId}`, {
+        const response = await fetch(`${this.baseUrl}/api/settings/vaults/${vaultId}`, {
             method: 'DELETE',
         });
         if (!response.ok) throw new Error(`Failed to delete vault: ${response.statusText}`);
