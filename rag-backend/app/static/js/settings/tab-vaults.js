@@ -1,8 +1,32 @@
 const VaultsTabMixin = {
     async renderVaultsTab() {
-        let vaults = await this.api.getSettingsVaults();
+        const domainId = this._activeDomainId || null;
+        let vaults = await this.api.getSettingsVaults(domainId);
         if (!Array.isArray(vaults)) vaults = [];
-        const toolbar = `<div class="settings-toolbar"><button class="btn btn-primary" data-action="new-vault">+ Новый vault</button></div>`;
+
+        // Загружаем домены для domain-selector в тулбаре
+        let domains = [];
+        try {
+            const dr = await this.api.getSettingsDomains();
+            domains = Array.isArray(dr) ? dr : (dr.domains || []);
+        } catch (_) {}
+
+        const domainSelector = `
+            <select id="vaults-domain-select" class="input-field" style="max-width:200px;height:36px;">
+                <option value="">Все домены</option>
+                ${domains.map(d => {
+                    const did = this.escapeHtml(d.domain_id || d.id || '');
+                    const dname = this.escapeHtml(d.display_name || d.domain_id || d.id || '');
+                    const sel = (d.domain_id || d.id) === domainId ? ' selected' : '';
+                    return `<option value="${did}"${sel}>${dname}</option>`;
+                }).join('')}
+            </select>`;
+
+        const toolbar = `<div class="settings-toolbar">
+            <button class="btn btn-primary" data-action="new-vault">+ Новый vault</button>
+            ${domainSelector}
+        </div>`;
+
         if (vaults.length === 0) return toolbar + `<div class="empty-state">Vault'ов нет</div>`;
         return toolbar + `<div class="settings-grid">${vaults.map(vault => `
             <article class="settings-card">
@@ -22,6 +46,16 @@ const VaultsTabMixin = {
                     <span class="badge ${vault.enabled ? 'ok' : 'muted'}">${this.escapeHtml(vault.binding_status)}</span>
                 </div>
             </article>`).join('')}</div>`;
+    },
+
+    _attachVaultsTabListeners(container) {
+        const sel = container.querySelector('#vaults-domain-select');
+        if (sel) {
+            sel.addEventListener('change', () => {
+                this._activeDomainId = sel.value || null;
+                this.loadTab('vaults');
+            });
+        }
     },
 
     async showVaultModal(vaultId = null) {
