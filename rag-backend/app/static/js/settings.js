@@ -4,6 +4,7 @@ class SettingsManager {
         this.currentTab = 'domains';
         this._tabContent = null;
         this._bound = false;
+        this._activeDomainId = null;
     }
 
     // setup() вызывается ОДИН раз — навешивает обработчики
@@ -66,6 +67,9 @@ class SettingsManager {
         }
         if (tab === 'params') {
             this._loadSidecarStatus();
+        }
+        if (tab === 'campaigns') {
+            this._attachCampaignsTabListeners(this._tabContent);
         }
     }
 
@@ -257,7 +261,7 @@ class SettingsManager {
         } else if (action === 'edit-emb') {
             await this.showEmbeddingModelModal(id);
         } else if (action === 'delete-emb') {
-            if (!confirm('Удалить модель?')) return;
+            if (!confirm('Удалить модель?')) return;\
             try {
                 await this.api.deleteEmbeddingModel(id);
                 await this.loadTab('models');
