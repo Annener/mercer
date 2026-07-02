@@ -149,25 +149,28 @@
     <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/languages/yaml.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/languages/sql.min.js"></script>
 
-    <!-- api.js refactored to ES modules -->
+    <!-- api/index.js — ES module; все локальные скрипты отмечены defer,
+         чтобы гарантировать выполнение ПОСЛЕ парсинга HTML в порядке объявления.
+         Это устраняет race condition: window.chatAPI будет установлен
+         до того, как settings.js / sidebar.js / chat.js начнут инициализацию. -->
     <script type="module" src="/static/js/api/index.js"></script>
-    <script src="/static/js/pipeline_builder.js"></script>
-    <script src="/static/js/settings.js"></script>
-    <script src="/static/js/settings/tab-domains.js"></script>
-    <script src="/static/js/settings/tab-vaults.js"></script>
-    <script src="/static/js/settings/tab-gen-models.js"></script>
-    <script src="/static/js/settings/tab-emb-models.js"></script>
-    <script src="/static/js/settings/tab-rerank-models.js"></script>
-    <script src="/static/js/settings/tab-models.js"></script>
-    <script src="/static/js/settings/tab-params.js"></script>
-    <script src="/static/js/settings/tab-pipelines.js"></script>
+    <script defer src="/static/js/pipeline_builder.js"></script>
+    <script defer src="/static/js/settings.js"></script>
+    <script defer src="/static/js/settings/tab-domains.js"></script>
+    <script defer src="/static/js/settings/tab-vaults.js"></script>
+    <script defer src="/static/js/settings/tab-gen-models.js"></script>
+    <script defer src="/static/js/settings/tab-emb-models.js"></script>
+    <script defer src="/static/js/settings/tab-rerank-models.js"></script>
+    <script defer src="/static/js/settings/tab-models.js"></script>
+    <script defer src="/static/js/settings/tab-params.js"></script>
+    <script defer src="/static/js/settings/tab-pipelines.js"></script>
     <!-- tag-badge.js должен быть загружен ДО tab-campaigns и tab-documents -->
-    <script src="/static/js/settings/tag-badge.js"></script>
-    <script src="/static/js/settings/tab-campaigns.js"></script>
-    <script src="/static/js/settings/tab-documents.js"></script>
-    <script src="/static/js/pending-banner.js"></script>
-    <script src="/static/js/chat.js"></script>
-    <script src="/static/js/sidebar.js"></script>
-    <script src="/static/js/db_management.js"></script>
+    <script defer src="/static/js/settings/tag-badge.js"></script>
+    <script defer src="/static/js/settings/tab-campaigns.js"></script>
+    <script defer src="/static/js/settings/tab-documents.js"></script>
+    <script defer src="/static/js/pending-banner.js"></script>
+    <script defer src="/static/js/chat.js"></script>
+    <script defer src="/static/js/sidebar.js"></script>
+    <script defer src="/static/js/db_management.js"></script>
 </body>
 </html>
