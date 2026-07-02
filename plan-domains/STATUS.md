@@ -9,7 +9,7 @@
 | # | Шаг | Статус | Дата | Заметки |
 |---|---|---|---|---|
 | 1 | Domain-selector Campaigns (frontend) | DONE | 2026-07-02 | Добавлен _activeDomainId в constructor, вызов _attachCampaignsTabListeners в _afterTabRender |
-| 2 | Domain-selector Pipelines (frontend) | TODO | — | — |
+| 2 | Domain-selector Pipelines (frontend) | DONE | 2026-07-02 | Добавлен вызов _attachPipelinesTabListeners в _afterTabRender; shared _activeDomainId подтверждён |
 | 3 | Domain-фильтр Vaults (frontend) | TODO | — | — |
 | 4 | Domain_id параметр Vaults (backend) | TODO | — | — |
 | 5 | Domain-selector Documents (новый UI) | TODO | — | — |
@@ -61,3 +61,18 @@
 4. Убедиться что список кампаний обновился и показывает только кампании выбранного домена.
 5. Выбрать "Все домены" — убедиться что показываются все кампании.
 6. В DevTools console: `settingsManager._activeDomainId` — должно совпадать с выбранным доменом (null для "все").
+
+### Шаг 2 — 2026-07-02
+- В `_afterTabRender(tab)` добавлен вызов `this._attachPipelinesTabListeners(this._tabContent)` при `tab === 'pipelines'`.
+- `_activeDomainId` уже существовал на уровне `SettingsManager` (shared state) — дополнительных изменений не потребовалось.
+- `tab-pipelines.js` изменений не требует: `renderPipelinesTab()` уже читает `this._activeDomainId` и рисует `#pipelines-domain-select`; `_attachPipelinesTabListeners` определён и корректен.
+- Тесты: JS-фреймворк отсутствует, автотесты не запускались. См. ручной сценарий ниже.
+- Результат: commit 3184971.
+- Следующий шаг: Шаг 3 (Domain-фильтр Vaults, frontend).
+
+#### Ручной сценарий проверки Шаг 2
+1. Открыть Settings → перейти на вкладку **Pipelines**.
+2. Убедиться что `#pipelines-domain-select` присутствует в DOM.
+3. Выбрать домен из селектора — список пайплайнов должен обновиться.
+4. В DevTools: `settingsManager._activeDomainId` — должно совпадать с выбранным доменом.
+5. Переключиться на вкладку Campaigns, снова на Pipelines — селектор должен сохранять значение (shared `_activeDomainId`).
