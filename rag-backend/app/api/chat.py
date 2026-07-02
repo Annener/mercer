@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Campaign, Chat, ClarificationStateRow, Message
+from app.db.models import Campaign, Chat, ClarificationStateRow, Message, Vault
 from app.db.session import get_db
 from app.services import clarification_fsm
 from app.services.domain_service import domain_service
@@ -173,6 +173,40 @@ async def _save_partial_answer(
         logger.exception("Failed to persist partial assistant answer chat_id=%s", chat.id)
 
 
+async def _check_vault_domain(
+    vault_id: str | None,
+    expected_domain_id: str,
+    db: AsyncSession,
+) -> None:
+    """Проверяет что vault принадлежит ожидаемому домену.
+
+    - vault_id=None → пропуск (back-compat: старые чаты без vault).
+    - Vault не найден → 404.
+    - vault.domain_id != expected_domain_id → 400.
+    - vault.domain_id is None → 400 (бесхозный vault не может быть привязан к домену).
+    """
+    if vault_id is None:
+        return
+
+    result = await db.execute(select(Vault).where(Vault.vault_id == vault_id))
+    vault = result.scalars().first()
+
+    if vault is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Vault '{vault_id}' not found",
+        )
+
+    if vault.domain_id != expected_domain_id:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Vault '{vault_id}' belongs to domain '{vault.domain_id}', "
+                f"but chat domain is '{expected_domain_id}'"
+            ),
+        )
+
+
 @router.post("/create", response_model=CreateChatResponse)
 async def create_chat(
     req: CreateChatRequest,
@@ -185,6 +219,9 @@ async def create_chat(
             campaign_uuid = uuid.UUID(req.campaign_id)
         except ValueError as exc:
             raise HTTPException(422, f"Invalid campaign_id format: {req.campaign_id}") from exc
+
+    # Cross-domain check: vault_id должен принадлежать тому же домену что и чат
+    await _check_vault_domain(req.vault_id, req.domain_id, db)
 
     chat = Chat(
         title="New Chat",
