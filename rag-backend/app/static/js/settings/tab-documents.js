@@ -16,10 +16,31 @@ const DocumentsTabMixin = {
     },
 
     async renderDocumentsTab() {
+        // Загружаем домены для domain-selector
+        let domains = [];
+        try {
+            const dr = await this.api.getSettingsDomains();
+            domains = Array.isArray(dr) ? dr : (dr.domains || []);
+        } catch (_) {}
+
+        const domainId = this._activeDomainId || null;
+
+        const domainSelector = `
+            <select id="docs-domain-select" class="input-field" style="max-width:200px;height:36px;">
+                <option value="">Все домены</option>
+                ${domains.map(d => {
+                    const did = this.escapeHtml(d.domain_id || d.id || '');
+                    const dname = this.escapeHtml(d.display_name || d.domain_id || d.id || '');
+                    const sel = (d.domain_id || d.id) === domainId ? ' selected' : '';
+                    return `<option value="${did}"${sel}>${dname}</option>`;
+                }).join('')}
+            </select>`;
+
         return `
         <div class="docs-toolbar">
             <div class="docs-toolbar-left">
                 <button class="btn btn-primary docs-toolbar-btn" data-action="run-indexer">▶ Запустить индексацию</button>
+                ${domainSelector}
                 <input type="text" id="docs-search-input" placeholder="🔍 поиск по имени..." class="input-field docs-toolbar-input">
                 <select id="docs-status-filter" class="input-field docs-toolbar-select">
                     <option value="">Все статусы</option>
@@ -53,6 +74,18 @@ const DocumentsTabMixin = {
                 </div>
             </div>
         </div>`;
+    },
+
+    _attachDocumentsTabListeners(container) {
+        const sel = container.querySelector('#docs-domain-select');
+        if (sel) {
+            sel.addEventListener('change', () => {
+                this._activeDomainId = sel.value || null;
+                // Сбрасываем фильтр тегов при смене домена — теги домен-зависимы
+                this._docsFilterTagId = '';
+                this.loadDocumentsData();
+            });
+        }
     },
 
     async loadDocumentsData() {
@@ -968,7 +1001,8 @@ const DocumentsTabMixin = {
             const runBtn = document.querySelector('[data-action="run-indexer"]');
             if (runBtn) { runBtn.disabled = true; runBtn.textContent = '⏳ Запуск…'; }
             try {
-                const result = await this.api.runIndexer();
+                // Передаём явно выбранный домен в runIndexer
+                const result = await this.api.runIndexer(this._activeDomainId || null);
                 const taskId = result?.task_id || result?.id || null;
                 this._docsIndexTaskId = taskId;
                 if (runBtn) { runBtn.disabled = false; runBtn.textContent = '▶ Запустить индексацию'; }
