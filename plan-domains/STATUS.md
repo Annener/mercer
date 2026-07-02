@@ -16,7 +16,7 @@
 | 6 | Cross-domain валидация Pipeline↔Campaign (backend) | DONE | 2026-07-03 | _check_campaign_domain helper + валидация в create/update + campaign_id в схемах и pipeline_dict |
 | 7 | Chat.vault_id domain-check (backend) | DONE | 2026-07-03 | _check_vault_domain helper + вызов в create_chat; Vault добавлен в импорты chat.py |
 | 8 | GET /api/chat/ domain_id параметр | DONE | 2026-07-03 | Уже реализован — list_chats принимает domain_id; ревью устарело |
-| 9 | Исследование Vault.domain_id nullable | TODO | — | — |
+| 9 | Исследование Vault.domain_id nullable | DONE | 2026-07-03 | nullable=True + ondelete=SET NULL подтверждены; SQL-запрос для проверки данных в БД задокументирован |
 
 ## Легенда статусов
 
@@ -225,3 +225,68 @@
 2. `GET /api/chat/list?domain_id=<uuid>` → возвращает только чаты данного домена.
 3. `sidebar.js`: убедиться что `chatAPI.listChats(this.currentDomain)` передаёт правильный domain_id
    в query-string (Network DevTools).
+
+### Шаг 9 — 2026-07-03
+
+#### Исследование: текущее состояние схемы
+
+**ORM-модель** (`rag-backend/app/db/models.py`, класс `Vault`):
+```python
+domain_id: Mapped[str] = mapped_column(
+    String(64),
+    ForeignKey("domains.domain_id", ondelete="SET NULL"),
+    nullable=True,
+)
+```
+Поле **nullable=True**, FK с `ondelete="SET NULL"` — при удалении домена vault «осиротевает»
+(domain_id становится NULL), а не удаляется.
+
+**Миграция** (`rag-backend/migrations/versions/0001_initial.py`):
+```python
+sa.Column("domain_id", sa.String(64),
+    sa.ForeignKey("domains.domain_id", ondelete="SET NULL"),
+    nullable=True),
+```
+Одна единственная миграция — nullable=True было задано изначально и ни разу не менялось.
+Нет более ранних миграций, где это поле создавалось бы с другими параметрами.
+
+#### SQL-запрос для проверки данных в живой БД
+
+Перед принятием решения о миграции необходимо выполнить в prod/dev БД:
+```sql
+-- Общее количество vault'ов без домена
+SELECT count(*) AS orphan_count
+FROM vaults
+WHERE domain_id IS NULL;
+
+-- Детализация: какие именно vault'ы без домена
+SELECT vault_id, display_name, binding_status, created_at
+FROM vaults
+WHERE domain_id IS NULL
+ORDER BY created_at;
+```
+
+#### Выводы по результатам анализа схемы
+
+1. **Текущий дизайн**: `domain_id` сознательно сделан nullable с `ondelete=SET NULL` —
+   это защита от каскадного удаления vault'ов при удалении домена. Vault остаётся жить,
+   но «теряет» домен.
+
+2. **Риск осиротевших vault'ов**: если vault.domain_id = NULL и он привязан к чату
+   (через vault_id в chats) — `_check_vault_domain` (Шаг 7) уже блокирует создание
+   нового чата с таким vault'ом (400: orphan vault). Старые чаты не затрагиваются
+   (back-compat через vault_id=None check).
+
+3. **Путь к NOT NULL** (будущий шаг, вне скоупа этого плана):
+   - Убедиться что `SELECT count(*) FROM vaults WHERE domain_id IS NULL` = 0.
+   - Если > 0: принудительно назначить домен (`UPDATE vaults SET domain_id = 'default' WHERE domain_id IS NULL`) или удалить/архивировать осиротевшие vault'ы.
+   - Написать Alembic-миграцию: сначала `ALTER TABLE vaults ALTER COLUMN domain_id SET NOT NULL`, затем сменить `ondelete` FK на `CASCADE` или `RESTRICT` в зависимости от политики.
+   - Обновить ORM-модель: `nullable=False`, убрать `ondelete="SET NULL"`.
+
+4. **Рекомендация**: НЕ менять nullable в рамках этого плана. Текущее поведение
+   (SET NULL при удалении домена) — это осознанная safety-net, а не баг.
+   NOT NULL миграция — отдельная задача с предварительным data-аудитом.
+
+- Код не менялся: шаг является исследованием.
+- Тесты: не применимо.
+- **Весь план Domain Isolation Fix завершён. Все 9 шагов — DONE.**
