@@ -2,7 +2,7 @@
 
 > Обновлять после каждого шага. Формат статуса: TODO / IN PROGRESS / DONE / BLOCKED / SKIPPED
 
-Последнее обновление: 2026-07-02
+Последнее обновление: 2026-07-03
 
 ## Сводная таблица
 
@@ -12,7 +12,7 @@
 | 2 | Domain-selector Pipelines (frontend) | DONE | 2026-07-02 | Добавлен вызов _attachPipelinesTabListeners в _afterTabRender; shared _activeDomainId подтверждён |
 | 3 | Domain-фильтр Vaults (frontend) | DONE | 2026-07-02 | runtime-fix в api/vaults.js |
 | 4 | Domain_id параметр Vaults (backend) | DONE | 2026-07-02 | Уже реализован в app/api/settings/vaults.py; ревью/план устарели |
-| 5 | Domain-selector Documents (новый UI) | TODO | — | — |
+| 5 | Domain-selector Documents (новый UI) | DONE | 2026-07-03 | Добавлен #docs-domain-select, _attachDocumentsTabListeners, runIndexer принимает _activeDomainId |
 | 6 | Cross-domain валидация Pipeline↔Campaign (backend) | TODO | — | — |
 | 7 | Chat.vault_id domain-check (backend) | TODO | — | — |
 | 8 | GET /api/chat/ domain_id параметр | TODO | — | — |
@@ -88,13 +88,13 @@
 #### Ручной сценарий проверки Шаг 3
 1. Открыть Settings → перейти на вкладку **Vaults**.
 2. Убедиться что `#vaults-domain-select` присутствует в DOM рядом с кнопкой "+ Новый vault".
-3. Выбрать домен — список vault'ов должен обновиться и показывать только vault'ы выбранного домена.
-4. Выбрать "Все домены" — должны показаться все vault'ы.
+3. Выбрать домен — список vault’ов должен обновиться и показывать только vault’ы выбранного домена.
+4. Выбрать "Все домены" — должны показаться все vault’ы.
 5. Переключиться на другую вкладку и обратно на Vaults — `_activeDomainId` сохраняется (shared state).
 6. В DevTools: в запросе к Network → фильтр по "vaults" — URL должен содержать `?domain_id=<id>` при выбранном домене.
 
 #### Заметка: фронтенд vs backend для Шага 3
-Шаг 3 — фронтендовый. Backend-эндпоинт `GET /api/settings/vaults` сейчас принимает параметр `domain_id` или нет — не верифицировано в рамках этого шага. Шаг 4 (следующий) добавит фильтрацию на стороне бекенда — только тогда цепочка замкнется полностью.
+Шаг 3 — фронтендовый. Backend-эндпойнт `GET /api/settings/vaults` сейчас принимает параметр `domain_id` или нет — не верифицировано в рамках этого шага. Шаг 4 (следующий) добавит фильтрацию на стороне бекенда — только тогда цепочка замкнётся полностью.
 
 ### Шаг 3 (уточнение runtime) — 2026-07-02
 - При ручной проверке выяснилось, что domain-selector на Vaults обновляет
@@ -119,3 +119,30 @@
 - Заметка: план/ревью устарели для этого шага; фактический баг находился во
   frontend runtime API-клиенте (api/vaults.js), а не в backend.
 - Следующий шаг: Шаг 5.
+
+### Шаг 5 — 2026-07-03
+- `tab-documents.js`:
+  - В `renderDocumentsTab()` добавлен `<select id="docs-domain-select">` в `docs-toolbar-left`.
+    Список опций загружается через `this.api.getSettingsDomains()` аналогично Campaigns/Pipelines/Vaults.
+  - Добавлен метод `_attachDocumentsTabListeners(container)`:
+    навешивает `change` на `#docs-domain-select` → обновляет `this._activeDomainId`,
+    сбрасывает `_docsFilterTagId`, вызывает `this.loadDocumentsData()`.
+  - `handleDocumentsAction('run-indexer')`: теперь явно передаёт `this._activeDomainId`
+    в `this.api.runIndexer(...)` — индексация запускается для выбранного домена.
+- `settings.js`:
+  - В `_afterTabRender('documents')` добавлен вызов
+    `this._attachDocumentsTabListeners(this._tabContent)` после `_initDocumentsTab()`.
+- Коммиты: 44812843 (tab-documents.js), 5cf2e6f2 (settings.js).
+- Тесты: JS-фреймворк отсутствует, автотесты не запускались. См. ручной сценарий ниже.
+- Следующий шаг: Шаг 6 (backend: cross-domain валидация Pipeline↔Campaign).
+
+#### Ручной сценарий проверки Шаг 5
+1. Открыть Settings → перейти на вкладку **Documents**.
+2. Убедиться, что `#docs-domain-select` присутствует в DOM рядом с кнопкой "▶ Запустить индексацию".
+3. Выбрать домен — список документов должен обновиться (только дерево vault’а этого домена).
+4. Теги в панели справа должны относиться к выбранному домену.
+5. Фильтр тегов в `#docs-tag-filter` должен обновиться (показывать теги выбранного домена).
+6. Выбрать "Все домены" — документы всех vault’ов/доменов.
+7. В DevTools: `settingsManager._activeDomainId` — совпадает с выбранным доменом.
+8. Нажать "▶ Запустить индексацию" с выбранным доменом:
+   в Network должен уйти POST `/api/v1/domains/<id>/index` (не для первого попавшегося домена).
