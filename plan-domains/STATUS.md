@@ -14,7 +14,7 @@
 | 4 | Domain_id параметр Vaults (backend) | DONE | 2026-07-02 | Уже реализован в app/api/settings/vaults.py; ревью/план устарели |
 | 5 | Domain-selector Documents (новый UI) | DONE | 2026-07-03 | Добавлен #docs-domain-select, _attachDocumentsTabListeners, runIndexer принимает _activeDomainId |
 | 6 | Cross-domain валидация Pipeline↔Campaign (backend) | DONE | 2026-07-03 | _check_campaign_domain helper + валидация в create/update + campaign_id в схемах и pipeline_dict |
-| 7 | Chat.vault_id domain-check (backend) | TODO | — | — |
+| 7 | Chat.vault_id domain-check (backend) | DONE | 2026-07-03 | _check_vault_domain helper + вызов в create_chat; Vault добавлен в импорты chat.py |
 | 8 | GET /api/chat/ domain_id параметр | TODO | — | — |
 | 9 | Исследование Vault.domain_id nullable | TODO | — | — |
 
@@ -177,3 +177,35 @@
    `POST /api/settings/pipelines` — ожидать HTTP 400 с сообщением о несовпадении доменов.
 3. Создать пайплайн с корректным `domain_id=A, campaign_id=<id кампании из A>` — ожидать HTTP 201.
 4. В ответе пайплайна убедиться что `campaign_id` присутствует (раньше его не было в pipeline_dict).
+
+### Шаг 7 — 2026-07-03
+- `chat.py`:
+  - Добавлен импорт `Vault` из `app.db.models`.
+  - Добавлена async-функция `_check_vault_domain(vault_id, expected_domain_id, db)`:
+    - `vault_id=None` → пропуск (back-compat: старые чаты без vault).
+    - Vault не найден по `vault_id` → `HTTPException(404, ...)`.
+    - `vault.domain_id != expected_domain_id` → `HTTPException(400, ...)` с обоими domain_id в сообщении.
+    - `vault.domain_id is None` → `HTTPException(400, ...)` (осиротевший vault не может быть привязан к конкретному домену).
+  - `create_chat`: добавлен вызов `await _check_vault_domain(req.vault_id, req.domain_id, db)` перед созданием объекта Chat.
+- `tests/test_chat_vault_domain.py`: 6 unit-тестов для `_check_vault_domain` без БД (AsyncMock):
+  - test_cross_domain_raises_400
+  - test_same_domain_no_exception
+  - test_vault_not_found_raises_404
+  - test_vault_id_none_skips_check
+  - test_error_message_contains_vault_and_domains
+  - test_vault_domain_id_none_raises_400
+- Commit: 2ee6276e
+- Тесты: запустить вручную: `pytest rag-backend/app/tests/test_chat_vault_domain.py -v`
+- Следующий шаг: Шаг 8 (GET /api/chat/ domain_id параметр — перепроверить, возможно уже реализован).
+
+#### Ручной сценарий проверки Шаг 7
+1. Создать vault в домене A.
+2. Попытаться создать чат с `domain_id=B, vault_id=<vault из домена A>` через API:
+   `POST /api/chat/create` — ожидать HTTP 400 с сообщением о несовпадении доменов.
+3. Создать чат с корректным `domain_id=A, vault_id=<vault из домена A>` → ожидать HTTP 200/201.
+4. Создать чат с `vault_id=null` в любом домене → ожидать успех (back-compat).
+
+#### Заметка: update_chat отсутствует
+В `chat.py` нет эндпоинта `update_chat` (кроме rename_chat, который меняет только title,
+и lock_pipeline). Проверка `_check_vault_domain` нужна только в `create_chat`.
+Если в будущем появится полноценный PATCH/PUT — добавить проверку туда же.
