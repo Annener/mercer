@@ -74,12 +74,15 @@ class SettingsManager {
         if (tab === 'pipelines') {
             this._attachPipelinesTabListeners(this._tabContent);
         }
+        if (tab === 'vaults') {
+            this._attachVaultsTabListeners(this._tabContent);
+        }
     }
 
     _bindActions() {
         if (!this._tabContent) return;
         this._tabContent.addEventListener('click', async (e) => {
-            // ── Card menu toggle ──────────────────────────────────────────────
+            // ── Card menu toggle ───────────────────────────────────────────────────────────────────
             const menuToggle = e.target.closest('.card-menu-toggle');
             if (menuToggle) {
                 e.stopPropagation();
@@ -93,7 +96,7 @@ class SettingsManager {
                 return;
             }
 
-            // ── Action buttons ────────────────────────────────────────────────
+            // ── Action buttons ────────────────────────────────────────────────────────────────
             const btn = e.target.closest('[data-action]');
             if (!btn) return;
 
@@ -128,7 +131,7 @@ class SettingsManager {
         });
     }
 
-    // ─── Params ────────────────────────────────────────────────────────────────────────────
+    // ─── Params ──────────────────────────────────────────────────────────────────────────────────────
 
     async handleParamsAction(action, id, btn) {
         if (action === 'save-params') {
@@ -160,7 +163,7 @@ class SettingsManager {
         if (action === 'sidecar-install') { this._openInstallModal();              return; }
     }
 
-    // ─── Domains ────────────────────────────────────────────────────────────────────────────
+    // ─── Domains ─────────────────────────────────────────────────────────────────────────────────────
 
     async handleDomainsAction(action, id, btn) {
         if (action === 'new-domain') {
@@ -176,7 +179,7 @@ class SettingsManager {
         }
     }
 
-    // ─── Campaigns ───────────────────────────────────────────────────────────────────────
+    // ─── Campaigns ───────────────────────────────────────────────────────────────────────────────────
 
     async handleCampaignsAction(action, id, btn) {
         if (action === 'new-campaign') {
@@ -192,7 +195,7 @@ class SettingsManager {
         }
     }
 
-    // ─── Pipelines ────────────────────────────────────────────────────────────────────────
+    // ─── Pipelines ────────────────────────────────────────────────────────────────────────────────────
 
     async handlePipelinesAction(action, id, btn) {
         if (action === 'new-pipeline') {
@@ -218,7 +221,7 @@ class SettingsManager {
         }
     }
 
-    // ─── Generation Models ──────────────────────────────────────────────────────────────────
+    // ─── Generation Models ────────────────────────────────────────────────────────────────────────────────────
 
     async handleGenModelsAction(action, id, btn) {
         if (action === 'new-gen') {
@@ -256,7 +259,7 @@ class SettingsManager {
         }
     }
 
-    // ─── Embedding Models ──────────────────────────────────────────────────────────────────
+    // ─── Embedding Models ───────────────────────────────────────────────────────────────────────────────────
 
     async handleEmbModelsAction(action, id, btn) {
         if (action === 'new-emb') {
@@ -279,7 +282,7 @@ class SettingsManager {
         }
     }
 
-    // ─── Rerank Models ──────────────────────────────────────────────────────────────────────
+    // ─── Rerank Models ──────────────────────────────────────────────────────────────────────────────────────
 
     async handleRerankModelsAction(action, id, btn) {
         if (action === 'new-rerank') {
@@ -317,7 +320,7 @@ class SettingsManager {
         }
     }
 
-    // ─── Combined Models tab ───────────────────────────────────────────────────────────────
+    // ─── Combined Models tab ───────────────────────────────────────────────────────────────────────────────────
 
     async handleModelsAction(action, id, btn) {
         const type = btn?.dataset.modelType;
@@ -327,7 +330,7 @@ class SettingsManager {
         if (type === 'rerank') return this.handleRerankModelsAction(action, id, btn);
     }
 
-    // ─── Vaults ────────────────────────────────────────────────────────────────────────────
+    // ─── Vaults ──────────────────────────────────────────────────────────────────────────────────────
 
     async handleVaultsAction(action, id, btn) {
         if (action === 'new-vault') {
@@ -343,7 +346,7 @@ class SettingsManager {
         }
     }
 
-    // ─── Documents ────────────────────────────────────────────────────────────────────────
+    // ─── Documents ────────────────────────────────────────────────────────────────────────────────────
 
     /**
      * Вызывается из _afterTabRender() сразу после того, как renderDocumentsTab()
@@ -389,7 +392,7 @@ class SettingsManager {
         }
     }
 
-    // ─── Utility ───────────────────────────────────────────────────────────────────────────
+    // ─── Utility ──────────────────────────────────────────────────────────────────────────────────────
 
     escapeHtml(str) {
         if (str === null || str === undefined) return '';
@@ -404,7 +407,7 @@ class SettingsManager {
 
 const settingsManager = new SettingsManager();
 
-// ─── Bootstrap ────────────────────────────────────────────────────────────────────────────
+// ─── Bootstrap ────────────────────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
     const openBtn      = document.getElementById('settings-btn');
     const backBtn      = document.getElementById('back-to-chat-btn');
