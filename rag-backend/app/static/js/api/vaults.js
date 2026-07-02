@@ -7,8 +7,8 @@ export const vaultsMixin = {
         return response.json();
     },
 
-    async getSettingsVaults() {
-        return this.getVaults();
+    async getSettingsVaults(domainId = null) {
+        return this.getVaults(domainId);
     },
 
     async createVault(data) {
