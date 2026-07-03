@@ -3,8 +3,10 @@
 Алгоритм:
   1. Запросить все активные vault из БД (только enabled=true)
   2. Для каждого vault: скан диска, diff с Redis-кэшем
+     2a. Если Redis-кэш пустой — перестроить из PostgreSQL (первый запуск)
   3. Удалённые → атомарно: LanceDB + PG + Redis
-  4. Изменённые/новые → авто-индексация или пометка pending
+  4. Изменённые/новые/pending/stale → авто-индексация
+     Если watchdog_auto_index_extensions не задан — индексировать всё.
 """
 from __future__ import annotations
 
@@ -78,8 +80,8 @@ async def _run_once(
     storage_client: StorageClient,
 ) -> None:
     """One watchdog iteration across all enabled vaults."""
-    # get_setting возвращает None если ключ не найден ИЛИ value=""
-    # (сценарий 3 — только ручная индексация): используем `or ""` как guard.
+    # Если настройка не задана или пустая — auto_extensions будет пустым set,
+    # что означает режим "индексировать все поддерживаемые расширения".
     raw_setting: str = await db_client.get_setting(WATCHDOG_SETTING_KEY) or ""
     auto_extensions: set[str] = {
         ext.strip() for ext in raw_setting.split(",") if ext.strip()
@@ -127,7 +129,19 @@ async def _process_vault(
 
     disk_index = {f["relative_path"]: f for f in disk_files}
 
+    # --- Если Redis-кэш пустой — перестроить из PostgreSQL.
+    # Это происходит при первом запуске или после сброса Redis.
+    # rebuild_vault_cache сразу проставит index_status=pending для файлов,
+    # которые есть на диске, но отсутствуют в БД.
     cache = await state_manager.get_all_vault_file_entries(vault_id)
+    if not cache:
+        logger.info(
+            "Watchdog: vault_id=%s Redis cache empty, rebuilding from PostgreSQL",
+            vault_id,
+        )
+        pg_documents = await db_client.get_documents_by_vault(vault_id)
+        await state_manager.rebuild_vault_cache(vault_id, pg_documents, disk_files)
+        cache = await state_manager.get_all_vault_file_entries(vault_id)
 
     deleted_paths = [p for p in cache if p not in disk_index]
     for path in deleted_paths:
@@ -143,15 +157,26 @@ async def _process_vault(
     for path, disk_file in disk_index.items():
         entry = cache.get(path)
         if entry is None:
+            # Файл появился после последнего rebuild
             changed.append(disk_file)
         elif disk_file["checksum"] != entry.get("indexed_md5", ""):
+            # Файл изменился на диске
+            changed.append(disk_file)
+        elif entry.get("index_status") in ("pending", "stale"):
+            # Файл уже помечен как ожидающий индексации (например, после rebuild)
             changed.append(disk_file)
 
     if not changed:
         return
 
-    to_auto = [f for f in changed if f["extension"] in auto_extensions]
-    to_mark = [f for f in changed if f["extension"] not in auto_extensions]
+    # Если auto_extensions не задан — индексировать все файлы автоматически.
+    # Если задан — авто только для matching расширений, остальные → pending.
+    if auto_extensions:
+        to_auto = [f for f in changed if f["extension"] in auto_extensions]
+        to_mark = [f for f in changed if f["extension"] not in auto_extensions]
+    else:
+        to_auto = changed
+        to_mark = []
 
     for f in to_mark:
         await state_manager.mark_file_pending(vault_id, f["relative_path"])
@@ -164,8 +189,8 @@ async def _process_vault(
         already_indexing = await state_manager.is_vault_indexing(vault_id)
         if not already_indexing:
             logger.info(
-                "Watchdog: vault_id=%s changed=%d files",
-                vault_id, len(changed),
+                "Watchdog: vault_id=%s triggering auto-index changed=%d files",
+                vault_id, len(to_auto),
             )
             try:
                 task_id = await indexer_service.start_task(vault_id, force_reindex=False)
