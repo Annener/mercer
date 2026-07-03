@@ -74,6 +74,14 @@ class CreateChatRequest(BaseModel):
     campaign_id: str | None = None
 
 
+class UpdateChatRequest(BaseModel):
+    """
+    Обновление метаданных существующего чата.
+    campaign_id — обязательный (но может быть null для сброса кампании).
+    """
+    campaign_id: str | None = ...
+
+
 class RenameChatRequest(BaseModel):
     title: str = Field(min_length=1, max_length=255)
 
@@ -243,6 +251,33 @@ async def create_chat(
     await db.commit()
     logger.info("Created chat: chat_id=%s", chat.id)
     return CreateChatResponse(chat_id=str(chat.id), title=chat.title)
+
+
+@router.patch("/{chat_id}", response_model=CreateChatResponse)
+async def update_chat(
+    chat_id: str,
+    req: UpdateChatRequest,
+    db: AsyncSession = Depends(get_db),
+) -> CreateChatResponse:
+    """Обновить метаданные чата (сейчас: campaign_id).
+
+    Принимает { "campaign_id": "<uuid>" } или { "campaign_id": null } для сброса.
+    """
+    chat = await _get_chat_or_404(chat_id, db)
+    if req.campaign_id:
+        try:
+            chat.campaign_id = uuid.UUID(req.campaign_id)
+        except ValueError as exc:
+            raise HTTPException(422, f"Invalid campaign_id: {req.campaign_id}") from exc
+    else:
+        chat.campaign_id = None
+    await db.commit()
+    await db.refresh(chat)
+    return CreateChatResponse(
+        chat_id=str(chat.id),
+        domain_id=str(chat.domain_id) if chat.domain_id else None,
+        campaign_id=str(chat.campaign_id) if chat.campaign_id else None,
+    )
 
 
 @router.get("/list", response_model=ChatListResponse)
