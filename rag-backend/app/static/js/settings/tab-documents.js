@@ -763,7 +763,14 @@ const DocumentsTabMixin = {
     _renderIndexProgress(state) {
         const panel = document.getElementById('docs-index-progress-panel');
         if (!panel) return;
-        if (!state) { panel.style.display = 'none'; return; }
+
+        // Скрываем панель если нет активной задачи или задача уже завершена.
+        // Показываем только для реально активных статусов: running / queued.
+        const terminalStatuses = ['completed', 'failed', 'cancelled'];
+        if (!state || terminalStatuses.includes(state.status)) {
+            panel.style.display = 'none';
+            return;
+        }
 
         panel.style.display = 'block';
 
@@ -775,9 +782,6 @@ const DocumentsTabMixin = {
         const statusLabel = {
             running:   '⚙️ Индексация…',
             queued:    '⏳ Очередь…',
-            completed: '✅ Готово',
-            failed:    '❌ Ошибка',
-            cancelled: '⛔ Отменено',
         }[state.status] || state.status;
 
         const filesHtml = Object.entries(state.files || {}).map(([path, f]) => {
@@ -824,7 +828,7 @@ const DocumentsTabMixin = {
                     this._stopSystemIndexPolling();
                     if (this._docsIndexWs) { this._docsIndexWs.close(); this._docsIndexWs = null; }
                     if (this._docsIndexPollTimer) { clearInterval(this._docsIndexPollTimer); this._docsIndexPollTimer = null; }
-                    this._renderIndexProgress({ status: 'cancelled', total, done, files: state.files || {} });
+                    this._renderIndexProgress(null);
                 } catch (e) { alert('Ошибка отмены: ' + e.message); }
             });
         }
@@ -1267,12 +1271,20 @@ const DocumentsTabMixin = {
                     this._stopSystemIndexPolling();
                     this._startIndexerWs(taskId);
                 } else {
-                    this._renderIndexProgress({ status: 'completed', total: 0, done: 0, files: {} });
+                    // taskId отсутствует — задача не создана или уже нечего индексировать,
+                    // просто обновляем список документов без показа панели.
                     await this.loadDocumentsData();
                 }
             } catch (e) {
                 if (runBtn) { runBtn.disabled = false; runBtn.textContent = '▶ Запустить индексацию'; }
-                this._renderIndexProgress({ status: 'failed', total: 0, done: 0, files: {}, error: e.message });
+                // При ошибке запуска показываем сообщение прямо в панели,
+                // но только если она уже видна (не форсируем показ).
+                const panel = document.getElementById('docs-index-progress-panel');
+                if (panel && panel.style.display !== 'none') {
+                    this._renderIndexProgress({ status: 'failed', total: 0, done: 0, files: {}, error: e.message });
+                } else {
+                    alert('Ошибка запуска индексации: ' + e.message);
+                }
             }
             return;
         }
