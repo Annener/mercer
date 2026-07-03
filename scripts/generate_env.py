@@ -84,7 +84,7 @@ def is_set(key: str, val: str) -> bool:
     # Для прочих авто-ключей пропускаем проверку здесь (обрабатываются в compute-блоке).
     placeholders = {
         "changeme",
-        "<generate with: python -c \"import base64, secrets; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())\">"  # noqa: E501
+        "<generate with: python -c \"import base64, secrets; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())\">",  # noqa: E501
     }
     if val in placeholders:
         return False
@@ -171,6 +171,30 @@ def ask_password(current: str) -> str:
         print("  Введите g или c.")
 
 
+def ask_vaults_path(current: str) -> str:
+    """Запрашивает абсолютный путь до папки-хранилища файлов."""
+    cprint(COLOR_CYAN, "\n  VAULTS_PATH — путь до папки с файлами на хосте,")
+    print("    где будут создаваться хранилища под индексируемые файлы.")
+    print("    Эта папка будет примонтирована в rag-indexer как /data/vaults")
+    print("    Укажите абсолютный путь, например: /home/user/mercer-vaults")
+    default = current or str(Path.home() / "mercer-vaults")
+    while True:
+        val = ask("Абсолютный путь", default=default)
+        if not os.path.isabs(val):
+            print("  Путь должен быть абсолютным (начинаться с /).")
+            continue
+        if not os.path.exists(val):
+            try:
+                choice = input(f"  Папка не существует. Создать? [y/N]: ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                sys.exit("\nПрервано пользователем.")
+            if choice == "y":
+                os.makedirs(val, exist_ok=True)
+                cprint(COLOR_GREEN, f"  ✓ Создана папка: {val}")
+        return val
+
+
 # ---------------------------------------------------------------------------
 # Вычисление авто-переменных
 # ---------------------------------------------------------------------------
@@ -217,7 +241,7 @@ def main() -> None:
 
     # 3. Проверяем: все ли интерактивные переменные уже заданы?
     # INSTALL_MODE всегда проверяем через is_set — пустая строка запустит диалог.
-    interactive_keys = ["INSTALL_MODE", "POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DB"]
+    interactive_keys = ["INSTALL_MODE", "POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DB", "VAULTS_PATH"]
     needs_dialog = any(not is_set(k, current.get(k, "")) for k in interactive_keys)
 
     # Если ещё и STORAGE_API_URL пуст при no-db-api
@@ -264,8 +288,16 @@ def main() -> None:
         if install_mode == "no-db-api" and not is_set("STORAGE_API_URL", current.get("STORAGE_API_URL", "")):
             storage_url = ask("STORAGE_API_URL (URL внешнего LanceDB HTTP API)")
             content = set_env_value(content, "STORAGE_API_URL", storage_url)
+
+        # VAULTS_PATH
+        if not is_set("VAULTS_PATH", current.get("VAULTS_PATH", "")):
+            vaults_path = ask_vaults_path(current.get("VAULTS_PATH", ""))
+            content = set_env_value(content, "VAULTS_PATH", vaults_path)
+        else:
+            vaults_path = current["VAULTS_PATH"]
     else:
         install_mode = current.get("INSTALL_MODE", "full")
+        vaults_path = current.get("VAULTS_PATH", "")
 
     # 5. Авто-переменные
     # ENCRYPTION_KEY — не перезаписывать если уже ровно 44 символа
@@ -304,6 +336,7 @@ def main() -> None:
     cprint(COLOR_GREEN, f"\n✓ .env сохранён ({ENV_FILE})")
     cprint(COLOR_GREEN, f"  INSTALL_MODE={install_mode}  →  COMPOSE_PROFILES={profiles}")
     cprint(COLOR_GREEN, f"  AGENT_MODE={agent_mode}  →  HOST_AGENT_URL={agent_url}")
+    cprint(COLOR_GREEN, f"  VAULTS_PATH={vaults_path}")
     print()
 
 
