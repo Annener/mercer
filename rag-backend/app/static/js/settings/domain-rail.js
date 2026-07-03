@@ -85,8 +85,13 @@ window.DomainRail = {
      * Навешивает обработчики кликов на кнопки рейла внутри container.
      *
      * @param {Element}  container — DOM-контейнер с отрисованным рейлом
-     * @param {Function} onSelect  — колбэк(domainId: string|null)
+     * @param {Function} onSelect  — колбэк(domainId: string)
      *                               domainId === '' означает «Все домены»
+     *                               domainId !== '' — конкретный домен
+     *
+     * ВАЖНО: пустая строка '' — это осознанный sentinel «Все домены».
+     * Не конвертируем в null, чтобы вызывающий код мог отличить
+     * «явно выбраны все домены» от «домен не инициализирован».
      */
     attach(container, onSelect) {
         const rail = container.querySelector('.domain-rail');
@@ -102,7 +107,10 @@ window.DomainRail = {
             );
             btn.classList.add('domain-rail__item--active');
 
-            const domainId = btn.dataset.domainId || null;
+            // Передаём пустую строку '' для «Все домены» (не null!).
+            // '' vs null — разные состояния: '' = пользователь выбрал «все»,
+            // null = ещё не известно какой домен активен.
+            const domainId = btn.dataset.domainId ?? '';
             onSelect(domainId);
         });
     },
