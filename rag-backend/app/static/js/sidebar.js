@@ -272,14 +272,20 @@ class SidebarManager {
             if (chat && chat.campaign_id && hasMessages) {
                 this.lockCampaignToChat(String(chat.campaign_id));
             } else {
-                // Пустой чат или нет кампании — показываем кампанию из чата (если есть),
-                // но не блокируем: пользователь ещё может её поменять.
+                // FIX: явно сбрасываем select и currentCampaignId если у чата нет кампании,
+                // чтобы следующий новый чат не унаследовал campaign_id предыдущего.
                 if (chat && chat.campaign_id) {
+                    // Пустой чат с кампанией — показываем, но не блокируем
                     const select = this.campaignSelect;
                     if (select && select.querySelector(`option[value="${chat.campaign_id}"]`)) {
                         select.value = String(chat.campaign_id);
                         this.currentCampaignId = String(chat.campaign_id);
                     }
+                } else {
+                    // Чат без кампании — сбрасываем выбор полностью
+                    this.currentCampaignId = null;
+                    _storage.removeItem('currentCampaignId');
+                    if (this.campaignSelect) this.campaignSelect.value = '';
                 }
                 this.unlockCampaign();
             }
@@ -303,10 +309,17 @@ class SidebarManager {
             return;
         }
         try {
-            // BUG FIX #3: передаём null (не пустую строку) — createChat корректно сериализует null в JSON
+            // FIX: читаем campaign_id напрямую из DOM-элемента select, а не из
+            // this.currentCampaignId — он может быть загрязнён lockCampaignToChat()
+            // предыдущего чата. select.value всегда отражает то, что видит пользователь.
+            // Если селектор заблокирован (открыт чужой чат) — не переносим его кампанию.
+            const campaignId = (this.campaignSelect && !this.campaignSelect.disabled)
+                ? (this.campaignSelect.value || null)
+                : null;
+
             const response = await chatAPI.createChat(
                 this.currentDomain,
-                this.currentCampaignId || null
+                campaignId
             );
             await this.loadChats();
             await this.selectChat(response.chat_id);
@@ -396,9 +409,9 @@ class SidebarManager {
      * Вызывается при открытии чата у которого есть campaign_id И есть сообщения,
      * а также после первого ответа в новом чате с кампанией.
      *
-     * FIX: теперь синхронизирует this.currentCampaignId с campaignId чата,
-     * чтобы createChatForCurrentDomain() брал правильное значение при создании
-     * нового чата после просмотра заблокированного.
+     * FIX: больше НЕ пишет в _storage — чтобы не загрязнять следующую сессию
+     * campaign_id чата который пользователь только просматривал.
+     * currentCampaignId обновляется только в памяти на время показа чата.
      *
      * FIX race condition: выставляет _campaignLocked=true ДО установки select.value,
      * чтобы параллельный вызов loadCampaignsForDomain() не перетёр значение.
@@ -411,7 +424,10 @@ class SidebarManager {
         // Выставляем флаг первым — защищаем от гонки с loadCampaignsForDomain()
         this._campaignLocked = true;
         this.currentCampaignId = campaignId;
-        _storage.setItem('currentCampaignId', campaignId);
+        // FIX: намеренно НЕ пишем в _storage здесь.
+        // _storage обновляется только через change-listener (явный выбор пользователем).
+        // lockCampaignToChat вызывается автоматически при открытии/ответе чата —
+        // это не должно менять «рабочую» кампанию пользователя в следующей сессии.
 
         // Если <option> ещё нет в DOM — создаём временную, чтобы select.value корректно встал.
         // Это происходит когда lockCampaignToChat вызывается из chat.js раньше, чем
@@ -495,7 +511,7 @@ class SidebarManager {
             }
         } catch (error) {
             console.error('Failed to delete chat:', error);
-            alert('Не удалось удалить чат');
+            alert('Не удалось удалить беседу');
         }
     }
 
