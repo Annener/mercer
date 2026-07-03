@@ -52,6 +52,16 @@ export const chatMixin = {
         return response.json();
     },
 
+    async updateChat(chatId, data) {
+        const response = await fetch(`${this.baseUrl}/chat/${chatId}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data),
+        });
+        if (!response.ok) throw new Error(`Failed to update chat: ${response.statusText}`);
+        return response.json();
+    },
+
     async deleteChat(chatId) {
         const response = await fetch(`${this.baseUrl}/chat/${chatId}`, {
             method: 'DELETE',

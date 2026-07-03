@@ -62,7 +62,7 @@ class SidebarManager {
             this.switchDomain(e.target.value);
         });
 
-        this.campaignSelect?.addEventListener('change', (e) => {
+        this.campaignSelect?.addEventListener('change', async (e) => {
             // Игнорируем изменения если селектор заблокирован (чат уже привязан к кампании)
             if (this.campaignSelect.disabled) return;
             // BUG FIX #3: сохраняем null вместо пустой строки при выборе «общего режима»
@@ -71,6 +71,20 @@ class SidebarManager {
                 _storage.setItem('currentCampaignId', this.currentCampaignId);
             } else {
                 _storage.removeItem('currentCampaignId');
+            }
+
+            // Сохраняем campaign_id в текущем открытом чате
+            const chatId = window.chatManager?.currentChatId;
+            if (chatId) {
+                try {
+                    await chatAPI.updateChat(chatId, { campaign_id: this.currentCampaignId });
+                    // Синхронизируем локальный объект чата
+                    if (window.chatManager?.currentChat) {
+                        window.chatManager.currentChat.campaign_id = this.currentCampaignId;
+                    }
+                } catch (err) {
+                    console.error('Failed to update chat campaign:', err);
+                }
             }
         });
 
@@ -264,29 +278,17 @@ class SidebarManager {
         if (chatItem) chatItem.classList.add('active');
         if (window.chatManager) {
             await window.chatManager.loadChat(chatId);
-            // Блокируем селектор кампании только если в чате есть сообщения И есть campaign_id.
-            // Пустой чат (нет сообщений) — селектор остаётся разблокированным,
-            // даже если у чата уже прописан campaign_id на бэкенде.
+            // Блокируем селектор кампании если у чата есть campaign_id.
+            // Бонусный фикс: убрано условие hasMessages — кампания «прилипает» к чату
+            // сразу при выборе, в том числе до первого сообщения.
             const chat = window.chatManager.currentChat;
-            const hasMessages = this._chatHasMessages();
-            if (chat && chat.campaign_id && hasMessages) {
+            if (chat && chat.campaign_id) {
                 this.lockCampaignToChat(String(chat.campaign_id));
             } else {
-                // FIX: явно сбрасываем select и currentCampaignId если у чата нет кампании,
-                // чтобы следующий новый чат не унаследовал campaign_id предыдущего.
-                if (chat && chat.campaign_id) {
-                    // Пустой чат с кампанией — показываем, но не блокируем
-                    const select = this.campaignSelect;
-                    if (select && select.querySelector(`option[value="${chat.campaign_id}"]`)) {
-                        select.value = String(chat.campaign_id);
-                        this.currentCampaignId = String(chat.campaign_id);
-                    }
-                } else {
-                    // Чат без кампании — сбрасываем выбор полностью
-                    this.currentCampaignId = null;
-                    _storage.removeItem('currentCampaignId');
-                    if (this.campaignSelect) this.campaignSelect.value = '';
-                }
+                // Чат без кампании — сбрасываем выбор полностью
+                this.currentCampaignId = null;
+                _storage.removeItem('currentCampaignId');
+                if (this.campaignSelect) this.campaignSelect.value = '';
                 this.unlockCampaign();
             }
         }
@@ -406,7 +408,7 @@ class SidebarManager {
 
     /**
      * Блокирует селектор кампании, отображая кампанию привязанную к текущему чату.
-     * Вызывается при открытии чата у которого есть campaign_id И есть сообщения,
+     * Вызывается при открытии чата у которого есть campaign_id,
      * а также после первого ответа в новом чате с кампанией.
      *
      * FIX: больше НЕ пишет в _storage — чтобы не загрязнять следующую сессию
@@ -446,7 +448,7 @@ class SidebarManager {
     /**
      * Снимает блокировку селектора кампании.
      * Вызывается при создании нового чата, смене домена,
-     * а также при открытии пустого чата (без сообщений).
+     * а также при открытии чата без campaign_id.
      */
     unlockCampaign() {
         this._campaignLocked = false;
