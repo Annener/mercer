@@ -71,7 +71,8 @@ app.include_router(pipeline_resume_router)  # Stage 5: pipeline_confirm + pipeli
 app.include_router(config_router)
 app.include_router(settings_router, prefix="/api/settings", tags=["settings"])
 app.include_router(db_management_router)
-app.include_router(indexer_state_router)
+# Новые endpoint'ы глобального статуса индексации: /api/v1/indexer/tasks
+app.include_router(indexer_state_router, prefix="/api/v1")
 app.include_router(watchdog_router)
 
 # === Статика ===

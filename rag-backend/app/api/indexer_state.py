@@ -2,9 +2,9 @@
 
 GET  /index-tasks/{task_id}/state       — состояние задачи (читает Redis напрямую)
 GET  /vaults/{vault_id}/index-state     — сводка по vault-кэшу в Redis
-GET  /api/v1/indexer/tasks              — НОВЫЙ: глобальный статус всех активных задач
+GET  /api/v1/indexer/tasks              — глобальный статус всех активных задач
                                           + последняя завершённая (без привязки к vault)
-POST /api/v1/indexer/tasks/{id}/cancel  — НОВЫЙ: запросить отмену задачи
+POST /api/v1/indexer/tasks/{id}/cancel  — запросить отмену задачи
 
 rag-backend НЕ импортирует RedisStateManager из rag-indexer.
 Все чтения выполняются через redis.asyncio напрямую.
@@ -169,15 +169,10 @@ async def get_all_indexer_tasks(request: Request) -> dict:
         })
 
     # Сортировка: running задачи вперёд, внутри группы — по started_at desc
-    tasks.sort(key=lambda t: (
-        0 if t["status"] == "running" else 1,
-        t.get("started_at", ""),
-    ), reverse=False)
-    # Внутри running-группы сортируем по started_at desc (новее = первее)
-    running = [t for t in tasks if t["status"] == "running"]
-    finished = [t for t in tasks if t["status"] != "running"]
-    running.sort(key=lambda t: t.get("started_at", ""), reverse=True)
-    finished.sort(key=lambda t: t.get("started_at", ""), reverse=True)
+    running  = sorted([t for t in tasks if t["status"] == "running"],
+                      key=lambda t: t.get("started_at", ""), reverse=True)
+    finished = sorted([t for t in tasks if t["status"] != "running"],
+                      key=lambda t: t.get("started_at", ""), reverse=True)
     tasks = running + finished
 
     return {"tasks": tasks, "has_active": has_active}
@@ -194,18 +189,25 @@ async def cancel_indexer_task(task_id: str, request: Request) -> dict:
     Устанавливает ключ cancel:{task_id} в Redis.
     Воркер rag-indexer проверяет этот ключ в is_cancelled() и завершает задачу.
 
-    Возвращает 404 если задача не найдена или уже завершена.
+    Возвращает:
+      404 — задача не найдена
+      409 — задача уже завершена (нельзя отменить)
+      200 — флаг отмены установлен
     """
     redis = request.app.state.redis
 
-    # Проверяем что задача существует и ещё активна
+    # Проверяем что задача существует
     task_data = await redis.hgetall(f"task:{task_id}")
     if not task_data:
         raise HTTPException(status_code=404, detail="Task not found")
 
     status = task_data.get("status", "unknown")
     if status not in ("running", "queued"):
-        return {"cancelled": False, "task_id": task_id, "reason": f"Task is already {status}"}
+        # 409 Conflict — задача уже в финальном состоянии
+        raise HTTPException(
+            status_code=409,
+            detail=f"Task is already {status} and cannot be cancelled",
+        )
 
     # Устанавливаем флаг отмены — воркер увидит его на следующей итерации
     await redis.set(f"cancel:{task_id}", "1", ex=3600)

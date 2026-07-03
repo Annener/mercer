@@ -89,17 +89,21 @@ export const documentsMixin = {
      * Запрашивает отмену задачи индексации через backend.
      * Backend устанавливает cancel:{task_id} в Redis;
      * воркер rag-indexer проверяет флаг и завершает задачу.
+     *
+     * 404 — задача не найдена
+     * 409 — задача уже завершена (нормальная ситуация — не бросаем ошибку)
+     * 200 — { cancelled: true, task_id }
      */
     async cancelIndexTask(taskId) {
         const response = await fetch(
             `${this.baseUrl}/api/v1/indexer/tasks/${encodeURIComponent(taskId)}/cancel`,
             { method: 'POST' },
         );
-        // Graceful fallback: если endpoint вернул ошибку — не ломаем UI
-        if (!response.ok) {
-            logger?.warn?.(`cancelIndexTask: server returned ${response.status}`);
+        // 409 — задача уже завершена, не ломаем UI
+        if (response.status === 409) {
             return { cancelled: false, task_id: taskId };
         }
+        if (!response.ok) throw new Error(`Failed to cancel task: ${response.statusText}`);
         return response.json();
     },
 };
