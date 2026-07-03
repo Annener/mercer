@@ -80,7 +80,7 @@ services:
     # ports не пробрасываем наружу — rag-indexer внутренний сервис,
     # доступен только через rag-backend (proxy) внутри rag-net
     volumes:
-      - ./vaults:/data/vaults:rw
+      - ${VAULTS_PATH}:/data/vaults:rw
       - ./logs:/app/logs
     depends_on:
       db-api-server:
@@ -118,7 +118,7 @@ services:
     volumes:
       - ./logs:/app/logs
       - ./rag-backend/app/static:/app/app/static:ro
-      - ./vaults:/data/vaults:rw
+      - ${VAULTS_PATH}:/data/vaults:rw
     depends_on:
       rag-db:
         condition: service_healthy
