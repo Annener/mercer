@@ -914,8 +914,13 @@ const DocumentsTabMixin = {
     },
 
     async _openDirModal(dirName, dirNode) {
-        const domainId = this._activeDomainId || await this._resolveDomainId();
+        // В режиме «Все домены» (_activeDomainId === '') берём domain_id из первого
+        // документа каталога, а не делаем fallback на _resolveDomainId() который
+        // всегда возвращает первый домен (D&D).
         const allDocs = this._collectDirDocs(dirNode);
+        const domainId = (this._activeDomainId && this._activeDomainId !== '')
+            ? this._activeDomainId
+            : (allDocs[0]?.domain_id || await this._resolveDomainId());
 
         document.getElementById('docs-dir-modal-backdrop')?.remove();
 
@@ -1101,7 +1106,13 @@ const DocumentsTabMixin = {
 
     async _openDocModal(doc) {
         this._docsCurrentDoc = doc;
-        const domainId = this._activeDomainId || await this._resolveDomainId();
+        // В режиме «Все домены» (_activeDomainId === '') оператор || давал false и
+        // уходил в _resolveDomainId(), который возвращает первый домен (D&D).
+        // Правильно: брать domain_id из самого документа, а fallback только когда
+        // домен вообще не известен (нет ни activeDomainId, ни doc.domain_id).
+        const domainId = (this._activeDomainId && this._activeDomainId !== '')
+            ? this._activeDomainId
+            : (doc.domain_id || await this._resolveDomainId());
 
         document.getElementById('docs-modal-backdrop')?.remove();
 
