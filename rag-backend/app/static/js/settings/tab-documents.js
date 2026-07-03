@@ -59,11 +59,7 @@ const DocumentsTabMixin = {
                 <div class="docs-tags-panel-header">Теги домена</div>
                 <div id="docs-tags-panel-list" class="docs-tags-panel-list">Загрузка...</div>
                 <div class="docs-tags-panel-create">
-                    <div class="docs-tag-create-row">
-                        <input type="text" id="new-tag-name" placeholder="Название" class="input-field docs-tag-name-input">
-                        <input type="color" id="new-tag-color" value="#01696f" class="docs-tag-color-input" title="Цвет">
-                        <button class="btn btn-primary docs-tag-add-btn" data-action="create-tag">➕</button>
-                    </div>
+                    <button class="btn btn-primary docs-tag-add-btn" data-action="open-create-tag-modal">+ Новый тег</button>
                 </div>
             </div>
         </div>`;
@@ -83,6 +79,12 @@ const DocumentsTabMixin = {
                 this.loadDocumentsData();
             });
         }
+
+        // Кнопка «Новый тег» — делегирование через container, нет проблемы stale closure
+        container.addEventListener('click', (e) => {
+            const btn = e.target.closest('[data-action="open-create-tag-modal"]');
+            if (btn) this._openCreateTagModal();
+        });
     },
 
     async loadDocumentsData() {
@@ -300,27 +302,141 @@ const DocumentsTabMixin = {
                     });
                 });
             });
-
-            const createBtn = document.querySelector('[data-action="create-tag"]');
-            if (createBtn && !createBtn._bound) {
-                createBtn._bound = true;
-                createBtn.addEventListener('click', async () => {
-                    const nameInp  = document.getElementById('new-tag-name');
-                    const colorInp = document.getElementById('new-tag-color');
-                    const name = nameInp?.value?.trim();
-                    if (!name) return;
-                    try {
-                        await this.api.createTag({ name, color: colorInp?.value || '#01696f', domain_id: domainId });
-                        if (nameInp) nameInp.value = '';
-                        await this._refreshTagsPanel(domainId);
-                        await this._loadTagFilterOptions(domainId);
-                        await this.loadDocumentsData();
-                    } catch (e) { alert('Ошибка создания: ' + e.message); }
-                });
-            }
         } catch (e) {
             if (listEl) listEl.innerHTML = `<span style="color:var(--color-error);font-size:var(--text-xs);">Ошибка: ${this.escapeHtml(e.message)}</span>`;
         }
+    },
+
+    /**
+     * Модальное окно создания нового тега.
+     * Читает this._activeDomainId в момент открытия — никакого stale closure.
+     * Список доменов загружается из API, текущий домен пред-выбран.
+     */
+    async _openCreateTagModal() {
+        document.getElementById('docs-create-tag-modal-backdrop')?.remove();
+
+        // Загружаем список активных доменов
+        let domains = [];
+        try {
+            const dr = await this.api.getSettingsDomains();
+            domains = (Array.isArray(dr) ? dr : (dr.domains || [])).filter(d => d.enabled !== false);
+        } catch (_) {}
+
+        const currentDomainId = this._activeDomainId || (domains[0]?.domain_id || domains[0]?.id || '');
+
+        const domainOptions = domains.map(d => {
+            const id   = d.domain_id || d.id || '';
+            const name = d.display_name || id;
+            const sel  = id === currentDomainId ? ' selected' : '';
+            return `<option value="${this.escapeHtml(id)}"${sel}>${this.escapeHtml(name)}</option>`;
+        }).join('');
+
+        const defaultColor = '#01696f';
+
+        const backdrop = document.createElement('div');
+        backdrop.id = 'docs-create-tag-modal-backdrop';
+        backdrop.className = 'docs-modal-backdrop';
+        backdrop.innerHTML = `
+        <div class="docs-modal docs-domain-tag-modal" role="dialog" aria-modal="true" aria-label="Создание тега">
+            <div class="docs-modal-header">
+                <div class="docs-modal-title">
+                    <span class="docs-modal-filename">Новый тег</span>
+                </div>
+                <button class="docs-modal-close" data-action="close-create-tag-modal" aria-label="Закрыть">✕</button>
+            </div>
+            <div class="docs-domain-tag-modal-body">
+                <label class="docs-domain-tag-field">
+                    <span class="docs-domain-tag-label">Название</span>
+                    <input type="text" id="docs-create-tag-name" class="input-field docs-domain-tag-name" placeholder="Название тега" autocomplete="off">
+                </label>
+                <label class="docs-domain-tag-field docs-domain-tag-field--color">
+                    <span class="docs-domain-tag-label">Цвет</span>
+                    <div class="docs-domain-tag-color-row">
+                        <input type="color" id="docs-create-tag-color" class="docs-tag-color-input" value="${defaultColor}" title="Цвет тега">
+                        <span class="badge badge--modal" id="docs-create-tag-preview"
+                              style="background:${defaultColor};color:${this._tc(defaultColor)};border-color:${defaultColor};"
+                        >Тег</span>
+                    </div>
+                </label>
+                <label class="docs-domain-tag-field">
+                    <span class="docs-domain-tag-label">Домен</span>
+                    <select id="docs-create-tag-domain" class="input-field">
+                        ${domainOptions || '<option value="">— нет активных доменов —</option>'}
+                    </select>
+                </label>
+                <div class="docs-domain-tag-actions">
+                    <button class="btn btn-primary" data-action="confirm-create-tag">Создать</button>
+                </div>
+            </div>
+        </div>`;
+
+        document.body.appendChild(backdrop);
+        document.body.style.overflow = 'hidden';
+
+        const closeModal = () => {
+            backdrop.remove();
+            document.body.style.overflow = '';
+        };
+
+        const nameInput  = backdrop.querySelector('#docs-create-tag-name');
+        const colorInput = backdrop.querySelector('#docs-create-tag-color');
+        const previewEl  = backdrop.querySelector('#docs-create-tag-preview');
+
+        const syncPreview = () => {
+            const name  = nameInput?.value?.trim() || 'Тег';
+            const color = colorInput?.value || defaultColor;
+            if (previewEl) {
+                previewEl.textContent      = name;
+                previewEl.style.background  = color;
+                previewEl.style.borderColor = color;
+                previewEl.style.color       = this._tc(color);
+            }
+        };
+
+        nameInput?.addEventListener('input', syncPreview);
+        colorInput?.addEventListener('input', syncPreview);
+
+        backdrop.addEventListener('click', e => { if (e.target === backdrop) closeModal(); });
+        backdrop.querySelector('[data-action="close-create-tag-modal"]').addEventListener('click', closeModal);
+
+        const escHandler = e => {
+            if (e.key === 'Escape') {
+                closeModal();
+                document.removeEventListener('keydown', escHandler);
+            }
+        };
+        document.addEventListener('keydown', escHandler);
+
+        nameInput?.focus();
+
+        backdrop.querySelector('[data-action="confirm-create-tag"]').addEventListener('click', async () => {
+            const name     = nameInput?.value?.trim();
+            const color    = colorInput?.value || defaultColor;
+            const domainId = backdrop.querySelector('#docs-create-tag-domain')?.value;
+
+            if (!name) {
+                alert('Введите название тега');
+                nameInput?.focus();
+                return;
+            }
+            if (!domainId) {
+                alert('Выберите домен');
+                return;
+            }
+
+            try {
+                await this.api.createTag({ name, color, domain_id: domainId });
+                closeModal();
+                // Обновляем панель тегов и фильтр для того домена, в который создали тег.
+                // Если он совпадает с активным — рефреш виден сразу.
+                const effectiveDomainId = this._activeDomainId || domainId;
+                await this._refreshTagsPanel(effectiveDomainId);
+                await this._loadTagFilterOptions(effectiveDomainId);
+                await this.loadDocumentsData();
+            } catch (e) {
+                alert('Ошибка создания тега: ' + e.message);
+            }
+        });
     },
 
     _openDomainTagModal(tag) {
