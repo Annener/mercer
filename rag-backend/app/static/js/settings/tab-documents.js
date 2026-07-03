@@ -27,7 +27,7 @@ const DocumentsTabMixin = {
         const domainId = this._activeDomainId || null;
 
         const railHtml = window.DomainRail
-            ? window.DomainRail.render(domains, domainId, this.escapeHtml.bind(this))
+            ? window.DomainRail.render(domains, domainId, this.escapeHtml.bind(this), { hideAll: true })
             : '';
 
         const paneHtml = `
