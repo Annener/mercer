@@ -4,8 +4,13 @@
  * Пилот: вкладка Vault'ы. Будущие вкладки подключают по той же схеме.
  *
  * Публичный API (window.DomainRail):
- *   render(domains, activeDomainId, escapeHtml) → HTML-строка рейла
- *   attach(container, onSelect)                 → вешает обработчики кликов
+ *   render(domains, activeDomainId, escapeHtml, options?) → HTML-строка рейла
+ *   attach(container, onSelect)                           → вешает обработчики кликов
+ *
+ * options:
+ *   hideAll {boolean} — если true, кнопка «Все домены» не рендерится.
+ *                       Использовать на вкладках, где выбор «всех доменов» бессмысленен
+ *                       (например, tab-documents, где домен обязателен для работы с тегами).
  */
 window.DomainRail = {
     /**
@@ -41,12 +46,16 @@ window.DomainRail = {
     /**
      * Возвращает HTML-строку для блока `.domain-rail`.
      *
-     * @param {Array}    domains        — массив объектов домена из API
+     * @param {Array}       domains        — массив объектов домена из API
      * @param {string|null} activeDomainId — текущий выбранный domain_id (или null = «Все»)
-     * @param {Function} escapeHtml     — this.escapeHtml из SettingsManager
+     * @param {Function}    escapeHtml     — this.escapeHtml из SettingsManager
+     * @param {Object}      [options={}]   — доп. опции
+     * @param {boolean}     [options.hideAll=false] — скрыть кнопку «Все домены»
      * @returns {string} HTML
      */
-    render(domains, activeDomainId, escapeHtml) {
+    render(domains, activeDomainId, escapeHtml, options = {}) {
+        const { hideAll = false } = options;
+
         // Фильтруем домен «default» — не показываем в рейле
         const visible = (domains || []).filter(d => {
             const id = d.domain_id || d.id || '';
@@ -56,6 +65,10 @@ window.DomainRail = {
         const allActive = !activeDomainId ? ' domain-rail__item--active' : '';
 
         const allAvatar = `<span class="domain-rail__avatar" style="background:#e8eef5;color:#526579;">&#9776;</span>`;
+
+        const allBtn = hideAll
+            ? ''
+            : `<button class="domain-rail__item domain-rail__item--all${allActive}" data-domain-id="" title="Все домены">${allAvatar}<span class="domain-rail__label">Все домены</span></button>`;
 
         const items = visible.map((d, idx) => {
             const id = d.domain_id || d.id || '';
@@ -76,7 +89,7 @@ window.DomainRail = {
 
         return `<nav class="domain-rail" aria-label="Домены">
             <span class="domain-rail__heading">Домены</span>
-            <button class="domain-rail__item domain-rail__item--all${allActive}" data-domain-id="" title="Все домены">${allAvatar}<span class="domain-rail__label">Все домены</span></button>
+            ${allBtn}
             ${items}
         </nav>`;
     },
