@@ -8,6 +8,7 @@ Redis-ключи:
   vault:{vault_id}:files  HASH  — кэш vault'а (без TTL)
   active_tasks            SET   — активные task_id
   cancel:{task_id}        STRING — флаг отмены (TTL 3600с)
+  last_task_id            STRING — id последней завершённой/отменённой задачи
 """
 from __future__ import annotations
 
@@ -122,7 +123,9 @@ class RedisStateManager:
         await self._r.hincrby(f"task:{task_id}", "files_done", 1)
 
     async def mark_task_done(self, task_id: str, error: str | None = None) -> None:
-        """Устанавливает status=done/error, finished_at. SREM active_tasks."""
+        """Устанавливает status=done/error, finished_at. SREM active_tasks.
+        Обновляет last_task_id для глобального экрана состояния.
+        """
         task_key = f"task:{task_id}"
         status = "error" if error else "done"
         pipe = self._r.pipeline()
@@ -132,10 +135,13 @@ class RedisStateManager:
             "error": error or "",
         })
         pipe.srem("active_tasks", task_id)
+        pipe.set("last_task_id", task_id)  # для глобального экрана Файлы
         await pipe.execute()
 
     async def mark_task_cancelled(self, task_id: str) -> None:
-        """Устанавливает status=cancelled. SREM active_tasks."""
+        """Устанавливает status=cancelled. SREM active_tasks.
+        Обновляет last_task_id для глобального экрана состояния.
+        """
         task_key = f"task:{task_id}"
         pipe = self._r.pipeline()
         pipe.hset(task_key, mapping={  # type: ignore[arg-type]
@@ -143,6 +149,7 @@ class RedisStateManager:
             "finished_at": _now_iso(),
         })
         pipe.srem("active_tasks", task_id)
+        pipe.set("last_task_id", task_id)  # для глобального экрана Файлы
         await pipe.execute()
 
     async def get_task_state(self, task_id: str) -> dict[str, Any] | None:
