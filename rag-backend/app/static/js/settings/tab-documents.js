@@ -7,6 +7,7 @@ const DocumentsTabMixin = {
     _docsFilterTagId: '',
     _docsIndexTaskId: null,
     _docsIndexPollTimer: null,
+    _docsSystemPollTimer: null,
     _docsIndexWs: null,
     _docsOpenDirs: null,
 
@@ -85,6 +86,9 @@ const DocumentsTabMixin = {
     },
 
     async loadDocumentsData() {
+        // Инициализация панели состояния индексации (вкладка «Файлы») — независимо от vault и сессии
+        this._initSystemIndexPanel();
+
         const tbody = document.getElementById('docs-tbody');
 
         let requestVaultId  = null;
@@ -135,6 +139,92 @@ const DocumentsTabMixin = {
             if (tbody) tbody.innerHTML = `<tr><td colspan="1" class="empty-state" style="color:var(--color-error)">Ошибка: ${this.escapeHtml(e.message)}</td></tr>`;
         }
     },
+
+    // ---------------------------------------------------------------
+    // Глобальный статус индексации (вкладка «Файлы»)
+    // ---------------------------------------------------------------
+
+    async _initSystemIndexPanel() {
+        if (this._docsSystemPollTimer) return;
+        try {
+            const data = await this.api.getSystemIndexState();
+            this._applySystemIndexState(data);
+            if (data && data.has_active) {
+                this._startSystemIndexPolling();
+            }
+        } catch (_) {
+            this._renderIndexProgress(null);
+        }
+    },
+
+    _applySystemIndexState(data) {
+        const tasks = (data && data.tasks) || [];
+        if (!tasks.length) {
+            this._renderIndexProgress(null);
+            return;
+        }
+        const task = tasks[0];
+        const parsed = this._parseTaskFromGlobalResponse(task);
+        this._docsIndexTaskId = task.task_id;
+        this._renderIndexProgress(parsed);
+    },
+
+    _parseTaskFromGlobalResponse(task) {
+        const filesRaw = task.files || {};
+        const files = {};
+        let doneCount = 0;
+        for (const [path, f] of Object.entries(filesRaw)) {
+            const stage = f.stage || 'pending';
+            files[path] = {
+                status:       stage,
+                chunks_done:  f.chunks_done  || 0,
+                chunks_total: f.chunks_total || 0,
+                name:         path.split('/').pop(),
+                error:        f.error || null,
+            };
+            if (stage === 'done' || stage === 'indexed') doneCount++;
+        }
+        const total = task.files_to_index || Object.keys(files).length || 0;
+        const done  = task.files_done    || doneCount;
+        const statusMap = {
+            running:   'running',
+            done:      'completed',
+            error:     'failed',
+            cancelled: 'cancelled',
+        };
+        const status = statusMap[task.status] || task.status || 'unknown';
+        return { status, total, done, files, error: task.error || null };
+    },
+
+    _startSystemIndexPolling() {
+        if (this._docsSystemPollTimer) return;
+        let failCount = 0;
+        this._docsSystemPollTimer = setInterval(async () => {
+            try {
+                const data = await this.api.getSystemIndexState();
+                this._applySystemIndexState(data);
+                failCount = 0;
+                if (!data.has_active) {
+                    this._stopSystemIndexPolling();
+                    await this.loadDocumentsData();
+                }
+            } catch (_) {
+                failCount++;
+                if (failCount >= 5) this._stopSystemIndexPolling();
+            }
+        }, 3000);
+    },
+
+    _stopSystemIndexPolling() {
+        if (this._docsSystemPollTimer) {
+            clearInterval(this._docsSystemPollTimer);
+            this._docsSystemPollTimer = null;
+        }
+    },
+
+    // ---------------------------------------------------------------
+    // Существующие методы
+    // ---------------------------------------------------------------
 
     /** Резолвит domain_id по известному vault_id (для тегов-панели при fallback). */
     async _resolveDomainIdForVault(vaultId) {
@@ -595,6 +685,7 @@ const DocumentsTabMixin = {
             cancelBtn.addEventListener('click', async () => {
                 try {
                     if (this._docsIndexTaskId) await this.api.cancelIndexTask(this._docsIndexTaskId);
+                    this._stopSystemIndexPolling();
                     if (this._docsIndexWs) { this._docsIndexWs.close(); this._docsIndexWs = null; }
                     if (this._docsIndexPollTimer) { clearInterval(this._docsIndexPollTimer); this._docsIndexPollTimer = null; }
                     this._renderIndexProgress({ status: 'cancelled', total, done, files: state.files || {} });
@@ -1026,6 +1117,7 @@ const DocumentsTabMixin = {
                 this._docsIndexTaskId = taskId;
                 if (runBtn) { runBtn.disabled = false; runBtn.textContent = '▶ Запустить индексацию'; }
                 if (taskId) {
+                    this._stopSystemIndexPolling();
                     this._startIndexerWs(taskId);
                 } else {
                     this._renderIndexProgress({ status: 'completed', total: 0, done: 0, files: {} });
