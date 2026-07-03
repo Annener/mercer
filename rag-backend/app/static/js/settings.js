@@ -171,6 +171,10 @@ class SettingsManager {
             await this.showDomainModal();
         } else if (action === 'edit-domain') {
             await this.showDomainModal(id);
+        } else if (action === 'manage-prompts') {
+            await this.showPromptsModal(id);
+        } else if (action === 'manage-fields') {
+            await this.showFieldsModal(id);
         } else if (action === 'delete-domain') {
             if (!confirm('Удалить домен?')) return;
             try {
