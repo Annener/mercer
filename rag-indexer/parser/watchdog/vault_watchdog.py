@@ -5,8 +5,10 @@
   2. Для каждого vault: скан диска, diff с Redis-кэшем
      2a. Если Redis-кэш пустой — перестроить из PostgreSQL (первый запуск)
   3. Удалённые → атомарно: LanceDB + PG + Redis
-  4. Изменённые/новые/pending/stale → авто-индексация
-     Если watchdog_auto_index_extensions не задан — индексировать всё.
+  4. Изменённые/новые/pending/stale:
+     Если watchdog_auto_index_extensions задан — авто-индексировать matching расширения,
+     остальные помечать pending.
+     Если НЕ задан (пустой) — помечать ВСЁ pending (только по запросу пользователя).
 """
 from __future__ import annotations
 
@@ -80,8 +82,9 @@ async def _run_once(
     storage_client: StorageClient,
 ) -> None:
     """One watchdog iteration across all enabled vaults."""
-    # Если настройка не задана или пустая — auto_extensions будет пустым set,
-    # что означает режим "индексировать все поддерживаемые расширения".
+    # Если настройка не задана или пустая — auto_extensions будет пустым set.
+    # Пустой set означает режим "только по запросу": все изменения → pending,
+    # авто-индексация не запускается.
     raw_setting: str = await db_client.get_setting(WATCHDOG_SETTING_KEY) or ""
     auto_extensions: set[str] = {
         ext.strip() for ext in raw_setting.split(",") if ext.strip()
@@ -116,6 +119,10 @@ async def _process_vault(
     # vault_path строится из env, т.к. vault_path — не колонка в БД
     vault_path = f"{VAULT_DATA_ROOT}/{vault_id}"
     if not os.path.isdir(vault_path):
+        logger.warning(
+            "Watchdog: vault directory not found, skipping vault_id=%s path=%s",
+            vault_id, vault_path,
+        )
         return
 
     try:
@@ -139,7 +146,7 @@ async def _process_vault(
             "Watchdog: vault_id=%s Redis cache empty, rebuilding from PostgreSQL",
             vault_id,
         )
-        pg_documents = await db_client.get_documents_by_vault(vault_id)
+        pg_documents = await db_client.get_all_documents(vault_id)
         await state_manager.rebuild_vault_cache(vault_id, pg_documents, disk_files)
         cache = await state_manager.get_all_vault_file_entries(vault_id)
 
@@ -169,20 +176,27 @@ async def _process_vault(
     if not changed:
         return
 
-    # Если auto_extensions не задан — индексировать все файлы автоматически.
-    # Если задан — авто только для matching расширений, остальные → pending.
+    # Если auto_extensions задан — авто только для matching расширений, остальные → pending.
+    # Если auto_extensions НЕ задан (пустой) — никакой авто-индексации,
+    # все изменённые файлы помечаются pending (индексация только по явному запросу).
     if auto_extensions:
         to_auto = [f for f in changed if f["extension"] in auto_extensions]
         to_mark = [f for f in changed if f["extension"] not in auto_extensions]
     else:
-        to_auto = changed
-        to_mark = []
+        to_auto = []
+        to_mark = changed
 
     for f in to_mark:
         await state_manager.mark_file_pending(vault_id, f["relative_path"])
         logger.debug(
             "Watchdog: marked pending vault_id=%s path=%s",
             vault_id, f["relative_path"],
+        )
+
+    if to_mark:
+        logger.info(
+            "Watchdog: vault_id=%s marked %d files as pending (no auto-extensions configured)",
+            vault_id, len(to_mark),
         )
 
     if to_auto:

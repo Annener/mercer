@@ -220,7 +220,10 @@ async def trigger_domain_index(
     domain_id: str,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> IndexResponse:
-    """Triggers indexing for all vaults of a domain via rag-indexer HTTP API."""
+    """Triggers indexing for all vaults of a domain via rag-indexer HTTP API.
+
+    Uses force_reindex=True to guarantee indexing regardless of Redis cache state.
+    """
     result = await db.execute(
         text("SELECT vault_id FROM vaults WHERE domain_id = :domain_id"),
         {"domain_id": domain_id},
@@ -233,7 +236,7 @@ async def trigger_domain_index(
             try:
                 resp = await client.post(
                     f"{INDEXER_API_URL}/api/v1/tasks",
-                    json={"vault_id": vault_id, "force_reindex": False},
+                    json={"vault_id": vault_id, "force_reindex": True},
                 )
                 resp.raise_for_status()
                 queued += 1
