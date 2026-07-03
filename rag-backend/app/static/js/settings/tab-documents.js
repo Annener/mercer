@@ -73,7 +73,11 @@ const DocumentsTabMixin = {
     _attachDocumentsTabListeners(container) {
         if (window.DomainRail) {
             window.DomainRail.attach(container, (domainId) => {
-                this._activeDomainId = domainId || null;
+                // domainId === ''   → пользователь выбрал «Все домены» (sentinel)
+                // domainId !== ''   → конкретный домен
+                // Не конвертируем в null — иначе теряем различие между
+                // «явно выбрано Все» и «домен ещё не инициализирован».
+                this._activeDomainId = domainId;
                 // Сбрасываем фильтр тегов при смене домена — теги домен-зависимы
                 this._docsFilterTagId = '';
                 this.loadDocumentsData();
@@ -93,10 +97,19 @@ const DocumentsTabMixin = {
 
         const tbody = document.getElementById('docs-tbody');
 
+        // Sentinel: '' означает «Все домены» — явный выбор пользователя.
+        // null означает «домен ещё не известен» — нужен fallback.
+        const allDomainsMode = this._activeDomainId === '';
+
         let requestVaultId  = null;
         let requestDomainId = null;
 
-        if (this._activeDomainId) {
+        if (allDomainsMode) {
+            // Режим «Все домены»: загружаем без фильтра по домену/vault.
+            // Передаём оба как null — бэкенд вернёт все документы.
+            requestVaultId  = null;
+            requestDomainId = null;
+        } else if (this._activeDomainId) {
             requestDomainId = this._activeDomainId;
         } else if (this._activeVaultId) {
             requestVaultId = this._activeVaultId;
@@ -107,7 +120,7 @@ const DocumentsTabMixin = {
             }
         }
 
-        if (!requestVaultId && !requestDomainId) {
+        if (!allDomainsMode && !requestVaultId && !requestDomainId) {
             if (tbody) tbody.innerHTML = '<tr><td colspan="1" class="empty-state">Vault не найден. Добавьте vault в настройках.</td></tr>';
             return;
         }
@@ -132,10 +145,22 @@ const DocumentsTabMixin = {
                 statusSel.onchange = () => { this._docsFilterStatus = statusSel.value; this.loadDocumentsData(); };
             }
 
-            const effectiveDomainId = requestDomainId || await this._resolveDomainIdForVault(requestVaultId);
-            if (effectiveDomainId) {
-                await this._loadTagFilterOptions(effectiveDomainId);
-                await this._refreshTagsPanel(effectiveDomainId);
+            if (allDomainsMode) {
+                // В режиме «Все домены» панель тегов и фильтр тегов скрываем:
+                // теги домен-зависимы, показывать их без конкретного домена бессмысленно.
+                const tagFilterSel = document.getElementById('docs-tag-filter');
+                if (tagFilterSel) {
+                    tagFilterSel.innerHTML = '<option value="">Все теги</option>';
+                    tagFilterSel.onchange = null;
+                }
+                const panelList = document.getElementById('docs-tags-panel-list');
+                if (panelList) panelList.innerHTML = '<span class="docs-tags-empty">Выберите домен для просмотра тегов</span>';
+            } else {
+                const effectiveDomainId = requestDomainId || await this._resolveDomainIdForVault(requestVaultId);
+                if (effectiveDomainId) {
+                    await this._loadTagFilterOptions(effectiveDomainId);
+                    await this._refreshTagsPanel(effectiveDomainId);
+                }
             }
         } catch (e) {
             if (tbody) tbody.innerHTML = `<tr><td colspan="1" class="empty-state" style="color:var(--color-error)">Ошибка: ${this.escapeHtml(e.message)}</td></tr>`;
@@ -322,7 +347,11 @@ const DocumentsTabMixin = {
             domains = (Array.isArray(dr) ? dr : (dr.domains || [])).filter(d => d.enabled !== false);
         } catch (_) {}
 
-        const currentDomainId = this._activeDomainId || (domains[0]?.domain_id || domains[0]?.id || '');
+        // _activeDomainId === '' означает «Все домены» — не подставляем как выбранный.
+        // В этом случае пред-выбираем первый домен из списка.
+        const currentDomainId = (this._activeDomainId && this._activeDomainId !== '')
+            ? this._activeDomainId
+            : (domains[0]?.domain_id || domains[0]?.id || '');
 
         const domainOptions = domains.map(d => {
             const id   = d.domain_id || d.id || '';
@@ -429,7 +458,9 @@ const DocumentsTabMixin = {
                 closeModal();
                 // Обновляем панель тегов и фильтр для того домена, в который создали тег.
                 // Если он совпадает с активным — рефреш виден сразу.
-                const effectiveDomainId = this._activeDomainId || domainId;
+                const effectiveDomainId = (this._activeDomainId && this._activeDomainId !== '')
+                    ? this._activeDomainId
+                    : domainId;
                 await this._refreshTagsPanel(effectiveDomainId);
                 await this._loadTagFilterOptions(effectiveDomainId);
                 await this.loadDocumentsData();
