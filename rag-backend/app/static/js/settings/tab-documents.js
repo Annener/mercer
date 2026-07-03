@@ -282,7 +282,6 @@ const DocumentsTabMixin = {
 
     async _refreshTagsPanel(domainId) {
         const listEl = document.getElementById('docs-tags-panel-list');
-        const panelEl = document.getElementById('docs-tags-panel');
         if (!listEl) return;
         try {
             const resp = await this.api.getTags(domainId);
@@ -290,7 +289,6 @@ const DocumentsTabMixin = {
 
             if (!globalTags.length) {
                 listEl.innerHTML = '<span class="docs-tags-empty">Тегов нет</span>';
-                if (panelEl) panelEl.style.width = '';
             } else {
                 listEl.innerHTML = globalTags.map(t => {
                     const color = t.color || '#01696f';
@@ -306,15 +304,6 @@ const DocumentsTabMixin = {
                         >${this.escapeHtml(t.name)}</button>
                     </div>`;
                 }).join('');
-
-                requestAnimationFrame(() => {
-                    const widest = Array.from(listEl.querySelectorAll('.docs-domain-tag-trigger'))
-                        .reduce((max, el) => Math.max(max, Math.ceil(el.getBoundingClientRect().width)), 0);
-                    if (panelEl && widest > 0) {
-                        const targetWidth = Math.min(Math.max(widest + 96, 260), 520);
-                        panelEl.style.width = `${targetWidth}px`;
-                    }
-                });
             }
 
             listEl.querySelectorAll('.docs-domain-tag-trigger').forEach(btn => {
