@@ -375,27 +375,9 @@ class SettingsManager {
         });
     }
 
-    async handleDocumentsAction(action, btn) {
-        if (action === 'delete-document') {
-            const id = btn?.dataset.id;
-            if (!id || !confirm('Удалить документ?')) return;
-            try {
-                await this.api.deleteDocument(id);
-                await this.loadDocumentsData();
-            } catch (e) { alert('Ошибка: ' + e.message); }
-        } else if (action === 'reindex-document') {
-            const id = btn?.dataset.id;
-            if (!id) return;
-            try {
-                await this.api.reindexDocument(id);
-                await this.loadDocumentsData();
-            } catch (e) { alert('Ошибка переиндексации: ' + e.message); }
-        } else if (action === 'run-indexer') {
-            try {
-                await this._runIndexer();
-            } catch (e) { alert('Ошибка запуска индексации: ' + e.message); }
-        }
-    }
+    // handleDocumentsAction полностью определён в DocumentsTabMixin (tab-documents.js)
+    // и подмешивается через Object.assign(SettingsManager.prototype, DocumentsTabMixin).
+    // Здесь намеренно нет реализации — миксин перекрывает прототип целиком.
 
     // ─── Utility ──────────────────────────────────────────────────────────────────────────────────────────────
 
