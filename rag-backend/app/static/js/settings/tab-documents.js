@@ -9,6 +9,8 @@ const DocumentsTabMixin = {
     _docsIndexPollTimer: null,
     _docsIndexWs: null,
     _docsOpenDirs: null,
+    // Таймер для глобального polling статуса (независимо от сессии)
+    _docsSystemPollTimer: null,
 
     /** Shorthand: contrast text color for a given bg hex/css-var */
     _tc(color) {
@@ -85,6 +87,9 @@ const DocumentsTabMixin = {
     },
 
     async loadDocumentsData() {
+        // Инициализация панели состояния индексации — независимо от vault и сессии
+        this._initSystemIndexPanel();
+
         const tbody = document.getElementById('docs-tbody');
 
         let requestVaultId  = null;
@@ -135,6 +140,128 @@ const DocumentsTabMixin = {
             if (tbody) tbody.innerHTML = `<tr><td colspan="1" class="empty-state" style="color:var(--color-error)">Ошибка: ${this.escapeHtml(e.message)}</td></tr>`;
         }
     },
+
+    // ---------------------------------------------------------------
+    // Глобальный статус индексации (вкладка «Файлы»)
+    // ---------------------------------------------------------------
+
+    /**
+     * Инициализация панели «Состояние индексации» при открытии вкладки.
+     *
+     * - Не перезапускает polling если он уже идёт.
+     * - При отсутствии backend — тихая ошибка, UI не ломается.
+     * - Если задач нет — скрывает панель (idle).
+     */
+    async _initSystemIndexPanel() {
+        // Если системный polling уже идёт — не трогаем
+        if (this._docsSystemPollTimer) return;
+
+        try {
+            const data = await this.api.getSystemIndexState();
+            this._applySystemIndexState(data);
+
+            if (data && data.has_active) {
+                this._startSystemIndexPolling();
+            }
+        } catch (_) {
+            // Backend недоступен — показываем idle без шума
+            this._renderIndexProgress(null);
+        }
+    },
+
+    /**
+     * Применяет ответ /api/v1/indexer/tasks к UI.
+     * Берёт первую задачу (running всегда вперёд благодаря сортировке в backend).
+     */
+    _applySystemIndexState(data) {
+        const tasks = (data && data.tasks) || [];
+        if (!tasks.length) {
+            this._renderIndexProgress(null);
+            return;
+        }
+
+        const task = tasks[0];
+        const parsed = this._parseTaskFromGlobalResponse(task);
+        // Сохраняем task_id для cancel-кнопки
+        this._docsIndexTaskId = task.task_id;
+        this._renderIndexProgress(parsed);
+    },
+
+    /**
+     * Нормализует задачу из /api/v1/indexer/tasks в формат, понятный _renderIndexProgress.
+     */
+    _parseTaskFromGlobalResponse(task) {
+        const filesRaw = task.files || {};
+        const files = {};
+        let doneCount = 0;
+
+        for (const [path, f] of Object.entries(filesRaw)) {
+            const stage = f.stage || 'pending';
+            files[path] = {
+                status:       stage,
+                chunks_done:  f.chunks_done  || 0,
+                chunks_total: f.chunks_total || 0,
+                name:         path.split('/').pop(),
+                error:        f.error || null,
+            };
+            if (stage === 'done' || stage === 'indexed') doneCount++;
+        }
+
+        const total = task.files_to_index || Object.keys(files).length || 0;
+        const done  = task.files_done    || doneCount;
+
+        // Нормализуем статус в формат _renderIndexProgress
+        const statusMap = {
+            running:   'running',
+            done:      'completed',
+            error:     'failed',
+            cancelled: 'cancelled',
+        };
+        const status = statusMap[task.status] || task.status || 'unknown';
+
+        return { status, total, done, files, error: task.error || null };
+    },
+
+    /**
+     * Запускает глобальный polling каждые 3 секунды.
+     * Автоматически останавливается когда has_active=false,
+     * затем перезагружает список файлов.
+     */
+    _startSystemIndexPolling() {
+        if (this._docsSystemPollTimer) return;
+        let failCount = 0;
+
+        this._docsSystemPollTimer = setInterval(async () => {
+            try {
+                const data = await this.api.getSystemIndexState();
+                this._applySystemIndexState(data);
+                failCount = 0;
+
+                if (!data.has_active) {
+                    // Активных задач больше нет — останавливаем polling
+                    this._stopSystemIndexPolling();
+                    // Перезагружаем список файлов чтобы отобразить обновлённые статусы
+                    await this.loadDocumentsData();
+                }
+            } catch (_) {
+                failCount++;
+                // После 5 сбоев подряд — останавливаем, не ломаем UI
+                if (failCount >= 5) this._stopSystemIndexPolling();
+            }
+        }, 3000);
+    },
+
+    /** Останавливает глобальный polling. Вызывать перед запуском WS/per-task polling или сменой вкладки. */
+    _stopSystemIndexPolling() {
+        if (this._docsSystemPollTimer) {
+            clearInterval(this._docsSystemPollTimer);
+            this._docsSystemPollTimer = null;
+        }
+    },
+
+    // ---------------------------------------------------------------
+    // Существующие методы (без изменений)
+    // ---------------------------------------------------------------
 
     /** Резолвит domain_id по известному vault_id (для тегов-панели при fallback). */
     async _resolveDomainIdForVault(vaultId) {
@@ -571,6 +698,7 @@ const DocumentsTabMixin = {
                 <div class="idx-file-bar-wrap">
                     <div class="idx-bar idx-bar-file ${fIsActive ? 'idx-bar-anim' : ''}" style="width:${fp}%;"></div>
                 </div>` : ''}
+                ${f.error ? `<div class="idx-file-error">${this.escapeHtml(String(f.error))}</div>` : ''}
             </div>`;
         }).join('');
 
@@ -595,6 +723,8 @@ const DocumentsTabMixin = {
             cancelBtn.addEventListener('click', async () => {
                 try {
                     if (this._docsIndexTaskId) await this.api.cancelIndexTask(this._docsIndexTaskId);
+                    // Останавливаем все таймеры
+                    this._stopSystemIndexPolling();
                     if (this._docsIndexWs) { this._docsIndexWs.close(); this._docsIndexWs = null; }
                     if (this._docsIndexPollTimer) { clearInterval(this._docsIndexPollTimer); this._docsIndexPollTimer = null; }
                     this._renderIndexProgress({ status: 'cancelled', total, done, files: state.files || {} });
@@ -1004,60 +1134,3 @@ const DocumentsTabMixin = {
                     el.style.background  = 'var(--color-surface-offset)';
                     el.style.color       = 'var(--color-text)';
                     el.style.borderColor = 'var(--color-border)';
-                    el.classList.replace('is-on', 'is-off');
-                } else {
-                    this._docsCurrentTags.push(tid);
-                    el.style.background  = color;
-                    el.style.color       = this._tc(color);
-                    el.style.borderColor = color;
-                    el.classList.replace('is-off', 'is-on');
-                }
-            });
-        });
-    },
-
-    async handleDocumentsAction(action, btn) {
-        if (action === 'run-indexer') {
-            const runBtn = document.querySelector('[data-action="run-indexer"]');
-            if (runBtn) { runBtn.disabled = true; runBtn.textContent = '⏳ Запуск…'; }
-            try {
-                const result = await this.api.runIndexer(this._activeDomainId || null);
-                const taskId = result?.task_id || result?.id || null;
-                this._docsIndexTaskId = taskId;
-                if (runBtn) { runBtn.disabled = false; runBtn.textContent = '▶ Запустить индексацию'; }
-                if (taskId) {
-                    this._startIndexerWs(taskId);
-                } else {
-                    this._renderIndexProgress({ status: 'completed', total: 0, done: 0, files: {} });
-                    await this.loadDocumentsData();
-                }
-            } catch (e) {
-                if (runBtn) { runBtn.disabled = false; runBtn.textContent = '▶ Запустить индексацию'; }
-                this._renderIndexProgress({ status: 'failed', total: 0, done: 0, files: {}, error: e.message });
-            }
-            return;
-        }
-    },
-
-    async _resolveVaultId() {
-        if (this._activeVaultId) return this._activeVaultId;
-        try {
-            const vaults = await this.api.getSettingsVaults();
-            const list = Array.isArray(vaults) ? vaults : [];
-            const active = list.find(v => v.is_active) || list[0];
-            return active ? (active.vault_id || active.id || null) : null;
-        } catch (_) { return null; }
-    },
-
-    async _resolveDomainId() {
-        if (this._activeDomainId) return this._activeDomainId;
-        try {
-            const resp = await this.api.getDomains();
-            const list = Array.isArray(resp) ? resp : (resp.domains || []);
-            const first = list.find(d => d.enabled !== false) || list[0];
-            return first ? (first.domain_id || first.id || null) : null;
-        } catch (_) { return null; }
-    },
-};
-
-Object.assign(SettingsManager.prototype, DocumentsTabMixin);
