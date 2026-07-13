@@ -1,7 +1,7 @@
 # Статус реализации: Full Document Mode
 
-> Последнее обновление: начало работы  
-> Текущий этап: **не начат**
+> Последнее обновление: 2026-07-13  
+> Текущий этап: **Этап 2 — Indexer size-метаданные**
 
 ---
 
@@ -9,24 +9,24 @@
 
 | Этап | Статус | Примечания |
 |---|---|---|
-| Этап 1 — Alembic-миграции (Chat + Document) | ⬜ не начат | — |
-| Этап 2 — Indexer: запись size-метаданных | ⬜ не начат | — |
-| Этап 3 — FullDocumentService | ⬜ не начат | — |
-| Этап 4 — PipelineExecutor: новый шаг | ⬜ не начат | — |
-| Этап 5 — API: новые эндпоинты | ⬜ не начат | — |
-| Этап 6 — Frontend: тоглер + панель | ⬜ не начат | — |
+| Этап 1 — Alembic-миграции (Chat + Document) | ✅ завершён | миграции 0003 + 0004 применены |
+| Этап 2 — Indexer: запись size-метаданных | ◾️ не начат | — |
+| Этап 3 — FullDocumentService | ◾️ не начат | — |
+| Этап 4 — PipelineExecutor: новый шаг | ◾️ не начат | — |
+| Этап 5 — API: новые эндпоинты | ◾️ не начат | — |
+| Этап 6 — Frontend: тоглер + панель | ◾️ не начат | — |
 
 ---
 
 ## Детальный статус
 
 ### Этап 1 — Alembic-миграции
-- [ ] Найдены ORM-модели Chat и Document
-- [ ] Создана Alembic-ревизия
-- [ ] Добавлены поля в Chat: `full_document_mode_enabled`, `sent_full_document_ids`
-- [ ] Добавлены поля в Document: `char_count`, `chunk_count`, `estimated_tokens`
-- [ ] Обновлены контракты в `shared_contracts/models.py`: `ChatRecord`, `DocumentRead`
-- [ ] Миграция применена без ошибок
+- [x] Найдены ORM-модели Chat и Document (`rag-backend/app/db/models.py`)
+- [x] Создана Alembic-ревизия `0003_fulldoc_fields`
+- [x] Добавлены поля в Chat: `full_document_mode_enabled`, `sent_full_document_ids`
+- [x] Добавлены поля в Document: `char_count`, `chunk_count`, `estimated_tokens`
+- [x] Обновлены контракты в `shared_contracts/models.py`: `ChatRecord`, `DocumentRead`, добавлен `DocumentCandidate`
+- [x] Миграция применена без ошибок (проверено через psql)
 
 ### Этап 2 — Indexer size-метаданные
 - [ ] Найдено место в `indexer_worker.py` для записи
@@ -70,23 +70,21 @@
 
 ## Обнаруженные проблемы и решения
 
-_Здесь фиксируются нестандартные находки при реализации_
-
 | # | Проблема | Решение | Этап |
 |---|---|---|---|
-| — | — | — | — |
+| 1 | `sent_full_document_ids` создан как `json`, а не `jsonb` | `sa.JSON()` в SQLAlchemy не форсирует `jsonb` на PostgreSQL. Добавлена миграция `0004_fix_sent_full_document_ids_jsonb` | 1 |
 
 ---
 
 ## Следующий шаг
 
-**Начать с Этапа 1.**
+**Начать Этап 2.**
 
 Что нужно сделать:
-1. Найти ORM-модели `Chat` и `Document` в `rag-backend/app/db/` (скорее всего `models.py`).
-2. Найти последнюю Alembic-ревизию в `rag-backend/migrations/versions/`.
-3. Создать новую ревизию с добавлением полей.
-4. Обновить `shared_contracts/models.py`.
+1. Найти `rag-indexer/indexer_worker.py` — место финализации документа (где статус переключается в `done`).
+2. Найти `rag-indexer/app/db_client.py` — понять, есть ли прямой HTTP-доступ к `rag-backend` или через отдельный эндпоинт.
+3. Добавить метод `update_document_size()` в `db_client.py`.
+4. Вызвать его в `indexer_worker.py` при финализации.
 
 ---
 
