@@ -302,11 +302,8 @@ async def update_chat(
 
     await db.commit()
     await db.refresh(chat)
-    return CreateChatResponse(
-        chat_id=str(chat.id),
-        domain_id=str(chat.domain_id) if chat.domain_id else None,
-        campaign_id=str(chat.campaign_id) if chat.campaign_id else None,
-    )
+    # fix(bug#1): передаём title — поле обязательно в CreateChatResponse
+    return CreateChatResponse(chat_id=str(chat.id), title=chat.title)
 
 
 @router.get("/list", response_model=ChatListResponse)
