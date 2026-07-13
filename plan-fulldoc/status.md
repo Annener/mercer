@@ -1,7 +1,7 @@
 # Статус реализации: Full Document Mode
 
 > Последнее обновление: 2026-07-13  
-> Текущий этап: **Этап 4 — PipelineExecutor**
+> Текущий этап: **Этап 5 — API**
 
 ---
 
@@ -12,7 +12,7 @@
 | Этап 1 — Alembic-миграции (Chat + Document) | ✅ завершён | миграции 0003 + 0004 применены |
 | Этап 2 — Indexer: запись size-метаданных | ✅ завершён | `update_document_size()` + вызов в `_process_file()`; поля заполнены в psql |
 | Этап 3 — FullDocumentService | ✅ завершён | `full_document_service.py` создан, все три функции реализованы |
-| Этап 4 — PipelineExecutor: новый шаг | ▾️ не начат | — |
+| Этап 4 — PipelineExecutor: новый шаг | ✅ завершён | пауза + resume реализованы |
 | Этап 5 — API: новые эндпоинты | ▾️ не начат | — |
 | Этап 6 — Frontend: тоглер + панель | ▾️ не начат | — |
 
@@ -41,10 +41,10 @@
 - [x] `DocumentCandidate` уже присутствовал в `shared_contracts/models.py` (добавлен в Этапе 1) — повторно не добавлялся
 
 ### Этап 4 — PipelineExecutor
-- [ ] Найдена точка вставки паузы в `pipeline_executor.py`
-- [ ] Пауза `full_document_selection` реализована
-- [ ] SSE-событие `full_document_selection_required` добавлено
-- [ ] `resume_from_full_doc_selection()` реализован
+- [x] Найдена точка вставки паузы в `pipeline_executor.py`
+- [x] Пауза `full_document_selection` реализована (метод `_maybe_pause_for_full_doc`)
+- [x] SSE-событие `full_document_selection_required` добавлено
+- [x] `resume_from_full_doc_selection()` реализован
 - [ ] Тест: режим выключен → pipeline идёт как обычно
 - [ ] Тест: режим включён → пауза работает
 - [ ] Тест: resume с пустым списком → только чанки
@@ -75,28 +75,27 @@
 | 1 | `sent_full_document_ids` создан как `json`, а не `jsonb` | `sa.JSON()` в SQLAlchemy не форсирует `jsonb` на PostgreSQL. Добавлена миграция `0004_fix_sent_full_document_ids_jsonb` | 1 |
 | 2 | `db_client.py` в indexer работает напрямую через asyncpg, а не HTTP | План предполагал возможным HTTP-путь. Использован asyncpg — прямой UPDATE быстрее и проще. Никаких проблем, адаптер не нужен | 2 |
 | 3 | Endpoint `/vaults/{vault_id}/documents/{document_id}/text` не существует в db-api-server | В `db-api-server/api/index.py` такого маршрута нет. Используется реальный endpoint: `GET /index/document/{document_id}/chunks?vault_id={vault_id}` → конкатенация текстов чанков по `chunk_index` | 3 |
+| 4 | `SearchHit` в shared_contracts не имеет поля `vault_id` | vault_id ищется в `hit.metadata["vault_id"]`, при отсутствии — берётся первый ваулт из context_snapshot.vault_ids | 4 |
+| 5 | `ctx.step_results` после `model_dump` содержит `_hits_*` ключи с объектами dict (не SearchHit) | `_collect_all_hits` поддерживает оба варианта: и `SearchHit`, и `dict` с валидацией через `model_validate` | 4 |
 
 ---
 
 ## Следующий шаг
 
-**Начать Этап 4 — PipelineExecutor.**
+**Начать Этап 5 — API.**
 
 Что нужно сделать:
-1. Прочитать `rag-backend/app/services/pipeline_executor.py` — найти точку вставки после retrieval, до `_run_final_composition`.
-2. Проверить `docker-compose.yml` — найти имя и порт сервиса `db-api-server` для передачи в `reconstruct_full_text(db_api_url=...)`.
-3. В `_run_dag_step()` после rerank и перед `format_context_with_role`:
-   - Если `chat.full_document_mode_enabled` и есть кандидаты → сохранить паузу, отправить SSE `full_document_selection_required` со списком `DocumentCandidate`.
-   - Если режим выключен → идти дальше как обычно.
-4. Реализовать `resume_from_full_doc_selection(ctx, selected_doc_ids)`:
-   - Получить `vault_id` для каждого документа из кандидатов.
-   - Вызвать `reconstruct_full_text()` для выбранных.
-   - Вызвать `assemble_hybrid_context()`.
-   - Записать результат в `ctx.step_results[step_id]`.
-   - Обновить `chat.sent_full_document_ids`.
-5. Добавить новый публичный метод в `PipelineExecutor`: `resume_from_full_doc_selection()`.
+1. Найти роутер чата в `rag-backend/app/api/` — скорее всего `app/api/chat.py` или `app/api/chat/`.
+2. Прочитать существующий `PATCH /chat/{chat_id}` — узнать текущую схему запроса и добавить поле `full_document_mode_enabled`.
+3. Добавить `POST /chat/{chat_id}/full_document_confirm`:
+   - Читает `pipeline_pause_state` из Chat.
+   - Проверяет `pause_state["step"] == "full_document_selection"`.
+   - Вызывает `executor.resume_from_full_doc_selection(chat_id, selected_document_ids, db)`.
+   - Возвращает SSE-стрим (как в `/stream`).
+   - Сохраняет ответ ллм в `Message`.
+4. Паттерн смотреть в `pipeline_resume.py` — аналогичная логика SSE-стрима с сохранением сообщения.
 
-**Важно перед реализацией**: проверить `docker-compose.yml` на имя сервиса db-api-server.
+**Важно перед реализацией**: прочитать реальный код роутера чата — найти `PATCH` и существующий `ChatUpdateRequest`.
 
 ---
 
