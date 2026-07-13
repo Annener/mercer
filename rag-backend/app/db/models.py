@@ -195,6 +195,10 @@ class Document(Base):
     indexed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    # --- full document mode: size metadata (Stage 1) ---
+    char_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    chunk_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    estimated_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     vault: Mapped[Vault] = relationship(back_populates="documents")
     labels: Mapped[list[DocumentLabel]] = relationship(back_populates="document", cascade="all, delete-orphan")
@@ -264,6 +268,13 @@ class Chat(Base):
     # Структура: {pipeline_id, pipeline_name, reasoning, confirm_token, query, expires_at}
     # NULL = нет ожидающего подтверждения.
     pending_pipeline_confirm: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True, default=None)
+    # --- full document mode (Stage 1) ---
+    full_document_mode_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    sent_full_document_ids: Mapped[list[Any]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default="[]"
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
