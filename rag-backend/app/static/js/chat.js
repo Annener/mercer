@@ -133,8 +133,6 @@ const LOCK_ICON_OPEN = `<svg width="15" height="15" viewBox="0 0 24 24" fill="no
 const STOP_ICON = `<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>`;
 
 // Специальное значение-сентинел для режима «Без пайплайна».
-// Если locked_pipeline_id равен этому значению — chat.py пропускает
-// pipeline_router.select() и идёт напрямую в plain RAG.
 const PIPELINE_NONE_ID = '__none__';
 
 // ============================================================
@@ -143,14 +141,6 @@ const PIPELINE_NONE_ID = '__none__';
 
 /**
  * Рендерит карточку подтверждения запуска пайплайна.
- * Вставляется в ленту чата при получении SSE-чанка type=pipeline_confirm_required.
- *
- * @param {string} chatId
- * @param {string} pipelineName
- * @param {string} reasoning   — объяснение от роутера почему выбран пайплайн
- * @param {string} confirmToken
- * @param {Function} onStream  — (ReadableStream) => Promise<void> — обработчик ответного стрима
- * @returns {HTMLElement}
  */
 function createConfirmCard(chatId, pipelineName, reasoning, confirmToken, onStream) {
     const card = document.createElement('div');
@@ -207,15 +197,6 @@ function createConfirmCard(chatId, pipelineName, reasoning, confirmToken, onStre
 
 /**
  * Рендерит карточку validation (human-in-the-loop пауза).
- * Вставляется при получении SSE-чанка type=validation_required.
- *
- * @param {string} chatId
- * @param {string} stepName    — имя validation-шага
- * @param {string} content     — validation_prompt для отображения пользователю
- * @param {string[]} options   — список вариантов ответа
- * @param {string} resumeToken
- * @param {Function} onStream  — (ReadableStream) => Promise<void>
- * @returns {HTMLElement}
  */
 function createValidationCard(chatId, stepName, content, options, resumeToken, onStream) {
     const card = document.createElement('div');
@@ -251,7 +232,6 @@ function createValidationCard(chatId, stepName, content, options, resumeToken, o
     const setDone = (label, mod) => {
         card.querySelector('.pipeline-card__actions').innerHTML =
             `<span class="pipeline-card__status pipeline-card__status--${mod}">${escapeHtml(label)}</span>`;
-        // Блокируем опции
         card.querySelectorAll('.pipeline-card__option').forEach(btn => {
             btn.disabled = true;
             btn.classList.add('is-disabled');
@@ -268,7 +248,6 @@ function createValidationCard(chatId, stepName, content, options, resumeToken, o
                 await onStream(result);
             }
         } catch (e) {
-            // Обновляем статус на ошибку, но карточка уже «done» — добавляем подпись
             const actionsEl = card.querySelector('.pipeline-card__actions');
             if (actionsEl) {
                 actionsEl.innerHTML = `<span class="pipeline-card__status pipeline-card__status--error">Ошибка: ${escapeHtml(e.message)}</span>`;
@@ -276,22 +255,18 @@ function createValidationCard(chatId, stepName, content, options, resumeToken, o
         }
     };
 
-    // Клик по варианту ответа
     card.querySelectorAll('.pipeline-card__option').forEach(btn => {
         btn.addEventListener('click', () => {
-            // Отмечаем выбранный
             card.querySelectorAll('.pipeline-card__option').forEach(b => b.classList.remove('is-selected'));
             btn.classList.add('is-selected');
             doResume(btn.dataset.value);
         });
     });
 
-    // Кнопка «Продолжить» (без вариантов)
     card.querySelector('.pipeline-card__btn--confirm')?.addEventListener('click', () => {
         doResume(null);
     });
 
-    // Кнопка отмены
     card.querySelector('.pipeline-card__btn--cancel').addEventListener('click', async () => {
         setDone('Пайплайн отменён', 'cancelled');
         try {
@@ -318,16 +293,124 @@ function createPipelineStatusLine(type, data) {
     return el;
 }
 
+// ============================================================
+// Full Document Mode — панель выбора документов
+// ============================================================
+
+/**
+ * Создаёт DOM-элемент панели выбора документов.
+ * Вставляется в ленту чата при получении SSE-события full_document_selection_required.
+ *
+ * @param {string} chatId
+ * @param {Array} candidates     — массив DocumentCandidate
+ * @param {Function} onStream   — (ReadableStream) => Promise<void>
+ * @returns {HTMLElement}
+ */
+function createFullDocPanel(chatId, candidates, onStream) {
+    const panel = document.createElement('div');
+    panel.className = 'fulldoc-panel';
+
+    // Заголовок
+    panel.innerHTML = `
+        <div class="fulldoc-panel__header">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+            Выберите документы для полной отправки
+        </div>
+        <p class="fulldoc-panel__subtitle">Найдены релевантные документы. Отметьте те, которые нужно передать в модель целиком:</p>
+        <div class="fulldoc-panel__list" id="fulldoc-list-${chatId}"></div>
+        <div class="fulldoc-panel__total" id="fulldoc-total-${chatId}">Выбрано: <strong>0</strong> токенов</div>
+        <div class="fulldoc-panel__actions">
+            <button class="fulldoc-panel__btn fulldoc-panel__btn--confirm" type="button">Продолжить с выбранными</button>
+            <button class="fulldoc-panel__btn fulldoc-panel__btn--skip" type="button">Продолжить без полных документов</button>
+        </div>
+    `;
+
+    const listEl   = panel.querySelector(`#fulldoc-list-${chatId}`);
+    const totalEl  = panel.querySelector(`#fulldoc-total-${chatId}`);
+    const confirmBtn = panel.querySelector('.fulldoc-panel__btn--confirm');
+    const skipBtn    = panel.querySelector('.fulldoc-panel__btn--skip');
+
+    // Рендерим кандидатов
+    for (const c of candidates) {
+        const item = document.createElement('label');
+        item.className = 'fulldoc-doc-item';
+
+        const tokensText = c.estimated_tokens != null
+            ? `~${c.estimated_tokens.toLocaleString()} токенов`
+            : '';
+        const alreadySentBadge = c.already_sent
+            ? `<span class="fulldoc-doc-item__badge">уже загружен</span>`
+            : '';
+
+        item.innerHTML = `
+            <input type="checkbox" value="${escapeHtml(c.document_id)}" data-tokens="${c.estimated_tokens || 0}">
+            <span class="fulldoc-doc-item__title" title="${escapeHtml(c.source_path || c.title)}">${escapeHtml(c.title || c.document_id)}</span>
+            ${tokensText ? `<span class="fulldoc-doc-item__tokens">${escapeHtml(tokensText)}</span>` : ''}
+            ${alreadySentBadge}
+        `;
+        listEl.appendChild(item);
+    }
+
+    // Обновляем счётчик токенов
+    const updateTotal = () => {
+        let total = 0;
+        listEl.querySelectorAll('input[type="checkbox"]:checked').forEach(cb => {
+            total += parseInt(cb.dataset.tokens || '0', 10);
+        });
+        totalEl.innerHTML = `Выбрано: <strong>${total.toLocaleString()}</strong> токенов`;
+    };
+    listEl.addEventListener('change', updateTotal);
+
+    // Блокируем кнопки + чекбоксы, ставим done-класс
+    const lockPanel = () => {
+        confirmBtn.disabled = true;
+        skipBtn.disabled = true;
+        listEl.querySelectorAll('input[type="checkbox"]').forEach(cb => { cb.disabled = true; });
+        panel.style.opacity = '0.65';
+    };
+
+    const doConfirm = async (selectedIds) => {
+        lockPanel();
+        try {
+            const result = await chatAPI.fullDocConfirm(chatId, selectedIds);
+            if (result instanceof ReadableStream) {
+                await onStream(result);
+            }
+        } catch (e) {
+            // Восстанавливаем кнопки при ошибке
+            confirmBtn.disabled = false;
+            skipBtn.disabled = false;
+            listEl.querySelectorAll('input[type="checkbox"]').forEach(cb => { cb.disabled = false; });
+            panel.style.opacity = '1';
+            const errLine = document.createElement('div');
+            errLine.className = 'pipeline-status-line pipeline-status-line--cancelled';
+            errLine.textContent = `Ошибка: ${e.message}`;
+            panel.appendChild(errLine);
+        }
+    };
+
+    confirmBtn.addEventListener('click', () => {
+        const selected = Array.from(
+            listEl.querySelectorAll('input[type="checkbox"]:checked')
+        ).map(cb => cb.value);
+        doConfirm(selected);
+    });
+
+    skipBtn.addEventListener('click', () => {
+        doConfirm([]);
+    });
+
+    return panel;
+}
+
 // === Chat Manager ===
 class ChatManager {
     constructor() {
         this.currentChatId = null;
         this.isStreaming = false;
         this._renderScheduled = false;
-        this._streamingDone = false; // флаг: стрим завершён, RAF не должен перезаписывать
-        this._abortController = null; // текущий AbortController для активной генерации
-        // Значение настройки chat.stream_answers (по умолчанию true до загрузки).
-        // Обновляется при инициализации и при каждом открытии чата.
+        this._streamingDone = false;
+        this._abortController = null;
         this._streamEnabled = true;
         this.messagesContainer = document.getElementById('messages-container');
         this.inputArea = document.getElementById('input-area');
@@ -340,27 +423,20 @@ class ChatManager {
         this.pipelineSelect = document.getElementById('pipeline-select');
         this.lockPipelineBtn = document.getElementById('lock-pipeline-btn');
         this.processingStatusEl = document.getElementById('processing-status');
+        this.fulldocCheckbox = document.getElementById('fulldoc-checkbox');
         this.currentChat = null;
         this._lastUserMessage = null;
         this.initEventListeners();
-        // Баннер pending-файлов (step-07)
         this.pendingBanner = new PendingFilesBanner('chat-banner-area');
-        // Загружаем настройку стриминга при старте
         this._loadStreamSetting();
     }
 
-    /**
-     * Читает chat.stream_answers из /api/settings/params и кэширует в this._streamEnabled.
-     * Тихо игнорирует ошибки — при недоступности API остаётся дефолт true.
-     */
     async _loadStreamSetting() {
         try {
             const params = await chatAPI.getSettingsParams();
             const val = params['chat.stream_answers'];
-            // Значение может прийти как boolean или как строка 'true'/'false'
             this._streamEnabled = (val === true || val === 'true');
         } catch (e) {
-            // API недоступен — продолжаем со стримингом по умолчанию
             console.warn('chat.js: could not load stream_answers setting, defaulting to true', e);
         }
     }
@@ -369,10 +445,6 @@ class ChatManager {
     // Processing status indicator
     // -------------------------------------------------------
 
-    /**
-     * Показывает индикатор обработки с заданным текстом статуса.
-     * @param {string} text
-     */
     showProcessingStatus(text) {
         if (!this.processingStatusEl) return;
         this.processingStatusEl.innerHTML =
@@ -381,9 +453,6 @@ class ChatManager {
         this.processingStatusEl.classList.remove('hidden');
     }
 
-    /**
-     * Скрывает индикатор обработки.
-     */
     hideProcessingStatus() {
         if (!this.processingStatusEl) return;
         this.processingStatusEl.classList.add('hidden');
@@ -394,11 +463,6 @@ class ChatManager {
     // Stop / Send button toggle
     // -------------------------------------------------------
 
-    /**
-     * Переключает кнопку в режим «Остановить».
-     * Создаёт новый AbortController и возвращает его signal.
-     * @returns {AbortSignal}
-     */
     _setStopMode() {
         this._abortController = new AbortController();
         if (this.sendBtn) {
@@ -411,10 +475,6 @@ class ChatManager {
         return this._abortController.signal;
     }
 
-    /**
-     * Возвращает кнопку в исходный режим «Отправить».
-     * Сбрасывает AbortController.
-     */
     _resetToSendMode() {
         this._abortController = null;
         if (this.sendBtn) {
@@ -428,7 +488,6 @@ class ChatManager {
 
     initEventListeners() {
         this.sendBtn?.addEventListener('click', () => {
-            // Если идёт генерация — прерываем, иначе — отправляем
             if (this.isStreaming && this._abortController) {
                 this._abortController.abort();
             } else {
@@ -446,12 +505,29 @@ class ChatManager {
             this.messageInput.style.height = Math.min(this.messageInput.scrollHeight, 150) + 'px';
         });
         this.lockPipelineBtn?.addEventListener('click', () => this.togglePipelineLock());
-        // Синхронизируем dataset при ручной смене селектора.
-        // Гарантирует консистентное состояние для togglePipelineLock
-        // даже если setupContextBar ещё не вызывался после смены.
         this.pipelineSelect?.addEventListener('change', () => {
             if (this.pipelineSelect) {
                 this.pipelineSelect.dataset.selectedPipelineId = this.pipelineSelect.value;
+            }
+        });
+
+        // Full Document Mode toggle
+        this.fulldocCheckbox?.addEventListener('change', async (e) => {
+            if (!this.currentChatId || !this.currentChat) return;
+            const enabled = e.target.checked;
+            try {
+                // Передаём campaign_id если он есть (бэкенд ребяет обязательное поле)
+                await chatAPI.setFullDocMode(
+                    this.currentChatId,
+                    enabled,
+                    this.currentChat.campaign_id || null,
+                );
+                // Обновляем локальный объект чата
+                if (this.currentChat) this.currentChat.full_document_mode_enabled = enabled;
+            } catch (err) {
+                console.error('setFullDocMode failed:', err);
+                // Откатываем чекбокс при ошибке
+                e.target.checked = !enabled;
             }
         });
     }
@@ -459,7 +535,6 @@ class ChatManager {
     async loadChat(chatId) {
         try {
             this.currentChatId = chatId;
-            // Обновляем настройку стриминга при каждом открытии чата — подхватываем изменения без перезагрузки
             await this._loadStreamSetting();
             const data = await chatAPI.getChat(chatId);
             this.currentChat = data.chat;
@@ -490,8 +565,6 @@ class ChatManager {
         this.isStreaming = true;
         const signal = this._setStopMode();
         try {
-            // Используем this._streamEnabled из настройки chat.stream_answers.
-            // При stream=false AbortSignal не передаётся (кнопка «Стоп» недоступна для sync-запроса).
             const stream = this._streamEnabled;
             const response = await chatAPI.sendMessage(
                 this.currentChatId,
@@ -505,9 +578,8 @@ class ChatManager {
                 this.handleJSONResponse(response);
             }
         } catch (error) {
-            // AbortError — пользователь нажал «Стоп», это ожидаемо, не показываем ошибку
             if (error.name === 'AbortError') {
-                // ничего не делаем — стрим уже мог частично отрисоваться, это нормально
+                // пользователь нажал «Стоп»
             } else if (error.message.includes('LLM service unavailable') || error.status === 503 || error.message.includes('generation model')) {
                 this.addMessage('system', 'Генеративная модель не настроена или недоступна. Перейдите в Настройки → Генеративные модели.');
             } else {
@@ -523,15 +595,11 @@ class ChatManager {
 
     /**
      * Обработчик SSE-стрима.
-     * Дополнен обработкой чанков:
-     *   step_status               → showProcessingStatus()
-     *   pipeline_confirm_required → createConfirmCard()
-     *   validation_required       → createValidationCard()
-     *   pipeline_resumed          → createPipelineStatusLine('pipeline_resumed', ...)
-     *   pipeline_cancelled        → createPipelineStatusLine('pipeline_cancelled', ...)
+     * Добавлена обработка чанка:
+     *   full_document_selection_required → createFullDocPanel()
      *
      * @param {ReadableStream} stream
-     * @param {AbortSignal|null} signal — пробрасывается из sendMessage()
+     * @param {AbortSignal|null} signal
      */
     async handleStreamResponse(stream, signal = null) {
         const reader = stream.getReader();
@@ -544,8 +612,6 @@ class ChatManager {
         let streamDone = false;
         this._streamingDone = false;
 
-        // Замыкание для передачи в inline-карточки:
-        // после confirm/resume бэк может вернуть новый SSE-стрим — обрабатываем рекурсивно.
         const handleNestedStream = async (nestedStream) => {
             this.isStreaming = true;
             try {
@@ -557,7 +623,6 @@ class ChatManager {
 
         try {
             while (!streamDone) {
-                // Если сигнал сброшен — выходим из цикла чисто
                 if (signal && signal.aborted) break;
 
                 const { done, value } = await reader.read();
@@ -574,11 +639,14 @@ class ChatManager {
                     try {
                         const parsed = JSON.parse(data);
                         if (parsed.type) {
-                            // Создаём assistantMessage только для типов с контентом,
-                            // НЕ для карточек (они идут как самостоятельные элементы).
-                            const needsAssistant = !['pipeline_confirm_required', 'validation_required',
-                                                     'pipeline_resumed', 'pipeline_cancelled',
-                                                     'step_status'].includes(parsed.type);
+                            const needsAssistant = ![
+                                'pipeline_confirm_required',
+                                'validation_required',
+                                'pipeline_resumed',
+                                'pipeline_cancelled',
+                                'step_status',
+                                'full_document_selection_required',
+                            ].includes(parsed.type);
                             if (needsAssistant && !assistantMessage) {
                                 assistantMessage = this.addMessage('assistant', '');
                             }
@@ -623,10 +691,21 @@ class ChatManager {
                                 this.scrollToBottom();
                             }
 
+                            // Full Document Mode: пауза для выбора документов
+                            if (parsed.type === 'full_document_selection_required') {
+                                this.hideProcessingStatus();
+                                const panel = createFullDocPanel(
+                                    this.currentChatId,
+                                    parsed.candidates || [],
+                                    handleNestedStream
+                                );
+                                this.messagesContainer.appendChild(panel);
+                                this.scrollToBottom();
+                            }
+
                             if (parsed.type === 'progress') this.updateProgressBar(assistantMessage, parsed.step, parsed.total, parsed.step_name);
                             if (parsed.type === 'step_done') this.markStepDone(assistantMessage, parsed.step);
                             if (parsed.type === 'token') {
-                                // Скрываем индикатор при первом токене — начался реальный стриминг ответа
                                 this.hideProcessingStatus();
                                 fullContent += parsed.content || '';
                                 pendingContent = fullContent;
@@ -650,20 +729,16 @@ class ChatManager {
                 }
             }
         } catch (error) {
-            // AbortError от reader.read() при abort() — не показываем ошибку
             if (error.name !== 'AbortError') {
                 console.error('Stream error:', error);
                 if (!assistantMessage) this.addMessage('system', 'Ошибка при получении ответа');
             }
         } finally {
-            // Освобождаем ридер в любом случае (в том числе при abort)
             try { reader.cancel(); } catch (_) { /* ignore */ }
         }
 
-        // Стрим завершён — запрещаем новые RAF-рендеры чтобы они не стёрли источники
         this._streamingDone = true;
 
-        // Финальный рендер markdown (последний раз, больше не тронем)
         if (assistantMessage && fullContent) {
             this.renderAssistantMarkdown(assistantMessage, fullContent);
             if (this._isLlmUnavailable(fullContent)) {
@@ -671,7 +746,6 @@ class ChatManager {
             }
         }
 
-        // Добавляем блок источников после финального рендера
         if (assistantMessage && pendingGroupedSources) {
             const sourcesHtml = renderGroupedSources(pendingGroupedSources, fullContent);
             if (sourcesHtml) assistantMessage.insertAdjacentHTML('beforeend', sourcesHtml);
@@ -682,7 +756,6 @@ class ChatManager {
 
         this.scrollToBottom();
 
-        // Обновляем заголовок чата только если генерация не была прервана
         if (!(signal && signal.aborted) && window.sidebarManager) {
             await window.sidebarManager.loadChats();
             try {
@@ -703,11 +776,16 @@ class ChatManager {
         if (this.worldName) {
             this.worldName.textContent = chat.domain_id ? `Домен: ${chat.domain_id}` : '';
         }
+
+        // Синхронизируем тоглер Full Document Mode
+        if (this.fulldocCheckbox) {
+            this.fulldocCheckbox.checked = Boolean(chat.full_document_mode_enabled);
+        }
+
         if (!this.pipelineSelect) return;
         const pipelines = await chatAPI.getPipelines(chat.domain_id, chat.campaign_id || null);
         this.pipelineSelect.innerHTML = '<option value="">Авто</option>';
 
-        // Статическая опция «Без пайплайна» — всегда присутствует в селекторе
         const noneOpt = document.createElement('option');
         noneOpt.value = PIPELINE_NONE_ID;
         noneOpt.textContent = 'Без пайплайна';
@@ -732,9 +810,6 @@ class ChatManager {
             }
         }
 
-        // Для обычных пайплайнов: если заблокированный пайплайн стал неактивным —
-        // добавляем скрытую опцию чтобы select мог его отобразить.
-        // Для PIPELINE_NONE_ID этот guard не нужен — опция уже добавлена статически выше.
         if (lockedId && lockedId !== PIPELINE_NONE_ID && !lockedOptionExists) {
             const hiddenOpt = document.createElement('option');
             hiddenOpt.value = lockedId;
@@ -746,8 +821,6 @@ class ChatManager {
 
         const effectiveLocked = lockedId && lockedOptionExists ? lockedId : '';
 
-        // Инициализируем dataset явно — '' вместо undefined, чтобы change-listener
-        // и togglePipelineLock всегда получали консистентное значение.
         this.pipelineSelect.dataset.selectedPipelineId = effectiveLocked || '';
         this.pipelineSelect.value = effectiveLocked;
         this.pipelineSelect.disabled = Boolean(effectiveLocked);
@@ -756,10 +829,6 @@ class ChatManager {
             this.lockPipelineBtn.classList.toggle('is-locked', Boolean(effectiveLocked));
             this.lockPipelineBtn.setAttribute('aria-label', effectiveLocked ? 'Разблокировать пайплайн' : 'Зафиксировать пайплайн');
             this.lockPipelineBtn.setAttribute('title', effectiveLocked ? 'Пайплайн зафиксирован. Нажмите, чтобы отменить.' : 'Нажмите, чтобы зафиксировать выбранный пайплайн');
-            // Три состояния кнопки:
-            // __none__ заблокирован → «Без пайплайна»
-            // обычный заблокирован  → «Авто: выкл»
-            // не заблокировано      → «Авто»
             this.lockPipelineBtn.innerHTML = effectiveLocked === PIPELINE_NONE_ID
                 ? `${LOCK_ICON_CLOSED}<span>Без пайплайна</span>`
                 : effectiveLocked
@@ -767,7 +836,6 @@ class ChatManager {
                     : `${LOCK_ICON_OPEN}<span>Авто</span>`;
         }
 
-        // Запускаем / переключаем polling баннера (step-07)
         if (this.pendingBanner) {
             this.pendingBanner.setDomain(chat.domain_id || null);
         }
@@ -777,10 +845,6 @@ class ChatManager {
         if (!this.currentChatId || !this.pipelineSelect) return;
 
         const currentlyLocked = Boolean(this.currentChat?.locked_pipeline_id);
-
-        // Читаем напрямую из .value — единственный достоверный источник текущего выбора.
-        // dataset.selectedPipelineId синхронизируется через change-listener и setupContextBar,
-        // но .value всегда актуален, в том числе при первом нажатии до любой блокировки.
         const selectedPipelineId = this.pipelineSelect.value || null;
 
         if (!currentlyLocked && !selectedPipelineId) return;
@@ -813,9 +877,6 @@ class ChatManager {
         messageEl.querySelector(`.pipeline-step[data-step="${step}"]`)?.classList.add('done');
     }
 
-    /**
-     * Debounced markdown-рендер во время стриминга (через RAF, ~60fps).
-     */
     scheduleMarkdownRender(element, contentGetter) {
         if (this._renderScheduled || this._streamingDone) return;
         this._renderScheduled = true;
@@ -830,10 +891,6 @@ class ChatManager {
         });
     }
 
-    /**
-     * Перезаписывает innerHTML элемента сохраняя pipeline-баджи
-     * и восстанавливая блок источников если он был добавлен ранее.
-     */
     renderAssistantMarkdown(element, text) {
         const existingSources = element.querySelector('.sources-block');
         const sourcesHtml = existingSources ? existingSources.outerHTML : '';
@@ -891,7 +948,7 @@ class ChatManager {
     }
 
     clearMessages() {
-        this.messagesContainer.querySelectorAll('.message, .typing-indicator, .pipeline-card, .pipeline-status-line').forEach(msg => msg.remove());
+        this.messagesContainer.querySelectorAll('.message, .typing-indicator, .pipeline-card, .pipeline-status-line, .fulldoc-panel').forEach(msg => msg.remove());
     }
 
     scrollToBottom() {
@@ -899,7 +956,6 @@ class ChatManager {
     }
 
     reset() {
-        // Останавливаем polling баннера и удаляем DOM-элемент (step-07)
         if (this.pendingBanner) {
             this.pendingBanner.destroy();
         }
@@ -909,6 +965,8 @@ class ChatManager {
         this.inputArea.style.display = 'none';
         this.welcomeMessage.style.display = 'block';
         this.chatTitle.textContent = 'Выберите чат или создайте новый';
+        // Сбрасываем тоглер при сбросе
+        if (this.fulldocCheckbox) this.fulldocCheckbox.checked = false;
     }
 }
 
