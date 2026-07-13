@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import secrets
 import uuid
 from collections.abc import AsyncGenerator, AsyncIterator
@@ -22,12 +23,16 @@ from app.services.retrieval import (
 )
 from app.services.settings_service import settings_service
 from shared_contracts.models import (
+    DocumentCandidate,
     PipelineExecutionContext,
     PipelineStep,
     SearchHit,
 )
 
 logger = logging.getLogger(__name__)
+
+# URL сервиса хранилища чанков (db-api-server).
+STORAGE_API_URL = os.getenv("STORAGE_API_URL", "http://db-api-server:8080")
 
 
 def _status(text: str) -> dict:
@@ -37,6 +42,10 @@ def _status(text: str) -> dict:
 
 # Validation token lives 1 hour.
 _VALIDATION_TTL = timedelta(hours=1)
+
+# Ключ в ctx.step_results для накопления сырых SearchHit по шагам.
+# Начинается с "_" — _resolve_prompt игнорирует такие ключи.
+_HITS_KEY_PREFIX = "_hits_"
 
 
 # =============================================================================
@@ -71,16 +80,42 @@ def _resolve_prompt(template: str, ctx: PipelineExecutionContext) -> str:
     return result
 
 
+def _collect_all_hits(ctx: PipelineExecutionContext) -> list[SearchHit]:
+    """Собирает все накопленные SearchHit из ctx.step_results (_hits_* ключи)."""
+    all_hits: list[SearchHit] = []
+    seen_chunk_ids: set[str] = set()
+    for key, value in ctx.step_results.items():
+        if not key.startswith(_HITS_KEY_PREFIX):
+            continue
+        if not isinstance(value, list):
+            continue
+        for item in value:
+            if isinstance(item, SearchHit):
+                hit = item
+            elif isinstance(item, dict):
+                try:
+                    hit = SearchHit.model_validate(item)
+                except Exception:
+                    continue
+            else:
+                continue
+            if hit.chunk_id not in seen_chunk_ids:
+                seen_chunk_ids.add(hit.chunk_id)
+                all_hits.append(hit)
+    return all_hits
+
+
 # =============================================================================
 # PipelineExecutor
 # =============================================================================
 
 class PipelineExecutor:
-    """Executes pipeline DAG with validation-pause support.
+    """Executes pipeline DAG with validation-pause and full_document_selection support.
 
     Public API:
-        run_stream(ctx)                  -> AsyncIterator[dict]
-        resume_from_validation(ctx, sid) -> AsyncIterator[dict]
+        run_stream(ctx)                              -> AsyncIterator[dict]
+        resume_from_validation(ctx, sid)             -> AsyncIterator[dict]
+        resume_from_full_doc_selection(chat_id, ...) -> AsyncIterator[dict]
     """
 
     def __init__(
@@ -110,6 +145,177 @@ class PipelineExecutor:
     ) -> AsyncIterator[dict[str, Any]]:
         """Continue pipeline after user response to a validation step."""
         async for chunk in self._dag_execute(ctx, start_after_step=validated_step_id):
+            yield chunk
+
+    async def resume_from_full_doc_selection(
+        self,
+        chat_id: str,
+        selected_document_ids: list[str],
+        db: AsyncSession,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Возобновить пайплайн после выбора полных документов пользователем.
+
+        Алгоритм:
+        1. Читаем pipeline_pause_state из Chat — там saved_hits, candidates, context_snapshot.
+        2. Загружаем full texts для selected_document_ids (параллельно).
+        3. Собираем hybrid context через assemble_hybrid_context.
+        4. Обновляем chat.sent_full_document_ids.
+        5. Очищаем pipeline_pause_state.
+        6. Записываем hybrid context в ctx.step_results под ключ _fulldoc_context.
+        7. Запускаем _run_final_composition.
+        """
+        from app.services.full_document_service import (
+            assemble_hybrid_context,
+            reconstruct_full_text,
+        )
+
+        provider = settings_service.get_active_provider()
+        if provider is None:
+            yield {"type": "error", "message": "No active model configured"}
+            return
+
+        # 1. Загружаем pause state
+        try:
+            chat_uuid = uuid.UUID(chat_id)
+        except ValueError:
+            yield {"type": "error", "message": f"Invalid chat_id: {chat_id}"}
+            return
+
+        chat = await db.get(Chat, chat_uuid)
+        if chat is None:
+            yield {"type": "error", "message": f"Chat {chat_id} not found"}
+            return
+
+        pause_state = chat.pipeline_pause_state
+        if not pause_state or pause_state.get("step") != "full_document_selection":
+            yield {"type": "error", "message": "No active full_document_selection pause"}
+            return
+
+        # Восстанавливаем данные из pause_state
+        saved_hits_raw: list[dict] = pause_state.get("saved_hits", [])
+        candidates_raw: list[dict] = pause_state.get("candidates", [])
+        context_snapshot: dict[str, Any] = pause_state.get("context_snapshot", {})
+
+        saved_hits: list[SearchHit] = []
+        for h in saved_hits_raw:
+            try:
+                saved_hits.append(SearchHit.model_validate(h))
+            except Exception:
+                pass
+
+        candidates: list[DocumentCandidate] = []
+        for c in candidates_raw:
+            try:
+                candidates.append(DocumentCandidate.model_validate(c))
+            except Exception:
+                pass
+
+        # 2. Загружаем full texts параллельно
+        full_texts: dict[str, str] = {}
+        if selected_document_ids:
+            yield _status("Loading full document texts...")
+
+            # Для каждого selected_doc_id нужен vault_id.
+            # Ищем vault_id в saved_hits: hit.metadata может содержать vault_id,
+            # либо берём из vault_ids контекста (первый vault если один).
+            vault_ids_from_ctx: list[str] = context_snapshot.get("vault_ids", [])
+
+            doc_vault_map: dict[str, str] = {}
+            for hit in saved_hits:
+                if hit.document_id in selected_document_ids:
+                    vault_id = hit.metadata.get("vault_id") or (
+                        vault_ids_from_ctx[0] if len(vault_ids_from_ctx) == 1 else None
+                    )
+                    if vault_id and hit.document_id not in doc_vault_map:
+                        doc_vault_map[hit.document_id] = vault_id
+
+            # Для документов без vault_id из hits — пробуем fallback через БД
+            missing = [did for did in selected_document_ids if did not in doc_vault_map]
+            if missing and vault_ids_from_ctx:
+                for did in missing:
+                    # Используем первый vault как fallback (типичный кейс: один vault)
+                    doc_vault_map[did] = vault_ids_from_ctx[0]
+                    logger.info(
+                        "resume_from_full_doc_selection: vault_id fallback for doc=%s → %s",
+                        did, vault_ids_from_ctx[0],
+                    )
+
+            async def _fetch_text(doc_id: str) -> tuple[str, str | None]:
+                vault_id = doc_vault_map.get(doc_id)
+                if not vault_id:
+                    logger.warning(
+                        "resume_from_full_doc_selection: no vault_id for doc=%s — skipping",
+                        doc_id,
+                    )
+                    return doc_id, None
+                text = await reconstruct_full_text(doc_id, vault_id, STORAGE_API_URL)
+                return doc_id, text
+
+            results = await asyncio.gather(
+                *[_fetch_text(did) for did in selected_document_ids],
+                return_exceptions=True,
+            )
+            for result in results:
+                if isinstance(result, Exception):
+                    logger.warning("resume_from_full_doc_selection: fetch error: %s", result)
+                    continue
+                doc_id, text = result
+                if text:
+                    full_texts[doc_id] = text
+
+        # 3. Собираем hybrid context
+        context_str = assemble_hybrid_context(
+            selected_doc_ids=selected_document_ids,
+            full_texts=full_texts,
+            hits=saved_hits,
+            candidates=candidates,
+        )
+
+        # 4 + 5. Обновляем sent_full_document_ids и очищаем pause_state
+        try:
+            existing_sent: list[str] = list(chat.sent_full_document_ids or [])
+            for did in selected_document_ids:
+                if did not in existing_sent:
+                    existing_sent.append(did)
+            chat.sent_full_document_ids = existing_sent
+            chat.pipeline_pause_state = None
+            await db.commit()
+        except Exception as exc:
+            logger.warning("resume_from_full_doc_selection: failed to update chat: %s", exc)
+
+        # 6. Восстанавливаем контекст и подставляем hybrid context в step_results
+        from shared_contracts.models import PipelineExecutionContext as PEC
+        ctx_data = {
+            "query": "",
+            "message_id": str(uuid.uuid4()),
+            **context_snapshot,
+            "chat_id": chat_id,
+        }
+        ctx = PEC.model_validate(ctx_data)
+
+        # Записываем hybrid context под специальный ключ — он будет доступен
+        # через {_fulldoc_context.result} если нужен в промпте,
+        # но главное — перезаписываем все retrieval step_results hybrid-контекстом.
+        # Стратегия: находим retrieval-шаги и заменяем их результат hybrid-строкой.
+        # Это гарантирует что _resolve_prompt в _run_final_composition использует
+        # hybrid context вместо старых отформатированных чанков.
+        if ctx.steps and context_str:
+            retrieval_step_ids = [
+                s.step_id for s in ctx.steps if s.type == "retrieval"
+            ]
+            if retrieval_step_ids:
+                # Помещаем весь hybrid context в первый retrieval шаг,
+                # остальные обнуляем (уже вошли в hybrid)
+                first_id = retrieval_step_ids[0]
+                ctx.step_results[first_id] = context_str
+                for sid in retrieval_step_ids[1:]:
+                    ctx.step_results[sid] = ""
+            else:
+                # Нет явных retrieval шагов — используем служебный ключ
+                ctx.step_results["_fulldoc_context"] = context_str
+
+        # 7. Запускаем финальную композицию
+        async for chunk in self._run_final_composition(ctx, provider):
             yield chunk
 
     # -------------------------------------------------------------------------
@@ -160,12 +366,87 @@ class PipelineExecutor:
                 if stop:
                     return
 
+        # --- Full Document Mode: пауза перед финальной композицией ---
+        async for chunk in self._maybe_pause_for_full_doc(ctx):
+            if chunk.get("__stop__"):
+                yield chunk["__payload__"]
+                return
+            yield chunk
+
         logger.info(
             "All DAG levels complete, starting final_composition. step_results keys=%s",
             list(ctx.step_results.keys()),
         )
         async for chunk in self._run_final_composition(ctx, provider):
             yield chunk
+
+    async def _maybe_pause_for_full_doc(
+        self,
+        ctx: PipelineExecutionContext,
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        """Проверяет нужна ли пауза full_document_selection.
+
+        Если full_document_mode_enabled=True и есть кандидаты → сохраняет
+        pause_state и эмитирует __stop__ с full_document_selection_required.
+        Иначе — ничего не эмитирует (пайплайн продолжается).
+        """
+        from app.services.full_document_service import collect_document_candidates
+
+        # Загружаем Chat для проверки флага
+        try:
+            chat_uuid = uuid.UUID(ctx.chat_id)
+        except ValueError:
+            return  # невалидный chat_id — не прерываем пайплайн
+        chat = await self.db.get(Chat, chat_uuid)
+        if chat is None or not chat.full_document_mode_enabled:
+            return  # режим выключен → продолжаем обычно
+
+        # Собираем все хиты из всех шагов
+        all_hits = _collect_all_hits(ctx)
+        if not all_hits:
+            logger.info(
+                "_maybe_pause_for_full_doc: no hits accumulated, skipping full_doc pause. "
+                "chat=%s", ctx.chat_id,
+            )
+            return
+
+        sent_ids: list[str] = list(chat.sent_full_document_ids or [])
+        candidates = await collect_document_candidates(all_hits, sent_ids, self.db)
+
+        if not candidates:
+            logger.info(
+                "_maybe_pause_for_full_doc: no candidates after filtering. chat=%s",
+                ctx.chat_id,
+            )
+            return
+
+        # Сохраняем pause_state
+        pause_state = {
+            "step": "full_document_selection",
+            "candidates": [c.model_dump() for c in candidates],
+            "saved_hits": [h.model_dump() for h in all_hits],
+            "context_snapshot": ctx.model_dump(mode="json"),
+            "expires_at": (datetime.now(UTC) + _VALIDATION_TTL).isoformat(),
+        }
+        try:
+            chat.pipeline_pause_state = pause_state
+            await self.db.commit()
+        except Exception as exc:
+            logger.warning("_maybe_pause_for_full_doc: failed to save pause_state: %s", exc)
+            return  # не прерываем пайплайн если сохранение упало
+
+        logger.info(
+            "_maybe_pause_for_full_doc: pausing for full_document_selection. "
+            "chat=%s candidates=%d", ctx.chat_id, len(candidates),
+        )
+
+        yield {
+            "__stop__": True,
+            "__payload__": {
+                "type": "full_document_selection_required",
+                "candidates": [c.model_dump() for c in candidates],
+            },
+        }
 
     async def _run_dag_step(
         self,
@@ -206,6 +487,12 @@ class PipelineExecutor:
                     "Rerank failed for step=%s, using original order: %s",
                     step.step_id, exc,
                 )
+
+        # Накапливаем сырые хиты для возможной full_document_selection паузы.
+        # Ключ начинается с "_" — _resolve_prompt его игнорирует.
+        ctx.step_results[f"{_HITS_KEY_PREFIX}{step.step_id}"] = [
+            h.model_dump() for h in hits
+        ]
 
         formatted = format_context_with_role(hits, getattr(step, "role", None))
         ctx.step_results[step.step_id] = formatted
