@@ -78,8 +78,10 @@ class UpdateChatRequest(BaseModel):
     """
     Обновление метаданных существующего чата.
     campaign_id — обязательный (но может быть null для сброса кампании).
+    full_document_mode_enabled — опциональный флаг Full Document Mode.
     """
     campaign_id: str | None = ...
+    full_document_mode_enabled: bool | None = None
 
 
 class RenameChatRequest(BaseModel):
@@ -259,11 +261,13 @@ async def update_chat(
     req: UpdateChatRequest,
     db: AsyncSession = Depends(get_db),
 ) -> CreateChatResponse:
-    """Обновить метаданные чата (сейчас: campaign_id).
+    """Обновить метаданные чата (campaign_id и/или full_document_mode_enabled).
 
     Принимает { "campaign_id": "<uuid>" } или { "campaign_id": null } для сброса.
+    Дополнительно принимает { "full_document_mode_enabled": true/false } для Full Document Mode.
     """
     chat = await _get_chat_or_404(chat_id, db)
+
     if req.campaign_id:
         try:
             chat.campaign_id = uuid.UUID(req.campaign_id)
@@ -271,6 +275,14 @@ async def update_chat(
             raise HTTPException(422, f"Invalid campaign_id: {req.campaign_id}") from exc
     else:
         chat.campaign_id = None
+
+    if req.full_document_mode_enabled is not None:
+        chat.full_document_mode_enabled = req.full_document_mode_enabled
+        logger.info(
+            "full_document_mode_enabled=%s for chat_id=%s",
+            req.full_document_mode_enabled, chat_id,
+        )
+
     await db.commit()
     await db.refresh(chat)
     return CreateChatResponse(
