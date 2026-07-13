@@ -1,7 +1,7 @@
 # Статус реализации: Full Document Mode
 
 > Последнее обновление: 2026-07-13  
-> Текущий этап: **Этап 3 — FullDocumentService**
+> Текущий этап: **Этап 4 — PipelineExecutor**
 
 ---
 
@@ -10,8 +10,8 @@
 | Этап | Статус | Примечания |
 |---|---|---|
 | Этап 1 — Alembic-миграции (Chat + Document) | ✅ завершён | миграции 0003 + 0004 применены |
-| Этап 2 — Indexer: запись size-метаданных | ✅ завершён | `update_document_size()` + вызов в `_process_file()` |
-| Этап 3 — FullDocumentService | ▾️ не начат | — |
+| Этап 2 — Indexer: запись size-метаданных | ✅ завершён | `update_document_size()` + вызов в `_process_file()`; поля заполнены в psql |
+| Этап 3 — FullDocumentService | ✅ завершён | `full_document_service.py` создан, все три функции реализованы |
 | Этап 4 — PipelineExecutor: новый шаг | ▾️ не начат | — |
 | Этап 5 — API: новые эндпоинты | ▾️ не начат | — |
 | Этап 6 — Frontend: тоглер + панель | ▾️ не начат | — |
@@ -31,14 +31,14 @@
 ### Этап 2 — Indexer size-метаданные
 - [x] Найдено место в `indexer_worker.py` для записи: финализация в `_process_file()` перед `update_document_status('indexed')`
 - [x] Добавлен метод `update_document_size()` в `db_client.py` (прямой asyncpg UPDATE)
-- [ ] Проверено: после переиндексации поля заполнены (requires manual test)
+- [x] Проверено через psql: `char_count`, `chunk_count`, `estimated_tokens` заполнены у реальных документов
 
 ### Этап 3 — FullDocumentService
-- [ ] Создан `full_document_service.py`
-- [ ] `collect_document_candidates()` реализован
-- [ ] `reconstruct_full_text()` реализован
-- [ ] `assemble_hybrid_context()` реализован
-- [ ] `DocumentCandidate` добавлен в `shared_contracts/models.py`
+- [x] Создан `rag-backend/app/services/full_document_service.py`
+- [x] `collect_document_candidates(hits, sent_full_document_ids, db)` реализован
+- [x] `reconstruct_full_text(document_id, vault_id, db_api_url)` реализован
+- [x] `assemble_hybrid_context(selected_doc_ids, full_texts, hits, candidates)` реализован
+- [x] `DocumentCandidate` уже присутствовал в `shared_contracts/models.py` (добавлен в Этапе 1) — повторно не добавлялся
 
 ### Этап 4 — PipelineExecutor
 - [ ] Найдена точка вставки паузы в `pipeline_executor.py`
@@ -74,21 +74,29 @@
 |---|---|---|---|
 | 1 | `sent_full_document_ids` создан как `json`, а не `jsonb` | `sa.JSON()` в SQLAlchemy не форсирует `jsonb` на PostgreSQL. Добавлена миграция `0004_fix_sent_full_document_ids_jsonb` | 1 |
 | 2 | `db_client.py` в indexer работает напрямую через asyncpg, а не HTTP | План предполагал возможным HTTP-путь. Использован asyncpg — прямой UPDATE быстрее и проще. Никаких проблем, адаптер не нужен | 2 |
+| 3 | Endpoint `/vaults/{vault_id}/documents/{document_id}/text` не существует в db-api-server | В `db-api-server/api/index.py` такого маршрута нет. Используется реальный endpoint: `GET /index/document/{document_id}/chunks?vault_id={vault_id}` → конкатенация текстов чанков по `chunk_index` | 3 |
 
 ---
 
 ## Следующий шаг
 
-**Начать Этап 3 — FullDocumentService.**
+**Начать Этап 4 — PipelineExecutor.**
 
 Что нужно сделать:
-1. Найти `rag-backend/app/services/` — проверить структуру существующих сервисов и соглашения по стилю.
-2. Найти `shared_contracts/models.py` — убедиться, что `DocumentCandidate` уже добавлен (этап 1), или добавить.
-3. Создать `rag-backend/app/services/full_document_service.py` с тремя функциями:
-   - `collect_document_candidates(hits, sent_full_document_ids, db)`
-   - `reconstruct_full_text(document_id, vault_id, storage_api_url)`
-   - `assemble_hybrid_context(selected_doc_ids, full_texts, hits, candidates)`
-4. Изучить `retrieval.py` — понять структуру `SearchHit` для правильной группировки по `document_id`.
+1. Прочитать `rag-backend/app/services/pipeline_executor.py` — найти точку вставки после retrieval, до `_run_final_composition`.
+2. Проверить `docker-compose.yml` — найти имя и порт сервиса `db-api-server` для передачи в `reconstruct_full_text(db_api_url=...)`.
+3. В `_run_dag_step()` после rerank и перед `format_context_with_role`:
+   - Если `chat.full_document_mode_enabled` и есть кандидаты → сохранить паузу, отправить SSE `full_document_selection_required` со списком `DocumentCandidate`.
+   - Если режим выключен → идти дальше как обычно.
+4. Реализовать `resume_from_full_doc_selection(ctx, selected_doc_ids)`:
+   - Получить `vault_id` для каждого документа из кандидатов.
+   - Вызвать `reconstruct_full_text()` для выбранных.
+   - Вызвать `assemble_hybrid_context()`.
+   - Записать результат в `ctx.step_results[step_id]`.
+   - Обновить `chat.sent_full_document_ids`.
+5. Добавить новый публичный метод в `PipelineExecutor`: `resume_from_full_doc_selection()`.
+
+**Важно перед реализацией**: проверить `docker-compose.yml` на имя сервиса db-api-server.
 
 ---
 
