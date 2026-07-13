@@ -427,6 +427,29 @@ async def _process_file(
         raise ValueError(f"Failed to upsert chunk indices: {response.failed_indices}")
     uploaded_document_ids.append(pg_document_id)
 
+    # --- [Full Document Mode Этап 2] запись size-метаданных ---
+    total_chars = sum(len(chunk.text) for chunk in chunks)
+    total_chunks = len(chunks)
+    estimated_tokens = total_chars // 4  # грубая оценка: ~4 символа на токен
+    try:
+        await db_client.update_document_size(
+            document_id=pg_document_id,
+            char_count=total_chars,
+            chunk_count=total_chunks,
+            estimated_tokens=estimated_tokens,
+        )
+        logger.info(
+            "Document size metadata updated: document_id=%s chars=%d chunks=%d tokens~=%d",
+            pg_document_id, total_chars, total_chunks, estimated_tokens,
+        )
+    except Exception:
+        # Не блокируем индексацию при ошибке записи size-метаданных
+        logger.warning(
+            "Failed to update document size metadata: document_id=%s",
+            pg_document_id, exc_info=True,
+        )
+    # --- [конец блока Full Document Mode] ---
+
     await db_client.update_document_status(
         pg_document_id,
         "indexed",
@@ -658,7 +681,7 @@ def _build_provider(embedding_model: EmbeddingModelConfig, api_key: str = "") ->
       - "openai_compatible" — OpenAI-совместимый POST /embeddings (нативный батч)
       - "sidecar"           — pdf-sidecar POST /embeddings (OpenAI-совместимый,
                               нативный батч через sentence-transformers).
-                              api_key не требуется — sidecar работает без автентификации.
+                              api_key не требуется — sidecar работает без аутентификации.
     """
     if embedding_model.provider == "ollama":
         return OllamaEmbeddingProvider(
