@@ -127,4 +127,53 @@ export const chatMixin = {
         if (!response.ok) throw new Error(`Failed to update clarification state: ${response.statusText}`);
         return response.json();
     },
+
+    /**
+     * Переключает full_document_mode_enabled для чата.
+     * PATCH /chat/{chatId} с { full_document_mode_enabled: bool }.
+     * Примечание: бэкенд требует campaign_id — если чат его имеет, передаётся.
+     */
+    async setFullDocMode(chatId, enabled, campaignId = null) {
+        const body = { full_document_mode_enabled: enabled };
+        if (campaignId != null) body.campaign_id = campaignId;
+        const response = await fetch(`${this.baseUrl}/chat/${chatId}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        if (!response.ok) {
+            let errMsg = response.statusText;
+            try {
+                const errData = await response.json();
+                errMsg = errData.detail || errData.message || errMsg;
+            } catch (_) {}
+            throw new Error(errMsg);
+        }
+        return response.json();
+    },
+
+    /**
+     * Подтверждает выбор документов для Full Document Mode.
+     * POST /chat/{chatId}/full_document_confirm
+     * Body: { selected_document_ids: string[] }
+     * Возвращает ReadableStream (SSE) или JSON.
+     */
+    async fullDocConfirm(chatId, selectedDocumentIds) {
+        const response = await fetch(`${this.baseUrl}/chat/${chatId}/full_document_confirm`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ selected_document_ids: selectedDocumentIds }),
+        });
+        if (!response.ok) {
+            let errMsg = response.statusText;
+            try {
+                const errData = await response.json();
+                errMsg = errData.detail || errData.message || errMsg;
+            } catch (_) {}
+            throw new Error(errMsg);
+        }
+        const ct = response.headers.get('content-type') || '';
+        if (ct.includes('text/event-stream')) return response.body;
+        return response.json();
+    },
 };
