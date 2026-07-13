@@ -1,11 +1,16 @@
 """Full Document Service — Stage 3.
 
-Три публичные функции:
+Три публичных функции:
   collect_document_candidates()  — собирает кандидатов из хитов, помечает already_sent
-  reconstruct_full_text()        — запрашивает полный текст документа из storage-api
+  reconstruct_full_text()        — запрашивает чанки документа из db-api-server, собирает полный текст
   assemble_hybrid_context()      — собирает гибридный контекст: полные тексты + остаточные чанки
 
 Не изменяет существующую логику pipeline/retrieval — только читает и агрегирует.
+
+Сторадж-endpoint для чанков:
+    GET {db_api_url}/index/document/{document_id}/chunks?vault_id={vault_id}
+    → ChunksResponse: {"chunks": [{chunk_id, document_id, vault_id, text, metadata, ...}]}
+    чанки уже сортированы по metadata.chunk_index на стороне lancedb_store.
 """
 from __future__ import annotations
 
@@ -22,7 +27,6 @@ from shared_contracts.models import DocumentCandidate, SearchHit
 logger = logging.getLogger(__name__)
 
 # Максимальный размер документа, который можно добавить целиком (в токенах).
-# Можно вынести в настройки платформы в следующих итерациях.
 FULL_DOC_TOKEN_LIMIT = 32_000
 
 
@@ -115,25 +119,37 @@ async def collect_document_candidates(
 async def reconstruct_full_text(
     document_id: str,
     vault_id: str,
-    storage_api_url: str,
+    db_api_url: str,
 ) -> str | None:
-    """Запрашивает полный текст документа из storage-api (pdf-sidecar / db-api-server).
+    """Собирает полный текст документа из db-api-server через /index/document/{id}/chunks.
 
-    Endpoint: GET {storage_api_url}/vaults/{vault_id}/documents/{document_id}/text
+    Реальный endpoint:
+        GET {db_api_url}/index/document/{document_id}/chunks?vault_id={vault_id}
+        → {"chunks": [{chunk_id, document_id, vault_id, text, metadata: {chunk_index: N}, ...}]}
+
+    Чанки уже сортированы по chunk_index на стороне lancedb_store — сортировка здесь for safety.
 
     Возвращает строку с текстом или None при ошибке.
-    Текст формируется на стороне db-api-server конкатенацией чанков в порядке chunk_index.
     """
-    url = f"{storage_api_url.rstrip('/')}/vaults/{vault_id}/documents/{document_id}/text"
+    url = f"{db_api_url.rstrip('/')}/index/document/{document_id}/chunks"
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
-            resp = await client.get(url)
+            resp = await client.get(url, params={"vault_id": vault_id})
             resp.raise_for_status()
             data: dict[str, Any] = resp.json()
-            text = data.get("text") or data.get("content") or ""
-            if not text:
+            chunks: list[dict[str, Any]] = data.get("chunks", [])
+            if not chunks:
                 logger.warning(
-                    "reconstruct_full_text: empty text for doc=%s vault=%s",
+                    "reconstruct_full_text: no chunks for doc=%s vault=%s",
+                    document_id, vault_id,
+                )
+                return None
+            # Сортировка for safety: lancedb_store уже сортирует, но защищаемся
+            chunks.sort(key=lambda c: int((c.get("metadata") or {}).get("chunk_index", 0)))
+            text = "\n".join(c.get("text", "") for c in chunks)
+            if not text.strip():
+                logger.warning(
+                    "reconstruct_full_text: empty text after join for doc=%s vault=%s",
                     document_id, vault_id,
                 )
                 return None
@@ -204,7 +220,6 @@ def assemble_hybrid_context(
         if hit.chunk_id in seen_chunks:
             continue
         seen_chunks.add(hit.chunk_id)
-        # Попробуем получить title из candidates
         candidate = candidates_by_id.get(hit.document_id)
         source = candidate.title if candidate else hit.metadata.get("source_path", hit.document_id)
         parts.append(f"[CHUNK from {source}]\n{hit.text}")
