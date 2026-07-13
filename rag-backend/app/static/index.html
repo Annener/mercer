@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MattMercer — RAG Chat Platform</title>
+    <title>MattMercer &mdash; RAG Chat Platform</title>
     <link rel="stylesheet" href="/static/css/base.css">
     <link rel="stylesheet" href="/static/css/sidebar.css">
     <link rel="stylesheet" href="/static/css/chat-area.css">
@@ -21,6 +21,8 @@
     <link rel="stylesheet" href="/static/css/models.css">
     <link rel="stylesheet" href="/static/css/db-management.css">
     <link rel="stylesheet" href="/static/css/pipeline-cards.css">
+    <!-- Full Document Mode styles -->
+    <link rel="stylesheet" href="/static/css/fulldoc.css">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github.min.css">
 </head>
 <body>
@@ -38,7 +40,7 @@
                 <div class="campaign-selector" id="campaign-selector" style="display: none;">
                     <label for="campaign-select">Контекст:</label>
                     <select id="campaign-select" class="domain-select">
-                        <option value="">— все документы —</option>
+                        <option value="">&mdash; все документы &mdash;</option>
                     </select>
                 </div>
                 <button id="new-chat-btn" class="btn-sidebar btn-sidebar--primary">+ Новая беседа</button>
@@ -58,6 +60,11 @@
                     <select id="pipeline-select"><option value="">Авто</option></select>
                     <button id="lock-pipeline-btn" class="btn btn-secondary btn-sm" title="Зафиксировать pipeline">🔓</button>
                 </span>
+                <!-- Full Document Mode toggle -->
+                <label class="fulldoc-toggle" id="fulldoc-toggle" title="Разрешить отправку полных документов">
+                    <input type="checkbox" id="fulldoc-checkbox">
+                    <span class="fulldoc-label">📄 Полные документы</span>
+                </label>
                 <!-- Баннер pending-files — справа в контекст-баре (step-07) -->
                 <div id="chat-banner-area" class="context-banner-slot"></div>
             </div>
@@ -81,7 +88,7 @@
     <main id="settings-page" class="settings-page hidden">
         <div class="settings-header">
             <h2>Настройки платформы</h2>
-            <button id="back-to-chat-btn" class="btn btn-secondary">← Назад к чатам</button>
+            <button id="back-to-chat-btn" class="btn btn-secondary">&larr; Назад к чатам</button>
         </div>
         <nav class="settings-tabs">
             <button data-tab="domains" class="active">Домены</button>
@@ -115,7 +122,7 @@
         <div class="modal-content modal-content-lg">
             <div class="modal-header">
                 <h3>Поиск по хранилищу</h3>
-                <button id="db-mgmt-close-btn" class="btn-close" title="Закрыть">✕</button>
+                <button id="db-mgmt-close-btn" class="btn-close" title="Закрыть">&times;</button>
             </div>
             <div class="search-form2">
                 <select id="search-domain-select" class="search-domain-sel"></select>
@@ -134,7 +141,7 @@
         <div class="modal-content chunk-detail-modal-content">
             <div class="modal-header">
                 <span></span>
-                <button id="chunk-detail-close" class="btn-close" title="Закрыть">✕</button>
+                <button id="chunk-detail-close" class="btn-close" title="Закрыть">&times;</button>
             </div>
             <div id="chunk-detail-content" class="chunk-detail-body"></div>
         </div>
