@@ -76,11 +76,22 @@ class CreateChatRequest(BaseModel):
 
 class UpdateChatRequest(BaseModel):
     """
-    Обновление метаданных существующего чата.
-    campaign_id — обязательный (но может быть null для сброса кампании).
-    full_document_mode_enabled — опциональный флаг Full Document Mode.
+    Частичное обновление метаданных существующего чата (partial PATCH semantics).
+
+    Оба поля опциональны и обновляются независимо друг от друга:
+    - campaign_id: передать строку UUID для установки кампании, null — для сброса.
+      Поле обновляется ТОЛЬКО если явно присутствует в теле запроса (model_fields_set).
+      Если поле не передано — campaign_id чата не изменяется.
+    - full_document_mode_enabled: true/false для управления Full Document Mode.
+      Если поле не передано — флаг чата не изменяется.
+
+    Примеры:
+      { "full_document_mode_enabled": true }              — только тоглер, campaign_id не трогается
+      { "campaign_id": "<uuid>" }                          — только кампания, флаг не трогается
+      { "campaign_id": null }                              — сброс кампании, флаг не трогается
+      { "campaign_id": "<uuid>", "full_document_mode_enabled": false } — оба поля
     """
-    campaign_id: str | None = ...
+    campaign_id: str | None = None
     full_document_mode_enabled: bool | None = None
 
 
@@ -261,20 +272,26 @@ async def update_chat(
     req: UpdateChatRequest,
     db: AsyncSession = Depends(get_db),
 ) -> CreateChatResponse:
-    """Обновить метаданные чата (campaign_id и/или full_document_mode_enabled).
+    """Частичное обновление метаданных чата (partial PATCH semantics).
 
-    Принимает { "campaign_id": "<uuid>" } или { "campaign_id": null } для сброса.
-    Дополнительно принимает { "full_document_mode_enabled": true/false } для Full Document Mode.
+    Оба поля независимы: campaign_id обновляется только если явно передан
+    в теле запроса; full_document_mode_enabled — только если передан и не None.
+
+    Примеры:
+      PATCH { "full_document_mode_enabled": true }  → только тоглер, campaign_id не трогается
+      PATCH { "campaign_id": "<uuid>" }              → только кампания, флаг не трогается
+      PATCH { "campaign_id": null }                  → сброс кампании, флаг не трогается
     """
     chat = await _get_chat_or_404(chat_id, db)
 
-    if req.campaign_id:
-        try:
-            chat.campaign_id = uuid.UUID(req.campaign_id)
-        except ValueError as exc:
-            raise HTTPException(422, f"Invalid campaign_id: {req.campaign_id}") from exc
-    else:
-        chat.campaign_id = None
+    if "campaign_id" in req.model_fields_set:
+        if req.campaign_id:
+            try:
+                chat.campaign_id = uuid.UUID(req.campaign_id)
+            except ValueError as exc:
+                raise HTTPException(422, f"Invalid campaign_id: {req.campaign_id}") from exc
+        else:
+            chat.campaign_id = None
 
     if req.full_document_mode_enabled is not None:
         chat.full_document_mode_enabled = req.full_document_mode_enabled
