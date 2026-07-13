@@ -137,6 +137,30 @@ class IndexerDBClient:
             *params,
         )
 
+    async def update_document_size(
+        self,
+        document_id: str,
+        char_count: int,
+        chunk_count: int,
+        estimated_tokens: int,
+    ) -> None:
+        """Записывает size-метаданные документа (char_count, chunk_count, estimated_tokens).
+
+        Вызывается при финализации индексации, сразу перед update_document_status(..., 'indexed').
+        Поля добавлены миграцией 0003_fulldoc_fields.
+        """
+        await self._execute(
+            """
+            UPDATE documents
+            SET char_count = $2, chunk_count = $3, estimated_tokens = $4
+            WHERE id = $1
+            """,
+            document_id,
+            char_count,
+            chunk_count,
+            estimated_tokens,
+        )
+
     async def delete_document(self, document_id: str) -> None:
         """Deletes a document record from PostgreSQL by id.
 
