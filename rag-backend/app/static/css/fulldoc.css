@@ -1,0 +1,197 @@
+/* ============================================================
+   Full Document Mode — styles
+   ============================================================ */
+
+/* --- Toggle in context-bar --- */
+.fulldoc-toggle {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    color: var(--text-secondary, #888);
+    user-select: none;
+    cursor: pointer;
+    padding: 0 4px;
+}
+
+.fulldoc-toggle input[type="checkbox"] {
+    appearance: none;
+    -webkit-appearance: none;
+    width: 30px;
+    height: 16px;
+    background: var(--border-color, #ccc);
+    border-radius: 8px;
+    position: relative;
+    cursor: pointer;
+    transition: background 0.2s;
+    flex-shrink: 0;
+}
+
+.fulldoc-toggle input[type="checkbox"]:checked {
+    background: var(--accent, #6c63ff);
+}
+
+.fulldoc-toggle input[type="checkbox"]::after {
+    content: '';
+    position: absolute;
+    width: 12px;
+    height: 12px;
+    background: #fff;
+    border-radius: 50%;
+    top: 2px;
+    left: 2px;
+    transition: left 0.2s;
+}
+
+.fulldoc-toggle input[type="checkbox"]:checked::after {
+    left: 16px;
+}
+
+.fulldoc-toggle .fulldoc-label {
+    white-space: nowrap;
+}
+
+/* --- Full Document Selection Panel --- */
+.fulldoc-panel {
+    margin: 12px 0;
+    border: 1px solid var(--border-color, #e0e0e0);
+    border-radius: 10px;
+    background: var(--surface-2, #f9f9f9);
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    max-width: 700px;
+}
+
+.fulldoc-panel__header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 600;
+    font-size: 14px;
+    color: var(--text-primary, #222);
+}
+
+.fulldoc-panel__header svg {
+    flex-shrink: 0;
+    color: var(--accent, #6c63ff);
+}
+
+.fulldoc-panel__subtitle {
+    font-size: 13px;
+    color: var(--text-secondary, #666);
+    margin: 0;
+}
+
+.fulldoc-panel__list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.fulldoc-doc-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    border-radius: 7px;
+    border: 1px solid var(--border-color, #e0e0e0);
+    background: var(--surface-1, #fff);
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s;
+}
+
+.fulldoc-doc-item:hover {
+    border-color: var(--accent, #6c63ff);
+    background: var(--surface-hover, #f3f1ff);
+}
+
+.fulldoc-doc-item input[type="checkbox"] {
+    flex-shrink: 0;
+    width: 15px;
+    height: 15px;
+    cursor: pointer;
+    accent-color: var(--accent, #6c63ff);
+}
+
+.fulldoc-doc-item__title {
+    flex: 1;
+    font-size: 13px;
+    color: var(--text-primary, #222);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.fulldoc-doc-item__tokens {
+    font-size: 12px;
+    color: var(--text-secondary, #888);
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+.fulldoc-doc-item__badge {
+    font-size: 11px;
+    padding: 2px 7px;
+    border-radius: 10px;
+    background: var(--badge-sent-bg, #e8f5e9);
+    color: var(--badge-sent-color, #388e3c);
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+/* --- Total counter --- */
+.fulldoc-panel__total {
+    font-size: 13px;
+    color: var(--text-secondary, #666);
+    padding: 4px 0;
+    border-top: 1px solid var(--border-color, #e0e0e0);
+}
+
+.fulldoc-panel__total strong {
+    color: var(--text-primary, #222);
+}
+
+/* --- Actions --- */
+.fulldoc-panel__actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.fulldoc-panel__btn {
+    padding: 7px 16px;
+    border-radius: 7px;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    border: 1px solid transparent;
+    transition: background 0.15s, border-color 0.15s;
+}
+
+.fulldoc-panel__btn--confirm {
+    background: var(--accent, #6c63ff);
+    color: #fff;
+    border-color: var(--accent, #6c63ff);
+}
+
+.fulldoc-panel__btn--confirm:hover {
+    background: var(--accent-hover, #574fd6);
+    border-color: var(--accent-hover, #574fd6);
+}
+
+.fulldoc-panel__btn--skip {
+    background: transparent;
+    color: var(--text-secondary, #666);
+    border-color: var(--border-color, #ccc);
+}
+
+.fulldoc-panel__btn--skip:hover {
+    background: var(--surface-hover, #f0f0f0);
+}
+
+.fulldoc-panel__btn:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+}
