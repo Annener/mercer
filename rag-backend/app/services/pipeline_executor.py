@@ -293,6 +293,15 @@ class PipelineExecutor:
         }
         ctx = PEC.model_validate(ctx_data)
 
+        # fix(bug#2): проверяем final_composition перед вызовом _run_final_composition
+        if ctx.final_composition is None:
+            logger.error(
+                "resume_from_full_doc_selection: final_composition is None in context_snapshot. "
+                "chat_id=%s", chat_id,
+            )
+            yield {"type": "error", "message": "Pipeline misconfiguration: final_composition missing in context snapshot"}
+            return
+
         # Записываем hybrid context под специальный ключ — он будет доступен
         # через {_fulldoc_context.result} если нужен в промпте,
         # но главное — перезаписываем все retrieval step_results hybrid-контекстом.

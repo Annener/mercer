@@ -224,9 +224,9 @@ async def pipeline_resume(
     context_snapshot: dict[str, Any] = pause_state.get("context_snapshot", {})
     step_results: dict[str, Any] = pause_state.get("step_results", {})
 
-    # Добавляем feedback validation-шага в step_results
-    feedback_key = f"_validation_{paused_step_id}"
-    step_results[feedback_key] = req.user_feedback or ""
+    # fix(bug#3): кладём фидбэк под обычный ключ step_id — именно его читает _resolve_prompt.
+    # Прежний _validation_{step_id} никогда не подставлялся в шаблоны промптов.
+    step_results[paused_step_id] = req.user_feedback or ""
 
     # Очищаем состояние паузы
     chat.pipeline_pause_state = None
