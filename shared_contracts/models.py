@@ -323,8 +323,21 @@ class DocumentRead(ORMModel):
     mtime: int
     indexed_at: datetime | None = None
     status: Literal["pending", "indexed", "error"]
+    char_count: int | None = None
+    chunk_count: int | None = None
+    estimated_tokens: int | None = None
     tags: list[TagRead] = []
     created_at: datetime | None = None
+
+
+class DocumentCandidate(BaseModel):
+    document_id: str
+    title: str
+    source_path: str
+    char_count: int | None = None
+    chunk_count: int | None = None
+    estimated_tokens: int | None = None
+    already_sent: bool
 
 
 class DocumentLabelWrite(BaseModel):
@@ -513,6 +526,8 @@ class ChatRecord(ORMModel):
     domain_id: str | None = None
     campaign_id: str | None = None
     locked_pipeline_id: str | None = None  # fix: поле отсутствовало — фронт не получал значение после lock
+    full_document_mode_enabled: bool = False
+    sent_full_document_ids: list[str] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
 
