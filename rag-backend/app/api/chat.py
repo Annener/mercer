@@ -55,6 +55,9 @@ _CONFIRM_TTL = timedelta(hours=1)
 # Специальное значение-сентинел: пайплайны отключены, чат работает только через plain RAG
 PIPELINE_NONE_ID = "__none__"
 
+# TTL для full_document_selection pause (те же 1 час)
+_FULLDOC_TTL = timedelta(hours=1)
+
 _AUTO_TITLE_PROMPT = """\
 Придумай короткое название (3–7 слов) для чата по первому вопросу пользователя.
 Название должно отражать суть вопроса, быть на том же языке что и вопрос.
@@ -157,18 +160,16 @@ async def _maybe_set_title(chat: Chat, query: str, db: AsyncSession) -> None:
         try:
             prompt = _AUTO_TITLE_PROMPT.format(query=query[:500])
             raw = await provider.generate([{"role": "user", "content": prompt}])
-            # Убираем возможные кавычки / лишние пробелы которые модель может добавить
-            title = re.sub(r'^["«»\'\s]+|["«»\'\s.]+$', "", raw.strip())
+            title = re.sub(r'^["\u00ab\u00bb\'\s]+|["\u00ab\u00bb\'\s.]+$', "", raw.strip())
             if title:
                 chat.title = title[:255]
-                logger.debug("auto_title LLM: '%s' → '%s'", query[:60], chat.title)
+                logger.debug("auto_title LLM: '%s' \u2192 '%s'", query[:60], chat.title)
                 return
         except Exception:
             logger.warning("auto_title LLM generation failed, falling back to word-cut", exc_info=True)
 
-    # Fallback: простой срез слов
     chat.title = _auto_title_fallback(query)
-    logger.debug("auto_title fallback: '%s' → '%s'", query[:60], chat.title)
+    logger.debug("auto_title fallback: '%s' \u2192 '%s'", query[:60], chat.title)
 
 
 async def _save_partial_answer(
@@ -177,11 +178,7 @@ async def _save_partial_answer(
     full_answer: str,
     title_query: str,
 ) -> None:
-    """Сохраняем частичный ответ модели в БД, защищая commit от CancelledError.
-
-    asyncio.shield() предотвращает отмену db.commit() даже если
-    родительская asyncio-таска уже отменена (client disconnect).
-    """
+    """Сохраняем частичный ответ модели в БД, защищая commit от CancelledError."""
     if not full_answer:
         return
     try:
@@ -199,13 +196,6 @@ async def _check_vault_domain(
     expected_domain_id: str,
     db: AsyncSession,
 ) -> None:
-    """Проверяет что vault принадлежит ожидаемому домену.
-
-    - vault_id=None → пропуск (back-compat: старые чаты без vault).
-    - Vault не найден → 404.
-    - vault.domain_id != expected_domain_id → 400.
-    - vault.domain_id is None → 400 (бесхозный vault не может быть привязан к домену).
-    """
     if vault_id is None:
         return
 
@@ -213,10 +203,7 @@ async def _check_vault_domain(
     vault = result.scalars().first()
 
     if vault is None:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Vault '{vault_id}' not found",
-        )
+        raise HTTPException(status_code=404, detail=f"Vault '{vault_id}' not found")
 
     if vault.domain_id != expected_domain_id:
         raise HTTPException(
@@ -241,7 +228,6 @@ async def create_chat(
         except ValueError as exc:
             raise HTTPException(422, f"Invalid campaign_id format: {req.campaign_id}") from exc
 
-    # Cross-domain check: vault_id должен принадлежать тому же домену что и чат
     await _check_vault_domain(req.vault_id, req.domain_id, db)
 
     chat = Chat(
@@ -255,10 +241,7 @@ async def create_chat(
     await db.flush()
     db.add(ClarificationStateRow(chat_id=chat.id, stage="idle"))
     await _audit(
-        db,
-        "chat.create",
-        "chat",
-        str(chat.id),
+        db, "chat.create", "chat", str(chat.id),
         {"vault_id": req.vault_id, "domain_id": req.domain_id, "campaign_id": req.campaign_id},
     )
     await db.commit()
@@ -272,16 +255,6 @@ async def update_chat(
     req: UpdateChatRequest,
     db: AsyncSession = Depends(get_db),
 ) -> CreateChatResponse:
-    """Частичное обновление метаданных чата (partial PATCH semantics).
-
-    Оба поля независимы: campaign_id обновляется только если явно передан
-    в теле запроса; full_document_mode_enabled — только если передан и не None.
-
-    Примеры:
-      PATCH { "full_document_mode_enabled": true }  → только тоглер, campaign_id не трогается
-      PATCH { "campaign_id": "<uuid>" }              → только кампания, флаг не трогается
-      PATCH { "campaign_id": null }                  → сброс кампании, флаг не трогается
-    """
     chat = await _get_chat_or_404(chat_id, db)
 
     if "campaign_id" in req.model_fields_set:
@@ -302,7 +275,6 @@ async def update_chat(
 
     await db.commit()
     await db.refresh(chat)
-    # fix(bug#1): передаём title — поле обязательно в CreateChatResponse
     return CreateChatResponse(chat_id=str(chat.id), title=chat.title)
 
 
@@ -412,7 +384,6 @@ async def send_message(
 
     domain_id = await _domain_id_for_chat(chat, db) or chat.domain_id
 
-    # ensure_loaded: кэш может быть пустым после старта сервиса
     await config_for_vault.ensure_loaded(db)
     vault_ids: list[str] = [
         v.vault_id for v in config_for_vault.vaults.values()
@@ -454,9 +425,7 @@ async def send_message(
         from app.db.models import Domain as DomainModel
         domain_obj = await db.get(DomainModel, context.domain_id) if context.domain_id else None
         domain_description = (
-            domain_obj.description
-            if domain_obj and domain_obj.description
-            else None
+            domain_obj.description if domain_obj and domain_obj.description else None
         )
         context.query = await query_rewriter.rewrite(
             original_query=context.query,
@@ -465,24 +434,15 @@ async def send_message(
             domain_description=domain_description,
         )
 
-    # Режим «Без пайплайна»: пропускаем роутер, сразу plain RAG
     if chat.locked_pipeline_id == PIPELINE_NONE_ID:
         pipeline = None
-        logger.info(
-            "Pipeline disabled (__none__ sentinel) — skipping router, plain RAG; chat_id=%s",
-            chat.id,
-        )
+        logger.info("Pipeline disabled (__none__ sentinel) — skipping router, plain RAG; chat_id=%s", chat.id)
     else:
         pipeline_router = PipelineRouter(db)
-        pipeline = await pipeline_router.select(
-            context,
-            locked_pipeline_id=chat.locked_pipeline_id,
-        )
+        pipeline = await pipeline_router.select(context, locked_pipeline_id=chat.locked_pipeline_id)
 
     if pipeline is None:
-        logger.info(
-            "No pipeline found for domain_id=%s — falling back to plain LLM chat", domain_id
-        )
+        logger.info("No pipeline found for domain_id=%s — falling back to plain LLM chat", domain_id)
         answer = await _plain_llm_reply(req.content, context, domain_id, db)
         assistant_msg = Message(chat_id=chat.id, role="assistant", content=answer)
         db.add(assistant_msg)
@@ -496,7 +456,6 @@ async def send_message(
     context.steps = pipeline.steps
     context.final_composition = pipeline.final_composition
 
-    # Накапливаем токены из run_stream — единственный публичный API executor'а
     executor = PipelineExecutor(db)
     full_answer = ""
     async for chunk in executor.run_stream(context):
@@ -504,17 +463,13 @@ async def send_message(
             full_answer += chunk.get("content", "")
 
     assistant_msg = Message(
-        chat_id=chat.id,
-        role="assistant",
-        content=full_answer,
+        chat_id=chat.id, role="assistant", content=full_answer,
         pipeline_id=pipeline.pipeline_id,
     )
     db.add(assistant_msg)
     await db.commit()
-
     await _maybe_set_title(chat, context.original_query or req.content, db)
     await db.commit()
-
     return MessageResponse(content=full_answer, message_id=str(assistant_msg.id))
 
 
@@ -535,16 +490,13 @@ async def send_message_stream(
     clarif_state = await clarification_fsm.get_state(db, chat.id)
     if clarif_state.stage == "collecting":
         max_turns: int = int(await settings_service.get("chat.max_clarification_turns", db))
-        prompt_pack = PromptPack(await domain_service.get_prompts(
-            chat.domain_id or "default", db
-        ))
+        prompt_pack = PromptPack(await domain_service.get_prompts(chat.domain_id or "default", db))
         new_state = clarification_fsm.process_clarification_answer(
             clarif_state, req.content, max_turns, prompt_pack
         )
         await clarification_fsm.save_state(db, chat.id, new_state)
 
         if new_state.stage == "collecting":
-            # Ещё есть несобранные поля — задаём следующий вопрос
             user_msg = Message(chat_id=chat.id, role="user", content=req.content)
             db.add(user_msg)
             question = new_state.next_question or ""
@@ -559,12 +511,8 @@ async def send_message_stream(
 
             return StreamingResponse(clarif_stream(), media_type="text/event-stream")
 
-        # stage == "complete" или "fallback" — продолжаем к генерации ответа
-
     user_msg = Message(chat_id=chat.id, role="user", content=req.content)
     db.add(user_msg)
-    # коммитим user_msg ДО старта стрима: при обрыве соединения
-    # вопрос пользователя всегда сохраняется в истории
     await db.commit()
 
     domain_id = await _domain_id_for_chat(chat, db) or chat.domain_id
@@ -615,19 +563,12 @@ async def send_message_stream(
             query=context.query,
             vault_id=chat.vault_id,
             domain_id=domain_id,
-            history=[
-                {"role": m.role, "content": m.content}
-                for m in (context.history or [])
-            ],
+            history=[{"role": m.role, "content": m.content} for m in (context.history or [])],
         )
         if decision.clarification_needed and missing_fields:
             max_turns: int = int(await settings_service.get("chat.max_clarification_turns", db))
-            prompt_pack = PromptPack(await domain_service.get_prompts(
-                domain_id or "default", db
-            ))
-            new_state = await clarification_fsm.start_collecting(
-                db, chat.id, missing_fields, prompt_pack
-            )
+            prompt_pack = PromptPack(await domain_service.get_prompts(domain_id or "default", db))
+            new_state = await clarification_fsm.start_collecting(db, chat.id, missing_fields, prompt_pack)
             await db.commit()
             question = new_state.next_question or ""
             assistant_msg = Message(chat_id=chat.id, role="assistant", content=question)
@@ -639,76 +580,52 @@ async def send_message_stream(
             )
 
             async def clarif_start_stream() -> AsyncIterator[str]:
-                chunk = json.dumps(
-                    {"type": "clarification", "content": question},
-                    ensure_ascii=False,
-                )
+                chunk = json.dumps({"type": "clarification", "content": question}, ensure_ascii=False)
                 yield f"data: {chunk}\n\n"
                 yield "data: [DONE]\n\n"
 
             return StreamingResponse(clarif_start_stream(), media_type="text/event-stream")
 
-    # ───────────────────────────────────────────────────────────────────────────────
-    # Захватываем всё необходимое для plain_stream в замыкании.
-    # rewriter + pipeline_router переносим ВНУТРЬ генератора — это даёт возможность
-    # слать step_status чанки клиенту до того, как тяжёлые операции завершились.
-    # ───────────────────────────────────────────────────────────────────────────────
     _locked_pipeline_id = chat.locked_pipeline_id
     _chat = chat
 
-    # После генерации ответа — сбрасываем FSM в idle
     async def _reset_clarif_fsm() -> None:
-        await clarification_fsm.save_state(
-            db, _chat.id, clarification_fsm.idle_state()
-        )
+        await clarification_fsm.save_state(db, _chat.id, clarification_fsm.idle_state())
 
     def _step(text: str) -> str:
-        """Форматирует step_status чанк для SSE."""
         return f"data: {json.dumps({'type': 'step_status', 'text': text}, ensure_ascii=False)}\n\n"
 
     async def plain_stream() -> AsyncIterator[str]:
         _provider = settings_service.get_active_provider()
         if _provider is None:
-            error_data = json.dumps({"type": "error", "message": "No LLM provider configured"}, ensure_ascii=False)
-            yield f"data: {error_data}\n\n"
+            yield f"data: {json.dumps({'type': 'error', 'message': 'No LLM provider configured'}, ensure_ascii=False)}\n\n"
             yield "data: [DONE]\n\n"
             return
 
-        # ── 1. Query rewriting (только если есть история) ─────────────────────
-        has_history = bool(context.history)
-        if has_history:
+        # ── 1. Query rewriting ─────────────────────────────────────────────────
+        if bool(context.history):
             yield _step("Переформулирую вопрос для поиска в базе знаний...")
             from app.db.models import Domain as DomainModel
             domain_obj = await db.get(DomainModel, context.domain_id) if context.domain_id else None
-            domain_description = (
-                domain_obj.description
-                if domain_obj and domain_obj.description
-                else None
-            )
             context.query = await query_rewriter.rewrite(
                 original_query=context.query,
                 history=context.history,
                 provider=_provider,
-                domain_description=domain_description,
+                domain_description=(
+                    domain_obj.description if domain_obj and domain_obj.description else None
+                ),
             )
 
-        # ── 2. Pipeline routing ────────────────────────────────────────────────
-        # Режим «Без пайплайна»: пропускаем роутер, сразу plain RAG
+        # ── 2. Pipeline routing ───────────────────────────────────────────────
         if _locked_pipeline_id == PIPELINE_NONE_ID:
             pipeline = None
-            logger.info(
-                "Pipeline disabled (__none__ sentinel) — skipping router, plain RAG; chat_id=%s",
-                _chat.id,
-            )
+            logger.info("Pipeline disabled (__none__ sentinel) — skipping router; chat_id=%s", _chat.id)
         else:
             yield _step("Анализирую контекст запроса...")
             _pipeline_router = PipelineRouter(db)
-            pipeline = await _pipeline_router.select(
-                context,
-                locked_pipeline_id=_locked_pipeline_id,
-            )
+            pipeline = await _pipeline_router.select(context, locked_pipeline_id=_locked_pipeline_id)
 
-        # ── 2a. Pipeline found — сохраняем confirm и завершаем стрим ──────────
+        # ── 2a. Pipeline found ────────────────────────────────────────────────
         if pipeline is not None:
             context.pipeline_id = pipeline.pipeline_id
             context.pipeline_version = pipeline.version
@@ -732,7 +649,6 @@ async def send_message_stream(
                 "Pipeline confirm required: chat_id=%s pipeline_id=%s token=%s…",
                 _chat.id, pipeline.pipeline_id, confirm_token[:8],
             )
-
             chunk = json.dumps(
                 {
                     "type": "pipeline_confirm_required",
@@ -746,16 +662,13 @@ async def send_message_stream(
             yield "data: [DONE]\n\n"
             return
 
-        # ── 3. Plain RAG fallback ──────────────────────────────────────────────
-        logger.info(
-            "No pipeline found for domain_id=%s — falling back to plain LLM stream", domain_id
-        )
+        # ── 3. Plain RAG fallback ─────────────────────────────────────────────
+        logger.info("No pipeline found for domain_id=%s — falling back to plain LLM stream", domain_id)
 
         system_prompt = await _resolve_system_prompt(context.campaign_id, domain_id, db)
 
         hits: list[SearchHit] = []
         if vault_ids:
-            # ── 3a. Retrieval (без rerank) ─────────────────────────────────────
             yield _step("Ищу в базе знаний...")
             hits = await _fallback_retrieve(
                 query=context.query,
@@ -765,12 +678,43 @@ async def send_message_stream(
                 db=db,
                 skip_rerank=True,
             )
-
-            # ── 3b. Reranking (явно, чтобы показать статус) ───────────────────
             if hits:
                 yield _step("Выбираю лучшие результаты поиска...")
                 hits = await rerank_hits(context.query, hits, db)
 
+        # ── 3a. Full Document Mode: если флаг включён — паузим и предлагаем документы
+        # ───────────────────────────────────────────────────────────────────────────────
+        if hits and _chat.full_document_mode_enabled:
+            from app.services.full_document_service import collect_document_candidates
+            sent_ids: list[str] = list(_chat.sent_full_document_ids or [])
+            candidates = await collect_document_candidates(hits, sent_ids, db)
+            if candidates:
+                # Сохраняем пауза-стейт в том же формате что и PipelineExecutor
+                _chat.pipeline_pause_state = {
+                    "step": "full_document_selection",
+                    "candidates": [c.model_dump() for c in candidates],
+                    "saved_hits": [h.model_dump() for h in hits],
+                    "context_snapshot": context.model_dump(mode="json"),
+                    "expires_at": (datetime.now(UTC) + _FULLDOC_TTL).isoformat(),
+                }
+                await asyncio.shield(db.commit())
+                logger.info(
+                    "plain_stream full_document_mode: pausing for selection. "
+                    "chat_id=%s candidates=%d",
+                    _chat.id, len(candidates),
+                )
+                chunk = json.dumps(
+                    {
+                        "type": "full_document_selection_required",
+                        "candidates": [c.model_dump() for c in candidates],
+                    },
+                    ensure_ascii=False,
+                )
+                yield f"data: {chunk}\n\n"
+                yield "data: [DONE]\n\n"
+                return
+
+        # ── 3b. Generation ──────────────────────────────────────────────────────
         rag_context = format_context(hits)
         full_system = f"{system_prompt}\n\n{rag_context}" if system_prompt else rag_context
 
@@ -781,7 +725,6 @@ async def send_message_stream(
             messages.append({"role": m.role, "content": m.content})
         messages.append({"role": "user", "content": req.content})
 
-        # ── 3c. Generation ────────────────────────────────────────────────────
         yield _step("Отправка контекста в генеративную модель для ответа...")
 
         full_answer = ""
@@ -841,7 +784,6 @@ def _build_confirm_payload(
     context: PipelineExecutionContext,
     expires_at: datetime,
 ) -> dict[str, Any]:
-    """Сериализуем всё необходимое для последующего запуска в JSONB-снапшот."""
     return {
         "confirm_token": confirm_token,
         "pipeline_id": pipeline_id,
@@ -865,7 +807,6 @@ async def _vault_enabled(db: AsyncSession, vault_id: str | None) -> bool:
 
 
 async def _domain_id_for_chat(chat: Chat, db: AsyncSession) -> str | None:
-    """Разрешить domain_id: prefer chat.domain_id, fall back to campaign.domain_id."""
     if chat.domain_id:
         return chat.domain_id
     if chat.campaign_id:
@@ -880,12 +821,6 @@ async def _resolve_system_prompt(
     domain_id: str | None,
     db: AsyncSession,
 ) -> str:
-    """Вернуть эффективный system prompt для fallback пути (no-pipeline).
-
-    Priority:
-      1. campaign.system_prompt  — when a campaign is selected and has a non-empty prompt
-      2. domain system prompt    — general mode or campaign without its own prompt
-    """
     if campaign_id:
         campaign = await db.get(Campaign, uuid.UUID(campaign_id))
         if campaign is not None and campaign.system_prompt:
@@ -902,20 +837,9 @@ async def _fallback_retrieve(
     *,
     skip_rerank: bool = False,
 ) -> list[SearchHit]:
-    """RAG retrieval для no-pipeline fallback пути.
-
-    - campaign выбрана: фильтруем по document_ids документов с тегами кампании + глобальными тегами домена.
-    - общий режим: ищем по всему домену (без фильтра по document_ids).
-    - если vault_ids пустой — возвращаем [].
-
-    skip_rerank=True — пропустить rerank_hits внутри retrieve_multi_vault.
-    Используется из plain_stream, где rerank вызывается явно для контроля step_status.
-    """
+    """RAG retrieval для no-pipeline fallback пути."""
     if not vault_ids or not domain_id:
-        logger.info(
-            "Fallback RAG skipped: vault_ids=%s domain_id=%s",
-            vault_ids, domain_id,
-        )
+        logger.info("Fallback RAG skipped: vault_ids=%s domain_id=%s", vault_ids, domain_id)
         return []
 
     retrieval_enabled: bool = await settings_service.get("retrieval.enabled", db)
@@ -924,33 +848,24 @@ async def _fallback_retrieve(
         return []
 
     top_k: int = int(await settings_service.get("retrieval.top_k", db))
-
-    document_ids: list[str] | None = None  # None = весь домен, без фильтра
+    document_ids: list[str] | None = None
 
     if campaign_id:
         allowed_tag_ids = await get_allowed_tag_ids(domain_id, campaign_id, db)
         if allowed_tag_ids:
-            document_ids = await get_document_ids_by_tags(
-                list(allowed_tag_ids), domain_id, db
-            )
+            document_ids = await get_document_ids_by_tags(list(allowed_tag_ids), domain_id, db)
             logger.info(
                 "Fallback RAG campaign scope: campaign_id=%s allowed_tags=%d document_ids=%d",
                 campaign_id, len(allowed_tag_ids), len(document_ids),
             )
             if document_ids == []:
-                logger.info(
-                    "Fallback RAG: no indexed documents for campaign tags, returning empty"
-                )
+                logger.info("Fallback RAG: no indexed documents for campaign tags, returning empty")
                 return []
         else:
-            logger.info(
-                "Fallback RAG: campaign has no tags, searching full domain domain_id=%s",
-                domain_id,
-            )
+            logger.info("Fallback RAG: campaign has no tags, searching full domain domain_id=%s", domain_id)
 
     return await retrieve_multi_vault(
-        query,
-        vault_ids,
+        query, vault_ids,
         document_ids=document_ids,
         top_k=top_k,
         strategy="hybrid",
@@ -961,7 +876,6 @@ async def _fallback_retrieve(
 
 
 def _hits_to_sources(hits: list[SearchHit]) -> list[dict[str, Any]]:
-    """Преобразовать SearchHit list в sources формат для SSE sources chunk."""
     sources: list[dict[str, Any]] = []
     seen: set[tuple[str, int | None, str]] = set()
     for hit in hits:
@@ -983,13 +897,11 @@ async def _plain_llm_reply(
     domain_id: str | None,
     db: AsyncSession,
 ) -> str:
-    """Прямой LLM ответ без пайплайна (fallback когда пайплайны не настроены)."""
     provider = settings_service.get_active_provider()
     if provider is None:
         raise HTTPException(503, "No LLM provider configured")
 
     system_prompt = await _resolve_system_prompt(context.campaign_id, domain_id, db)
-
     vault_ids: list[str] = getattr(context, "vault_ids", []) or []
     hits: list[SearchHit] = await _fallback_retrieve(
         query=context.query,
@@ -1024,7 +936,6 @@ async def _audit(
 
 
 async def _pipeline_versions(request: Request) -> dict[str, str]:
-    """Извлекаем X-Pipeline-Version заголовки для reproducibility tracking."""
     return {
         k.removeprefix("x-pipeline-"): v
         for k, v in request.headers.items()
