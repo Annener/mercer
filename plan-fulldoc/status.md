@@ -1,7 +1,7 @@
 # Статус реализации: Full Document Mode
 
 > Последнее обновление: 2026-07-13  
-> Текущий этап: **Этап 5 — API**
+> Текущий этап: **Этап 6 — Frontend**
 
 ---
 
@@ -13,7 +13,7 @@
 | Этап 2 — Indexer: запись size-метаданных | ✅ завершён | `update_document_size()` + вызов в `_process_file()`; поля заполнены в psql |
 | Этап 3 — FullDocumentService | ✅ завершён | `full_document_service.py` создан, все три функции реализованы |
 | Этап 4 — PipelineExecutor: новый шаг | ✅ завершён | пауза + resume реализованы |
-| Этап 5 — API: новые эндпоинты | ▾️ не начат | — |
+| Этап 5 — API: новые эндпоинты | ✅ завершён | `full_document_confirm` добавлен, PATCH расширен, роутер зарегистрирован |
 | Этап 6 — Frontend: тоглер + панель | ▾️ не начат | — |
 
 ---
@@ -51,9 +51,9 @@
 - [ ] Тест: resume с документами → гибридный контекст
 
 ### Этап 5 — API
-- [ ] Найден роутер чата (`api/chat/`)
-- [ ] `POST /api/chat/{chat_id}/full_document_confirm` добавлен
-- [ ] PATCH чата расширен флагом `full_document_mode_enabled`
+- [x] Найден роутер чата (`rag-backend/app/api/chat.py`)
+- [x] `POST /chat/{chat_id}/full_document_confirm` добавлен (`rag-backend/app/api/fulldoc_confirm.py`)
+- [x] PATCH чата расширен флагом `full_document_mode_enabled`
 - [ ] curl-тесты пройдены
 
 ### Этап 6 — Frontend
@@ -77,25 +77,31 @@
 | 3 | Endpoint `/vaults/{vault_id}/documents/{document_id}/text` не существует в db-api-server | В `db-api-server/api/index.py` такого маршрута нет. Используется реальный endpoint: `GET /index/document/{document_id}/chunks?vault_id={vault_id}` → конкатенация текстов чанков по `chunk_index` | 3 |
 | 4 | `SearchHit` в shared_contracts не имеет поля `vault_id` | vault_id ищется в `hit.metadata["vault_id"]`, при отсутствии — берётся первый ваулт из context_snapshot.vault_ids | 4 |
 | 5 | `ctx.step_results` после `model_dump` содержит `_hits_*` ключи с объектами dict (не SearchHit) | `_collect_all_hits` поддерживает оба варианта: и `SearchHit`, и `dict` с валидацией через `model_validate` | 4 |
+| 6 | `PATCH /chat/{chat_id}` уже использует `UpdateChatRequest`, где `campaign_id` объявлен как обязательное поле (`= ...`) | Для минимально-инвазивной реализации Stage 5 новый флаг `full_document_mode_enabled` добавлен как опциональный, без изменения обязательности `campaign_id`. Это значит, что клиенту пока безопаснее продолжать отправлять `campaign_id` вместе с PATCH-запросом | 5 |
+| 7 | В `full_document_confirm` нужен устойчивый SSE lifecycle с живой DB-сессией до конца генератора | Использован отдельный `SessionLocal()` внутри генератора по тому же паттерну, что и в `pipeline_resume.py`, чтобы сессия не закрылась раньше завершения стрима | 5 |
 
 ---
 
 ## Следующий шаг
 
-**Начать Этап 5 — API.**
+**Начать Этап 6 — Frontend.**
 
 Что нужно сделать:
-1. Найти роутер чата в `rag-backend/app/api/` — скорее всего `app/api/chat.py` или `app/api/chat/`.
-2. Прочитать существующий `PATCH /chat/{chat_id}` — узнать текущую схему запроса и добавить поле `full_document_mode_enabled`.
-3. Добавить `POST /chat/{chat_id}/full_document_confirm`:
-   - Читает `pipeline_pause_state` из Chat.
-   - Проверяет `pause_state["step"] == "full_document_selection"`.
-   - Вызывает `executor.resume_from_full_doc_selection(chat_id, selected_document_ids, db)`.
-   - Возвращает SSE-стрим (как в `/stream`).
-   - Сохраняет ответ ллм в `Message`.
-4. Паттерн смотреть в `pipeline_resume.py` — аналогичная логика SSE-стрима с сохранением сообщения.
+1. Прочитать реальные frontend-файлы в `rag-backend/app/static/` и найти:
+   - место, где рендерится чат/панель настроек,
+   - место, где вызывается `PATCH /chat/{chat_id}`,
+   - обработчик SSE-чанков из `/chat/{chat_id}/send_stream`.
+2. Добавить тоглер Full Document Mode в UI и связать его с `PATCH /chat/{chat_id}`.
+3. Добавить обработку SSE-события `full_document_selection_required`.
+4. Реализовать панель выбора документов:
+   - список кандидатов,
+   - чекбоксы,
+   - суммарный счётчик токенов,
+   - кнопка продолжения без документов,
+   - вызов `POST /chat/{chat_id}/full_document_confirm`.
+5. Проверить, что обычный чат не сломан и что новый UI появляется только когда приходит full-document pause.
 
-**Важно перед реализацией**: прочитать реальный код роутера чата — найти `PATCH` и существующий `ChatUpdateRequest`.
+**Важно перед реализацией**: сначала прочитать реальные JS-файлы и существующий код SSE-обработки — не предполагать структуру фронтенда.
 
 ---
 
