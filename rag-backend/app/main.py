@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from app.api.chat import router as chat_router
 from app.api.config_api import router as config_router
 from app.api.db_management import router as db_management_router
+from app.api.fulldoc_confirm import router as fulldoc_confirm_router
 from app.api.indexer_state import router as indexer_state_router
 from app.api.pipeline_resume import router as pipeline_resume_router
 from app.api.settings import router as settings_router
@@ -68,6 +69,7 @@ app = FastAPI(title="RAG Backend", lifespan=lifespan)
 # === Роутеры ===
 app.include_router(chat_router)
 app.include_router(pipeline_resume_router)  # Stage 5: pipeline_confirm + pipeline_resume
+app.include_router(fulldoc_confirm_router)  # Stage 5: full_document_confirm
 app.include_router(config_router)
 app.include_router(settings_router, prefix="/api/settings", tags=["settings"])
 app.include_router(db_management_router)
