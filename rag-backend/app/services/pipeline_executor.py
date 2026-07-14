@@ -157,12 +157,17 @@ class PipelineExecutor:
 
         Алгоритм:
         1. Читаем pipeline_pause_state из Chat — там saved_hits, candidates, context_snapshot.
-        2. Загружаем full texts для selected_document_ids (параллельно).
-        3. Собираем hybrid context через assemble_hybrid_context.
-        4. Обновляем chat.sent_full_document_ids.
-        5. Очищаем pipeline_pause_state.
-        6. Записываем hybrid context в ctx.step_results под ключ _fulldoc_context.
-        7. Запускаем _run_final_composition.
+        2. Проверяем pipeline_id в context_snapshot:
+           - Если None → plain-fallback ветка (без DAG): _resolve_system_prompt +
+             assemble_hybrid_context + provider.generate_stream напрямую.
+           - Если задан → полный пайплайн (оригинальная логика с final_composition).
+        3. Загружаем full texts для selected_document_ids (параллельно).
+        4. Собираем hybrid context через assemble_hybrid_context.
+        5. Обновляем chat.sent_full_document_ids.
+        6. Очищаем pipeline_pause_state.
+        7a. (plain-fallback) Вызываем LLM напрямую, сохраняем Message.
+        7b. (pipeline) Записываем hybrid context в ctx.step_results, запускаем
+            _run_final_composition.
         """
         from app.services.full_document_service import (
             assemble_hybrid_context,
@@ -213,7 +218,7 @@ class PipelineExecutor:
         # 2. Загружаем full texts параллельно
         full_texts: dict[str, str] = {}
         if selected_document_ids:
-            yield _status("Loading full document texts...")
+            yield _status("Загружаю полные тексты документов...")
 
             # Для каждого selected_doc_id нужен vault_id.
             # Ищем vault_id в saved_hits: hit.metadata может содержать vault_id,
@@ -283,7 +288,64 @@ class PipelineExecutor:
         except Exception as exc:
             logger.warning("resume_from_full_doc_selection: failed to update chat: %s", exc)
 
-        # 6. Восстанавливаем контекст и подставляем hybrid context в step_results
+        # ── Проверяем: это plain-fallback пауза или пауза из полноценного пайплайна?
+        pipeline_id = context_snapshot.get("pipeline_id")
+
+        if not pipeline_id:
+            # ── 7a. Plain-fallback ветка ──────────────────────────────────────
+            # pipeline_id отсутствует → пауза пришла из plain_stream в chat.py.
+            # Запускаем LLM напрямую, без DAG и final_composition.
+            logger.info(
+                "resume_from_full_doc_selection: plain-fallback branch (no pipeline_id). "
+                "chat_id=%s", chat_id,
+            )
+            from app.api.chat import _resolve_system_prompt
+
+            campaign_id: str | None = context_snapshot.get("campaign_id")
+            domain_id: str | None = context_snapshot.get("domain_id")
+            original_query: str = context_snapshot.get("original_query") or context_snapshot.get("query", "")
+
+            system_prompt = await _resolve_system_prompt(campaign_id, domain_id, db)
+            full_system = f"{system_prompt}\n\n{context_str}" if system_prompt else context_str
+
+            messages: list[dict[str, str]] = []
+            if full_system:
+                messages.append({"role": "system", "content": full_system})
+            messages.append({"role": "user", "content": original_query})
+
+            yield _status("Генерирую ответ...")
+            full_answer = ""
+            try:
+                async for token in provider.generate_stream(messages):
+                    full_answer += token
+                    yield {"type": "token", "content": token}
+            except Exception as exc:
+                logger.error(
+                    "resume_from_full_doc_selection plain-fallback stream error: %s",
+                    exc, exc_info=True,
+                )
+                yield {"type": "error", "message": f"LLM stream error: {exc}"}
+                return
+
+            # Сохраняем ответ в Message
+            try:
+                from app.db.models import Message
+                assistant_msg = Message(
+                    chat_id=chat_uuid,
+                    role="assistant",
+                    content=full_answer,
+                )
+                db.add(assistant_msg)
+                await db.commit()
+            except Exception as exc:
+                logger.warning(
+                    "resume_from_full_doc_selection: failed to save assistant message: %s", exc,
+                )
+
+            yield {"type": "pipeline_complete"}
+            return
+
+        # ── 7b. Полный пайплайн: восстанавливаем контекст и запускаем final_composition
         from shared_contracts.models import PipelineExecutionContext as PEC
         ctx_data = {
             "query": "",
@@ -293,7 +355,6 @@ class PipelineExecutor:
         }
         ctx = PEC.model_validate(ctx_data)
 
-        # fix(bug#2): проверяем final_composition перед вызовом _run_final_composition
         if ctx.final_composition is None:
             logger.error(
                 "resume_from_full_doc_selection: final_composition is None in context_snapshot. "
@@ -323,7 +384,7 @@ class PipelineExecutor:
                 # Нет явных retrieval шагов — используем служебный ключ
                 ctx.step_results["_fulldoc_context"] = context_str
 
-        # 7. Запускаем финальную композицию
+        # Запускаем финальную композицию
         async for chunk in self._run_final_composition(ctx, provider):
             yield chunk
 
@@ -581,7 +642,7 @@ class PipelineExecutor:
         # Use the original unmodified user query as the user-role message so the
         # LLM receives the full intent, not the retrieval-optimised short phrase.
         user_content = ctx.original_query if ctx.original_query else ctx.query
-        yield _status("Generating response...")
+        yield _status("Генерирую ответ...")
         try:
             async for token in provider.generate_stream([
                 {"role": "system", "content": prompt},
