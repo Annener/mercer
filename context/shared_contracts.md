@@ -66,7 +66,7 @@ VaultBinding:
   embedding_model_id: str
   expected_dimensions: int  # > 0
   locked: bool = False
-  status: unbound|indexing|bound|error
+  status: unbound|binding|bound|error
   chunk_count: int
 ```
 
@@ -74,22 +74,38 @@ VaultBinding:
 
 ```python
 UpsertChunk:
-  chunk_id: str
   document_id: str
-  vault_id: str
+  chunk_index: int
   text: str
   vector: list[float]
   metadata: dict
 
+UpsertRequest:
+  vault_id: str
+  chunks: list[UpsertChunk]
+
+UpsertResponse:
+  status: "ok" | "partial"
+  upserted_count: int
+  failed_indices: list[int]
+  error_details: list[str]
+
+SearchHit:
+  chunk_id: str
+  document_id: str
+  text: str
+  metadata: dict  # содержит vault_id, source_path, chunk_index и др.
+  score: float
+
 SearchRequest:
   vault_id: str
-  query_vector: list[float]
-  top_k: int = 10
+  vector: list[float]
+  top_k: int = 10  # ge=1, le=200
+  score_threshold: float | None
   filter: dict | None
 
 SearchResponse:
-  results: list[ChunkRecord]
-  scores: list[float]
+  results: list[SearchHit]
 ```
 
 ## Read/Create/Update схемы (API-контракты)
@@ -149,103 +165,158 @@ RerankModelUpdate: все поля optional
 ```python
 VaultRead(ORMModel): vault_id, domain_id, display_name, enabled, embedding_model_id,
                      expected_dimensions, chunk_size, overlap, entity_aware_mode,
-                     binding_status, chunk_count, created_at, updated_at
-  # binding_status: unbound|indexing|bound|error
-VaultCreate: vault_id, domain_id, display_name?, embedding_model_id?, ...
-VaultUpdate: все поля optional
-```
-
-### Tag
-```python
-TagRead(ORMModel): id, name, domain_id, campaign_id?, color?, created_at
-# TagCreate / TagUpdate определены в api/settings/schemas.py
+                     semantic_threshold, binding_status, chunk_count, created_at, updated_at
+VaultCreate: vault_id, domain_id, display_name?, embedding_model_id?, expected_dimensions?,
+             chunk_size?, overlap?, entity_aware_mode?, semantic_threshold
+VaultUpdate: все поля optional (включая binding_status, chunk_count)
 ```
 
 ### Document
 ```python
-DocumentRead(ORMModel): id, vault_id, source_path, title, md5, mtime, status,
-                        indexed_at, created_at
-  # status: pending|parsing|chunking|indexing|done|error|cancelled|empty
+DocumentRead(ORMModel): id, vault_id, source_path, title, md5, mtime, indexed_at,
+                        status, char_count, chunk_count, estimated_tokens, tags, created_at
+  # status: pending | indexed | error
+  # char_count, estimated_tokens — None если документ (ещё) не индексирован
+  # tags: list[TagRead] — M2M, заполняется вручную в роуте
 ```
 
-### Campaign
+### DocumentCandidate
 ```python
-CampaignRead(ORMModel): id, domain_id, name, description, system_prompt,
-                        last_session_at, created_at
+DocumentCandidate(BaseModel):  # НЕ ORMModel, чистый DTO
+  document_id: str
+  title: str          # заполняется из Document.title ?? Document.source_path
+  source_path: str
+  char_count: int | None
+  chunk_count: int | None
+  estimated_tokens: int | None
+  already_sent: bool  # True если document_id уже в Chat.sent_full_document_ids
+```
+
+Iспользуется в `full_document_service.py` и `pipeline_executor.py` для Full Document Mode паузы.
+
+### Tag / Campaign
+```python
+TagRead(ORMModel): id, name, domain_id, campaign_id, color, created_at
+TagCreate: name, domain_id, campaign_id?, color?
+TagUpdate: name?, color?
+TagsGrouped: global_tags, by_campaign: dict[campaign_id, list[TagRead]]
+
+CampaignRead(ORMModel): id, domain_id, name, description, system_prompt, last_session_at, created_at, tags
 CampaignCreate: domain_id, name, description?, system_prompt?
 CampaignUpdate: name?, description?, system_prompt?
+```
+
+### Chat
+```python
+ChatRecord(ORMModel):
+  id: str
+  title: str
+  vault_id: str | None      # deprecated back-compat
+  domain_id: str | None
+  campaign_id: str | None
+  locked_pipeline_id: str | None
+  full_document_mode_enabled: bool = False  # режим отправки полных документов
+  sent_full_document_ids: list[str] = []   # история уже отправленных документов
+  created_at: datetime
+  updated_at: datetime
+
+CreateChatRequest:
+  domain_id: str | None     # основной ID
+  vault_id: str | None      # deprecated back-compat
+  campaign_id: str | None
+
+CreateChatResponse: chat_id, title
+SendMessageRequest: content, stream=True
 ```
 
 ### Pipeline
 ```python
 PipelineStep:
-  step_id: str
-  type: Literal["retrieval", "validation"]
-  depends_on: list[str] = []
-  params: dict = {}
+  step_id: str               # user-defined slug, e.g. "analyze"
+  type: "retrieval" | "validation"
+  name: str
+  system_prompt: str         # {query}, {STEP_ID.result}, {STEP_ID.key}
+  after_step_ids: list[str]  # [] = стартовый шаг
+  # только retrieval:
+  top_k, tag_ids, role, output_format: "text"|"json"
+  # только validation:
+  validation_prompt, options: list[str]?
 
 FinalComposition:
-  template: str
-  sources: list[str] = []
+  system_prompt: str  # {STEP_ID.result}, {query}
 
-PipelineRead(ORMModel): id, pipeline_id, domain_id, campaign_id?, version, name, description,
-                        steps: list[PipelineStep], final_composition: FinalComposition,
-                        is_active, created_at
-PipelineCreate: pipeline_id, domain_id, campaign_id?, version, name, description?,
-                steps, final_composition
+PipelineRead(ORMModel): id, pipeline_id, domain_id, campaign_id, version, name, description,
+                        steps, final_composition, is_active, created_at
+PipelineCreate: pipeline_id, domain_id, campaign_id?, name, description?, steps, final_composition
 PipelineUpdate: name?, description?, steps?, final_composition?, is_active?
 ```
 
-### Chat
+### PipelineExecutionContext
+
 ```python
-ChatRecord(ORMModel): id, title, domain_id, campaign_id?, vault_id?,
-                      locked_pipeline_id?, pipeline_versions?,
-                      pipeline_pause_state?, pending_pipeline_confirm?,
-                      created_at, updated_at
-CreateChatRequest: domain_id, campaign_id?
-CreateChatResponse: chat_id: str
-SendMessageRequest: text: str
+PipelineExecutionContext(BaseModel):
+  chat_id: str
+  message_id: str
+  query: str                 # после QueryRewriter
+  original_query: str | None # запрос до переформулировки
+  domain_id, campaign_id
+  vault_ids: list[str]       # все enabled-Vault домена
+  vault_id: str | None       # deprecated back-compat
+  pipeline_id, pipeline_version, steps, final_composition  # None до router.select()
+  history: list[ChatMessage]
+  metadata: dict
+  retrieval_strategy: str | None
+  confidence, reasoning, mode  # заполняются после pipeline_router.select()
+  step_results: dict[str, Any]  # накапливается в DAG
+    # step_id           → текст/dict для output retrieval-шагов
+    # _hits_{step_id}   → list[SearchHit] для full_document_service
 ```
 
-### Message
+`context.resolve(template)` — подставляет `{query}`, `{STEP_ID.result}`, `{STEP_ID.key}` (делегирует в `prompt_pack.resolve_step_vars`).
+
+## Indexer task API
+
 ```python
-ChatMessage(ORMModel): id, chat_id, role, content, pipeline_id?, created_at
-  # role: user | assistant | system
+StartIndexTaskRequest: vault_id, force_reindex=False
+StartIndexTaskResponse: task_id, vault_id, status
+TaskStateResponse: task_id, vault_id, status, state: IndexState | None
+IndexStatusResponse: vault_id, task_id, status, progress_pct, chunks_total, chunks_processed, error, files
 ```
 
-### ClarificationState
+## WebSocket сообщения прогресса (rag-indexer → frontend)
+
 ```python
-ClarificationState(ORMModel): chat_id, stage, missing_fields, collected, turn, next_question
-  # stage: idle | collecting | ready
-ClarificationResponse:
-  needs_clarification: bool
-  question: str | None
-ClarificationAnswer: answer: str
+WSFileChunkProgressMessage: type="file_chunk_progress", task_id, file_path,
+                            stage, chunks_total, chunks_processed, error
+WSFileStatusMessage:        type="file_status", task_id, file_path, status, chunk_count, error
+WSTaskCancelledMessage:     type="task_cancelled", task_id
+WSTaskCompleteMessage:      type="task_complete", task_id, files_total, files_indexed
 ```
 
-### PipelineDecision
+## Planner-контракты
+
 ```python
-PipelineDecision(ORMModel): id, chat_id, message_id, selected_pipeline_id,
-                            confidence, reasoning, mode, created_at
+PipelineInvocation: pipeline_id, domain, priority
+PlannerDecision: retrieval_strategy, clarification_needed, pipeline_invocations, reasoning
 ```
 
-### AuditLog
+## ClarificationState
+
 ```python
-AuditLogRead(ORMModel): id, action, entity_type, entity_id, details, created_at
+ClarificationState(BaseModel):  # НЕ ORMModel — DTO между FSM и chat-роутом
+  stage: idle | collecting | complete | fallback
+  missing_fields: list[str]
+  collected: dict[str, str]
+  turn: int
+  next_question: str | None
 ```
 
-## Важные замечания
+## Ретривал-схемы (deprecated/internal)
 
-1. `has_api_key` в Read-схемах моделей — это `bool`, не сам ключ. Ключи хранятся
-   зашифрованными в `encrypted_api_key` и никогда не возвращаются в API.
-
-2. `domain_id` в Domain — это строка-идентификатор (`"dnd"`, `"work"`), не UUID.
-   Все FK на домены — тоже строки.
-
-3. `vault_id` в Vault — строка-идентификатор (`"dnd-vault"`), не UUID.
-   UUID хранится во внутреннем поле `id`, но во внешнем API используется `vault_id`.
-
-4. `VaultBinding.status` — используется значение `indexing` (не `binding`).
-
-5. `js/api/sidecar.js` — фронтенд-клиент для управления pdf-sidecar через host-agent
-   (запуск, остановка, установка, статус). Соответствует `api/settings/sidecar.py` в бэкенде.
+```python
+RetrievalContext:  query, vault_ids, vault_id (deprecated), domain_id, campaign_id,
+                   tag_ids, top_k, metadata_filter
+RetrievalResult:  chunk_id, document_id, vault_id, text, score, metadata
+PipelineStepResult: step_id, step_name, retrieval_results, llm_output, error
+PipelineResult: pipeline_id, pipeline_version, steps, final_answer, error
+```
