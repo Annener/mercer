@@ -14,9 +14,12 @@ logger = logging.getLogger(__name__)
 class _VaultEntry:
     """Lightweight DTO mirroring shared_contracts.models.VaultConfigEntry."""
 
-    __slots__ = ("vault_id", "domain_id", "enabled", "embedding_model_id",
-                 "expected_dimensions", "chunk_size", "overlap",
-                 "entity_aware_mode", "binding_status", "chunk_count")
+    __slots__ = (
+        "vault_id", "domain_id", "enabled", "embedding_model_id",
+        "expected_dimensions", "chunk_size", "overlap",
+        "entity_aware_mode", "binding_status", "chunk_count",
+        "git_author_name", "git_author_email",
+    )
 
     def __init__(self, row: Vault) -> None:
         self.vault_id: str = row.vault_id
@@ -29,6 +32,8 @@ class _VaultEntry:
         self.entity_aware_mode: bool | None = row.entity_aware_mode
         self.binding_status: str = row.binding_status
         self.chunk_count: int = row.chunk_count
+        self.git_author_name: str | None = row.git_author_name
+        self.git_author_email: str | None = row.git_author_email
 
 
 class VaultConfigService:
