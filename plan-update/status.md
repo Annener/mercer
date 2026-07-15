@@ -19,8 +19,8 @@
 ## Текущий статус
 
 ```text
-Состояние: BLOCKED — гит не установлен в indexer image
-Текущая фаза: 0 — Baseline зафиксирован, блокеры зафиксированы
+Состояние: Фаза 0 завершена, готовны к фазе 1
+Текущая фаза: 1 — Indexer filesystem/git foundation
 Последнее обновление: 2026-07-15
 ```
 
@@ -28,64 +28,35 @@
 
 - [x] Зафиксирован clean baseline после `git reset --hard`.
 - [x] Подтверждён фактический Alembic head: `0004_fulldoc_jsonb_fix (head)`.
-- [x] Выполнены backend и indexer test suites — **есть pre-existing failures**, зафиксированы ниже.
-- [x] Подтверждён Docker shared mount: `/data/vaults` доступен и записываем (`mount ok`).
-- [ ] Active generation provider — не проверялся в рамках baseline; проверить перед фазой 3.
-- [ ] Подтверждён минимум один enabled vault с `.md` — не проверялся; проверить перед фазой 3.
-- [ ] **BLOCKER: git недоступен в indexer image** — `sh: 1: git: not found`.
-
-Не начинать фазы 1–5, пока blocker не закрыт.
+- [x] Backend tests: 136 passed, 11 pre-existing failures (unrelated — зафиксированы ниже).
+- [x] Indexer tests: 95 passed, 3 pre-existing failures (unrelated — зафиксированы ниже).
+- [x] Docker shared mount `/data/vaults` — `mount ok`.
+- [x] `git` доступен в indexer image: `git version 2.47.3`.
+- [ ] Active generation provider — проверить перед фазой 3.
+- [ ] Минимум один enabled vault с `.md` — проверить перед фазой 3.
 
 ---
 
-## Блокеры Phase 0
+## Pre-existing test failures (not Campaign Update Mode)
 
-### BLOCKER-1: git не установлен в rag-indexer image
+Не исправлять в рамках Campaign Update Mode. Зафиксированы для отслеживания регрессий.
 
-**Точная команда:**
-```bash
-docker compose exec rag-indexer sh -lc 'git --version'
-```
-
-**Output:**
-```text
-sh: 1: git: not found
-```
-
-**Причина:** В `Dockerfile` `rag-indexer` не установлен `git`.
-
-**Решение:** Добавить в `Dockerfile` `rag-indexer`:
-```dockerfile
-RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
-```
-или эквивалент для Alpine (`apk add --no-cache git`).
-
-После изменения перестроить image и проверить:
-```bash
-docker compose build rag-indexer
-docker compose exec rag-indexer sh -lc 'git --version'
-```
-
-### Pre-existing test failures (not Campaign Update Mode)
-
-Следующие failures существовали до начала работы. Не исправлять в рамках Campaign Update Mode.
-
-#### rag-backend (11 failed, 136 passed)
+### rag-backend (11 failed, 136 passed)
 
 | Файл | Тесты | Причина |
 |---|---|---|
 | `test_pipeline_executor_integration.py` | `TestParallelDagIntegration` (2) | `_retrieve_for_step_dag` получил новый 3й аргумент `provider`; mock пишет 2 |
-| `test_pipeline_resume.py` | `TestPipelineResume` (2) | тесты патчат `PipelineExecutor` по неверному import path / ключ `_validation_` префикс не совпадает с production кодом |
-| `test_planner_td03.py` | `TestPlannerMissingFields` (4) | `Planner._missing_fields` удалён/переименован в production коде |
-| `test_redis_endpoints.py` | `test_get_task_state_running`, `test_get_vault_index_state` (2) | routes `/index-tasks/` и `/vaults/*/index-state` возвращают 404; вероятно удалены/переименованы |
-| `test_watchdog_api.py` | `test_post_domain_index` (1) | indexer отклоняет task с 404 для unknown vault; тест ожидает `queued==2` |
+| `test_pipeline_resume.py` | `TestPipelineResume` (2) | patch по неверному import path / ключ `_validation_` не совпадает с production |
+| `test_planner_td03.py` | `TestPlannerMissingFields` (4) | `Planner._missing_fields` удалён/переименован в production |
+| `test_redis_endpoints.py` | `test_get_task_state_running`, `test_get_vault_index_state` (2) | роуты вернули 404; вероятно удалены/переименованы |
+| `test_watchdog_api.py` | `test_post_domain_index` (1) | indexer отклоняет task с 404 для unknown vault |
 
-#### rag-indexer (3 failed, 95 passed)
+### rag-indexer (3 failed, 95 passed)
 
 | Файл | Тест | Причина |
 |---|---|---|
-| `test_embed_batch.py` | `test_parallel_not_sequential` | `embed_batch` выполняет sequential, не parallel (`asyncio.gather`) |
-| `test_watchdog_lifespan.py` | `test_watchdog_loop_stops_on_cancel`, `test_watchdog_loop_calls_run_once` | `watchdog_loop()` не принимает `interval_sec` аргумент |
+| `test_embed_batch.py` | `test_parallel_not_sequential` | `embed_batch` работает sequential, не `asyncio.gather` |
+| `test_watchdog_lifespan.py` | `test_watchdog_loop_stops_on_cancel`, `test_watchdog_loop_calls_run_once` | `watchdog_loop()` не принимает `interval_sec` |
 
 ---
 
@@ -125,14 +96,12 @@ docker compose exec rag-indexer sh -lc 'git --version'
 
 | Фаза | Файл | Цель | Статус |
 |---:|---|---|---|
-| 0 | `phase-0-invariants-and-recovery.md` | Baseline, boundaries, migration path, contracts | BLOCKED (git missing in indexer) |
-| 1 | `phase-1-git-infrastructure.md` | Indexer path/file/git foundation | Not started |
+| 0 | `phase-0-invariants-and-recovery.md` | Baseline, boundaries, migration path, contracts | **Done** |
+| 1 | `phase-1-git-infrastructure.md` | Indexer path/file/git foundation | In progress |
 | 2 | `phase-2-data-model.md` | DB fields, DTO, Redis session, router skeleton | Not started |
 | 3 | `phase-3-executor.md` | Campaign scope, retrieval, LLM intents, resolve | Not started |
 | 4 | `phase-4-api.md` | Review, apply, git commits, targeted reindex | Not started |
 | 5 | `phase-5-sse-frontend.md` | UI, E2E, deployment, observability | Not started |
-
-Фазы выполняются строго по порядку.
 
 ---
 
@@ -148,32 +117,26 @@ docker compose exec rag-indexer sh -lc 'git --version'
 ### Backend
 
 - Session dependency — `get_db()` в `rag-backend/app/db/session.py`.
-- Active generation provider берётся через:
-  ```python
-  settings_service.get_active_provider()
-  ```
+- Active generation provider берётся через `settings_service.get_active_provider()`.
 - Chat flow уже может собирать enabled vaults domain.
 - `VaultConfigService` — lazy process-local cache DB vault rows; не source of truth для update writes.
-- `full_document_service.reconstruct_full_text()` уже может собрать полный indexed text документа через db-api-server chunks endpoint.
-- Baseline: 136 passed, 11 pre-existing failures (unrelated to Campaign Update Mode).
+- `full_document_service.reconstruct_full_text()` уже может собрать полный indexed text документа.
+- Baseline: 136 passed, 11 pre-existing failures.
 
 ### Indexer
 
-- Indexer строит vault path как:
-  ```python
-  /data/vaults/{vault_id}
-  ```
-- Parser поддерживает `.md` и `.pdf`, но Campaign Update Mode работает только с `.md`.
+- Vault path: `/data/vaults/{vault_id}`.
+- Parser поддерживает `.md` и `.pdf`; Campaign Update Mode работает только с `.md`.
 - Reindex текущего changed document удаляет старые chunks до upsert новых.
-- Baseline: 95 passed, 3 pre-existing failures (unrelated to Campaign Update Mode).
-- **`/data/vaults` монт присутствует и записываем** — подтверждено 2026-07-15.
-- **BLOCKER: `git` отсутствует в indexer image** — необходимо добавить в Dockerfile.
+- `/data/vaults` mount: `mount ok` — подтверждено 2026-07-15.
+- `git version 2.47.3` — подтверждено 2026-07-15.
+- Baseline: 95 passed, 3 pre-existing failures.
 
 ### Docker
 
 - `rag-backend` и `rag-indexer` монтируют `${VAULTS_PATH}` в `/data/vaults:rw` — подтверждено.
-- `rag-indexer` уже работает в Docker network и доступен backend по service URL.
-- Новый internal indexer update-mode API не должен публиковаться наружу отдельным `ports` mapping.
+- `rag-indexer` доступен backend по service URL внутри Docker network.
+- Новый internal indexer update-mode API не публикуется наружу отдельным `ports` mapping.
 
 ---
 
@@ -199,35 +162,21 @@ alembic upgrade head
 ### Backend tests
 
 ```bash
-cd rag-backend
-pytest -q
+cd rag-backend && pytest -q
 ```
 
 ### Indexer tests
 
 ```bash
-cd rag-indexer
-pytest -q
-```
-
-### Docker smoke test
-
-```bash
-docker compose --profile core up -d --build
-docker compose ps
-docker compose logs --tail=200 rag-backend
-docker compose logs --tail=200 rag-indexer
+cd rag-indexer && pytest -q
 ```
 
 ### Git capability внутри indexer
 
 ```bash
 docker compose exec rag-indexer sh -lc 'git --version'
-docker compose exec rag-indexer sh -lc 'test -d /data/vaults'
-docker compose exec rag-indexer sh -lc 'test -w /data/vaults'
+docker compose exec rag-indexer sh -lc 'test -d /data/vaults && test -w /data/vaults && echo "mount ok"'
 ```
-
-Никогда не вставлять private vault filename или file content в публичные logs/issue comments.
 
 ---
 
@@ -275,7 +224,7 @@ docker compose exec rag-indexer sh -lc 'test -w /data/vaults'
 | `git_ignored_target` | 409 | Git игнорирует target `.md` | Исправить вручную |
 | `apply_already_started` | 409 | Другой apply ID уже выполняется | Retry тем же ID |
 | `apply_id_payload_mismatch` | 409 | Same apply ID, другой payload | Не retry с изменённым payload |
-| `apply_in_progress` | 409 | Apply с тем же ID ещё выполняется | Poll/retry позже |
+| `apply_in_progress` | 409 | Apply с тем же ID ещё выполняется | Poll/retry пожже |
 
 `410 Gone` для expired review session должен сопровождаться `Cache-Control: no-store`.
 
