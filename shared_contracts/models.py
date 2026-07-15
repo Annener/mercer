@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid as _uuid
 from datetime import datetime
+from enum import Enum
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -843,3 +844,278 @@ class PlannerDecision(BaseModel):
     clarification_needed: bool = False
     pipeline_invocations: list[PipelineInvocation] = Field(default_factory=list)
     reasoning: str = ""
+
+
+# ---------------------------------------------------------------------------
+# Campaign Update Mode — Phase 2
+# ---------------------------------------------------------------------------
+
+class UpdateModeAction(str, Enum):
+    UPDATE = "update"
+    CREATE = "create"
+
+
+class UpdateModeOperation(str, Enum):
+    APPEND_AFTER_SECTION = "append_after_section"
+    APPEND_TO_FILE = "append_to_file"
+    REPLACE_UNIQUE_TEXT = "replace_unique_text"
+    CREATE_FILE = "create_file"
+
+
+class UpdateModeChangeStatus(str, Enum):
+    PENDING = "pending"
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
+    RESOLUTION_FAILED = "resolution_failed"
+
+
+class UpdateModeVaultApplyStatus(str, Enum):
+    APPLIED = "applied"
+    CONFLICT = "conflict"
+    FAILED = "failed"
+    NO_CHANGES = "no_changes"
+
+
+# --- LLM intent contracts ---
+
+class UpdateModeAnchor(BaseModel):
+    kind: Literal["markdown_heading", "exact_text"]
+    value: str = Field(min_length=1, max_length=16_384)
+
+
+class UpdateModeIntent(BaseModel):
+    change_id: str
+    action: UpdateModeAction
+    description: str = Field(min_length=1, max_length=2_000)
+
+    document_id: str | None = None
+    parent_document_id: str | None = None
+
+    operation: UpdateModeOperation
+    anchor: UpdateModeAnchor | None = None
+
+    suggested_filename: str | None = None
+    content: str = Field(min_length=1, max_length=65_536)
+
+    @model_validator(mode="after")
+    def _validate_intent_invariants(self) -> "UpdateModeIntent":
+        if self.action == UpdateModeAction.UPDATE:
+            if self.document_id is None:
+                raise ValueError("update action requires document_id")
+            if self.parent_document_id is not None:
+                raise ValueError("update action must not have parent_document_id")
+            if self.suggested_filename is not None:
+                raise ValueError("update action must not have suggested_filename")
+            valid_ops = {
+                UpdateModeOperation.APPEND_AFTER_SECTION,
+                UpdateModeOperation.APPEND_TO_FILE,
+                UpdateModeOperation.REPLACE_UNIQUE_TEXT,
+            }
+            if self.operation not in valid_ops:
+                raise ValueError(f"update action requires operation in {[o.value for o in valid_ops]}")
+            if self.operation == UpdateModeOperation.APPEND_AFTER_SECTION:
+                if self.anchor is None or self.anchor.kind != "markdown_heading":
+                    raise ValueError("append_after_section requires anchor.kind == markdown_heading")
+            if self.operation == UpdateModeOperation.REPLACE_UNIQUE_TEXT:
+                if self.anchor is None or self.anchor.kind != "exact_text":
+                    raise ValueError("replace_unique_text requires anchor.kind == exact_text")
+            if self.operation == UpdateModeOperation.APPEND_TO_FILE:
+                if self.anchor is not None:
+                    raise ValueError("append_to_file must not have anchor")
+
+        if self.action == UpdateModeAction.CREATE:
+            if self.document_id is not None:
+                raise ValueError("create action must not have document_id")
+            if self.operation != UpdateModeOperation.CREATE_FILE:
+                raise ValueError("create action requires operation == create_file")
+            if self.anchor is not None:
+                raise ValueError("create action must not have anchor")
+            if self.suggested_filename is None:
+                raise ValueError("create action requires suggested_filename")
+
+        if self.document_id is not None and self.parent_document_id is not None:
+            raise ValueError("document_id and parent_document_id are mutually exclusive")
+
+        return self
+
+
+class UpdateModeIntentBatch(BaseModel):
+    intents: list[UpdateModeIntent] = Field(min_length=1, max_length=10)
+
+    @model_validator(mode="after")
+    def _validate_unique_change_ids(self) -> "UpdateModeIntentBatch":
+        ids = [i.change_id for i in self.intents]
+        if len(ids) != len(set(ids)):
+            raise ValueError("change_id must be unique within batch")
+        return self
+
+
+# --- Internal indexer API contracts ---
+
+class UpdateModeResolveRequest(BaseModel):
+    chat_id: str
+    campaign_id: str
+    domain_id: str
+    vault_ids: list[str] = Field(min_length=1)
+    intents: list[UpdateModeIntent] = Field(min_length=1, max_length=10)
+    default_vault_id: str
+    candidate_document_ids: list[str] = Field(default_factory=list, max_length=15)
+
+    @model_validator(mode="after")
+    def _validate_default_vault(self) -> "UpdateModeResolveRequest":
+        if self.default_vault_id not in self.vault_ids:
+            raise ValueError("default_vault_id must be in vault_ids")
+        return self
+
+
+class ResolvedUpdateModeChange(BaseModel):
+    change_id: str
+    vault_id: str | None = None
+    document_id: str | None = None
+    file_path: str | None = None
+
+    action: UpdateModeAction
+    description: str
+
+    original_content: str = ""
+    proposed_content: str = ""
+    unified_diff: str = ""
+    expected_sha256: str | None = None
+
+    status: UpdateModeChangeStatus = UpdateModeChangeStatus.PENDING
+    error_code: str | None = None
+    error_message: str | None = None
+
+
+class UpdateModeResolveResponse(BaseModel):
+    changes: list[ResolvedUpdateModeChange]
+
+
+class UpdateModeApplyChange(BaseModel):
+    change_id: str
+    vault_id: str
+    file_path: str
+    action: UpdateModeAction
+    proposed_content: str
+    expected_sha256: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_sha_policy(self) -> "UpdateModeApplyChange":
+        if self.action == UpdateModeAction.UPDATE and self.expected_sha256 is None:
+            raise ValueError("update action requires expected_sha256")
+        if self.action == UpdateModeAction.CREATE and self.expected_sha256 is not None:
+            raise ValueError("create action must not have expected_sha256")
+        return self
+
+
+class UpdateModeApplyRequest(BaseModel):
+    apply_id: str
+    chat_id: str
+    campaign_id: str
+    accepted_changes: list[UpdateModeApplyChange] = Field(min_length=1, max_length=10)
+
+    @model_validator(mode="after")
+    def _validate_apply_request(self) -> "UpdateModeApplyRequest":
+        change_ids = [c.change_id for c in self.accepted_changes]
+        if len(change_ids) != len(set(change_ids)):
+            raise ValueError("change_id must be unique in accepted_changes")
+        path_pairs = [(c.vault_id, c.file_path) for c in self.accepted_changes]
+        if len(path_pairs) != len(set(path_pairs)):
+            raise ValueError("(vault_id, file_path) pairs must be unique in accepted_changes")
+        return self
+
+
+class UpdateModeVaultApplyResult(BaseModel):
+    vault_id: str
+    status: UpdateModeVaultApplyStatus
+    applied_count: int = Field(ge=0)
+
+    snapshot_commit_sha: str | None = None
+    commit_sha: str | None = None
+    commit_message: str | None = None
+
+    reindex_task_id: str | None = None
+    reindex_error: str | None = None
+
+    error_code: str | None = None
+    error_message: str | None = None
+
+
+class UpdateModeApplyResponse(BaseModel):
+    apply_id: str
+    results: list[UpdateModeVaultApplyResult] = Field(min_length=1)
+
+
+# --- Public backend API contracts ---
+
+class StartUpdateModeRequest(BaseModel):
+    note: str = Field(min_length=1, max_length=20_000)
+
+
+class StartUpdateModeResponse(BaseModel):
+    chat_id: str
+    expires_at: datetime
+    changes: list[ResolvedUpdateModeChange]
+    warnings: list[str] = Field(default_factory=list)
+
+
+class UpdateModeSessionResponse(BaseModel):
+    chat_id: str
+    campaign_id: str
+    domain_id: str
+    vault_ids: list[str]
+    expires_at: datetime
+    changes: list[ResolvedUpdateModeChange]
+    warnings: list[str] = Field(default_factory=list)
+
+
+class UpdateModeReviewRequest(BaseModel):
+    accepted_change_ids: list[str] = Field(default_factory=list, max_length=10)
+    rejected_change_ids: list[str] = Field(default_factory=list, max_length=10)
+
+    @model_validator(mode="after")
+    def _validate_no_overlap(self) -> "UpdateModeReviewRequest":
+        accepted = set(self.accepted_change_ids)
+        rejected = set(self.rejected_change_ids)
+        overlap = accepted & rejected
+        if overlap:
+            raise ValueError(f"change_ids cannot be both accepted and rejected: {overlap}")
+        if not accepted and not rejected:
+            raise ValueError("review request must contain at least one accepted or rejected change_id")
+        return self
+
+
+class ApplyUpdateModeRequest(BaseModel):
+    apply_id: str | None = None
+
+
+class ApplyUpdateModeResponse(BaseModel):
+    apply_id: str
+    results: list[UpdateModeVaultApplyResult]
+
+
+class CancelUpdateModeResponse(BaseModel):
+    status: Literal["cancelled"]
+
+
+# --- Redis session contract ---
+
+class UpdateModeSession(BaseModel):
+    session_id: str
+    chat_id: str
+    campaign_id: str
+    domain_id: str
+
+    vault_ids: list[str]
+    default_vault_id: str
+    candidate_document_ids: list[str]
+
+    note: str
+    warnings: list[str] = Field(default_factory=list)
+    changes: list[ResolvedUpdateModeChange]
+
+    created_at: datetime
+    expires_at: datetime
+
+    apply_id: str | None = None
+    apply_started_at: datetime | None = None
