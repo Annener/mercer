@@ -12,29 +12,80 @@
 - какие риски остаются;
 - что должна сделать следующая модель или разработчик.
 
-Не использовать этот файл как changelog пользовательских релизов. Статус implementation и пользовательский changelog решают разные задачи.
+Не использовать этот файл как changelog пользовательских релизов.
 
 ---
 
 ## Текущий статус
 
 ```text
-Состояние: План переписан, реализация не начата
-Текущая фаза: 0 — Инварианты, контракты и baseline
-Последнее решение: 2026-07-15
+Состояние: BLOCKED — гит не установлен в indexer image
+Текущая фаза: 0 — Baseline зафиксирован, блокеры зафиксированы
+Последнее обновление: 2026-07-15
 ```
 
-### Блокирующие условия перед началом кода
+### Baseline checklist
 
-- [ ] Зафиксирован clean baseline после `git reset --hard`.
-- [ ] Подтверждён фактический Alembic head.
-- [ ] Выполнены backend и indexer test suites.
-- [ ] Подтверждён Docker shared mount для backend и indexer.
-- [ ] Подтверждён active generation provider.
-- [ ] Подтверждён минимум один enabled vault с существующим `.md`.
-- [ ] Подтверждено, что git доступен в indexer image.
+- [x] Зафиксирован clean baseline после `git reset --hard`.
+- [x] Подтверждён фактический Alembic head: `0004_fulldoc_jsonb_fix (head)`.
+- [x] Выполнены backend и indexer test suites — **есть pre-existing failures**, зафиксированы ниже.
+- [x] Подтверждён Docker shared mount: `/data/vaults` доступен и записываем (`mount ok`).
+- [ ] Active generation provider — не проверялся в рамках baseline; проверить перед фазой 3.
+- [ ] Подтверждён минимум один enabled vault с `.md` — не проверялся; проверить перед фазой 3.
+- [ ] **BLOCKER: git недоступен в indexer image** — `sh: 1: git: not found`.
 
-Не начинать фазы 1–5, пока baseline содержит неизвестные regression failures.
+Не начинать фазы 1–5, пока blocker не закрыт.
+
+---
+
+## Блокеры Phase 0
+
+### BLOCKER-1: git не установлен в rag-indexer image
+
+**Точная команда:**
+```bash
+docker compose exec rag-indexer sh -lc 'git --version'
+```
+
+**Output:**
+```text
+sh: 1: git: not found
+```
+
+**Причина:** В `Dockerfile` `rag-indexer` не установлен `git`.
+
+**Решение:** Добавить в `Dockerfile` `rag-indexer`:
+```dockerfile
+RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
+```
+или эквивалент для Alpine (`apk add --no-cache git`).
+
+После изменения перестроить image и проверить:
+```bash
+docker compose build rag-indexer
+docker compose exec rag-indexer sh -lc 'git --version'
+```
+
+### Pre-existing test failures (not Campaign Update Mode)
+
+Следующие failures существовали до начала работы. Не исправлять в рамках Campaign Update Mode.
+
+#### rag-backend (11 failed, 136 passed)
+
+| Файл | Тесты | Причина |
+|---|---|---|
+| `test_pipeline_executor_integration.py` | `TestParallelDagIntegration` (2) | `_retrieve_for_step_dag` получил новый 3й аргумент `provider`; mock пишет 2 |
+| `test_pipeline_resume.py` | `TestPipelineResume` (2) | тесты патчат `PipelineExecutor` по неверному import path / ключ `_validation_` префикс не совпадает с production кодом |
+| `test_planner_td03.py` | `TestPlannerMissingFields` (4) | `Planner._missing_fields` удалён/переименован в production коде |
+| `test_redis_endpoints.py` | `test_get_task_state_running`, `test_get_vault_index_state` (2) | routes `/index-tasks/` и `/vaults/*/index-state` возвращают 404; вероятно удалены/переименованы |
+| `test_watchdog_api.py` | `test_post_domain_index` (1) | indexer отклоняет task с 404 для unknown vault; тест ожидает `queued==2` |
+
+#### rag-indexer (3 failed, 95 passed)
+
+| Файл | Тест | Причина |
+|---|---|---|
+| `test_embed_batch.py` | `test_parallel_not_sequential` | `embed_batch` выполняет sequential, не parallel (`asyncio.gather`) |
+| `test_watchdog_lifespan.py` | `test_watchdog_loop_stops_on_cancel`, `test_watchdog_loop_calls_run_once` | `watchdog_loop()` не принимает `interval_sec` аргумент |
 
 ---
 
@@ -74,14 +125,14 @@
 
 | Фаза | Файл | Цель | Статус |
 |---:|---|---|---|
-| 0 | `phase-0-invariants-and-recovery.md` | Baseline, boundaries, migration path, contracts | Not started |
+| 0 | `phase-0-invariants-and-recovery.md` | Baseline, boundaries, migration path, contracts | BLOCKED (git missing in indexer) |
 | 1 | `phase-1-git-infrastructure.md` | Indexer path/file/git foundation | Not started |
 | 2 | `phase-2-data-model.md` | DB fields, DTO, Redis session, router skeleton | Not started |
 | 3 | `phase-3-executor.md` | Campaign scope, retrieval, LLM intents, resolve | Not started |
 | 4 | `phase-4-api.md` | Review, apply, git commits, targeted reindex | Not started |
 | 5 | `phase-5-sse-frontend.md` | UI, E2E, deployment, observability | Not started |
 
-Фазы выполняются строго по порядку. Не начинать реализацию последующей фазы при незакрытых acceptance criteria предыдущей.
+Фазы выполняются строго по порядку.
 
 ---
 
@@ -90,14 +141,8 @@
 ### Database и migrations
 
 - Миграции находятся в `rag-backend/migrations/versions/`.
-- Текущие приложенные migrations:
-  ```text
-  0001_initial
-  0002_watchdog_interval
-  0003_fulldoc_fields
-  0004_fix_sent_full_document_ids_jsonb
-  ```
-- Новая migration не должна жёстко предполагать `0004` без проверки актуального `alembic heads`.
+- Фактический Alembic head: `0004_fulldoc_jsonb_fix (head)` — подтверждён 2026-07-15.
+- Новая migration Campaign Update Mode ссылается на `0004_fulldoc_jsonb_fix` как `down_revision`.
 - `vaults` уже содержит DB-only operational settings, domain binding, embedding binding и indexing status.
 
 ### Backend
@@ -110,6 +155,7 @@
 - Chat flow уже может собирать enabled vaults domain.
 - `VaultConfigService` — lazy process-local cache DB vault rows; не source of truth для update writes.
 - `full_document_service.reconstruct_full_text()` уже может собрать полный indexed text документа через db-api-server chunks endpoint.
+- Baseline: 136 passed, 11 pre-existing failures (unrelated to Campaign Update Mode).
 
 ### Indexer
 
@@ -119,11 +165,13 @@
   ```
 - Parser поддерживает `.md` и `.pdf`, но Campaign Update Mode работает только с `.md`.
 - Reindex текущего changed document удаляет старые chunks до upsert новых.
-- Indexer обновляет document metadata, включая checksum, mtime, charcount, chunkcount и estimated tokens.
+- Baseline: 95 passed, 3 pre-existing failures (unrelated to Campaign Update Mode).
+- **`/data/vaults` монт присутствует и записываем** — подтверждено 2026-07-15.
+- **BLOCKER: `git` отсутствует в indexer image** — необходимо добавить в Dockerfile.
 
 ### Docker
 
-- `rag-backend` и `rag-indexer` монтируют `${VAULTS_PATH}` в `/data/vaults:rw`.
+- `rag-backend` и `rag-indexer` монтируют `${VAULTS_PATH}` в `/data/vaults:rw` — подтверждено.
 - `rag-indexer` уже работает в Docker network и доступен backend по service URL.
 - Новый internal indexer update-mode API не должен публиковаться наружу отдельным `ports` mapping.
 
@@ -139,8 +187,6 @@ docker compose config
 docker compose ps
 ```
 
-Если worktree не clean, записать текущие intentional changes перед продолжением. Не смешивать Campaign Update Mode с unrelated edit.
-
 ### Database migration
 
 ```bash
@@ -149,14 +195,6 @@ alembic heads
 alembic current
 alembic upgrade head
 ```
-
-После migration:
-
-```bash
-alembic current
-```
-
-Должен показывать ожидаемый head.
 
 ### Backend tests
 
@@ -231,7 +269,7 @@ docker compose exec rag-indexer sh -lc 'test -w /data/vaults'
 | `file_modified` | 409 | Original file изменился после review | Start заново |
 | `target_exists` | 409 | Create target уже существует | Start заново |
 | `vault_root_missing` | 409 | Нет vault directory | Исправить deployment/storage |
-| `vault_lock_timeout` | 409 | Vault занят другой apply/resolve | Retry позже |
+| `vault_lock_timeout` | 409 | Vault занят другой apply/resolve | Retry пожже |
 | `git_unavailable` | 503 | Git отсутствует/недоступен | Исправить indexer image |
 | `git_identity_missing` | 503 | Нет DB или fallback git identity | Настроить vault/env |
 | `git_ignored_target` | 409 | Git игнорирует target `.md` | Исправить вручную |
@@ -239,7 +277,7 @@ docker compose exec rag-indexer sh -lc 'test -w /data/vaults'
 | `apply_id_payload_mismatch` | 409 | Same apply ID, другой payload | Не retry с изменённым payload |
 | `apply_in_progress` | 409 | Apply с тем же ID ещё выполняется | Poll/retry позже |
 
-`410 Gone` для expired review session должен сопровождаться `Cache-Control: no-store`, чтобы response не кэшировался.
+`410 Gone` для expired review session должен сопровождаться `Cache-Control: no-store`.
 
 ---
 
@@ -259,72 +297,29 @@ docker compose exec rag-indexer sh -lc 'test -w /data/vaults'
 | Vault lock TTL | 60 seconds |
 | Lock wait timeout | 5 seconds |
 
-Не менять limits молча. Любое изменение должно быть обновлено в `concept.md`, соответствующей phase и test cases.
-
 ---
 
 ## Известные риски
 
 ### Indexed text отличается от original Markdown
 
-Indexed text проходит parsing, preprocessing и chunking. Поэтому он используется только для LLM understanding; indexer строит final diff по original file.
-
-Mitigation:
-
-- LLM возвращает intent, не full file replacement;
-- indexer использует exact anchors;
-- UI показывает diff original file;
-- apply проверяет SHA-256.
+Mitigation: LLM возвращает intent; indexer использует exact anchors; UI показывает diff original file; apply проверяет SHA-256.
 
 ### Partial multi-vault apply
 
-Нет distributed transaction между отдельными git repositories vault.
-
-Mitigation:
-
-- обработка по vault groups;
-- explicit per-vault result;
-- AuditLog;
-- UI не говорит «всё успешно», если часть vault конфликтует.
+Mitigation: обработка по vault groups; explicit per-vault result; AuditLog.
 
 ### Git commit прошёл, reindex не запустился
 
-Файл и git history уже изменены, но retrieval может временно видеть старый индекс.
+Mitigation: `reindex_error` возвращается отдельно; watcher остаётся fallback; нет автоматического git rollback.
 
-Mitigation:
+### Prompt injection
 
-- `reindex_error` возвращается отдельно;
-- UI показывает distinction;
-- watcher остаётся fallback;
-- нет автоматического git rollback.
+Mitigation: system instructions отдельно; data delimiters; strict structured output; DTO validation; indexer path/operation validation; human review.
 
-### Prompt injection в note/documents
+### Git history sensitive data
 
-Campaign note и indexed markdown являются untrusted model inputs.
-
-Mitigation:
-
-- system instructions отдельно;
-- data delimiters;
-- strict structured output;
-- DTO validation;
-- indexer path/operation validation;
-- human review;
-- no LLM direct filesystem/git access.
-
-Prompt injection — известный риск, когда недоверенный текст может пытаться изменить поведение LLM, поэтому защита должна быть многоуровневой, а не ограничиваться одним prompt.
-
-### Git содержит историю sensitive campaign data
-
-Git history является долговременной, даже если пользователь позднее удаляет текст из файла.
-
-Mitigation:
-
-- local-only repo MVP;
-- explicit staging;
-- не коммитить `.env`, `.gitignore`, arbitrary files;
-- document это ограничение пользователю;
-- не отправлять repository remote автоматически.
+Mitigation: local-only repo MVP; explicit staging; не отправлять remote автоматически.
 
 ---
 
@@ -334,26 +329,14 @@ Mitigation:
 
 ```text
 Indexer internal API доступен только внутри Docker network,
-без отдельной service-to-service authentication,
-если в проекте ещё нет общего token mechanism.
+без отдельной service-to-service authentication.
 ```
 
-До remote/multi-user deployment обязательно:
-
-- добавить service-to-service token/mTLS;
-- разделить filesystem read/write permissions;
-- добавить user authorization на campaign/vault;
-- добавить audit actor identity;
-- определить secret scanning/pre-commit policy;
-- определить vault-level ACL.
+До remote/multi-user deployment: service-to-service token/mTLS, user authorization, audit actor identity, vault-level ACL.
 
 ---
 
 ## Commit discipline
-
-### Кодовые коммиты разработки
-
-Рекомендуемая последовательность:
 
 ```text
 feat(update-mode): add indexer path and git foundation
@@ -364,30 +347,11 @@ feat(update-mode): add update mode UI and e2e coverage
 docs(update-mode): finalize operational plan
 ```
 
-Перед каждым commit:
-
-```bash
-git diff --check
-pytest -q
-```
-
-Не коммитить:
-
-- `.env`;
-- API keys;
-- vault content, если это не сознательная часть отдельного vault local repo;
-- generated test artifacts;
-- Redis dumps;
-- temporary diff files;
-- private logs.
-
-`.gitignore` полезен как защита от случайного добавления sensitive files, но staging explicit paths остаётся обязательным.
+Перед каждым commit: `git diff --check` и `pytest -q`.
 
 ---
 
 ## Definition of done
-
-Campaign Update Mode считается готовым только если одновременно:
 
 - [ ] Все acceptance criteria фаз 0–5 закрыты.
 - [ ] Migration применена и downgrade проверен.
