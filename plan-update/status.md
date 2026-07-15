@@ -19,27 +19,24 @@
 ## Текущий статус
 
 ```text
-Состояние: Фаза 0 завершена, готовны к фазе 1
-Текущая фаза: 1 — Indexer filesystem/git foundation
+Состояние: Фаза 1 завершена, готовны к фазе 2
+Текущая фаза: 2 — DB fields, DTO, Redis session, router skeleton
 Последнее обновление: 2026-07-15
 ```
 
 ### Baseline checklist
 
-- [x] Зафиксирован clean baseline после `git reset --hard`.
-- [x] Подтверждён фактический Alembic head: `0004_fulldoc_jsonb_fix (head)`.
-- [x] Backend tests: 136 passed, 11 pre-existing failures (unrelated — зафиксированы ниже).
-- [x] Indexer tests: 95 passed, 3 pre-existing failures (unrelated — зафиксированы ниже).
-- [x] Docker shared mount `/data/vaults` — `mount ok`.
-- [x] `git` доступен в indexer image: `git version 2.47.3`.
-- [ ] Active generation provider — проверить перед фазой 3.
-- [ ] Минимум один enabled vault с `.md` — проверить перед фазой 3.
+- [x] Alembic head: `0004_fulldoc_jsonb_fix (head)` — подтверждён 2026-07-15.
+- [x] Backend tests: 136 passed, 11 pre-existing failures (unrelated).
+- [x] Indexer tests: 95 passed + 39 new — **134 passed**, 3 pre-existing failures.
+- [x] `/data/vaults` mount: `mount ok`.
+- [x] `git version 2.47.3` в indexer image.
 
 ---
 
 ## Pre-existing test failures (not Campaign Update Mode)
 
-Не исправлять в рамках Campaign Update Mode. Зафиксированы для отслеживания регрессий.
+Не исправлять в рамках Campaign Update Mode.
 
 ### rag-backend (11 failed, 136 passed)
 
@@ -48,15 +45,15 @@
 | `test_pipeline_executor_integration.py` | `TestParallelDagIntegration` (2) | `_retrieve_for_step_dag` получил новый 3й аргумент `provider`; mock пишет 2 |
 | `test_pipeline_resume.py` | `TestPipelineResume` (2) | patch по неверному import path / ключ `_validation_` не совпадает с production |
 | `test_planner_td03.py` | `TestPlannerMissingFields` (4) | `Planner._missing_fields` удалён/переименован в production |
-| `test_redis_endpoints.py` | `test_get_task_state_running`, `test_get_vault_index_state` (2) | роуты вернули 404; вероятно удалены/переименованы |
-| `test_watchdog_api.py` | `test_post_domain_index` (1) | indexer отклоняет task с 404 для unknown vault |
+| `test_redis_endpoints.py` | (2) | роуты вернули 404 |
+| `test_watchdog_api.py` | (1) | indexer отклоняет task с 404 для unknown vault |
 
-### rag-indexer (3 failed, 95 passed)
+### rag-indexer (3 failed)
 
 | Файл | Тест | Причина |
 |---|---|---|
-| `test_embed_batch.py` | `test_parallel_not_sequential` | `embed_batch` работает sequential, не `asyncio.gather` |
-| `test_watchdog_lifespan.py` | `test_watchdog_loop_stops_on_cancel`, `test_watchdog_loop_calls_run_once` | `watchdog_loop()` не принимает `interval_sec` |
+| `test_embed_batch.py` | `test_parallel_not_sequential` | `embed_batch` sequential, не `asyncio.gather` |
+| `test_watchdog_lifespan.py` | (2) | `watchdog_loop()` не принимает `interval_sec` |
 
 ---
 
@@ -97,8 +94,8 @@
 | Фаза | Файл | Цель | Статус |
 |---:|---|---|---|
 | 0 | `phase-0-invariants-and-recovery.md` | Baseline, boundaries, migration path, contracts | **Done** |
-| 1 | `phase-1-git-infrastructure.md` | Indexer path/file/git foundation | In progress |
-| 2 | `phase-2-data-model.md` | DB fields, DTO, Redis session, router skeleton | Not started |
+| 1 | `phase-1-git-infrastructure.md` | Indexer path/file/git foundation | **Done** |
+| 2 | `phase-2-data-model.md` | DB fields, DTO, Redis session, router skeleton | In progress |
 | 3 | `phase-3-executor.md` | Campaign scope, retrieval, LLM intents, resolve | Not started |
 | 4 | `phase-4-api.md` | Review, apply, git commits, targeted reindex | Not started |
 | 5 | `phase-5-sse-frontend.md` | UI, E2E, deployment, observability | Not started |
@@ -109,40 +106,34 @@
 
 ### Database и migrations
 
-- Миграции находятся в `rag-backend/migrations/versions/`.
-- Фактический Alembic head: `0004_fulldoc_jsonb_fix (head)` — подтверждён 2026-07-15.
-- Новая migration Campaign Update Mode ссылается на `0004_fulldoc_jsonb_fix` как `down_revision`.
-- `vaults` уже содержит DB-only operational settings, domain binding, embedding binding и indexing status.
+- Миграции: `rag-backend/migrations/versions/`.
+- Фактический head: `0004_fulldoc_jsonb_fix` — подтверждён 2026-07-15.
+- Новая migration ссылается на `0004_fulldoc_jsonb_fix` как `down_revision`.
 
 ### Backend
 
-- Session dependency — `get_db()` в `rag-backend/app/db/session.py`.
-- Active generation provider берётся через `settings_service.get_active_provider()`.
-- Chat flow уже может собирать enabled vaults domain.
-- `VaultConfigService` — lazy process-local cache DB vault rows; не source of truth для update writes.
-- `full_document_service.reconstruct_full_text()` уже может собрать полный indexed text документа.
+- Session dependency: `get_db()` в `rag-backend/app/db/session.py`.
+- Active provider: `settings_service.get_active_provider()`.
+- `full_document_service.reconstruct_full_text()` собирает indexed text документа.
 - Baseline: 136 passed, 11 pre-existing failures.
 
 ### Indexer
 
 - Vault path: `/data/vaults/{vault_id}`.
-- Parser поддерживает `.md` и `.pdf`; Campaign Update Mode работает только с `.md`.
-- Reindex текущего changed document удаляет старые chunks до upsert новых.
-- `/data/vaults` mount: `mount ok` — подтверждено 2026-07-15.
-- `git version 2.47.3` — подтверждено 2026-07-15.
-- Baseline: 95 passed, 3 pre-existing failures.
+- `/data/vaults` mount: `mount ok` — подтверждено.
+- `git version 2.47.3` — подтверждено.
+- Baseline: 134 passed (95 + 39 new), 3 pre-existing failures.
+- `app/update_mode/fs_git.py` — path validation, file I/O, git primitives: **39/39 tests pass**.
 
 ### Docker
 
-- `rag-backend` и `rag-indexer` монтируют `${VAULTS_PATH}` в `/data/vaults:rw` — подтверждено.
+- `rag-backend` и `rag-indexer` монтируют `${VAULTS_PATH}` в `/data/vaults:rw`.
 - `rag-indexer` доступен backend по service URL внутри Docker network.
-- Новый internal indexer update-mode API не публикуется наружу отдельным `ports` mapping.
+- Internal update-mode API не публикуется наружу.
 
 ---
 
 ## Обязательные runtime команды
-
-### До каждой фазы
 
 ```bash
 git status --short
@@ -150,28 +141,11 @@ docker compose config
 docker compose ps
 ```
 
-### Database migration
-
 ```bash
-cd rag-backend
-alembic heads
-alembic current
-alembic upgrade head
-```
-
-### Backend tests
-
-```bash
+cd rag-backend && alembic heads && alembic current
 cd rag-backend && pytest -q
-```
-
-### Indexer tests
-
-```bash
 cd rag-indexer && pytest -q
 ```
-
-### Git capability внутри indexer
 
 ```bash
 docker compose exec rag-indexer sh -lc 'git --version'
@@ -251,52 +225,25 @@ docker compose exec rag-indexer sh -lc 'test -d /data/vaults && test -w /data/va
 ## Известные риски
 
 ### Indexed text отличается от original Markdown
-
-Mitigation: LLM возвращает intent; indexer использует exact anchors; UI показывает diff original file; apply проверяет SHA-256.
+Mitigation: LLM возвращает intent; indexer использует exact anchors; apply проверяет SHA-256.
 
 ### Partial multi-vault apply
-
 Mitigation: обработка по vault groups; explicit per-vault result; AuditLog.
 
 ### Git commit прошёл, reindex не запустился
-
-Mitigation: `reindex_error` возвращается отдельно; watcher остаётся fallback; нет автоматического git rollback.
+Mitigation: `reindex_error` возвращается отдельно; watcher остаётся fallback.
 
 ### Prompt injection
-
-Mitigation: system instructions отдельно; data delimiters; strict structured output; DTO validation; indexer path/operation validation; human review.
+Mitigation: system instructions отдельно; strict structured output; DTO validation; indexer path validation; human review.
 
 ### Git history sensitive data
-
-Mitigation: local-only repo MVP; explicit staging; не отправлять remote автоматически.
+Mitigation: local-only repo; explicit staging; не отправлять remote автоматически.
 
 ---
 
 ## Security debt
 
-Допустимо в single-user local MVP:
-
-```text
-Indexer internal API доступен только внутри Docker network,
-без отдельной service-to-service authentication.
-```
-
-До remote/multi-user deployment: service-to-service token/mTLS, user authorization, audit actor identity, vault-level ACL.
-
----
-
-## Commit discipline
-
-```text
-feat(update-mode): add indexer path and git foundation
-feat(update-mode): add contracts and review session store
-feat(update-mode): add retrieval and intent generation
-feat(update-mode): add safe apply and targeted reindex
-feat(update-mode): add update mode UI and e2e coverage
-docs(update-mode): finalize operational plan
-```
-
-Перед каждым commit: `git diff --check` и `pytest -q`.
+Допустимо в single-user local MVP: indexer internal API доступен только внутри Docker network без service-to-service auth.
 
 ---
 
