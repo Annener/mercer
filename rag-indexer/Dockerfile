@@ -24,6 +24,7 @@ ENV PYTHONUNBUFFERED=1
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         curl \
+        git \
         libmagic1 \
         libgl1 \
         libglib2.0-0 \
