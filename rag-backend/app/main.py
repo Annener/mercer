@@ -17,6 +17,7 @@ from app.api.fulldoc_confirm import router as fulldoc_confirm_router
 from app.api.indexer_state import router as indexer_state_router
 from app.api.pipeline_resume import router as pipeline_resume_router
 from app.api.settings import router as settings_router
+from app.api.update_mode import router as update_mode_router
 from app.api.watchdog_settings import router as watchdog_router
 from app.db.migrations import run_migrations
 from app.db.session import SessionLocal, dispose_engine
@@ -76,6 +77,8 @@ app.include_router(db_management_router)
 # Новые endpoint'ы глобального статуса индексации: /api/v1/indexer/tasks
 app.include_router(indexer_state_router, prefix="/api/v1")
 app.include_router(watchdog_router)
+# Phase 2: Campaign Update Mode API
+app.include_router(update_mode_router)
 
 # === Статика ===
 STATIC_DIR = Path(__file__).parent / "static"
