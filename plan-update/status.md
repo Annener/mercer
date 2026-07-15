@@ -12,7 +12,7 @@
 - какие риски остаются;
 - что должна сделать следующая модель или разработчик.
 
-Не использовать этот файл как changelog пользовательских релизов. Статус implementation и пользовательский changelog решают разные задачи. [web:189][web:195]
+Не использовать этот файл как changelog пользовательских релизов. Статус implementation и пользовательский changelog решают разные задачи.
 
 ---
 
@@ -75,11 +75,11 @@
 | Фаза | Файл | Цель | Статус |
 |---:|---|---|---|
 | 0 | `phase-0-invariants-and-recovery.md` | Baseline, boundaries, migration path, contracts | Not started |
-| 1 | `phase-1-git-foundation.md` | Indexer path/file/git foundation | Not started |
-| 2 | `phase-2-data-model-and-contracts.md` | DB fields, DTO, Redis session, router skeleton | Not started |
-| 3 | `phase-3-context-and-intent-generation.md` | Campaign scope, retrieval, LLM intents, resolve | Not started |
-| 4 | `phase-4-review-apply-and-reindex.md` | Review, apply, git commits, targeted reindex | Not started |
-| 5 | `phase-5-ui-e2e-and-operational-readiness.md` | UI, E2E, deployment, observability | Not started |
+| 1 | `phase-1-git-infrastructure.md` | Indexer path/file/git foundation | Not started |
+| 2 | `phase-2-data-model.md` | DB fields, DTO, Redis session, router skeleton | Not started |
+| 3 | `phase-3-executor.md` | Campaign scope, retrieval, LLM intents, resolve | Not started |
+| 4 | `phase-4-api.md` | Review, apply, git commits, targeted reindex | Not started |
+| 5 | `phase-5-sse-frontend.md` | UI, E2E, deployment, observability | Not started |
 
 Фазы выполняются строго по порядку. Не начинать реализацию последующей фазы при незакрытых acceptance criteria предыдущей.
 
@@ -239,7 +239,7 @@ docker compose exec rag-indexer sh -lc 'test -w /data/vaults'
 | `apply_id_payload_mismatch` | 409 | Same apply ID, другой payload | Не retry с изменённым payload |
 | `apply_in_progress` | 409 | Apply с тем же ID ещё выполняется | Poll/retry позже |
 
-`410 Gone` для expired review session должен сопровождаться `Cache-Control: no-store`, чтобы response не кэшировался. [web:78][web:85]
+`410 Gone` для expired review session должен сопровождаться `Cache-Control: no-store`, чтобы response не кэшировался.
 
 ---
 
@@ -312,7 +312,7 @@ Mitigation:
 - human review;
 - no LLM direct filesystem/git access.
 
-Prompt injection — известный риск, когда недоверенный текст может пытаться изменить поведение LLM, поэтому защита должна быть многоуровневой, а не ограничиваться одним prompt. [web:159][web:160]
+Prompt injection — известный риск, когда недоверенный текст может пытаться изменить поведение LLM, поэтому защита должна быть многоуровневой, а не ограничиваться одним prompt.
 
 ### Git содержит историю sensitive campaign data
 
@@ -381,7 +381,7 @@ pytest -q
 - temporary diff files;
 - private logs.
 
-`.gitignore` полезен как защита от случайного добавления sensitive files, но staging explicit paths остаётся обязательным. [web:69][web:73][web:76]
+`.gitignore` полезен как защита от случайного добавления sensitive files, но staging explicit paths остаётся обязательным.
 
 ---
 
