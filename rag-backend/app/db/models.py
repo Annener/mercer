@@ -157,6 +157,9 @@ class Vault(Base):
     semantic_threshold: Mapped[float] = mapped_column(Float, nullable=False, default=0.3, server_default="0.3")
     binding_status: Mapped[str] = mapped_column(String(32), nullable=False, default="unbound", server_default="unbound")
     chunk_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    # Campaign Update Mode: per-vault git author identity override (nullable)
+    git_author_name: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    git_author_email: Mapped[str | None] = mapped_column(String(320), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
