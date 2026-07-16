@@ -13,6 +13,7 @@ from fastapi import FastAPI, HTTPException, Request
 
 from app.db_client import IndexerDBClient
 from app.indexer_service import IndexerService
+from app.update_mode.router import router as update_mode_router
 from logging_config import setup_logging
 from parser.scanning.vault_scanner import scan_vault
 from parser.state.redis_state_manager import RedisStateManager
@@ -130,6 +131,9 @@ async def _rebuild_one_vault(
 
 
 app = FastAPI(title="RAG Indexer", lifespan=lifespan)
+
+# Internal update-mode endpoints (resolve + apply)
+app.include_router(update_mode_router)
 
 
 @app.get("/health")
