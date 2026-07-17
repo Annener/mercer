@@ -18,6 +18,7 @@ Error mapping
   Per-intent / per-vault failures → 200 with RESOLUTION_FAILED / FAILED status
   Invalid request body            → 422 (FastAPI default)
   app.state missing               → 503
+  apply_id in-progress on another worker → 409
 """
 from __future__ import annotations
 
@@ -27,7 +28,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from app.db_client import IndexerDBClient
 from app.indexer_service import IndexerService
-from app.update_mode.applier import apply_changes
+from app.update_mode.applier import ApplyInProgressError, apply_changes
 from app.update_mode.resolver import resolve_changes
 from shared_contracts.models import (
     UpdateModeApplyRequest,
@@ -56,6 +57,13 @@ def _indexer_service(request: Request) -> IndexerService:
     if not isinstance(service, IndexerService):
         raise HTTPException(status_code=503, detail="Indexer service not initialised")
     return service
+
+
+def _redis(request: Request):
+    redis = getattr(request.app.state, "redis_client", None)
+    if redis is None:
+        raise HTTPException(status_code=503, detail="Redis not initialised")
+    return redis
 
 
 @router.post("/resolve", response_model=UpdateModeResolveResponse)
@@ -87,17 +95,28 @@ async def apply(
 
     Per-vault failures are captured in UpdateModeVaultApplyResult —
     they never cause 500.
+
+    Returns 409 if the same apply_id is currently being processed by another
+    worker instance (distributed lock contention).
     """
     db = _db_client(request)
     indexer_service = _indexer_service(request)
+    redis = _redis(request)
     log.info(
         "update-mode apply chat_id=%s apply_id=%s changes=%d",
         body.chat_id,
         body.apply_id,
         len(body.accepted_changes),
     )
-    return await apply_changes(
-        request=body,
-        db=db,
-        indexer_service=indexer_service,
-    )
+    try:
+        return await apply_changes(
+            request=body,
+            db=db,
+            indexer_service=indexer_service,
+            redis=redis,
+        )
+    except ApplyInProgressError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=f"apply_in_progress: {exc}",
+        ) from exc
