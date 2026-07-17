@@ -422,6 +422,7 @@ class ChatManager {
         this.worldName = document.getElementById('world-name');
         this.pipelineSelect = document.getElementById('pipeline-select');
         this.lockPipelineBtn = document.getElementById('lock-pipeline-btn');
+        this.updateModeBtn = document.getElementById('update-mode-btn');
         this.processingStatusEl = document.getElementById('processing-status');
         this.fulldocCheckbox = document.getElementById('fulldoc-checkbox');
         this.currentChat = null;
@@ -529,6 +530,16 @@ class ChatManager {
                 // Откатываем чекбокс при ошибке
                 e.target.checked = !enabled;
             }
+        });
+
+        // Update Mode button
+        this.updateModeBtn?.addEventListener('click', () => {
+            if (!this.currentChatId) return;
+            // Если панель уже открыта — не открывать вторую
+            if (this.messagesContainer.querySelector('.um-panel')) return;
+            const panel = createUpdateModePanel(this.currentChatId);
+            this.messagesContainer.appendChild(panel);
+            this.scrollToBottom();
         });
     }
 
@@ -782,6 +793,12 @@ class ChatManager {
             this.fulldocCheckbox.checked = Boolean(chat.full_document_mode_enabled);
         }
 
+        // Update Mode button: показываем только для чатов с кампанией
+        if (this.updateModeBtn) {
+            const hasCampaign = Boolean(chat.campaign_id);
+            this.updateModeBtn.classList.toggle('hidden', !hasCampaign);
+        }
+
         if (!this.pipelineSelect) return;
         const pipelines = await chatAPI.getPipelines(chat.domain_id, chat.campaign_id || null);
         this.pipelineSelect.innerHTML = '<option value="">Авто</option>';
@@ -948,7 +965,9 @@ class ChatManager {
     }
 
     clearMessages() {
-        this.messagesContainer.querySelectorAll('.message, .typing-indicator, .pipeline-card, .pipeline-status-line, .fulldoc-panel').forEach(msg => msg.remove());
+        this.messagesContainer.querySelectorAll(
+            '.message, .typing-indicator, .pipeline-card, .pipeline-status-line, .fulldoc-panel, .um-panel'
+        ).forEach(msg => msg.remove());
     }
 
     scrollToBottom() {
@@ -967,6 +986,8 @@ class ChatManager {
         this.chatTitle.textContent = 'Выберите чат или создайте новый';
         // Сбрасываем тоглер при сбросе
         if (this.fulldocCheckbox) this.fulldocCheckbox.checked = false;
+        // Скрываем кнопку Update Mode
+        if (this.updateModeBtn) this.updateModeBtn.classList.add('hidden');
     }
 }
 
