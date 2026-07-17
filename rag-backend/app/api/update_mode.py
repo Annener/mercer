@@ -9,13 +9,23 @@ Endpoints (all under /api/chats/{chat_id}/update-mode):
   DELETE /session  — cancel session
 
 chat_id is the primary key for all operations.
-campaign_id is a query param in this skeleton; Phase 3 will resolve it
-from chat.campaign_id via DB (UpdateModeExecutor).
 
-Error mapping:
-  UpdateModeError subclasses → HTTP 409 / 404 / 422 where appropriate
-  IndexerUnavailableError    → HTTP 502
-  IndexerConflictError       → HTTP 409
+Error mapping (POST /start):
+  UpdateModeSessionAlreadyActiveError     → 409
+  UpdateModeChatNotFoundError             → 404
+  UpdateModeCampaignRequiredError         → 422
+  UpdateModeCampaignNotFoundError         → 404
+  UpdateModeCampaignDomainMismatchError   → 409
+  UpdateModeCampaignTagsRequiredError     → 422
+  UpdateModeNoEnabledVaultsError          → 422
+  UpdateModeNoIndexedMarkdownError        → 422
+  UpdateModeNoRelevantContextError        → 422
+  UpdateModeNoUsableContextError          → 422
+  UpdateModeGenerationProviderUnavailableError → 503
+  UpdateModeInvalidGenerationOutputError  → 422
+  UpdateModeIndexerUnavailableError       → 503
+  UpdateModeIndexerInvalidResponseError   → 502
+  UpdateModeReviewStoreUnavailableError   → 503
 """
 from __future__ import annotations
 
@@ -23,22 +33,37 @@ import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Campaign, Document, Vault
 from app.db.session import get_db
 from app.services.indexer_client import (
     IndexerConflictError,
     IndexerUnavailableError,
     indexer_client,
 )
+from app.services.update_mode_executor import (
+    UpdateModeExecutor,
+    UpdateModeCampaignDomainMismatchError,
+    UpdateModeCampaignNotFoundError,
+    UpdateModeCampaignRequiredError,
+    UpdateModeCampaignTagsRequiredError,
+    UpdateModeChatNotFoundError,
+    UpdateModeGenerationProviderUnavailableError,
+    UpdateModeIndexerInvalidResponseError,
+    UpdateModeIndexerUnavailableError,
+    UpdateModeInvalidGenerationOutputError,
+    UpdateModeNoEnabledVaultsError,
+    UpdateModeNoIndexedMarkdownError,
+    UpdateModeNoRelevantContextError,
+    UpdateModeNoUsableContextError,
+    UpdateModeReviewStoreUnavailableError,
+    UpdateModeSessionAlreadyActiveError,
+)
 from app.services.update_mode_store import (
     ApplyConflictError,
     CannotAcceptFailedChangeError,
     ReviewConflictError,
-    SessionAlreadyActiveError,
     SessionExpiredError,
     UnknownChangeIdError,
     update_mode_store,
@@ -53,8 +78,6 @@ from shared_contracts.models import (
     UpdateModeApplyChange,
     UpdateModeApplyRequest,
     UpdateModeChangeStatus,
-    UpdateModeIntent,
-    UpdateModeOperation,
     UpdateModeResolveRequest,
     UpdateModeReviewRequest,
     UpdateModeSession,
@@ -68,59 +91,10 @@ router = APIRouter(
     tags=["update-mode"],
 )
 
-_SESSION_HOURS = 3
-
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-async def _get_campaign_context(
-    db: AsyncSession,
-    campaign_id: str,
-) -> tuple[str, list[str], str, list[str]]:
-    """Return (domain_id, vault_ids, default_vault_id, candidate_doc_ids).
-
-    candidate_doc_ids: up to 15 recently indexed document ids from all vaults
-    belonging to the campaign domain — sent to indexer for resolve lookup.
-
-    Raises 404 if campaign not found.
-    Raises 422 if domain has no enabled vaults.
-    """
-    result = await db.execute(
-        select(Campaign).where(Campaign.id == campaign_id)
-    )
-    campaign = result.scalar_one_or_none()
-    if campaign is None:
-        raise HTTPException(status_code=404, detail="Campaign not found")
-
-    domain_id: str = campaign.domain_id
-
-    vault_result = await db.execute(
-        select(Vault)
-        .where(Vault.domain_id == domain_id, Vault.enabled.is_(True))
-        .order_by(Vault.vault_id)
-    )
-    vaults = vault_result.scalars().all()
-    if not vaults:
-        raise HTTPException(status_code=422, detail="Domain has no enabled vaults")
-
-    vault_ids = [v.vault_id for v in vaults]
-    default_vault_id = vault_ids[0]
-
-    doc_result = await db.execute(
-        select(Document.id)
-        .where(
-            Document.vault_id.in_(vault_ids),
-            Document.status == "indexed",
-        )
-        .order_by(Document.indexed_at.desc())
-        .limit(15)
-    )
-    candidate_doc_ids = [str(row) for row in doc_result.scalars().all()]
-
-    return domain_id, vault_ids, default_vault_id, candidate_doc_ids
 
 
 def _session_to_response(session: UpdateModeSession) -> UpdateModeSessionResponse:
@@ -145,74 +119,59 @@ async def start_update_mode(
     chat_id: str,
     body: StartUpdateModeRequest,
     request: Request,
-    campaign_id: str = Query(..., description="Campaign ID (Phase 3: resolved from chat.campaign_id)"),
     db: AsyncSession = Depends(get_db),
 ) -> StartUpdateModeResponse:
-    """Parse note, resolve changes via rag-indexer, store session in Redis.
+    """Validate campaign context, retrieve docs, generate intents, resolve via indexer,
+    store Redis review session.
 
-    campaign_id is a temporary query param for the Phase 2 skeleton.
-    Phase 3 (UpdateModeExecutor) will resolve it from chat.campaign_id via DB
-    and remove this query param.
-
-    Calling /start while a session already exists for this chat_id returns 409.
+    campaign_id is resolved from chat.campaign_id via DB — no query param needed.
     """
     redis = request.app.state.redis
 
-    domain_id, vault_ids, default_vault_id, candidate_doc_ids = (
-        await _get_campaign_context(db, campaign_id)
-    )
-
-    stub_intent = UpdateModeIntent(
-        change_id="stub-0",
-        action=UpdateModeAction.CREATE,
-        description=body.note[:2000],
-        operation=UpdateModeOperation.CREATE_FILE,
-        suggested_filename="_note.md",
-        content=body.note,
-    )
-    resolve_req = UpdateModeResolveRequest(
-        chat_id=chat_id,
-        campaign_id=campaign_id,
-        domain_id=domain_id,
-        vault_ids=vault_ids,
-        intents=[stub_intent],
-        default_vault_id=default_vault_id,
-        candidate_document_ids=candidate_doc_ids,
+    executor = UpdateModeExecutor(
+        db=db,
+        store=update_mode_store,
+        indexer_client=indexer_client,
     )
 
     try:
-        resolve_resp = await indexer_client.resolve(resolve_req)
-    except IndexerUnavailableError as exc:
-        logger.error("indexer resolve failed: %s", exc.detail)
-        raise HTTPException(status_code=502, detail=f"Indexer unavailable: {exc.detail}")
-
-    now = datetime.now(timezone.utc)
-    expires_at = now + timedelta(hours=_SESSION_HOURS)
-    session = UpdateModeSession(
-        session_id=str(uuid.uuid4()),
-        chat_id=chat_id,
-        campaign_id=campaign_id,
-        domain_id=domain_id,
-        vault_ids=vault_ids,
-        default_vault_id=default_vault_id,
-        candidate_document_ids=candidate_doc_ids,
-        note=body.note,
-        warnings=[],
-        changes=resolve_resp.changes,
-        created_at=now,
-        expires_at=expires_at,
-    )
-
-    try:
-        await update_mode_store.create(redis, session)
-    except SessionAlreadyActiveError as exc:
-        raise HTTPException(status_code=409, detail=str(exc))
+        session = await executor.start(chat_id=chat_id, redis=redis, note=body.note)
+    except UpdateModeSessionAlreadyActiveError as exc:
+        raise HTTPException(status_code=409, detail=exc.code)
+    except UpdateModeChatNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=exc.code)
+    except UpdateModeCampaignNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=exc.code)
+    except UpdateModeCampaignRequiredError as exc:
+        raise HTTPException(status_code=422, detail=exc.code)
+    except UpdateModeCampaignDomainMismatchError as exc:
+        raise HTTPException(status_code=409, detail=exc.code)
+    except UpdateModeCampaignTagsRequiredError as exc:
+        raise HTTPException(status_code=422, detail=exc.code)
+    except UpdateModeNoEnabledVaultsError as exc:
+        raise HTTPException(status_code=422, detail=exc.code)
+    except UpdateModeNoIndexedMarkdownError as exc:
+        raise HTTPException(status_code=422, detail=exc.code)
+    except UpdateModeNoRelevantContextError as exc:
+        raise HTTPException(status_code=422, detail=exc.code)
+    except UpdateModeNoUsableContextError as exc:
+        raise HTTPException(status_code=422, detail=exc.code)
+    except UpdateModeInvalidGenerationOutputError as exc:
+        raise HTTPException(status_code=422, detail=exc.code)
+    except UpdateModeGenerationProviderUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=exc.code)
+    except UpdateModeIndexerUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=exc.code)
+    except UpdateModeIndexerInvalidResponseError as exc:
+        raise HTTPException(status_code=502, detail=exc.code)
+    except UpdateModeReviewStoreUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=exc.code)
 
     return StartUpdateModeResponse(
-        chat_id=chat_id,
-        expires_at=expires_at,
-        changes=resolve_resp.changes,
-        warnings=[],
+        chat_id=session.chat_id,
+        expires_at=session.expires_at,
+        changes=session.changes,
+        warnings=session.warnings,
     )
 
 
@@ -231,10 +190,6 @@ async def get_update_mode_session(
 
     session = await update_mode_store.get(redis, chat_id)
     if session is None:
-        # Distinguish expired (key existed, TTL elapsed) from never-created.
-        # Redis DEL on TTL expiry is indistinguishable from never-set at this
-        # level, so we return 410 Gone for any missing key on GET /session —
-        # the client must call POST /start to create a new session.
         response.headers["Cache-Control"] = "no-store"
         raise HTTPException(status_code=410, detail="session_expired")
 

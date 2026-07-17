@@ -960,6 +960,48 @@ class UpdateModeIntentBatch(BaseModel):
         return self
 
 
+# --- Phase 3: executor-level DTOs ---
+
+class IndexedContextDocument(BaseModel):
+    """In-memory DTO для документа, включённого в LLM-контекст.
+
+    Используется только внутри UpdateModeExecutor — не персистируется.
+    """
+    document_id: str
+    vault_id: str
+    source_path: str
+    title: str | None
+    text: str
+    estimated_tokens: int
+
+
+class UpdateModeGenerationResult(BaseModel):
+    """Outer wrapper результата генерации LLM.
+
+    Отличается от UpdateModeIntentBatch тем, что допускает пустой список intents
+    (когда note не содержит actionable изменений). В этом случае обязателен
+    no_change_reason.
+
+    Инварианты:
+    - empty intents → non-empty no_change_reason
+    - non-empty intents → no_change_reason must be None
+    """
+    intents: list[UpdateModeIntent] = Field(default_factory=list, max_length=10)
+    no_change_reason: str | None = Field(default=None, max_length=1_000)
+
+    @model_validator(mode="after")
+    def _validate_no_change_invariant(self) -> "UpdateModeGenerationResult":
+        if not self.intents and not self.no_change_reason:
+            raise ValueError(
+                "no_change_reason is required when intents list is empty"
+            )
+        if self.intents and self.no_change_reason is not None:
+            raise ValueError(
+                "no_change_reason must be None when intents are present"
+            )
+        return self
+
+
 # --- Internal indexer API contracts ---
 
 class UpdateModeResolveRequest(BaseModel):
