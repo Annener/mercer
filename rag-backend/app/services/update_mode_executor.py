@@ -7,7 +7,7 @@ Orchestrates the full /start pipeline:
   4. Rerank hits (same reranker as chat flow)
   5. Reconstruct full indexed text per document (16k token limit, 64k total)
   6. Build LLM prompt → generate → validate UpdateModeGenerationResult
-  7. Domain validation of intents (document_id membership, duplicates, limits)
+  7. Domain validation of intents (document_id membership, vault membership, duplicates, limits)
   8. UpdateModeResolveRequest → indexer_client.resolve()
   9. UpdateModeSession → update_mode_store.create()
 
@@ -409,22 +409,48 @@ async def _generate_intents(
 def _validate_intents_domain(
     intents: list[UpdateModeIntent],
     usable_doc_ids: set[str],
-    vault_ids: set[str],
+    vault_ids_set: set[str],
+    doc_vault_map: dict[str, str],
 ) -> None:
-    """Validate intents against campaign context. Raises UpdateModeInvalidGenerationOutputError."""
+    """Validate intents against campaign context.
+
+    Checks:
+    - document_id and parent_document_id are within usable_doc_ids
+    - the vault that owns each referenced document is within vault_ids_set
+    - content byte limit
+    - no duplicate create targets
+    - no duplicate update anchors
+
+    Raises UpdateModeInvalidGenerationOutputError on any violation.
+    """
     seen_create_targets: set[tuple[str | None, str | None]] = set()
     seen_update_anchors: set[tuple[str, str, str | None]] = set()
 
+    def _check_doc_vault(doc_id: str, field: str, change_id: str) -> None:
+        """Assert that doc_id's vault is within the allowed vault_ids_set."""
+        vault = doc_vault_map.get(doc_id)
+        if vault is None or vault not in vault_ids_set:
+            raise UpdateModeInvalidGenerationOutputError(
+                f"intent {change_id}: {field} {doc_id!r} belongs to vault "
+                f"{vault!r} which is not in the allowed vault set"
+            )
+
     for intent in intents:
-        # document_id membership
-        if intent.document_id is not None and intent.document_id not in usable_doc_ids:
-            raise UpdateModeInvalidGenerationOutputError(
-                f"intent {intent.change_id}: document_id {intent.document_id!r} not in usable context"
-            )
-        if intent.parent_document_id is not None and intent.parent_document_id not in usable_doc_ids:
-            raise UpdateModeInvalidGenerationOutputError(
-                f"intent {intent.change_id}: parent_document_id {intent.parent_document_id!r} not in usable context"
-            )
+        # document_id membership + vault check
+        if intent.document_id is not None:
+            if intent.document_id not in usable_doc_ids:
+                raise UpdateModeInvalidGenerationOutputError(
+                    f"intent {intent.change_id}: document_id {intent.document_id!r} not in usable context"
+                )
+            _check_doc_vault(intent.document_id, "document_id", intent.change_id)
+
+        # parent_document_id membership + vault check
+        if intent.parent_document_id is not None:
+            if intent.parent_document_id not in usable_doc_ids:
+                raise UpdateModeInvalidGenerationOutputError(
+                    f"intent {intent.change_id}: parent_document_id {intent.parent_document_id!r} not in usable context"
+                )
+            _check_doc_vault(intent.parent_document_id, "parent_document_id", intent.change_id)
 
         # content byte limit (64 KiB)
         if len(intent.content.encode("utf-8")) > 65_536:
@@ -552,7 +578,8 @@ class UpdateModeExecutor:
         if not allowed_doc_ids:
             raise UpdateModeNoIndexedMarkdownError(str(campaign_uuid))
 
-        # Build doc→vault map and doc metadata map for context reconstruction
+        # Build doc→vault map and doc metadata map for context reconstruction.
+        # doc_vault_map is also used later for vault membership validation of intents.
         doc_rows_result = await self.db.execute(
             select(Document.id, Document.vault_id, Document.source_path, Document.title)
             .where(Document.id.in_([uuid.UUID(d) for d in allowed_doc_ids]))
@@ -647,9 +674,14 @@ class UpdateModeExecutor:
             await self._store_session(redis, session)
             return session
 
-        # 10. Domain validation of intents
+        # 10. Domain validation of intents (doc membership + vault membership + duplicates)
         vault_ids_set = set(vault_ids)
-        _validate_intents_domain(gen_result.intents, usable_doc_ids, vault_ids_set)
+        _validate_intents_domain(
+            gen_result.intents,
+            usable_doc_ids,
+            vault_ids_set,
+            doc_vault_map,
+        )
 
         # 11. Indexer resolve
         resolve_req = UpdateModeResolveRequest(
