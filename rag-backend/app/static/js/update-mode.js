@@ -596,12 +596,14 @@ function _buildPanel(chatId, initialSession) {
         try {
             applyResult = await chatAPI.updateModeApply(chatId);
             _applying = false;              // BUG-1 fix: reset flag on success path
-            if (!panel.isConnected) return; // BUG-2 fix: panel removed by concurrent _doCancel
+            // FIX: сброс _applying перед ранним выходом, иначе панель окажется заблокирована
+            if (!panel.isConnected) { _applying = false; return; }
             state = 'result';
             render();
         } catch (err) {
             _applying = false;
-            if (!panel.isConnected) return; // BUG-2 fix: panel removed by concurrent _doCancel
+            // FIX: сброс _applying перед ранним выходом при ошибке
+            if (!panel.isConnected) { _applying = false; return; }
             _showError(_umErrorMsg(err));
         }
     }

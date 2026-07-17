@@ -997,6 +997,11 @@ class ChatManager {
     }
 
     clearMessages() {
+        // FIX: отменяем серверную сессию update mode fire-and-forget перед удалением панели
+        const umPanel = this.messagesContainer.querySelector('.um-panel');
+        if (umPanel && umPanel.dataset.chatId && typeof chatAPI !== 'undefined') {
+            chatAPI.updateModeCancel(umPanel.dataset.chatId).catch(() => { /* ignore */ });
+        }
         this.messagesContainer.querySelectorAll(
             '.message, .typing-indicator, .pipeline-card, .pipeline-status-line, .fulldoc-panel, .um-panel'
         ).forEach(msg => msg.remove());
@@ -1012,6 +1017,7 @@ class ChatManager {
         }
         this.hideProcessingStatus();
         this.currentChatId = null;
+        // FIX: clearMessages() теперь сам отменяет серверную сессию update mode
         this.clearMessages();
         this.inputArea.style.display = 'none';
         this.welcomeMessage.style.display = 'block';
