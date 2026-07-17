@@ -20,8 +20,6 @@ if TYPE_CHECKING:
     import redis.asyncio as aioredis
 
 from shared_contracts.models import (
-    ResolvedUpdateModeChange,
-    UpdateModeChangeStatus,
     UpdateModeSession,
 )
 
@@ -119,37 +117,38 @@ return updated
 
 # Lua script for atomic apply_begin
 # KEYS[1] = redis key
-# ARGV[1] = requested apply_id (may be empty string = generate)
+# ARGV[1] = apply_id — MUST be a non-empty UUID string; caller is responsible
+#           for generating it before calling this script (see begin_apply).
 # ARGV[2] = new TTL seconds
 # ARGV[3] = apply_started_at ISO string
-# Returns: updated session JSON, or "ERR:session_expired", or "ERR:apply_conflict:{existing}"
+# Returns: updated session JSON, or one of:
+#   "ERR:session_expired"           key not found
+#   "ERR:apply_conflict:{existing}" different apply_id already set
+#   "ERR:missing_apply_id"          ARGV[1] was empty (programming error)
 _APPLY_BEGIN_LUA = """
 local raw = redis.call('GET', KEYS[1])
 if not raw then
     return 'ERR:session_expired'
 end
-local session = cjson.decode(raw)
 local requested = ARGV[1]
+if requested == '' then
+    return 'ERR:missing_apply_id'
+end
+local session = cjson.decode(raw)
 local ttl = tonumber(ARGV[2])
 local started_at = ARGV[3]
 
 if session['apply_id'] and session['apply_id'] ~= cjson.null then
     -- Already has an apply_id
-    if requested == '' or requested == session['apply_id'] then
-        -- Same or no specific request — idempotent: return existing session
+    if requested == session['apply_id'] then
+        -- Same ID: idempotent retry — return existing session unchanged
         return cjson.encode(session)
     else
         return 'ERR:apply_conflict:' .. session['apply_id']
     end
 end
 
-local new_id = requested
-if new_id == '' then
-    -- generate deterministic UUID-like id from timestamp+random is not possible in Lua;
-    -- caller should always pass a pre-generated UUID; empty means use session_id+timestamp hash
-    new_id = session['session_id'] .. '-apply'
-end
-session['apply_id'] = new_id
+session['apply_id'] = requested
 session['apply_started_at'] = started_at
 
 local updated = cjson.encode(session)
@@ -234,8 +233,13 @@ class UpdateModeStore:
 
         Idempotent: same apply_id on retry returns existing session unchanged.
         Different apply_id after one has been set raises ApplyConflictError.
+
+        A non-empty UUID is always generated here before being passed to Lua,
+        so the Lua script never receives an empty string.
         """
-        apply_id = requested_apply_id or str(uuid.uuid4())
+        apply_id = requested_apply_id if requested_apply_id else str(uuid.uuid4())
+        assert apply_id, "apply_id must be a non-empty string before calling Lua"
+
         sha = await self._ensure_apply_script(redis)
         result = await redis.evalsha(
             sha,
@@ -290,6 +294,8 @@ class UpdateModeStore:
             err = result[4:]
             if err == "session_expired":
                 raise SessionExpiredError(chat_id)
+            if err == "missing_apply_id":
+                raise UpdateModeError("missing_apply_id", "apply_id was empty when passed to Lua (programming error)")
             if err.startswith("apply_conflict:"):
                 existing = err.split(":", 1)[1]
                 raise ApplyConflictError(requested_apply_id, existing)
