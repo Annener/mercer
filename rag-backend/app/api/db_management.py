@@ -236,7 +236,8 @@ async def _audit(
     entity_id: str | None = None,
     details: dict[str, Any] | None = None,
 ) -> None:
-    db.add(AuditLog(action=action, entity_type=entity_type, entity_id=entity_id, details=details or {}))
+    # NOTE: AuditLog column was renamed details -> payload in migration 0010_audit_log_actor_payload
+    db.add(AuditLog(action=action, entity_type=entity_type, entity_id=entity_id, payload=details or {}))
 
 
 def _raise_upstream(response: httpx.Response) -> None:

@@ -185,12 +185,13 @@ class PipelineRouter:
         available_pipelines: list[str],
         db: AsyncSession,
     ) -> None:
+        # NOTE: AuditLog column was renamed details -> payload in migration 0010_audit_log_actor_payload
         db.add(
             AuditLog(
                 action="pipeline_router_failure",
                 entity_type="pipeline",
                 entity_id=None,
-                details={"query": query, "response": response, "available_pipelines": available_pipelines},
+                payload={"query": query, "response": response, "available_pipelines": available_pipelines},
             )
         )
         await db.commit()
