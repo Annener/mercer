@@ -1,11 +1,7 @@
-"""0006_audit_log_actor_payload
+"""Add actor and payload columns to audit_logs table.
 
-Adds actor (VARCHAR 256) and payload (JSONB) columns to audit_logs table.
-The old 'details' column (JSONB) is left intact for backward-compat — data
-already stored there will not be migrated automatically.
-
-Revision ID: 0006
-Revises: 0005
+Revision ID: 0006_audit_log_actor_payload
+Revises: 0005_campaign_git_identity
 Create Date: 2026-07-17
 """
 from __future__ import annotations
@@ -13,8 +9,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0006"
-down_revision = "0005"
+revision = "0006_audit_log_actor_payload"
+down_revision = "0005_campaign_git_identity"
 branch_labels = None
 depends_on = None
 
