@@ -60,8 +60,21 @@ async def run_indexing(
     force_reindex: bool,
     db_client: IndexerDBClient,
     state_manager: RedisStateManager,
+    source_paths: list[str] | None = None,
 ) -> None:
-    """Основной воркер индексации. Использует RedisStateManager для хранения состояния."""
+    """Основной воркер индексации. Использует RedisStateManager для хранения состояния.
+
+    Args:
+        task_id:       Unique task identifier.
+        vault_id:      Target vault.
+        force_reindex: Re-index even if checksum unchanged.
+        db_client:     DB access.
+        state_manager: Redis state manager.
+        source_paths:  When provided, restrict processing to these relative
+                       markdown paths inside the vault (targeted reindex for
+                       update-mode apply). None means full vault scan —
+                       existing behaviour, backward compatible.
+    """
     try:
         settings = await db_client.get_platform_settings()
         vault = await db_client.get_vault(vault_id)
@@ -111,6 +124,41 @@ async def run_indexing(
                 "last_modified": f["last_modified"],
                 "extension": str(f.get("extension", "")),
             })
+
+        # Phase 4: targeted reindex — restrict to caller-supplied paths.
+        # source_paths contains relative paths as written by update-mode applier
+        # (forward-slash, relative to vault root).  We normalise both sides to
+        # strip leading slashes before comparing so there is no accidental mismatch.
+        if source_paths is not None:
+            normalised_targets = {p.lstrip("/") for p in source_paths}
+            original_count = len(all_files_info)
+            all_files_info = [
+                f for f in all_files_info
+                if f["relative_path"].lstrip("/") in normalised_targets
+            ]
+            logger.info(
+                "targeted reindex: vault=%s requested=%d matched=%d/%d",
+                vault_id,
+                len(normalised_targets),
+                len(all_files_info),
+                original_count,
+            )
+            if not all_files_info:
+                logger.warning(
+                    "targeted reindex: no matching files found in vault=%s source_paths=%s",
+                    vault_id,
+                    source_paths,
+                )
+                # Nothing to do — mark task done immediately so the caller gets a clean task_id
+                await state_manager.create_task(
+                    task_id=task_id,
+                    vault_id=vault_id,
+                    files_to_index=[],
+                    files_skipped=0,
+                    files_total=0,
+                )
+                await state_manager.mark_task_done(task_id)
+                return
 
         # Разделяем файлы на «нужно индексировать» и «пропустить»
         new_and_changed: list[dict[str, Any]] = []
@@ -584,9 +632,6 @@ async def _embed_chunks(
 
     if _uses_batch_api(provider):
         # --- Батч-путь: один HTTP-запрос на батч (openai_compatible / sidecar) ---
-        # Весь список отправляется за один forward pass.
-        # Для очень больших документов (ярлыки десятки страниц) батч делится
-        # на куски по _BATCH_EMBED_SIZE чтобы не превысить memory budget sidecar'a.
         vectors: list[list[float]] = []
         total = len(embedding_texts)
         for batch_start in range(0, total, _BATCH_EMBED_SIZE):
