@@ -4,14 +4,18 @@ Called by POST /internal/update-mode/apply.
 
 Responsibilities
 ----------------
-1. Group accepted changes by vault_id.
-2. For each vault:
+1. Idempotency: if apply_id already completed, return cached response from Redis.
+2. Distributed lock: SET NX / PX lock key for duration of apply to prevent
+   concurrent duplicate in-flight requests for the same apply_id.
+3. Group accepted changes by vault_id.
+4. For each vault:
    a. git_init_if_needed.
    b. git_snapshot (pre-apply safety commit, --allow-empty).
    c. For each change: CAS-check expected_sha256, then atomic_write.
    d. git_apply_commit with list of written paths.
-   e. Trigger re-index via IndexerService.start_task.
-3. Return UpdateModeApplyResponse with per-vault results.
+   e. Trigger TARGETED re-index via IndexerService.start_task(source_paths=...).
+5. Persist completed response in Redis (idempotency record, TTL=3h).
+6. Return UpdateModeApplyResponse with per-vault results.
 
 CAS failures and write errors produce CONFLICT / FAILED vault results,
 not HTTP 500.  Partial success is possible across vaults.
@@ -19,8 +23,12 @@ not HTTP 500.  Partial success is possible across vaults.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
+
+import redis.asyncio as aioredis
 
 from app.db_client import IndexerDBClient
 from app.indexer_service import IndexerService
@@ -37,6 +45,7 @@ from app.update_mode.fs_git import (
     resolve_vault_root,
 )
 from shared_contracts.models import (
+    IndexerApplyState,
     UpdateModeAction,
     UpdateModeApplyChange,
     UpdateModeApplyRequest,
@@ -47,6 +56,21 @@ from shared_contracts.models import (
 
 log = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Redis key helpers
+# ---------------------------------------------------------------------------
+
+_APPLY_STATE_TTL = 3 * 60 * 60  # 3 hours — matches session TTL
+_LOCK_TTL_MS = 30_000  # 30 s lock TTL (auto-expire on crash)
+
+
+def _apply_state_key(apply_id: str) -> str:
+    return f"update_mode:apply:{apply_id}"
+
+
+def _apply_lock_key(apply_id: str) -> str:
+    return f"update_mode:apply:lock:{apply_id}"
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -54,6 +78,13 @@ log = logging.getLogger(__name__)
 
 def _sha256_str(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _request_fingerprint(request: UpdateModeApplyRequest) -> str:
+    """Stable canonical fingerprint for the apply payload."""
+    payload = request.model_dump(mode="json", exclude_none=False)
+    canonical = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 async def _get_vault_identity(db: IndexerDBClient, vault_id: str) -> GitIdentity | None:
@@ -90,6 +121,7 @@ async def _apply_vault(
         code: str,
         msg: str,
         status: UpdateModeVaultApplyStatus = UpdateModeVaultApplyStatus.FAILED,
+        manual_recovery_required: bool = False,
     ) -> UpdateModeVaultApplyResult:
         return UpdateModeVaultApplyResult(
             vault_id=vault_id,
@@ -97,6 +129,7 @@ async def _apply_vault(
             applied_count=0,
             error_code=code,
             error_message=msg,
+            manual_recovery_required=manual_recovery_required,
         )
 
     # 1. Resolve vault root
@@ -118,7 +151,38 @@ async def _apply_vault(
         log.warning("Could not fetch vault git identity vault_id=%s: %s", vault_id, exc)
         vault_identity = None
 
-    # 4. Snapshot commit (pre-apply)
+    # 4. Preflight CAS check (read-only, before any writes)
+    #    Fail fast if any UPDATE change would CAS-conflict.
+    preflight_conflicts: list[str] = []
+    for change in changes:
+        if change.action == UpdateModeAction.UPDATE:
+            assert change.expected_sha256 is not None  # validated by Pydantic
+            try:
+                abs_path = resolve_file_path(vault_root, change.file_path)
+            except PathValidationError:
+                preflight_conflicts.append(change.change_id)
+                continue
+            if not abs_path.exists():
+                preflight_conflicts.append(change.change_id)
+                continue
+            current_sha = _sha256_str(abs_path.read_text(encoding="utf-8"))
+            if current_sha != change.expected_sha256:
+                preflight_conflicts.append(change.change_id)
+
+    if preflight_conflicts:
+        log.warning(
+            "update-mode preflight CAS conflict vault=%s change_ids=%s",
+            vault_id, preflight_conflicts,
+        )
+        return UpdateModeVaultApplyResult(
+            vault_id=vault_id,
+            status=UpdateModeVaultApplyStatus.CONFLICT,
+            applied_count=0,
+            error_code="cas_conflict",
+            error_message=f"preflight conflict on change_ids: {preflight_conflicts}",
+        )
+
+    # 5. Snapshot commit (pre-apply)
     # Collect only the paths that will be touched (must exist for UPDATE actions).
     snapshot_paths: list[Path] = []
     for change in changes:
@@ -128,7 +192,7 @@ async def _apply_vault(
                 if abs_path.exists():
                     snapshot_paths.append(abs_path)
             except PathValidationError:
-                pass  # will fail properly in the write loop below
+                pass
 
     snapshot_sha: str | None = None
     try:
@@ -152,9 +216,9 @@ async def _apply_vault(
         )
         # Non-fatal: proceed without snapshot
 
-    # 5. Apply each change
+    # 6. Apply each change
     written_paths: list[Path] = []
-    conflict_changes: list[str] = []
+    written_rel_paths: list[str] = []  # relative source paths for targeted reindex
 
     for change in changes:
         try:
@@ -162,29 +226,14 @@ async def _apply_vault(
         except PathValidationError as exc:
             log.error(
                 "update-mode path validation failed vault=%s path=%s: %s",
-                vault_id,
-                change.file_path,
-                exc,
+                vault_id, change.file_path, exc,
             )
-            return _fail(exc.code, f"path={change.file_path!r}: {exc}")
-
-        # CAS guard for UPDATE
-        if change.action == UpdateModeAction.UPDATE:
-            assert change.expected_sha256 is not None  # validated by Pydantic
-            if abs_path.exists():
-                current_sha = _sha256_str(abs_path.read_text(encoding="utf-8"))
-                if current_sha != change.expected_sha256:
-                    log.warning(
-                        "update-mode CAS conflict vault=%s path=%s",
-                        vault_id,
-                        change.file_path,
-                    )
-                    conflict_changes.append(change.change_id)
-                    continue  # skip this change; report conflict at vault level
-            else:
-                # File was deleted between resolve and apply — treat as conflict
-                conflict_changes.append(change.change_id)
-                continue
+            # Any write-time path error after preflight passed — flag manual recovery
+            return _fail(
+                exc.code,
+                f"path={change.file_path!r}: {exc}",
+                manual_recovery_required=bool(written_paths),
+            )
 
         # CREATE: ensure parent directory exists
         if change.action == UpdateModeAction.CREATE:
@@ -193,24 +242,17 @@ async def _apply_vault(
         try:
             atomic_write(abs_path, change.proposed_content)
         except AtomicWriteError as exc:
-            return _fail(exc.code, f"write failed for {change.file_path!r}: {exc}")
+            return _fail(
+                exc.code,
+                f"write failed for {change.file_path!r}: {exc}",
+                manual_recovery_required=bool(written_paths),
+            )
 
         written_paths.append(abs_path)
+        written_rel_paths.append(change.file_path)
         log.info(
             "update-mode wrote vault=%s path=%s action=%s",
-            vault_id,
-            change.file_path,
-            change.action.value,
-        )
-
-    if conflict_changes:
-        return UpdateModeVaultApplyResult(
-            vault_id=vault_id,
-            status=UpdateModeVaultApplyStatus.CONFLICT,
-            applied_count=len(written_paths),
-            snapshot_commit_sha=snapshot_sha,
-            error_code="cas_conflict",
-            error_message=f"conflict on change_ids: {conflict_changes}",
+            vault_id, change.file_path, change.action.value,
         )
 
     if not written_paths:
@@ -221,7 +263,7 @@ async def _apply_vault(
             snapshot_commit_sha=snapshot_sha,
         )
 
-    # 6. git apply commit
+    # 7. git apply commit
     commit_msg = (
         f"update-mode: apply chat_id={request.chat_id} "
         f"campaign_id={request.campaign_id} "
@@ -237,43 +279,38 @@ async def _apply_vault(
         )
         log.info(
             "update-mode apply commit vault=%s commit=%s files=%d",
-            vault_id,
-            commit_sha,
-            len(written_paths),
+            vault_id, commit_sha, len(written_paths),
         )
     except GitError as exc:
         log.error(
             "update-mode git commit failed vault=%s: %s",
-            vault_id,
-            exc,
+            vault_id, exc,
         )
-        return _fail(exc.code, str(exc))
+        return _fail(exc.code, str(exc), manual_recovery_required=True)
 
-    # 7. Trigger re-index
+    # 8. Trigger TARGETED re-index (only written files — avoids full vault rescan)
     reindex_task_id: str | None = None
     reindex_error: str | None = None
     try:
         reindex_task_id = await indexer_service.start_task(
             vault_id=vault_id,
             force_reindex=False,
+            source_paths=written_rel_paths,
         )
         log.info(
-            "update-mode re-index triggered vault=%s task_id=%s",
-            vault_id,
-            reindex_task_id,
+            "update-mode targeted re-index triggered vault=%s task_id=%s paths=%s",
+            vault_id, reindex_task_id, written_rel_paths,
         )
     except (KeyError, ValueError) as exc:
         log.warning(
             "update-mode re-index not started vault=%s: %s",
-            vault_id,
-            exc,
+            vault_id, exc,
         )
         reindex_error = str(exc)
     except Exception as exc:
         log.error(
             "update-mode re-index unexpected error vault=%s: %s",
-            vault_id,
-            exc,
+            vault_id, exc,
             exc_info=True,
         )
         reindex_error = str(exc)
@@ -291,6 +328,31 @@ async def _apply_vault(
 
 
 # ---------------------------------------------------------------------------
+# Idempotency helpers
+# ---------------------------------------------------------------------------
+
+async def _get_apply_state(
+    redis: aioredis.Redis,
+    apply_id: str,
+) -> IndexerApplyState | None:
+    raw = await redis.get(_apply_state_key(apply_id))
+    if raw is None:
+        return None
+    return IndexerApplyState.model_validate(json.loads(raw))
+
+
+async def _save_apply_state(
+    redis: aioredis.Redis,
+    state: IndexerApplyState,
+) -> None:
+    await redis.set(
+        _apply_state_key(state.apply_id),
+        json.dumps(state.model_dump(mode="json"), ensure_ascii=False),
+        ex=_APPLY_STATE_TTL,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Public entry-point
 # ---------------------------------------------------------------------------
 
@@ -298,35 +360,95 @@ async def apply_changes(
     request: UpdateModeApplyRequest,
     db: IndexerDBClient,
     indexer_service: IndexerService,
+    redis: aioredis.Redis,
 ) -> UpdateModeApplyResponse:
     """Apply all accepted changes grouped by vault_id.
+
+    Idempotent: re-sending the same apply_id returns cached response.
+    Concurrent duplicates for the same apply_id are blocked by a Redis NX lock.
 
     Returns per-vault results.  Never raises — vault-level errors are
     captured in UpdateModeVaultApplyResult.
     """
-    # Group changes by vault_id
-    by_vault: dict[str, list[UpdateModeApplyChange]] = {}
-    for change in request.accepted_changes:
-        by_vault.setdefault(change.vault_id, []).append(change)
+    apply_id = request.apply_id
+    fingerprint = _request_fingerprint(request)
 
-    results: list[UpdateModeVaultApplyResult] = []
-    for vault_id, vault_changes in by_vault.items():
-        result = await _apply_vault(
-            vault_id=vault_id,
-            changes=vault_changes,
-            request=request,
-            db=db,
-            indexer_service=indexer_service,
-        )
-        results.append(result)
+    # --- 1. Check completed idempotency record ---
+    existing_state = await _get_apply_state(redis, apply_id)
+    if existing_state is not None and existing_state.status == "completed":
+        assert existing_state.response is not None
         log.info(
-            "apply vault=%s status=%s applied=%d",
-            vault_id,
-            result.status.value,
-            result.applied_count,
+            "update-mode apply idempotent hit apply_id=%s",
+            apply_id,
+        )
+        return existing_state.response
+
+    # --- 2. Acquire distributed lock (NX, auto-expires) ---
+    lock_key = _apply_lock_key(apply_id)
+    acquired = await redis.set(lock_key, "1", nx=True, px=_LOCK_TTL_MS)
+    if not acquired:
+        # Another instance is processing the same apply_id.
+        # Return 409-equivalent by raising — router will translate.
+        raise _ApplyInProgressError(
+            f"apply_id={apply_id} is already in progress on another instance"
         )
 
-    return UpdateModeApplyResponse(
-        apply_id=request.apply_id,
-        results=results,
-    )
+    try:
+        # --- 3. Persist in_progress record ---
+        in_progress_state = IndexerApplyState(
+            apply_id=apply_id,
+            request_fingerprint=fingerprint,
+            status="in_progress",
+            response=None,
+            created_at=datetime.now(timezone.utc),
+        )
+        await _save_apply_state(redis, in_progress_state)
+
+        # --- 4. Group changes by vault_id ---
+        by_vault: dict[str, list[UpdateModeApplyChange]] = {}
+        for change in request.accepted_changes:
+            by_vault.setdefault(change.vault_id, []).append(change)
+
+        results: list[UpdateModeVaultApplyResult] = []
+        for vault_id, vault_changes in by_vault.items():
+            result = await _apply_vault(
+                vault_id=vault_id,
+                changes=vault_changes,
+                request=request,
+                db=db,
+                indexer_service=indexer_service,
+            )
+            results.append(result)
+            log.info(
+                "apply vault=%s status=%s applied=%d",
+                vault_id, result.status.value, result.applied_count,
+            )
+
+        response = UpdateModeApplyResponse(
+            apply_id=apply_id,
+            results=results,
+        )
+
+        # --- 5. Persist completed state ---
+        completed_state = IndexerApplyState(
+            apply_id=apply_id,
+            request_fingerprint=fingerprint,
+            status="completed",
+            response=response,
+            created_at=in_progress_state.created_at,
+        )
+        await _save_apply_state(redis, completed_state)
+        return response
+
+    finally:
+        # Always release the lock, even on unexpected exception
+        await redis.delete(lock_key)
+
+
+class _ApplyInProgressError(Exception):
+    """Raised when a distributed lock prevents duplicate concurrent apply."""
+    pass
+
+
+# Expose for import in router
+ApplyInProgressError = _ApplyInProgressError
