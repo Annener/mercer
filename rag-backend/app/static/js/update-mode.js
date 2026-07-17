@@ -240,6 +240,7 @@ function _buildPanel(chatId, initialSession) {
     let _pendingReview = {};              // change_id → 'accept' | 'reject'
     let _applying = false;
     let _showApplyHint = false;           // BUG-9 fix: part of render cycle instead of direct DOM
+    let _openDiffs = new Set();           // change_ids of <details> that were open before render()
 
     // -------- root element --------
     const panel = document.createElement('div');
@@ -248,6 +249,12 @@ function _buildPanel(chatId, initialSession) {
 
     // -------- render pipeline --------
     function render() {
+        // Сохраняем открытые <details> перед уничтожением DOM
+        _openDiffs = new Set(
+            [...panel.querySelectorAll('.um-change-diff[open]')]
+                .map(el => el.closest('.um-change-card')?.dataset.changeId)
+                .filter(Boolean)
+        );
         panel.innerHTML = '';
         panel.appendChild(_renderHeader());
         if (state === 'idle')               panel.appendChild(_renderIdle());
@@ -424,6 +431,17 @@ function _buildPanel(chatId, initialSession) {
         for (const ch of displayChanges) {
             changesList.appendChild(_createChangeCard(ch, _onToggleChange));
         }
+
+        // Восстанавливаем открытые диффы, которые были до render()
+        if (_openDiffs.size > 0) {
+            changesList.querySelectorAll('.um-change-card').forEach(card => {
+                if (_openDiffs.has(card.dataset.changeId)) {
+                    const details = card.querySelector('.um-change-diff');
+                    if (details) details.open = true;
+                }
+            });
+        }
+
         el.appendChild(changesList);
 
         // Accept/Reject All controls
