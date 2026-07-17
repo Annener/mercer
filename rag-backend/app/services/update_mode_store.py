@@ -7,6 +7,11 @@ Atomicity:
   update_review and begin_apply use a Lua CAS script to avoid lost updates
   from concurrent PATCH requests. The script reads, mutates, and writes in
   a single server-side transaction — no WATCH/MULTI overhead per operation.
+
+  complete_apply uses a Lua script to atomically:
+    - write apply_result into the session
+    - transition apply_state: "in_progress" -> "completed"
+    - renew TTL
 """
 from __future__ import annotations
 
@@ -14,12 +19,13 @@ import json
 import logging
 import uuid
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     import redis.asyncio as aioredis
 
 from shared_contracts.models import (
+    UpdateModeApplyResponse,
     UpdateModeSession,
 )
 
@@ -156,6 +162,30 @@ redis.call('SET', KEYS[1], updated, 'EX', ttl)
 return updated
 """
 
+# Lua script for atomic apply completion.
+# Writes apply_result + transitions apply_state -> "completed".
+#
+# KEYS[1] = redis key
+# ARGV[1] = apply_result JSON string
+# ARGV[2] = new TTL seconds
+# Returns: updated session JSON, or:
+#   "ERR:session_expired"  — key not found (session expired between apply start and completion)
+_APPLY_COMPLETE_LUA = """
+local raw = redis.call('GET', KEYS[1])
+if not raw then
+    return 'ERR:session_expired'
+end
+local session = cjson.decode(raw)
+local ttl = tonumber(ARGV[2])
+
+session['apply_result'] = cjson.decode(ARGV[1])
+session['apply_state'] = 'completed'
+
+local updated = cjson.encode(session)
+redis.call('SET', KEYS[1], updated, 'EX', ttl)
+return updated
+"""
+
 
 # ---------------------------------------------------------------------------
 # Store
@@ -173,6 +203,7 @@ class UpdateModeStore:
     # Lua script SHA cache per redis connection (filled lazily)
     _review_sha: str | None = None
     _apply_sha: str | None = None
+    _complete_sha: str | None = None
 
     @staticmethod
     def _key(chat_id: str) -> str:
@@ -251,6 +282,44 @@ class UpdateModeStore:
         )
         return self._parse_apply_result(result, chat_id, apply_id)
 
+    async def complete_apply(
+        self,
+        redis: "aioredis.Redis",
+        chat_id: str,
+        result: UpdateModeApplyResponse,
+    ) -> UpdateModeSession | None:
+        """Atomically persist apply_result and transition apply_state to 'completed'.
+
+        Called by the backend /apply endpoint after receiving a successful
+        response from rag-indexer.
+
+        Returns the updated session, or None if the session has already expired
+        (e.g. the 3-hour TTL elapsed during a very slow apply). The caller should
+        treat None as non-fatal — the indexer already applied the changes.
+
+        Never raises on session-expiry — logs a warning and returns None instead.
+        """
+        result_json = json.dumps(result.model_dump(mode="json"), ensure_ascii=False)
+        sha = await self._ensure_complete_script(redis)
+        raw = await redis.evalsha(
+            sha,
+            1,
+            self._key(chat_id),
+            result_json,
+            str(SESSION_TTL_SECONDS),
+        )
+        if isinstance(raw, (bytes, str)):
+            s = raw.decode() if isinstance(raw, bytes) else raw
+            if s.startswith("ERR:session_expired"):
+                logger.warning(
+                    "complete_apply: session expired before completion could be persisted "
+                    "chat_id=%s apply_id=%s — changes were applied but session is gone",
+                    chat_id,
+                    result.apply_id,
+                )
+                return None
+        return UpdateModeSession.model_validate(json.loads(raw))
+
     async def delete(self, redis: "aioredis.Redis", chat_id: str) -> None:
         await redis.delete(self._key(chat_id))
         logger.info("update_mode session deleted chat_id=%s", chat_id)
@@ -268,6 +337,11 @@ class UpdateModeStore:
         if UpdateModeStore._apply_sha is None:
             UpdateModeStore._apply_sha = await redis.script_load(_APPLY_BEGIN_LUA)
         return UpdateModeStore._apply_sha
+
+    async def _ensure_complete_script(self, redis: "aioredis.Redis") -> str:
+        if UpdateModeStore._complete_sha is None:
+            UpdateModeStore._complete_sha = await redis.script_load(_APPLY_COMPLETE_LUA)
+        return UpdateModeStore._complete_sha
 
     # ------------------------------------------------------------------
     # Result parsers
