@@ -87,6 +87,9 @@ class VaultCreateRequest(BaseModel):
     display_name: str | None = None
     embedding_model_id: str | None = None
     create_folder: bool = False
+    # Git identity — per-vault override for git commits made by the indexer
+    git_author_name: str | None = Field(default=None, max_length=256)
+    git_author_email: str | None = Field(default=None, max_length=320)
 
 
 class VaultUpdateRequest(BaseModel):
@@ -96,6 +99,10 @@ class VaultUpdateRequest(BaseModel):
     chunk_size: int | None = None
     overlap: int | None = None
     entity_aware_mode: bool | None = None
+    # Git identity — per-vault override for git commits made by the indexer.
+    # Pass empty string "" to clear a previously set value.
+    git_author_name: str | None = Field(default=None, max_length=256)
+    git_author_email: str | None = Field(default=None, max_length=320)
 
 
 # S48-2 fix: removed stale CampaignCreateRequest and CampaignUpdateRequest (old schema:

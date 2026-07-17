@@ -90,6 +90,9 @@ def vault_dict(vault: Vault) -> dict[str, Any]:
         "chunk_size": vault.chunk_size, "overlap": vault.overlap,
         "entity_aware_mode": vault.entity_aware_mode,
         "binding_status": vault.binding_status, "chunk_count": vault.chunk_count,
+        # Git identity fields — added by migration 0005_campaign_git_identity
+        "git_author_name": vault.git_author_name,
+        "git_author_email": vault.git_author_email,
         "created_at": vault.created_at, "updated_at": vault.updated_at,
     }
 
