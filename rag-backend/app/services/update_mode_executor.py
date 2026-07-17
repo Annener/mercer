@@ -4,11 +4,12 @@ Orchestrates the full /start pipeline:
   1. Guard: check no existing Redis session
   2. DB validation: chat → campaign → domain invariant → tags → vaults → .md docs
   3. Semantic retrieval scoped to vault_ids from chat domain (fresh DB read)
-  4. Reconstruct full indexed text per document (16k token limit, 64k total)
-  5. Build LLM prompt → generate → validate UpdateModeGenerationResult
-  6. Domain validation of intents (document_id membership, duplicates, limits)
-  7. UpdateModeResolveRequest → indexer_client.resolve()
-  8. UpdateModeSession → update_mode_store.create()
+  4. Rerank hits (same reranker as chat flow)
+  5. Reconstruct full indexed text per document (16k token limit, 64k total)
+  6. Build LLM prompt → generate → validate UpdateModeGenerationResult
+  7. Domain validation of intents (document_id membership, duplicates, limits)
+  8. UpdateModeResolveRequest → indexer_client.resolve()
+  9. UpdateModeSession → update_mode_store.create()
 
 This executor never reads raw vault files, never builds diffs, never touches git.
 All file-system work belongs to rag-indexer.
@@ -30,7 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import Campaign, Chat, Document, DocumentLabel, Tag, Vault, campaign_tags
 from app.services.full_document_service import reconstruct_full_text
 from app.services.indexer_client import IndexerClient, IndexerUnavailableError
-from app.services.retrieval import retrieve_multi_vault
+from app.services.retrieval import rerank_hits, retrieve_multi_vault
 from app.services.settings_service import settings_service
 from app.services.update_mode_store import SessionAlreadyActiveError, UpdateModeStore
 from shared_contracts.models import (
@@ -574,6 +575,15 @@ class UpdateModeExecutor:
         )
         if not hits:
             raise UpdateModeNoRelevantContextError(str(campaign_uuid))
+
+        # Rerank hits via the same reranker used in chat flow
+        try:
+            hits = await rerank_hits(note, hits, self.db)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "update_mode start: rerank_hits failed for chat=%s, falling back to retrieval order: %s",
+                chat_id, exc,
+            )
 
         # Deduplicate doc IDs preserving ranked order, cap at 15
         allowed_set = set(allowed_doc_ids)
