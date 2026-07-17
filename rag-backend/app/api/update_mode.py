@@ -23,12 +23,12 @@ import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Campaign, Document, Vault
-from app.db.session import SessionLocal
+from app.db.session import get_db
 from app.services.indexer_client import (
     IndexerConflictError,
     IndexerUnavailableError,
@@ -146,6 +146,7 @@ async def start_update_mode(
     body: StartUpdateModeRequest,
     request: Request,
     campaign_id: str = Query(..., description="Campaign ID (Phase 3: resolved from chat.campaign_id)"),
+    db: AsyncSession = Depends(get_db),
 ) -> StartUpdateModeResponse:
     """Parse note, resolve changes via rag-indexer, store session in Redis.
 
@@ -157,10 +158,9 @@ async def start_update_mode(
     """
     redis = request.app.state.redis
 
-    async with SessionLocal() as db:
-        domain_id, vault_ids, default_vault_id, candidate_doc_ids = (
-            await _get_campaign_context(db, campaign_id)
-        )
+    domain_id, vault_ids, default_vault_id, candidate_doc_ids = (
+        await _get_campaign_context(db, campaign_id)
+    )
 
     stub_intent = UpdateModeIntent(
         change_id="stub-0",
