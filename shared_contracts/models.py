@@ -485,7 +485,6 @@ class PipelineCreate(BaseModel):
 
 class PipelineUpdate(BaseModel):
     name: str | None = None
-
     description: str | None = None
     steps: list[PipelineStep] | None = None
     final_composition: FinalComposition | None = None
@@ -615,6 +614,181 @@ class IndexStatusResponse(BaseModel):
     files: dict[str, FileIndexState] = Field(default_factory=dict)
 
 
+class CreateChatRequest(BaseModel):
+    """
+    domain_id — основной идентификатор контекста чата.
+    vault_id оставлен nullable для back-compat (старые клиенты).
+    campaign_id — опциональная привязка к кампании (iter2).
+    TODO(iter4-cleanup): сделать domain_id обязательным, убрать vault_id.
+    """
+    domain_id: str | None = None
+    vault_id: str | None = None  # deprecated back-compat
+    campaign_id: str | None = None
+
+
+class CreateChatResponse(BaseModel):
+    chat_id: str
+    title: str
+
+
+class SendMessageRequest(BaseModel):
+    content: str
+    stream: bool = True
+
+
+class ClarificationResponse(BaseModel):
+    message_id: str
+    role: Literal["assistant"] = "assistant"
+    content: str
+    clarification_id: str | None = None
+    stage: str | None = None
+
+
+class ClarificationAnswer(BaseModel):
+    clarification_id: str
+    answers: dict[str, str]
+
+
+# ---------------------------------------------------------------------------
+# Clarification FSM state contract
+# ---------------------------------------------------------------------------
+
+class ClarificationState(BaseModel):
+    """Пыдантик-DTO состояния машины уточняющих вопросов.
+
+    Не является ORM-моделью — живёт только в памяти и передаётся
+    между clarification_fsm и chat-роутом.
+    Персистируется через ClarificationState ORM-строку в БД
+    (app/db/models.py :: ClarificationState).
+    """
+    stage: Literal["idle", "collecting", "complete", "fallback"] = "idle"
+    missing_fields: list[str] = Field(default_factory=list)
+    collected: dict[str, str] = Field(default_factory=dict)
+    turn: int = 0
+    next_question: str | None = None
+
+
+class PipelineExecutionContext(BaseModel):
+    """Полный контекст для запуска пайплайна.
+
+    pipeline_id, pipeline_version, steps, final_composition — Optional:
+    объект создаётся до pipeline_router.select(), затем поля дописываются.
+    PipelineExecutor обязан проверять что поля заполнены перед запуском.
+
+    step_results — накапливается в процессе выполнения DAG:
+      output_format=text  → step_results[step_id] = "строка"
+      output_format=json  → step_results[step_id] = dict (при ошибке парсинга — строка)
+      type=validation     → step_results[step_id] = ответ пользователя (строка)
+    """
+    chat_id: str
+    message_id: str
+    query: str
+    original_query: str | None = None  # оригинал до переформулировки QueryRewriter-ом
+    domain_id: str | None = None
+    campaign_id: str | None = None
+    vault_ids: list[str] = Field(default_factory=list)
+    vault_id: str | None = None  # deprecated back-compat; используй vault_ids
+    # C-STREAM02: заполняются после pipeline_router.select() — не при создании объекта
+    pipeline_id: str | None = None
+    pipeline_version: str | None = None
+    steps: list[PipelineStep] | None = None
+    final_composition: FinalComposition | None = None
+    history: list[ChatMessage] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    retrieval_strategy: str | None = None
+    # Заполняются pipeline_router.select() после выбора пайплайна
+    confidence: float | None = None
+    reasoning: str | None = None
+    mode: str | None = None
+    # Накапливается в процессе DAG-выполнения
+    step_results: dict[str, Any] = Field(default_factory=dict)
+
+    def resolve(self, template: str) -> str:
+        """Подставить {STEP_ID.result} и {STEP_ID.key} из накопленных step_results.
+
+        Также поддерживает {query} — подставляется напрямую через format_map.
+        Делегирует в resolve_step_vars() из prompt_pack.
+        """
+        # Импорт здесь во избежание циклических зависимостей:
+        # shared_contracts не должен импортировать rag-backend напрямую.
+        # В продакшне resolve_step_vars будет доступен как пакет в sys.path.
+        try:
+            from app.services.prompt_pack import resolve_step_vars  # type: ignore[import]
+        except ImportError:
+            # Fallback для контекстов где rag-backend не в sys.path (тесты shared_contracts)
+            from prompt_pack import resolve_step_vars  # type: ignore[import]
+
+        # Сначала разворачиваем {query} через простой .replace, чтобы не ломать
+        # паттерн {STEP_ID.xxx} для resolve_step_vars
+        resolved = template.replace("{query}", self.query)
+        return resolve_step_vars(resolved, self.step_results)
+
+
+class PipelineStepResult(BaseModel):
+    step_id: str                                           # slug шага (новое поле)
+    step_name: str
+    retrieval_results: list[RetrievalResult] = Field(default_factory=list)
+    llm_output: str | None = None
+    error: str | None = None
+
+
+class PipelineResult(BaseModel):
+    pipeline_id: str
+    pipeline_version: str
+    steps: list[PipelineStepResult] = Field(default_factory=list)
+    final_answer: str
+    error: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# LanceDB / db-api-server contracts
+# ---------------------------------------------------------------------------
+
+class UpsertChunk(BaseModel):
+    """Один чанк для записи в LanceDB."""
+    document_id: str
+    chunk_index: int
+    text: str
+    vector: list[float]
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class UpsertRequest(BaseModel):
+    vault_id: str
+    chunks: list[UpsertChunk]
+
+
+class UpsertResponse(BaseModel):
+    status: Literal["ok", "partial"]
+    upserted_count: int = 0
+    failed_indices: list[int] = Field(default_factory=list)
+    error_details: list[str] = Field(default_factory=str)
+
+
+class SearchHit(BaseModel):
+    chunk_id: str
+    document_id: str
+    text: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    score: float
+
+
+class SearchRequest(BaseModel):
+    vault_id: str
+    vector: list[float]
+    top_k: int = Field(default=10, ge=1, le=200)
+    score_threshold: float | None = None
+    filter: dict[str, Any] | None = None
+
+
+class SearchResponse(BaseModel):
+    results: list[SearchHit] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Indexer task API contracts (rag-indexer/app/main.py)
+# ---------------------------------------------------------------------------
+
 class StartIndexTaskRequest(BaseModel):
     vault_id: str
     force_reindex: bool = False
@@ -661,7 +835,7 @@ class WSFileStatusMessage(BaseModel):
     error: str | None = None
 
 
-class WSTaskCancelledMessage(Base model):
+class WSTaskCancelledMessage(BaseModel):
     """Задача индексации отменена."""
     type: Literal["task_cancelled"] = "task_cancelled"
     task_id: str
