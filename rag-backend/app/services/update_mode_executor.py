@@ -273,6 +273,16 @@ Never remove or overwrite unrelated content.
 Return 1 to 10 intents.
 Return no intent only when the note contains no actionable campaign knowledge.
 
+LANGUAGE RULE (mandatory):
+Detect the language of the user note.
+Write the following fields in that same language:
+- content        (the markdown text inserted into the document)
+- description    (the human-readable summary of the change)
+- no_change_reason (when returning no intents)
+- the stem of suggested_filename for create actions (extension stays .md)
+The anchor.value field must reproduce the exact heading or text as it appears
+in the source document — do NOT translate it.
+
 Return JSON with this schema:
 {
   "intents": [...],         // list of 0-10 intent objects
