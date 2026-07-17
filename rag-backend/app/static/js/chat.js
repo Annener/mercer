@@ -548,6 +548,31 @@ class ChatManager {
         });
     }
 
+    // BUG-11 fix: restore active update-mode session panel when opening a chat.
+    // Called after messages are rendered in loadChat().
+    // Errors are caught and logged — must never block chat load.
+    async _restoreUpdateModeSession(chatId) {
+        // Skip if chat has no campaign (update mode requires campaign)
+        if (!this.currentChat || !this.currentChat.campaign_id) return;
+        // Skip if update-mode.js failed to load
+        if (typeof restoreUpdateModePanel !== 'function') {
+            console.warn('chat.js: restoreUpdateModePanel not available — update-mode.js may have failed to load');
+            return;
+        }
+        // Skip if a panel is already present (e.g. double loadChat call)
+        if (this.messagesContainer.querySelector('.um-panel')) return;
+        try {
+            const session = await chatAPI.updateModeGetSession(chatId);
+            if (!session) return; // 404 — no active session, nothing to restore
+            const panel = restoreUpdateModePanel(chatId, session);
+            this.messagesContainer.appendChild(panel);
+            this.scrollToBottom();
+        } catch (err) {
+            // Non-blocking: session recovery failure must not prevent chat load
+            console.warn('chat.js: failed to restore update-mode session:', err);
+        }
+    }
+
     async loadChat(chatId) {
         try {
             this.currentChatId = chatId;
@@ -562,6 +587,8 @@ class ChatManager {
                 this.addMessage(message.role, message.content);
             }
             await this.setupContextBar(data.chat);
+            // BUG-11 fix: restore active update-mode panel after messages are rendered
+            await this._restoreUpdateModeSession(chatId);
             this.scrollToBottom();
         } catch (error) {
             console.error('Failed to load chat:', error);

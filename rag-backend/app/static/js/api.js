@@ -179,6 +179,101 @@ class ChatAPI {
         return response.json();
     }
 
+    // === Update Mode API ===
+
+    async updateModeStart(chatId, note) {
+        const response = await fetch(`${this.baseUrl}/api/chats/${chatId}/update-mode/start`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ note }),
+        });
+        if (!response.ok) {
+            let errMsg = response.statusText;
+            let code = null;
+            try {
+                const errData = await response.json();
+                errMsg = errData.detail || errData.message || errMsg;
+                code = errData.code || null;
+            } catch (_) {}
+            const err = new Error(errMsg);
+            err.code = code;
+            throw err;
+        }
+        return response.json();
+    }
+
+    async updateModeReview(chatId, accepted, rejected) {
+        const response = await fetch(`${this.baseUrl}/api/chats/${chatId}/update-mode/review`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ accepted, rejected }),
+        });
+        if (!response.ok) {
+            let errMsg = response.statusText;
+            let code = null;
+            try {
+                const errData = await response.json();
+                errMsg = errData.detail || errData.message || errMsg;
+                code = errData.code || null;
+            } catch (_) {}
+            const err = new Error(errMsg);
+            err.code = code;
+            throw err;
+        }
+        return response.json();
+    }
+
+    async updateModeApply(chatId) {
+        const response = await fetch(`${this.baseUrl}/api/chats/${chatId}/update-mode/apply`, {
+            method: 'POST',
+        });
+        if (!response.ok) {
+            let errMsg = response.statusText;
+            let code = null;
+            try {
+                const errData = await response.json();
+                errMsg = errData.detail || errData.message || errMsg;
+                code = errData.code || null;
+            } catch (_) {}
+            const err = new Error(errMsg);
+            err.code = code;
+            throw err;
+        }
+        return response.json();
+    }
+
+    async updateModeCancel(chatId) {
+        const response = await fetch(`${this.baseUrl}/api/chats/${chatId}/update-mode/cancel`, {
+            method: 'POST',
+        });
+        if (!response.ok) {
+            let errMsg = response.statusText;
+            try {
+                const errData = await response.json();
+                errMsg = errData.detail || errData.message || errMsg;
+            } catch (_) {}
+            throw new Error(errMsg);
+        }
+    }
+
+    // BUG-11 fix: GET active update-mode session for session recovery on loadChat.
+    // Returns session object if active session exists (HTTP 200).
+    // Returns null if no active session (HTTP 404) — not an error.
+    // Throws on any other HTTP error (5xx, 401, etc.).
+    async updateModeGetSession(chatId) {
+        const response = await fetch(`${this.baseUrl}/api/chats/${chatId}/update-mode/session`);
+        if (response.status === 404) return null;
+        if (!response.ok) {
+            let errMsg = response.statusText;
+            try {
+                const errData = await response.json();
+                errMsg = errData.detail || errData.message || errMsg;
+            } catch (_) {}
+            throw new Error(`Failed to get update-mode session: ${errMsg}`);
+        }
+        return response.json();
+    }
+
     // === Domain / Campaign / Pipeline API ===
 
     async getDomains() {
@@ -871,6 +966,35 @@ class ChatAPI {
 
     async cancelIndexTask(taskId) {
         return { cancelled: true, task_id: taskId };
+    }
+
+    async setFullDocMode(chatId, enabled, campaignId = null) {
+        const response = await fetch(`${this.baseUrl}/chat/${chatId}/full_doc_mode`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ enabled, campaign_id: campaignId }),
+        });
+        if (!response.ok) throw new Error(`Failed to set full doc mode: ${response.statusText}`);
+        return response.json();
+    }
+
+    async fullDocConfirm(chatId, selectedIds) {
+        const response = await fetch(`${this.baseUrl}/chat/${chatId}/full_doc_confirm`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ selected_document_ids: selectedIds }),
+        });
+        if (!response.ok) {
+            let errMsg = response.statusText;
+            try {
+                const errData = await response.json();
+                errMsg = errData.detail || errData.message || errMsg;
+            } catch (_) {}
+            throw new Error(errMsg);
+        }
+        const ct = response.headers.get('content-type') || '';
+        if (ct.includes('text/event-stream')) return response.body;
+        return response.json();
     }
 }
 
