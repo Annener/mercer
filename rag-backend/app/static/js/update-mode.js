@@ -250,13 +250,13 @@ function _buildPanel(chatId, initialSession) {
     function render() {
         panel.innerHTML = '';
         panel.appendChild(_renderHeader());
-        if (state === 'idle')          panel.appendChild(_renderIdle());
+        if (state === 'idle')               panel.appendChild(_renderIdle());
         else if (state === 'entering_note') panel.appendChild(_renderNoteForm());
-        else if (state === 'starting') panel.appendChild(_renderStarting());
-        else if (state === 'review')   panel.appendChild(_renderReview());
-        else if (state === 'applying') panel.appendChild(_renderApplying());
-        else if (state === 'result')   panel.appendChild(_renderResult());
-        else if (state === 'error')    { /* error rendered in header */ }
+        else if (state === 'starting')      panel.appendChild(_renderStarting());
+        else if (state === 'review')        panel.appendChild(_renderReview());
+        else if (state === 'applying')      panel.appendChild(_renderApplying());
+        else if (state === 'result')        panel.appendChild(_renderResult());
+        else if (state === 'error')         { /* error rendered in header */ }
     }
 
     function _renderHeader() {
@@ -297,25 +297,39 @@ function _buildPanel(chatId, initialSession) {
         return el;
     }
 
+    // BUG-13 fix: character counter for note textarea
     function _renderNoteForm() {
+        const MAX_LEN = 20000;
         const el = document.createElement('div');
         el.className = 'um-panel__note-form';
         el.innerHTML = `
             <label class="um-note-label" for="um-note-${chatId}">Заметка об изменениях:</label>
             <textarea class="um-note-textarea" id="um-note-${chatId}"
                 placeholder="Например: добавить раздел про новую фичу X в документ Y…"
-                maxlength="20000" rows="5"></textarea>
+                maxlength="${MAX_LEN}" rows="5"></textarea>
+            <div class="um-note-counter">
+                <span class="um-note-counter__current">0</span> / ${MAX_LEN}
+            </div>
             <div class="um-note-actions">
                 <button class="um-note-btn um-note-btn--submit" type="button">Анализировать</button>
                 <button class="um-note-btn um-note-btn--back" type="button">Назад</button>
             </div>
         `;
+
+        const textarea = el.querySelector('textarea');
+        const counter  = el.querySelector('.um-note-counter__current');
+
+        // Update counter on every keystroke / paste
+        textarea.addEventListener('input', () => {
+            counter.textContent = textarea.value.length;
+        });
+
         el.querySelector('.um-note-btn--back').addEventListener('click', () => {
             state = 'idle'; render();
         });
         el.querySelector('.um-note-btn--submit').addEventListener('click', () => {
-            const note = el.querySelector('textarea').value.trim();
-            if (!note) { el.querySelector('textarea').focus(); return; }
+            const note = textarea.value.trim();
+            if (!note) { textarea.focus(); return; }
             _doStart(note);
         });
         return el;
@@ -412,10 +426,19 @@ function _buildPanel(chatId, initialSession) {
         saveBtn.textContent = 'Сохранить разметку';
         saveBtn.addEventListener('click', _doSaveReview);
 
+        // BUG-14 fix: disable Apply button when no accepted changes exist or apply is in flight.
+        // Compute at render time so DOM reflects current state without waiting for a click.
+        const pendingAcceptedCount = Object.values(_pendingReview).filter(a => a === 'accept').length;
+        const serverAcceptedCount  = session.changes
+            ? session.changes.filter(ch => ch.status === 'accepted').length
+            : 0;
+        const hasAccepted = pendingAcceptedCount > 0 || serverAcceptedCount > 0;
+
         const applyBtn = document.createElement('button');
         applyBtn.className = 'um-review-btn um-review-btn--apply';
         applyBtn.type = 'button';
         applyBtn.textContent = 'Применить принятые';
+        applyBtn.disabled = !hasAccepted || _applying; // BUG-14
         applyBtn.addEventListener('click', _doApply);
 
         footer.appendChild(saveBtn);
@@ -498,8 +521,6 @@ function _buildPanel(chatId, initialSession) {
         render();
         try {
             const resp = await chatAPI.updateModeStart(chatId, note);
-            // Promote to session-like shape (GET session has more fields;
-            // StartUpdateModeResponse has changes + warnings + expires_at)
             session = resp;
             _pendingReview = {};
             state = 'review';
@@ -523,13 +544,19 @@ function _buildPanel(chatId, initialSession) {
         render();
     }
 
-    async function _doSaveReview() {
+    // BUG-12 fix: deduplicate accepted/rejected collection
+    function _collectPendingLists() {
         const accepted = [];
         const rejected = [];
         for (const [id, action] of Object.entries(_pendingReview)) {
             if (action === 'accept') accepted.push(id);
             else rejected.push(id);
         }
+        return { accepted, rejected };
+    }
+
+    async function _doSaveReview() {
+        const { accepted, rejected } = _collectPendingLists(); // BUG-12
         if (accepted.length === 0 && rejected.length === 0) return;
         try {
             const updated = await chatAPI.updateModeReview(chatId, accepted, rejected);
@@ -544,13 +571,7 @@ function _buildPanel(chatId, initialSession) {
     async function _doApply() {
         if (_applying) return;
         _showApplyHint = false; // BUG-9 fix: reset hint on each new attempt
-        // Save any pending review before applying
-        const accepted = [];
-        const rejected = [];
-        for (const [id, action] of Object.entries(_pendingReview)) {
-            if (action === 'accept') accepted.push(id);
-            else rejected.push(id);
-        }
+        const { accepted, rejected } = _collectPendingLists(); // BUG-12
         if (accepted.length > 0 || rejected.length > 0) {
             try {
                 const updated = await chatAPI.updateModeReview(chatId, accepted, rejected);
