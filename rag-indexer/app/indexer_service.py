@@ -18,7 +18,21 @@ class IndexerService:
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._lock = asyncio.Lock()
 
-    async def start_task(self, vault_id: str, force_reindex: bool) -> str:
+    async def start_task(
+        self,
+        vault_id: str,
+        force_reindex: bool,
+        source_paths: list[str] | None = None,
+    ) -> str:
+        """Start an indexing task for *vault_id*.
+
+        Args:
+            vault_id: Target vault.
+            force_reindex: Re-index even if checksum unchanged.
+            source_paths: When provided, only process these relative markdown
+                paths inside the vault (targeted reindex).  None means full
+                vault scan (existing behaviour — backward compatible).
+        """
         vault = await self._db_client.get_vault(vault_id)
         if vault is None:
             raise KeyError(f"Unknown vault_id={vault_id!r}")
@@ -28,7 +42,7 @@ class IndexerService:
         task_id = uuid.uuid4().hex
         async with self._lock:
             task = asyncio.create_task(
-                self._run_task(task_id, vault_id, force_reindex),
+                self._run_task(task_id, vault_id, force_reindex, source_paths),
                 name=f"index-{task_id}",
             )
             self._tasks[task_id] = task
@@ -72,7 +86,13 @@ class IndexerService:
             )
             task.cancel()
 
-    async def _run_task(self, task_id: str, vault_id: str, force_reindex: bool) -> None:
+    async def _run_task(
+        self,
+        task_id: str,
+        vault_id: str,
+        force_reindex: bool,
+        source_paths: list[str] | None = None,
+    ) -> None:
         from indexer_worker import run_indexing
 
         await run_indexing(
@@ -81,6 +101,7 @@ class IndexerService:
             force_reindex=force_reindex,
             db_client=self._db_client,
             state_manager=self._state_manager,
+            source_paths=source_paths,
         )
 
     def _on_task_done(self, task_id: str, task: asyncio.Task[None]) -> None:
