@@ -544,6 +544,12 @@ class AuditLogRead(ORMModel):
 
 
 class VaultConfigEntry(BaseModel):
+    """Read/cache contract for a single vault's configuration.
+
+    Mirrors the `vaults` DB table columns used by the indexer for runtime
+    decisions (embedding model, chunking, git identity).
+    Additions here must stay in sync with migration 0005_campaign_update_git_identity.
+    """
     vault_id: str
     domain_id: str
     enabled: bool = True
@@ -555,6 +561,10 @@ class VaultConfigEntry(BaseModel):
     semantic_threshold: float = 0.3
     binding_status: str = "unbound"
     chunk_count: int = 0
+    # Git identity fields — added by migration 0005_campaign_update_git_identity.
+    # Used by indexer to sign commits; fallback to env GIT_AUTHOR_NAME/EMAIL when None.
+    git_author_name: str | None = None
+    git_author_email: str | None = None
 
 
 class VaultConfig(BaseModel):
@@ -959,7 +969,9 @@ class UpdateModeResolveRequest(BaseModel):
     vault_ids: list[str] = Field(min_length=1)
     intents: list[UpdateModeIntent] = Field(min_length=1, max_length=10)
     default_vault_id: str
-    candidate_document_ids: list[str] = Field(default_factory=list, max_length=15)
+    candidate_document_ids: list[str] = Field(
+        default_factory=list, min_length=0, max_length=15
+    )
 
     @model_validator(mode="after")
     def _validate_default_vault(self) -> "UpdateModeResolveRequest":
