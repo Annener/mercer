@@ -327,11 +327,21 @@ function _buildPanel(chatId, initialSession) {
         el.querySelector('.um-note-btn--back').addEventListener('click', () => {
             state = 'idle'; render();
         });
-        el.querySelector('.um-note-btn--submit').addEventListener('click', () => {
+
+        // FIX(double-click): локальный флаг внутри замыкания предотвращает
+        // параллельный запуск двух _doStart при быстром двойном клике
+        // до первого render() (state = 'starting').
+        let _submitted = false;
+        const submitBtn = el.querySelector('.um-note-btn--submit');
+        submitBtn.addEventListener('click', () => {
+            if (_submitted) return;
             const note = textarea.value.trim();
             if (!note) { textarea.focus(); return; }
+            _submitted = true;
+            submitBtn.disabled = true;
             _doStart(note);
         });
+
         return el;
     }
 
@@ -360,12 +370,41 @@ function _buildPanel(chatId, initialSession) {
             el.appendChild(warn);
         }
 
-        // BUG-3 fix: show explicit message when changes array is empty
+        // BUG-3 / FIX(empty-deadlock): при пустом списке рендерим явные кнопки действий,
+        // иначе пользователь застрянет — кнопка «Отмена» в header неочевидна.
         if (!session.changes || session.changes.length === 0) {
             const empty = document.createElement('div');
             empty.className = 'um-panel__empty';
             empty.textContent = 'Изменений не обнаружено.';
             el.appendChild(empty);
+
+            const emptyActions = document.createElement('div');
+            emptyActions.className = 'um-panel__empty-actions';
+
+            const retryBtn = document.createElement('button');
+            retryBtn.className = 'um-note-btn um-note-btn--submit';
+            retryBtn.type = 'button';
+            retryBtn.textContent = 'Попробовать снова';
+            retryBtn.addEventListener('click', () => {
+                chatAPI.updateModeCancel(chatId); // fire-and-forget
+                session = null;
+                _pendingReview = {};
+                state = 'entering_note';
+                render();
+            });
+
+            const closeBtn = document.createElement('button');
+            closeBtn.className = 'um-note-btn um-note-btn--back';
+            closeBtn.type = 'button';
+            closeBtn.textContent = 'Закрыть';
+            closeBtn.addEventListener('click', () => {
+                chatAPI.updateModeCancel(chatId); // fire-and-forget
+                panel.remove();
+            });
+
+            emptyActions.appendChild(retryBtn);
+            emptyActions.appendChild(closeBtn);
+            el.appendChild(emptyActions);
             return el;
         }
 
