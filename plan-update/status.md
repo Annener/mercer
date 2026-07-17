@@ -19,8 +19,8 @@
 ## Текущий статус
 
 ```text
-Состояние: Фаза 2 завершена, готовы к фазе 3
-Текущая фаза: 3 — Campaign scope, retrieval, LLM intents, resolve
+Состояние: Фаза 3 завершена, готовы к фазе 4
+Текущая фаза: 4 — Review, apply, git commits, targeted reindex
 Последнее обновление: 2026-07-17
 ```
 
@@ -96,7 +96,7 @@
 | 0 | `phase-0-invariants-and-recovery.md` | Baseline, boundaries, migration path, contracts | **Done** |
 | 1 | `phase-1-git-infrastructure.md` | Indexer path/file/git foundation | **Done** |
 | 2 | `phase-2-data-model.md` | DB fields, DTO, Redis session, router skeleton | **Done** |
-| 3 | `phase-3-executor.md` | Campaign scope, retrieval, LLM intents, resolve | In progress |
+| 3 | `phase-3-executor.md` | Campaign scope, retrieval, LLM intents, resolve | **Done** |
 | 4 | `phase-4-api.md` | Review, apply, git commits, targeted reindex | Not started |
 | 5 | `phase-5-sse-frontend.md` | UI, E2E, deployment, observability | Not started |
 
@@ -160,7 +160,7 @@ docker compose exec rag-indexer sh -lc 'test -d /data/vaults && test -w /data/va
 
 | Endpoint | Назначение | Состояние |
 |---|---|---|
-| `POST /api/chats/{chat_id}/update-mode/start` | Note → retrieval → LLM intents → resolved diffs | Skeleton ready (Phase 3: UpdateModeExecutor) |
+| `POST /api/chats/{chat_id}/update-mode/start` | Note → retrieval → LLM intents → resolved diffs | **Ready (Phase 3 complete)** |
 | `GET /api/chats/{chat_id}/update-mode/session` | Получить Redis review state | Ready |
 | `PATCH /api/chats/{chat_id}/update-mode/review` | Accept/reject changes | Ready |
 | `POST /api/chats/{chat_id}/update-mode/apply` | Применить accepted changes | Skeleton ready (Phase 4: file apply) |
@@ -170,7 +170,7 @@ docker compose exec rag-indexer sh -lc 'test -d /data/vaults && test -w /data/va
 
 | Endpoint | Назначение | Состояние |
 |---|---|---|
-| `POST /internal/update-mode/resolve` | Intent → original-file diff | Planned (Phase 3) |
+| `POST /internal/update-mode/resolve` | Intent → original-file diff | Planned (Phase 4) |
 | `POST /internal/update-mode/apply` | Checksum → snapshot → write → commit → reindex | Planned (Phase 4) |
 
 ---
