@@ -162,7 +162,7 @@ function _createApplyResultView(applyResp) {
                 <div class="um-vault-result__header">
                     <code class="um-vault-result__id">${escapeHtml(r.vault_id)}</code>
                     <span class="um-vault-result__status">${escapeHtml(r.status)}</span>
-                    <span class="um-vault-result__count">${r.applied_count} файл(ов)</span>
+                    <span class="um-vault-result__count">${escapeHtml(String(r.applied_count))} файл(ов)</span>
                     ${commitInfo}
                     ${reindexInfo}
                 </div>
@@ -236,7 +236,8 @@ function _buildPanel(chatId, initialSession) {
             </svg>
             <span class="um-panel__title">Обновить контекст</span>
         `;
-        if (state !== 'idle' && state !== 'entering_note' && state !== 'starting') {
+        // BUG-2 fix: exclude 'applying' — cancel button must not be available during active apply request
+        if (state !== 'idle' && state !== 'entering_note' && state !== 'starting' && state !== 'applying') {
             const cancelBtn = document.createElement('button');
             cancelBtn.className = 'um-panel__cancel-btn';
             cancelBtn.type = 'button';
@@ -513,10 +514,13 @@ function _buildPanel(chatId, initialSession) {
         render();
         try {
             applyResult = await chatAPI.updateModeApply(chatId);
+            _applying = false;              // BUG-1 fix: reset flag on success path
+            if (!panel.isConnected) return; // BUG-2 fix: panel removed by concurrent _doCancel
             state = 'result';
             render();
         } catch (err) {
             _applying = false;
+            if (!panel.isConnected) return; // BUG-2 fix: panel removed by concurrent _doCancel
             _showError(_umErrorMsg(err));
         }
     }
