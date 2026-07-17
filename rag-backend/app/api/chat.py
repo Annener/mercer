@@ -931,8 +931,9 @@ async def _audit(
     entity_id: str,
     payload: dict[str, Any],
 ) -> None:
+    # NOTE: AuditLog column was renamed details -> payload in migration 0010_audit_log_actor_payload
     from app.db.models import AuditLog
-    db.add(AuditLog(action=action, entity_type=entity_type, entity_id=entity_id, details=payload))
+    db.add(AuditLog(action=action, entity_type=entity_type, entity_id=entity_id, payload=payload))
 
 
 async def _pipeline_versions(request: Request) -> dict[str, str]:
