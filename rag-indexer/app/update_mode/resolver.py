@@ -61,11 +61,29 @@ def _append_to_file(original: str, content: str) -> str:
     return original + content
 
 
+def _normalise_heading_text(raw: str) -> str:
+    """Strip leading '#' characters and surrounding whitespace from a heading string.
+
+    Used to normalise both file lines and the incoming anchor.value so that
+    comparisons are robust to either format:
+      '# Темы на 1:1'  →  'Темы на 1:1'
+      'Темы на 1:1'   →  'Темы на 1:1'
+    """
+    return raw.lstrip("#").strip()
+
+
 def _append_after_section(original: str, heading: str, content: str) -> str | None:
     """Insert content after the first markdown heading that matches `heading`.
 
+    `heading` may be supplied with or without leading '#' characters
+    (both formats are valid per the LLM prompt contract).  The match is
+    case-insensitive and whitespace-normalised on both sides.
+
     Returns None if the heading is not found.
     """
+    # Normalise the anchor so '# Foo' and 'Foo' both match a '# Foo' line.
+    heading_text = _normalise_heading_text(heading)
+
     lines = original.splitlines(keepends=True)
     insert_at: int | None = None
 
@@ -73,8 +91,8 @@ def _append_after_section(original: str, heading: str, content: str) -> str | No
         stripped = line.strip()
         # Match heading prefix: # Heading or ## Heading etc.
         if stripped.startswith("#"):
-            text = stripped.lstrip("#").strip()
-            if text.lower() == heading.strip().lower():
+            text = _normalise_heading_text(stripped)
+            if text.lower() == heading_text.lower():
                 # Find the end of this section (next heading at same or higher level)
                 level = len(stripped) - len(stripped.lstrip("#"))
                 j = i + 1
@@ -158,7 +176,7 @@ async def _resolve_one(
             error_message=msg,
         )
 
-    # ── CREATE action ────────────────────────────────────────────────────────
+    # ── CREATE action ────────────────────────────────────────────────────────────────────
     if intent.action == UpdateModeAction.CREATE:
         vault_id = request.default_vault_id
         filename = intent.suggested_filename or "_note.md"
@@ -199,7 +217,7 @@ async def _resolve_one(
             status=UpdateModeChangeStatus.PENDING,
         )
 
-    # ── UPDATE action ────────────────────────────────────────────────────────
+    # ── UPDATE action ────────────────────────────────────────────────────────────────────
     assert intent.action == UpdateModeAction.UPDATE  # validated by Pydantic
     assert intent.document_id is not None
 
