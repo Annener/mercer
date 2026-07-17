@@ -28,7 +28,7 @@ from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Campaign, Chat, Document, DocumentLabel, Tag, Vault, campaign_tags
+from app.db.models import Campaign, Chat, Document, DocumentLabel, Tag, Vault
 from app.services.full_document_service import reconstruct_full_text
 from app.services.indexer_client import IndexerClient, IndexerUnavailableError
 from app.services.retrieval import rerank_hits, retrieve_multi_vault
@@ -135,28 +135,15 @@ async def _get_campaign_tag_ids(
     campaign_id: uuid.UUID,
     domain_id: str,
 ) -> set[str]:
-    """Return tag IDs accessible to campaign (own + linked global domain tags)."""
-    # Own campaign tags
-    own_stmt = select(Tag.id).where(
+    """Return tag IDs that directly belong to the campaign (tags.campaign_id)."""
+    stmt = select(Tag.id).where(
         Tag.domain_id == domain_id,
         Tag.campaign_id == campaign_id,
     )
-    # Global domain tags explicitly linked via campaign_tags join table
-    linked_stmt = (
-        select(Tag.id)
-        .join(campaign_tags, campaign_tags.c.tag_id == Tag.id)
-        .where(
-            Tag.domain_id == domain_id,
-            Tag.campaign_id.is_(None),
-            campaign_tags.c.campaign_id == campaign_id,
-        )
-    )
-    own = (await db.execute(own_stmt)).scalars().all()
-    linked = (await db.execute(linked_stmt)).scalars().all()
-    return {str(t) for t in own} | {str(t) for t in linked}
+    result = await db.execute(stmt)
+    return {str(t) for t in result.scalars().all()}
 
 
-# Fix 1: single JOIN query — no intermediate _get_campaign_tag_ids call
 async def get_campaign_markdown_document_ids(
     db: AsyncSession,
     *,
@@ -169,20 +156,22 @@ async def get_campaign_markdown_document_ids(
     - Document.vault_id IN vault_ids  (only enabled domain vaults from chat context)
     - Document.status == 'indexed'
     - Document.source_path ILIKE '%.md'
-    - Document has at least one label whose tag is linked to the campaign
-      via the campaign_tags association table (single JOIN, no subquery).
+    - Document has at least one DocumentLabel whose tag directly belongs to the
+      campaign (Tag.campaign_id == campaign_id).
 
-    Returns deduplicated list (no guaranteed ordering — caller reorders by retrieval rank).
+    campaign_tags association table is not used — campaign tags are stored
+    exclusively via Tag.campaign_id.
     """
     if not vault_ids:
         return []
 
+    campaign_tag_ids_stmt = select(Tag.id).where(Tag.campaign_id == campaign_id)
+
     stmt = (
         select(Document.id).distinct()
         .join(DocumentLabel, DocumentLabel.document_id == Document.id)
-        .join(campaign_tags, campaign_tags.c.tag_id == DocumentLabel.tag_id)
         .where(
-            campaign_tags.c.campaign_id == campaign_id,
+            DocumentLabel.tag_id.in_(campaign_tag_ids_stmt),
             Document.vault_id.in_(vault_ids),
             Document.status == "indexed",
             Document.source_path.ilike("%.md"),
@@ -586,7 +575,7 @@ class UpdateModeExecutor:
             raise UpdateModeNoEnabledVaultsError(domain_id)
         vault_ids: list[str] = [v.vault_id for v in vaults]
 
-        # 6. Scoped indexed .md documents with campaign tags (Fix 1: single JOIN query)
+        # 6. Scoped indexed .md documents filtered by Tag.campaign_id
         allowed_doc_ids = await get_campaign_markdown_document_ids(
             self.db,
             campaign_id=campaign_uuid,
