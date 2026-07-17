@@ -425,6 +425,7 @@ def _validate_intents_domain(
     Checks:
     - document_id and parent_document_id are within usable_doc_ids
     - the vault that owns each referenced document is within vault_ids_set
+    - content is non-empty (defensive check independent of Pydantic min_length)
     - content byte limit
     - no duplicate create targets
     - no duplicate update anchors
@@ -459,6 +460,15 @@ def _validate_intents_domain(
                     f"intent {intent.change_id}: parent_document_id {intent.parent_document_id!r} not in usable context"
                 )
             _check_doc_vault(intent.parent_document_id, "parent_document_id", intent.change_id)
+
+        # content non-empty — defensive check independent of Pydantic min_length=1.
+        # Pydantic guards deserialization from LLM output, but does NOT re-validate
+        # if an UpdateModeIntent is constructed programmatically with an empty string.
+        # This layer is the authoritative gate before data reaches the indexer.
+        if not intent.content or not intent.content.strip():
+            raise UpdateModeInvalidGenerationOutputError(
+                f"intent {intent.change_id}: content must not be empty"
+            )
 
         # content byte limit (64 KiB)
         if len(intent.content.encode("utf-8")) > 65_536:
