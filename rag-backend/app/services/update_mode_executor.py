@@ -16,7 +16,6 @@ All file-system work belongs to rag-indexer.
 """
 from __future__ import annotations
 
-import json
 import logging
 import math
 import os
@@ -310,51 +309,13 @@ def _build_user_message(note: str, context_docs: list[IndexedContextDocument]) -
     )
 
 
-async def _call_llm(
-    provider: Any,
-    system: str,
-    user: str,
-    *,
-    chat_id: str = "",
-) -> str:
-    """Call LLM provider and return raw text response."""
-    messages = [
-        {"role": "system", "content": system},
-        {"role": "user", "content": user},
-    ]
-    # Fix 2: track whether json_mode was accepted by the provider
-    json_mode = False
-    try:
-        response = await provider.complete(
-            messages=messages,
-            response_format={"type": "json_object"},
-        )
-        json_mode = True
-    except (TypeError, AttributeError):
-        # Fallback: provider doesn't support response_format kwarg
-        response = await provider.complete(messages=messages)
+def _validate_generation_result(data: dict) -> UpdateModeGenerationResult:
+    """Validate a parsed JSON dict as UpdateModeGenerationResult via Pydantic.
 
-    logger.debug(
-        "llm_call_mode",
-        extra={"json_mode": json_mode, "chat_id": chat_id},
-    )
-    return response
-
-
-def _parse_generation_result(raw: str) -> UpdateModeGenerationResult:
-    """Extract JSON from raw LLM output and validate as UpdateModeGenerationResult.
-
-    Pydantic validation is the sole reliability gate — independent of whether
-    the provider honoured response_format.
+    generate_json() already handles code-fence stripping and json.loads().
+    This function is the sole Pydantic validation gate before data reaches
+    domain validation and the indexer.
     """
-    # Strip markdown code fences if present
-    stripped = raw.strip()
-    if stripped.startswith("```"):
-        lines = stripped.splitlines()
-        # drop first and last fence lines
-        inner = lines[1:-1] if lines[-1].strip().startswith("```") else lines[1:]
-        stripped = "\n".join(inner).strip()
-    data = json.loads(stripped)
     return UpdateModeGenerationResult.model_validate(data)
 
 
@@ -365,34 +326,57 @@ async def _generate_intents(
     *,
     chat_id: str = "",
 ) -> UpdateModeGenerationResult:
-    """Call LLM, validate output. On failure perform exactly one repair attempt."""
-    user_msg = _build_user_message(note, context_docs)
-    raw = await _call_llm(provider, _SYSTEM_PROMPT, user_msg, chat_id=chat_id)
+    """Call LLM via generate_json(), validate as UpdateModeGenerationResult.
 
+    On ValidationError performs exactly one repair attempt.
+
+    generate_json() is used instead of generate() because:
+    - it injects a JSON requirement into the system prompt (compatible with all
+      models including DeepSeek via OpenRouter, which rejects response_format kwarg);
+    - it strips code-fences and calls json.loads() — returns dict, not str;
+    - network/HTTP retries are already handled inside generate_json().
+
+    generate_json() raises GenerationProviderUnavailableError after exhausting
+    retries on network errors or syntactically invalid JSON. That exception
+    propagates up and is mapped to UpdateModeGenerationProviderUnavailableError
+    by the caller. Only schema-level ValidationError is caught here for repair.
+    """
+    messages = [
+        {"role": "system", "content": _SYSTEM_PROMPT},
+        {"role": "user", "content": _build_user_message(note, context_docs)},
+    ]
+
+    # First attempt
+    first_err_captured: ValidationError | ValueError | None = None
     try:
-        return _parse_generation_result(raw)
-    except (json.JSONDecodeError, ValidationError, ValueError) as first_err:
+        data = await provider.generate_json(messages)
+        return _validate_generation_result(data)
+    except (ValidationError, ValueError) as first_err:
         logger.warning(
-            "_generate_intents: first attempt invalid (%s), trying repair",
-            type(first_err).__name__,
+            "_generate_intents chat=%s: first attempt invalid (%s: %s), trying repair",
+            chat_id, type(first_err).__name__, first_err,
         )
+        first_err_captured = first_err
 
-    # One repair attempt
-    repair_prompt = (
-        f"Your previous response was invalid.\n"
-        f"Validation error: {first_err}\n"
-        f"Your previous output was:\n{raw}\n\n"
-        f"Return only valid JSON matching the schema. No prose, no markdown fences."
+    # One repair attempt — tell the model exactly what was wrong
+    repair_suffix = (
+        f"Your previous response did not match the required schema.\n"
+        f"Validation error: {first_err_captured}\n\n"
+        f"Return only valid JSON matching the schema. "
+        f"No prose, no markdown fences, no extra keys."
     )
-    repair_user = _build_user_message(note, context_docs) + "\n\n" + repair_prompt
-    raw2 = await _call_llm(provider, _SYSTEM_PROMPT, repair_user, chat_id=chat_id)
+    repair_messages = [
+        {"role": "system", "content": _SYSTEM_PROMPT},
+        {"role": "user", "content": _build_user_message(note, context_docs) + "\n\n" + repair_suffix},
+    ]
 
     try:
-        return _parse_generation_result(raw2)
-    except (json.JSONDecodeError, ValidationError, ValueError) as second_err:
+        data2 = await provider.generate_json(repair_messages)
+        return _validate_generation_result(data2)
+    except (ValidationError, ValueError) as second_err:
         logger.error(
-            "_generate_intents: repair attempt also invalid: %s",
-            second_err,
+            "_generate_intents chat=%s: repair attempt also invalid: %s",
+            chat_id, second_err,
         )
         raise UpdateModeInvalidGenerationOutputError(
             f"LLM returned invalid output after repair attempt: {second_err}"
