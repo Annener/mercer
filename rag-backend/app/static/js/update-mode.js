@@ -13,6 +13,28 @@
 /* global chatAPI, escapeHtml, renderMarkdown */
 
 // ---------------------------------------------------------------------------
+// BUG-5 fix: defensive wrappers for escapeHtml / renderMarkdown
+// Both are declared in chat.js which loads AFTER this file.
+// Inside functions this is safe (called at runtime, not parse-time),
+// but explicit guards prevent silent breakage if call sites drift.
+// ---------------------------------------------------------------------------
+function _escapeHtml(str) {
+    if (typeof escapeHtml === 'function') return escapeHtml(str);
+    // Minimal fallback so the panel degrades gracefully instead of throwing
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+function _renderMarkdown(str) {
+    if (typeof renderMarkdown === 'function') return renderMarkdown(str);
+    return _escapeHtml(str);
+}
+
+// ---------------------------------------------------------------------------
 // Error code → human-readable message
 // ---------------------------------------------------------------------------
 const UPDATE_MODE_ERROR_MESSAGES = {
@@ -50,9 +72,18 @@ const STATUS_LABELS = {
     resolution_failed:  { text: 'Не разрешено', cls: 'um-status--failed' },
 };
 
+// BUG-10 fix: whitelist for change.action used in CSS class names
+const ACTION_WHITELIST = new Set(['update', 'create']);
+
+function _safeActionCls(action) {
+    // Returns the action string only if it's in the whitelist;
+    // falls back to 'unknown' to keep CSS class well-formed.
+    return ACTION_WHITELIST.has(action) ? action : 'unknown';
+}
+
 function _statusBadge(status) {
     const s = STATUS_LABELS[status] || { text: status, cls: '' };
-    return `<span class="um-status-badge ${escapeHtml(s.cls)}">${escapeHtml(s.text)}</span>`;
+    return `<span class="um-status-badge ${_escapeHtml(s.cls)}">${_escapeHtml(s.text)}</span>`;
 }
 
 function _actionLabel(action) {
@@ -76,7 +107,7 @@ function _createChangeCard(change, onToggle) {
 
     let diffHtml = '';
     if (change.unified_diff) {
-        const escaped = escapeHtml(change.unified_diff);
+        const escaped = _escapeHtml(change.unified_diff);
         diffHtml = `
             <details class="um-change-diff">
                 <summary class="um-change-diff__toggle">Показать diff</summary>
@@ -87,7 +118,7 @@ function _createChangeCard(change, onToggle) {
 
     let errorHtml = '';
     if (isFailed && change.error_message) {
-        errorHtml = `<div class="um-change-error">${escapeHtml(change.error_message)}</div>`;
+        errorHtml = `<div class="um-change-error">${_escapeHtml(change.error_message)}</div>`;
     }
 
     let actionsHtml = '';
@@ -104,17 +135,18 @@ function _createChangeCard(change, onToggle) {
         `;
     }
 
+    // BUG-10 fix: use _safeActionCls() instead of escapeHtml(change.action) in CSS class
     card.innerHTML = `
         <div class="um-change-header">
-            <span class="um-change-action-badge um-change-action-badge--${escapeHtml(change.action)}">
-                ${escapeHtml(_actionLabel(change.action))}
+            <span class="um-change-action-badge um-change-action-badge--${_safeActionCls(change.action)}">
+                ${_escapeHtml(_actionLabel(change.action))}
             </span>
-            <span class="um-change-filename" title="${escapeHtml(change.file_path || '')}">
-                ${escapeHtml(fileName)}
+            <span class="um-change-filename" title="${_escapeHtml(change.file_path || '')}">
+                ${_escapeHtml(fileName)}
             </span>
             ${_statusBadge(change.status)}
         </div>
-        <div class="um-change-description">${escapeHtml(change.description)}</div>
+        <div class="um-change-description">${_escapeHtml(change.description)}</div>
         ${errorHtml}
         ${diffHtml}
         ${actionsHtml}
@@ -149,21 +181,21 @@ function _createApplyResultView(applyResp) {
             : r.status === 'no_changes' ? 'um-vault-result--neutral'
             : 'um-vault-result--error';
         const commitInfo = r.commit_sha
-            ? `<span class="um-vault-result__commit" title="${escapeHtml(r.commit_sha)}">commit: ${escapeHtml(r.commit_sha.slice(0, 8))}</span>`
+            ? `<span class="um-vault-result__commit" title="${_escapeHtml(r.commit_sha)}">commit: ${_escapeHtml(r.commit_sha.slice(0, 8))}</span>`
             : '';
         const reindexInfo = r.reindex_task_id
-            ? `<span class="um-vault-result__reindex">Переиндексация: <code>${escapeHtml(r.reindex_task_id)}</code></span>`
+            ? `<span class="um-vault-result__reindex">Переиндексация: <code>${_escapeHtml(r.reindex_task_id)}</code></span>`
             : '';
         const errInfo = r.error_message
-            ? `<div class="um-vault-result__error">${escapeHtml(r.error_message)}</div>`
+            ? `<div class="um-vault-result__error">${_escapeHtml(r.error_message)}</div>`
             : '';
-        // BUG-4 fix: cast to Number, fallback to 0, then escapeHtml(String(...)) to prevent XSS
-        const appliedCount = escapeHtml(String(typeof r.applied_count === 'number' ? r.applied_count : Number(r.applied_count) || 0));
+        // BUG-4 fix: cast to Number, fallback to 0, then _escapeHtml(String(...)) to prevent XSS
+        const appliedCount = _escapeHtml(String(typeof r.applied_count === 'number' ? r.applied_count : Number(r.applied_count) || 0));
         return `
             <div class="um-vault-result ${statusCls}">
                 <div class="um-vault-result__header">
-                    <code class="um-vault-result__id">${escapeHtml(r.vault_id)}</code>
-                    <span class="um-vault-result__status">${escapeHtml(r.status)}</span>
+                    <code class="um-vault-result__id">${_escapeHtml(r.vault_id)}</code>
+                    <span class="um-vault-result__status">${_escapeHtml(r.status)}</span>
                     <span class="um-vault-result__count">${appliedCount} файл(ов)</span>
                     ${commitInfo}
                     ${reindexInfo}
@@ -308,7 +340,7 @@ function _buildPanel(chatId, initialSession) {
             const warn = document.createElement('div');
             warn.className = 'um-panel__warnings';
             warn.innerHTML = session.warnings.map(w =>
-                `<div class="um-warning-item">⚠ ${escapeHtml(w)}</div>`
+                `<div class="um-warning-item">⚠ ${_escapeHtml(w)}</div>`
             ).join('');
             el.appendChild(warn);
         }
@@ -425,7 +457,7 @@ function _buildPanel(chatId, initialSession) {
                 <line x1="12" y1="8" x2="12" y2="12"/>
                 <line x1="12" y1="16" x2="12.01" y2="16"/>
             </svg>
-            <span>${escapeHtml(msg)}</span>
+            <span>${_escapeHtml(msg)}</span>
         `;
         const retryBtn = document.createElement('button');
         retryBtn.className = 'um-error-retry-btn';
