@@ -109,6 +109,35 @@ def _session_to_response(session: UpdateModeSession) -> UpdateModeSessionRespons
     )
 
 
+async def _write_audit_log(
+    db: AsyncSession,
+    action: str,
+    entity_type: str,
+    entity_id: str,
+    actor: str,
+    payload: dict,
+) -> None:
+    """Fire-and-forget audit log write. Errors are logged but never re-raised."""
+    try:
+        from app.db.models import AuditLog  # local import to avoid circular
+        from sqlalchemy import insert
+
+        await db.execute(
+            insert(AuditLog).values(
+                id=str(uuid.uuid4()),
+                action=action,
+                entity_type=entity_type,
+                entity_id=entity_id,
+                actor=actor,
+                payload=payload,
+                created_at=datetime.now(timezone.utc),
+            )
+        )
+        await db.commit()
+    except Exception:
+        logger.warning("audit log write failed action=%s entity_id=%s", action, entity_id, exc_info=True)
+
+
 # ---------------------------------------------------------------------------
 # POST /start
 # ---------------------------------------------------------------------------
@@ -238,8 +267,14 @@ async def apply_changes(
     chat_id: str,
     body: ApplyUpdateModeRequest,
     request: Request,
+    db: AsyncSession = Depends(get_db),
 ) -> ApplyUpdateModeResponse:
-    """Delegate writing + reindex to rag-indexer. Idempotent for same apply_id."""
+    """Delegate writing + reindex to rag-indexer. Idempotent for same apply_id.
+
+    After receiving the indexer response:
+    - persists apply_result in the Redis session via complete_apply()
+    - writes an AuditLog row
+    """
     redis = request.app.state.redis
 
     try:
@@ -294,6 +329,33 @@ async def apply_changes(
         raise HTTPException(status_code=409, detail=f"Apply conflict: {exc.detail}")
     except IndexerUnavailableError as exc:
         raise HTTPException(status_code=502, detail=f"Indexer unavailable: {exc.detail}")
+
+    # Persist completed result into Redis session (non-fatal if session already expired)
+    await update_mode_store.complete_apply(redis, chat_id, apply_resp)
+
+    # Audit log — non-fatal
+    await _write_audit_log(
+        db=db,
+        action="update_mode.apply",
+        entity_type="campaign",
+        entity_id=session.campaign_id,
+        actor=f"chat:{chat_id}",
+        payload={
+            "apply_id": apply_resp.apply_id,
+            "chat_id": chat_id,
+            "campaign_id": session.campaign_id,
+            "vault_results": [
+                {
+                    "vault_id": r.vault_id,
+                    "status": r.status.value,
+                    "applied_count": r.applied_count,
+                    "commit_sha": r.commit_sha,
+                    "reindex_task_id": r.reindex_task_id,
+                }
+                for r in apply_resp.results
+            ],
+        },
+    )
 
     return ApplyUpdateModeResponse(
         apply_id=apply_resp.apply_id,
