@@ -19,8 +19,8 @@
 ## Текущий статус
 
 ```text
-Состояние: Фаза 3 завершена, готовы к фазе 4
-Текущая фаза: 4 — Review, apply, git commits, targeted reindex
+Состояние: Фаза 4 завершена, готовы к фазе 5
+Текущая фаза: 5 — UI, E2E, deployment, observability
 Последнее обновление: 2026-07-17
 ```
 
@@ -31,6 +31,28 @@
 - [x] Indexer tests: 95 passed + 39 new — **134 passed**, 3 pre-existing failures.
 - [x] `/data/vaults` mount: `mount ok`.
 - [x] `git version 2.47.3` в indexer image.
+
+---
+
+## Результаты аудита Phase 4 (2026-07-17)
+
+Code review проведён по 6 файлам реализации (коммиты `aa78a2d`, `1771501`, `cfe738f`, `d8f8c52`).
+
+| Шаг | Файл / область | Статус |
+|-----|----------------|--------|
+| 1 | `update_mode_store.py` — `complete_apply` + Lua | ✅ PASS (11/11) |
+| 2 | `update_mode.py` — `/apply` endpoint | ✅ PASS (1 ⚠️) |
+| 3 | `indexer_worker.py` — `source_paths` targeted reindex | ✅ PASS (9/9) |
+| 4 | `test_update_mode_store_complete_apply.py` | ✅ PASS (6/6) |
+| 5 | `test_update_mode_apply_endpoint.py` | ✅ PASS (6/6) |
+| 6 | `test_indexer_worker_source_paths.py` | ✅ PASS (6/6) |
+
+**Критических проблем (❌ FAIL): нет.**
+
+**Предупреждения (⚠️ WARN):**
+- **2.10** — `IndexerUnavailableError` маппится в HTTP **502** (Bad Gateway), тогда как в docstring модуля аналогичная ошибка `UpdateModeIndexerUnavailableError` помечена как 503. Семантически корректно (upstream недоступен = bad gateway), но расходится с docstring. Рекомендуется выровнять при рефакторинге — не блокирует Phase 5.
+
+**Вывод: PHASE 4 READY ✅**
 
 ---
 
@@ -97,7 +119,7 @@
 | 1 | `phase-1-git-infrastructure.md` | Indexer path/file/git foundation | **Done** |
 | 2 | `phase-2-data-model.md` | DB fields, DTO, Redis session, router skeleton | **Done** |
 | 3 | `phase-3-executor.md` | Campaign scope, retrieval, LLM intents, resolve | **Done** |
-| 4 | `phase-4-api.md` | Review, apply, git commits, targeted reindex | Not started |
+| 4 | `phase-4-api.md` | Review, apply, git commits, targeted reindex | **Done** |
 | 5 | `phase-5-sse-frontend.md` | UI, E2E, deployment, observability | Not started |
 
 ---
@@ -163,15 +185,15 @@ docker compose exec rag-indexer sh -lc 'test -d /data/vaults && test -w /data/va
 | `POST /api/chats/{chat_id}/update-mode/start` | Note → retrieval → LLM intents → resolved diffs | **Ready (Phase 3 complete)** |
 | `GET /api/chats/{chat_id}/update-mode/session` | Получить Redis review state | Ready |
 | `PATCH /api/chats/{chat_id}/update-mode/review` | Accept/reject changes | Ready |
-| `POST /api/chats/{chat_id}/update-mode/apply` | Применить accepted changes | Skeleton ready (Phase 4: file apply) |
+| `POST /api/chats/{chat_id}/update-mode/apply` | Применить accepted changes + targeted reindex + audit log | **Ready (Phase 4 complete)** |
 | `DELETE /api/chats/{chat_id}/update-mode/session` | Cancel session | Ready |
 
 ### Internal indexer API
 
 | Endpoint | Назначение | Состояние |
 |---|---|---|
-| `POST /internal/update-mode/resolve` | Intent → original-file diff | Planned (Phase 4) |
-| `POST /internal/update-mode/apply` | Checksum → snapshot → write → commit → reindex | Planned (Phase 4) |
+| `POST /internal/update-mode/resolve` | Intent → original-file diff | Ready (Phase 3) |
+| `POST /internal/update-mode/apply` | Checksum → snapshot → write → commit → targeted reindex | **Ready (Phase 4 complete)** |
 
 ---
 
@@ -186,21 +208,24 @@ docker compose exec rag-indexer sh -lc 'test -d /data/vaults && test -w /data/va
 | `no_relevant_campaign_context` | 422 | Retrieval не нашёл релевантный context | Уточнить note |
 | `no_usable_indexed_context` | 422 | Context reconstruction/limits не дали usable docs | Проверить документы/indexer |
 | `generation_provider_unavailable` | 503 | Нет active LLM provider | Настроить model |
-| `indexer_unavailable` | 503 | Indexer недоступен | Retry позже |
+| `indexer_unavailable` | 503 | Indexer недоступен (executor) | Retry позже |
+| `indexer_unavailable` | 502 | Indexer недоступен во время apply (bad gateway) | Retry позже |
 | `session_already_active` | 409 | Review session уже существует | Открыть session |
 | `session_expired` | 410 | Redis TTL истёк | Start заново |
 | `file_modified` | 409 | Original file изменился после review | Start заново |
 | `target_exists` | 409 | Create target уже существует | Start заново |
 | `vault_root_missing` | 409 | Нет vault directory | Исправить deployment/storage |
-| `vault_lock_timeout` | 409 | Vault занят другой apply/resolve | Retry пожже |
+| `vault_lock_timeout` | 409 | Vault занят другой apply/resolve | Retry позже |
 | `git_unavailable` | 503 | Git отсутствует/недоступен | Исправить indexer image |
 | `git_identity_missing` | 503 | Нет DB или fallback git identity | Настроить vault/env |
 | `git_ignored_target` | 409 | Git игнорирует target `.md` | Исправить вручную |
 | `apply_already_started` | 409 | Другой apply ID уже выполняется | Retry тем же ID |
 | `apply_id_payload_mismatch` | 409 | Same apply ID, другой payload | Не retry с изменённым payload |
-| `apply_in_progress` | 409 | Apply с тем же ID ещё выполняется | Poll/retry пожже |
+| `apply_in_progress` | 409 | Apply с тем же ID ещё выполняется | Poll/retry позже |
 
 `410 Gone` для expired review session должен сопровождаться `Cache-Control: no-store`.
+
+> **Примечание (⚠️ tech debt):** `IndexerUnavailableError` при `/apply` маппится в 502, а не 503 — расхождение с docstring `update_mode.py`. Не блокирует, выровнять при рефакторинге.
 
 ---
 
