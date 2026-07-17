@@ -157,12 +157,14 @@ function _createApplyResultView(applyResp) {
         const errInfo = r.error_message
             ? `<div class="um-vault-result__error">${escapeHtml(r.error_message)}</div>`
             : '';
+        // BUG-4 fix: cast to Number, fallback to 0, then escapeHtml(String(...)) to prevent XSS
+        const appliedCount = escapeHtml(String(typeof r.applied_count === 'number' ? r.applied_count : Number(r.applied_count) || 0));
         return `
             <div class="um-vault-result ${statusCls}">
                 <div class="um-vault-result__header">
                     <code class="um-vault-result__id">${escapeHtml(r.vault_id)}</code>
                     <span class="um-vault-result__status">${escapeHtml(r.status)}</span>
-                    <span class="um-vault-result__count">${escapeHtml(String(r.applied_count))} файл(ов)</span>
+                    <span class="um-vault-result__count">${appliedCount} файл(ов)</span>
                     ${commitInfo}
                     ${reindexInfo}
                 </div>
@@ -309,6 +311,15 @@ function _buildPanel(chatId, initialSession) {
                 `<div class="um-warning-item">⚠ ${escapeHtml(w)}</div>`
             ).join('');
             el.appendChild(warn);
+        }
+
+        // BUG-3 fix: show explicit message when changes array is empty
+        if (!session.changes || session.changes.length === 0) {
+            const empty = document.createElement('div');
+            empty.className = 'um-panel__empty';
+            empty.textContent = 'Изменений не обнаружено.';
+            el.appendChild(empty);
+            return el;
         }
 
         // Changes list
