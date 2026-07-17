@@ -517,7 +517,7 @@ class ChatManager {
             if (!this.currentChatId || !this.currentChat) return;
             const enabled = e.target.checked;
             try {
-                // Передаём campaign_id если он есть (бэкенд ребяет обязательное поле)
+                // Передаём campaign_id если он есть (бэкенд требует обязательное поле)
                 await chatAPI.setFullDocMode(
                     this.currentChatId,
                     enabled,
@@ -533,8 +533,13 @@ class ChatManager {
         });
 
         // Update Mode button
+        // BUG-7 fix: guard against update-mode.js failing to load
         this.updateModeBtn?.addEventListener('click', () => {
             if (!this.currentChatId) return;
+            if (typeof createUpdateModePanel !== 'function') {
+                console.error('chat.js: createUpdateModePanel not available — update-mode.js may have failed to load');
+                return;
+            }
             // Если панель уже открыта — не открывать вторую
             if (this.messagesContainer.querySelector('.um-panel')) return;
             const panel = createUpdateModePanel(this.currentChatId);
