@@ -127,14 +127,29 @@ class IndexerClient:
         payload: dict[str, Any],
         *,
         allow_conflict: bool = False,
+        chat_id: str = "",
     ) -> dict[str, Any]:
         try:
             async with httpx.AsyncClient(timeout=self._timeout) as client:
                 response = await client.post(url, json=payload)
-        except httpx.TransportError as exc:
+        # Fix 3: TimeoutException FIRST (it is a subclass of TransportError)
+        except httpx.TimeoutException as exc:
+            logger.warning(
+                "indexer_timeout",
+                extra={"url": str(exc.request.url), "chat_id": chat_id},
+            )
             raise IndexerUnavailableError(
                 status_code=None,
-                detail=f"Network error reaching rag-indexer: {exc}",
+                detail="timeout",
+            ) from exc
+        except httpx.TransportError as exc:
+            logger.warning(
+                "indexer_transport_error",
+                extra={"error": str(exc), "chat_id": chat_id},
+            )
+            raise IndexerUnavailableError(
+                status_code=None,
+                detail=f"transport: {exc}",
             ) from exc
 
         if response.status_code == 409 and allow_conflict:

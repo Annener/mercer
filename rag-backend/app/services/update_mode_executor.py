@@ -156,12 +156,12 @@ async def _get_campaign_tag_ids(
     return {str(t) for t in own} | {str(t) for t in linked}
 
 
+# Fix 1: single JOIN query — no intermediate _get_campaign_tag_ids call
 async def get_campaign_markdown_document_ids(
     db: AsyncSession,
     *,
     campaign_id: uuid.UUID,
     vault_ids: list[str],
-    domain_id: str,
 ) -> list[str]:
     """Return distinct document IDs for indexed .md files scoped to vault_ids.
 
@@ -169,30 +169,24 @@ async def get_campaign_markdown_document_ids(
     - Document.vault_id IN vault_ids  (only enabled domain vaults from chat context)
     - Document.status == 'indexed'
     - Document.source_path ILIKE '%.md'
-    - Document has at least one label linked to a campaign tag
+    - Document has at least one label whose tag is linked to the campaign
+      via the campaign_tags association table (single JOIN, no subquery).
 
     Returns deduplicated list (no guaranteed ordering — caller reorders by retrieval rank).
     """
     if not vault_ids:
         return []
 
-    # Collect campaign tag ids first
-    tag_ids = await _get_campaign_tag_ids(db, campaign_id, domain_id)
-    if not tag_ids:
-        return []
-
-    tag_uuids = [uuid.UUID(t) for t in tag_ids]
-
     stmt = (
-        select(Document.id)
+        select(Document.id).distinct()
         .join(DocumentLabel, DocumentLabel.document_id == Document.id)
+        .join(campaign_tags, campaign_tags.c.tag_id == DocumentLabel.tag_id)
         .where(
+            campaign_tags.c.campaign_id == campaign_id,
             Document.vault_id.in_(vault_ids),
             Document.status == "indexed",
             Document.source_path.ilike("%.md"),
-            DocumentLabel.tag_id.in_(tag_uuids),
         )
-        .distinct()
     )
     result = await db.execute(stmt)
     return [str(row) for row in result.scalars().all()]
@@ -331,26 +325,39 @@ async def _call_llm(
     provider: Any,
     system: str,
     user: str,
+    *,
+    chat_id: str = "",
 ) -> str:
     """Call LLM provider and return raw text response."""
     messages = [
         {"role": "system", "content": system},
         {"role": "user", "content": user},
     ]
-    # Use structured JSON output if provider supports it
+    # Fix 2: track whether json_mode was accepted by the provider
+    json_mode = False
     try:
         response = await provider.complete(
             messages=messages,
             response_format={"type": "json_object"},
         )
+        json_mode = True
     except (TypeError, AttributeError):
         # Fallback: provider doesn't support response_format kwarg
         response = await provider.complete(messages=messages)
+
+    logger.debug(
+        "llm_call_mode",
+        extra={"json_mode": json_mode, "chat_id": chat_id},
+    )
     return response
 
 
 def _parse_generation_result(raw: str) -> UpdateModeGenerationResult:
-    """Extract JSON from raw LLM output and validate as UpdateModeGenerationResult."""
+    """Extract JSON from raw LLM output and validate as UpdateModeGenerationResult.
+
+    Pydantic validation is the sole reliability gate — independent of whether
+    the provider honoured response_format.
+    """
     # Strip markdown code fences if present
     stripped = raw.strip()
     if stripped.startswith("```"):
@@ -366,10 +373,12 @@ async def _generate_intents(
     provider: Any,
     note: str,
     context_docs: list[IndexedContextDocument],
+    *,
+    chat_id: str = "",
 ) -> UpdateModeGenerationResult:
     """Call LLM, validate output. On failure perform exactly one repair attempt."""
     user_msg = _build_user_message(note, context_docs)
-    raw = await _call_llm(provider, _SYSTEM_PROMPT, user_msg)
+    raw = await _call_llm(provider, _SYSTEM_PROMPT, user_msg, chat_id=chat_id)
 
     try:
         return _parse_generation_result(raw)
@@ -387,7 +396,7 @@ async def _generate_intents(
         f"Return only valid JSON matching the schema. No prose, no markdown fences."
     )
     repair_user = _build_user_message(note, context_docs) + "\n\n" + repair_prompt
-    raw2 = await _call_llm(provider, _SYSTEM_PROMPT, repair_user)
+    raw2 = await _call_llm(provider, _SYSTEM_PROMPT, repair_user, chat_id=chat_id)
 
     try:
         return _parse_generation_result(raw2)
@@ -548,7 +557,7 @@ class UpdateModeExecutor:
         domain_id: str = chat.domain_id
         campaign_uuid: uuid.UUID = chat.campaign_id  # type: ignore[assignment]
 
-        # 4. Campaign tags
+        # 4. Campaign tags — guard: campaign must have at least one tag
         tag_ids = await _get_campaign_tag_ids(self.db, campaign_uuid, domain_id)
         if not tag_ids:
             raise UpdateModeCampaignTagsRequiredError(str(campaign_uuid))
@@ -567,12 +576,11 @@ class UpdateModeExecutor:
             raise UpdateModeNoEnabledVaultsError(domain_id)
         vault_ids: list[str] = [v.vault_id for v in vaults]
 
-        # 6. Scoped indexed .md documents with campaign tags
+        # 6. Scoped indexed .md documents with campaign tags (Fix 1: single JOIN query)
         allowed_doc_ids = await get_campaign_markdown_document_ids(
             self.db,
             campaign_id=campaign_uuid,
             vault_ids=vault_ids,
-            domain_id=domain_id,
         )
         if not allowed_doc_ids:
             raise UpdateModeNoIndexedMarkdownError(str(campaign_uuid))
@@ -646,11 +654,7 @@ class UpdateModeExecutor:
         if provider is None:
             raise UpdateModeGenerationProviderUnavailableError()
 
-        gen_result = await _generate_intents(provider, note, context_docs)
-
-        # expires_at derived from SESSION_TTL_SECONDS — single source of truth with store
-        now = datetime.now(timezone.utc)
-        session_expires_at = now + timedelta(seconds=SESSION_TTL_SECONDS)
+        gen_result = await _generate_intents(provider, note, context_docs, chat_id=chat_id)
 
         # Empty intents → no-change session
         if not gen_result.intents:
@@ -660,6 +664,10 @@ class UpdateModeExecutor:
             )
             if gen_result.no_change_reason:
                 warnings.append(f"no_change:{gen_result.no_change_reason}")
+
+            # Fix 4: compute now immediately before session construction — no await in between
+            now = datetime.now(timezone.utc)
+            session_expires_at = now + timedelta(seconds=SESSION_TTL_SECONDS)
             session = UpdateModeSession(
                 session_id=str(uuid.uuid4()),
                 chat_id=chat_id,
@@ -704,6 +712,9 @@ class UpdateModeExecutor:
             raise UpdateModeIndexerInvalidResponseError(str(exc)) from exc
 
         # 12. Create Redis session
+        # Fix 4: compute now immediately before session construction — no await in between
+        now = datetime.now(timezone.utc)
+        session_expires_at = now + timedelta(seconds=SESSION_TTL_SECONDS)
         session = UpdateModeSession(
             session_id=str(uuid.uuid4()),
             chat_id=chat_id,
