@@ -239,6 +239,7 @@ function _buildPanel(chatId, initialSession) {
     let applyResult = null;               // ApplyUpdateModeResponse
     let _pendingReview = {};              // change_id → 'accept' | 'reject'
     let _applying = false;
+    let _showApplyHint = false;           // BUG-9 fix: part of render cycle instead of direct DOM
 
     // -------- root element --------
     const panel = document.createElement('div');
@@ -397,6 +398,14 @@ function _buildPanel(chatId, initialSession) {
         const footer = document.createElement('div');
         footer.className = 'um-review-footer';
 
+        // BUG-9 fix: hint is now part of the render cycle via _showApplyHint flag
+        if (_showApplyHint) {
+            const hint = document.createElement('div');
+            hint.className = 'um-apply-hint';
+            hint.textContent = 'Примите хотя бы одно изменение перед применением.';
+            footer.appendChild(hint);
+        }
+
         const saveBtn = document.createElement('button');
         saveBtn.className = 'um-review-btn um-review-btn--save';
         saveBtn.type = 'button';
@@ -459,17 +468,32 @@ function _buildPanel(chatId, initialSession) {
             </svg>
             <span>${_escapeHtml(msg)}</span>
         `;
+        // BUG-8 fix: cancel active server session before resetting to idle,
+        // otherwise next _doStart will fail with session_already_active.
         const retryBtn = document.createElement('button');
         retryBtn.className = 'um-error-retry-btn';
         retryBtn.type = 'button';
         retryBtn.textContent = 'Попробовать снова';
-        retryBtn.addEventListener('click', () => { state = 'idle'; _pendingReview = {}; render(); });
+        retryBtn.addEventListener('click', async () => {
+            retryBtn.disabled = true;
+            retryBtn.textContent = 'Отмена сессии…';
+            if (session) {
+                try {
+                    await chatAPI.updateModeCancel(chatId);
+                } catch (_) { /* session may have already expired — safe to ignore */ }
+                session = null;
+            }
+            _pendingReview = {};
+            state = 'idle';
+            render();
+        });
         errEl.appendChild(retryBtn);
         panel.appendChild(errEl);
     }
 
     // -------- actions --------
     async function _doStart(note) {
+        _showApplyHint = false; // BUG-9 fix: reset hint flag on fresh start
         state = 'starting';
         render();
         try {
@@ -519,6 +543,7 @@ function _buildPanel(chatId, initialSession) {
 
     async function _doApply() {
         if (_applying) return;
+        _showApplyHint = false; // BUG-9 fix: reset hint on each new attempt
         // Save any pending review before applying
         const accepted = [];
         const rejected = [];
@@ -539,17 +564,9 @@ function _buildPanel(chatId, initialSession) {
         const hasAccepted = session && session.changes &&
             session.changes.some(ch => ch.status === 'accepted');
         if (!hasAccepted) {
-            // Nothing to apply — show gentle message
-            const reviewEl = panel.querySelector('.um-review-footer');
-            if (reviewEl) {
-                let hint = reviewEl.querySelector('.um-apply-hint');
-                if (!hint) {
-                    hint = document.createElement('div');
-                    hint.className = 'um-apply-hint';
-                    hint.textContent = 'Примите хотя бы одно изменение перед применением.';
-                    reviewEl.appendChild(hint);
-                }
-            }
+            // BUG-9 fix: set flag and re-render — hint stays alive through subsequent render() calls
+            _showApplyHint = true;
+            render();
             return;
         }
         _applying = true;
