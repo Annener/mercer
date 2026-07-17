@@ -783,6 +783,9 @@ class SearchResponse(BaseModel):
 class StartIndexTaskRequest(BaseModel):
     vault_id: str
     force_reindex: bool = False
+    # Phase 4: targeted reindex — only process these relative markdown paths.
+    # None means full-vault scan (existing behaviour, backward compatible).
+    source_paths: list[str] | None = None
 
 
 class StartIndexTaskResponse(BaseModel):
@@ -1093,11 +1096,27 @@ class UpdateModeVaultApplyResult(BaseModel):
 
     error_code: str | None = None
     error_message: str | None = None
+    manual_recovery_required: bool = False
 
 
 class UpdateModeApplyResponse(BaseModel):
     apply_id: str
     results: list[UpdateModeVaultApplyResult] = Field(min_length=1)
+
+
+# --- Phase 4: Indexer apply idempotency state ---
+
+class IndexerApplyState(BaseModel):
+    """Redis-persisted idempotency record for a single apply_id on the indexer.
+
+    Key: update_mode:apply:{apply_id}
+    TTL: SESSION_TTL_SECONDS (3 hours)
+    """
+    apply_id: str
+    request_fingerprint: str  # SHA-256 of canonical JSON payload
+    status: Literal["in_progress", "completed"]
+    response: UpdateModeApplyResponse | None = None
+    created_at: datetime
 
 
 # --- Public backend API contracts ---
@@ -1173,3 +1192,6 @@ class UpdateModeSession(BaseModel):
 
     apply_id: str | None = None
     apply_started_at: datetime | None = None
+    # Phase 4: apply lifecycle state
+    apply_state: Literal["review", "in_progress", "completed"] = "review"
+    apply_result: UpdateModeApplyResponse | None = None
