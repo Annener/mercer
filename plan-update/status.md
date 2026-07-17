@@ -19,14 +19,14 @@
 ## Текущий статус
 
 ```text
-Состояние: Фаза 1 завершена, готовны к фазе 2
-Текущая фаза: 2 — DB fields, DTO, Redis session, router skeleton
-Последнее обновление: 2026-07-15
+Состояние: Фаза 2 завершена, готовы к фазе 3
+Текущая фаза: 3 — Campaign scope, retrieval, LLM intents, resolve
+Последнее обновление: 2026-07-17
 ```
 
 ### Baseline checklist
 
-- [x] Alembic head: `0004_fulldoc_jsonb_fix (head)` — подтверждён 2026-07-15.
+- [x] Alembic head: `0005_campaign_update_git_identity (head)` — подтверждён 2026-07-17.
 - [x] Backend tests: 136 passed, 11 pre-existing failures (unrelated).
 - [x] Indexer tests: 95 passed + 39 new — **134 passed**, 3 pre-existing failures.
 - [x] `/data/vaults` mount: `mount ok`.
@@ -95,8 +95,8 @@
 |---:|---|---|---|
 | 0 | `phase-0-invariants-and-recovery.md` | Baseline, boundaries, migration path, contracts | **Done** |
 | 1 | `phase-1-git-infrastructure.md` | Indexer path/file/git foundation | **Done** |
-| 2 | `phase-2-data-model.md` | DB fields, DTO, Redis session, router skeleton | In progress |
-| 3 | `phase-3-executor.md` | Campaign scope, retrieval, LLM intents, resolve | Not started |
+| 2 | `phase-2-data-model.md` | DB fields, DTO, Redis session, router skeleton | **Done** |
+| 3 | `phase-3-executor.md` | Campaign scope, retrieval, LLM intents, resolve | In progress |
 | 4 | `phase-4-api.md` | Review, apply, git commits, targeted reindex | Not started |
 | 5 | `phase-5-sse-frontend.md` | UI, E2E, deployment, observability | Not started |
 
@@ -107,7 +107,7 @@
 ### Database и migrations
 
 - Миграции: `rag-backend/migrations/versions/`.
-- Фактический head: `0004_fulldoc_jsonb_fix` — подтверждён 2026-07-15.
+- Фактический head: `0005_campaign_update_git_identity` — подтверждён 2026-07-17.
 - Новая migration ссылается на `0004_fulldoc_jsonb_fix` как `down_revision`.
 
 ### Backend
@@ -160,18 +160,18 @@ docker compose exec rag-indexer sh -lc 'test -d /data/vaults && test -w /data/va
 
 | Endpoint | Назначение | Состояние |
 |---|---|---|
-| `POST /api/chats/{chat_id}/update-mode/start` | Note → retrieval → LLM intents → resolved diffs | Planned |
-| `GET /api/chats/{chat_id}/update-mode/session` | Получить Redis review state | Planned |
-| `PATCH /api/chats/{chat_id}/update-mode/review` | Accept/reject changes | Planned |
-| `POST /api/chats/{chat_id}/update-mode/apply` | Применить accepted changes | Planned |
-| `DELETE /api/chats/{chat_id}/update-mode/session` | Cancel session | Planned |
+| `POST /api/chats/{chat_id}/update-mode/start` | Note → retrieval → LLM intents → resolved diffs | Skeleton ready (Phase 3: UpdateModeExecutor) |
+| `GET /api/chats/{chat_id}/update-mode/session` | Получить Redis review state | Ready |
+| `PATCH /api/chats/{chat_id}/update-mode/review` | Accept/reject changes | Ready |
+| `POST /api/chats/{chat_id}/update-mode/apply` | Применить accepted changes | Skeleton ready (Phase 4: file apply) |
+| `DELETE /api/chats/{chat_id}/update-mode/session` | Cancel session | Ready |
 
 ### Internal indexer API
 
 | Endpoint | Назначение | Состояние |
 |---|---|---|
-| `POST /internal/update-mode/resolve` | Intent → original-file diff | Planned |
-| `POST /internal/update-mode/apply` | Checksum → snapshot → write → commit → reindex | Planned |
+| `POST /internal/update-mode/resolve` | Intent → original-file diff | Planned (Phase 3) |
+| `POST /internal/update-mode/apply` | Checksum → snapshot → write → commit → reindex | Planned (Phase 4) |
 
 ---
 
