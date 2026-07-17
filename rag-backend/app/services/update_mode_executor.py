@@ -33,7 +33,7 @@ from app.services.full_document_service import reconstruct_full_text
 from app.services.indexer_client import IndexerClient, IndexerUnavailableError
 from app.services.retrieval import rerank_hits, retrieve_multi_vault
 from app.services.settings_service import settings_service
-from app.services.update_mode_store import SessionAlreadyActiveError, UpdateModeStore
+from app.services.update_mode_store import SESSION_TTL_SECONDS, SessionAlreadyActiveError, UpdateModeStore
 from shared_contracts.models import (
     IndexedContextDocument,
     UpdateModeGenerationResult,
@@ -49,7 +49,6 @@ _DB_API_URL = os.getenv("STORAGE_API_URL", "http://db-api-server:8080")
 _MAX_DOCS = 15
 _PER_DOC_TOKEN_LIMIT = 16_000
 _TOTAL_TOKEN_BUDGET = 64_000
-_SESSION_HOURS = 3
 # top_k large enough to surface 15 unique documents from multi-vault results
 _RETRIEVAL_TOP_K = 60
 
@@ -612,7 +611,7 @@ class UpdateModeExecutor:
                 chat_id, exc,
             )
 
-        # Deduplicate doc IDs preserving ranked order, cap at 15
+        # Deduplicate doc IDs preserving ranked order, cap at _MAX_DOCS
         allowed_set = set(allowed_doc_ids)
         seen: set[str] = set()
         ranked_doc_ids: list[str] = []
@@ -631,6 +630,7 @@ class UpdateModeExecutor:
         if not context_docs:
             raise UpdateModeNoUsableContextError(str(campaign_uuid))
 
+        # usable_doc_ids_list is already bounded by _MAX_DOCS via ranked_doc_ids above
         usable_doc_ids = {d.document_id for d in context_docs}
         usable_doc_ids_list = [d.document_id for d in context_docs]
 
@@ -648,6 +648,10 @@ class UpdateModeExecutor:
 
         gen_result = await _generate_intents(provider, note, context_docs)
 
+        # expires_at derived from SESSION_TTL_SECONDS — single source of truth with store
+        now = datetime.now(timezone.utc)
+        session_expires_at = now + timedelta(seconds=SESSION_TTL_SECONDS)
+
         # Empty intents → no-change session
         if not gen_result.intents:
             logger.info(
@@ -656,7 +660,6 @@ class UpdateModeExecutor:
             )
             if gen_result.no_change_reason:
                 warnings.append(f"no_change:{gen_result.no_change_reason}")
-            now = datetime.now(timezone.utc)
             session = UpdateModeSession(
                 session_id=str(uuid.uuid4()),
                 chat_id=chat_id,
@@ -669,7 +672,7 @@ class UpdateModeExecutor:
                 warnings=warnings,
                 changes=[],
                 created_at=now,
-                expires_at=now + timedelta(hours=_SESSION_HOURS),
+                expires_at=session_expires_at,
             )
             await self._store_session(redis, session)
             return session
@@ -691,7 +694,7 @@ class UpdateModeExecutor:
             vault_ids=vault_ids,
             intents=gen_result.intents,
             default_vault_id=default_vault_id,
-            candidate_document_ids=usable_doc_ids_list[:15],
+            candidate_document_ids=usable_doc_ids_list,
         )
         try:
             resolve_resp: UpdateModeResolveResponse = await self.indexer_client.resolve(resolve_req)
@@ -701,7 +704,6 @@ class UpdateModeExecutor:
             raise UpdateModeIndexerInvalidResponseError(str(exc)) from exc
 
         # 12. Create Redis session
-        now = datetime.now(timezone.utc)
         session = UpdateModeSession(
             session_id=str(uuid.uuid4()),
             chat_id=chat_id,
@@ -709,12 +711,12 @@ class UpdateModeExecutor:
             domain_id=domain_id,
             vault_ids=vault_ids,
             default_vault_id=default_vault_id,
-            candidate_document_ids=usable_doc_ids_list[:15],
+            candidate_document_ids=usable_doc_ids_list,
             note=note,
             warnings=warnings,
             changes=resolve_resp.changes,
             created_at=now,
-            expires_at=now + timedelta(hours=_SESSION_HOURS),
+            expires_at=session_expires_at,
         )
         await self._store_session(redis, session)
         return session
