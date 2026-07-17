@@ -146,7 +146,7 @@ function _createChangeCard(change, onToggle) {
             </span>
             ${_statusBadge(change.status)}
         </div>
-        <div class="um-change-description">${_escapeHtml(change.description)}</div>
+        <div class="um-change-description">${_renderMarkdown(change.description)}</div>
         ${errorHtml}
         ${diffHtml}
         ${actionsHtml}
@@ -348,6 +348,9 @@ function _buildPanel(chatId, initialSession) {
             submitBtn.disabled = true;
             _doStart(note);
         });
+
+        // UX: autofocus textarea after element is appended to DOM
+        textarea.focus();
 
         return el;
     }
