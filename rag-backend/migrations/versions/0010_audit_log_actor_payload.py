@@ -5,7 +5,7 @@ The old 'details' column (JSONB) is left intact for backward-compat — data
 already stored there will not be migrated automatically.
 
 Revision ID: 0010
-Revises: 0009
+Revises: 0005
 Create Date: 2026-07-17
 """
 from __future__ import annotations
@@ -14,7 +14,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "0010"
-down_revision = "0009"
+down_revision = "0005"
 branch_labels = None
 depends_on = None
 
