@@ -12,6 +12,22 @@ Atomicity:
     - write apply_result into the session
     - transition apply_state: "in_progress" -> "completed"
     - renew TTL
+
+cjson empty-array fix:
+  cjson (the JSON library bundled with Redis) cannot distinguish an empty
+  Lua table from an empty Lua array — both serialise to "{}". This would
+  break Pydantic validation for every list field in UpdateModeSession
+  (warnings, vault_ids, candidate_document_ids, changes) after a Lua
+  round-trip.
+
+  Each Lua script calls _fix_session_arrays() before cjson.encode to mark
+  known list fields with cjson.empty_array_mt, so they are written back as
+  "[]" rather than "{}".
+
+  A Python-side _normalize_session_lists() guard is also applied in all
+  result-parser methods as defence-in-depth — it handles any session blob
+  written by old code before this patch, or any future field not yet
+  covered by the Lua helper.
 """
 from __future__ import annotations
 
@@ -78,6 +94,39 @@ class ApplyConflictError(UpdateModeError):
 
 
 # ---------------------------------------------------------------------------
+# Shared Lua helper: fix empty arrays before cjson.encode
+# ---------------------------------------------------------------------------
+# cjson cannot tell an empty Lua table from an empty object, so it encodes
+# both as "{}". _fix_session_arrays() tags top-level session list fields with
+# cjson.empty_array_mt so they round-trip as "[]".
+#
+# This snippet is embedded verbatim into every Lua script below.
+_LUA_FIX_ARRAYS = """
+local function _fix_session_arrays(sess)
+    local list_fields = {'warnings', 'vault_ids', 'candidate_document_ids', 'changes'}
+    for _, f in ipairs(list_fields) do
+        if type(sess[f]) == 'table' and next(sess[f]) == nil then
+            sess[f] = cjson.empty_array
+        end
+    end
+    -- Also fix nested list fields inside each change object.
+    if type(sess['changes']) == 'table' then
+        for _, ch in ipairs(sess['changes']) do
+            -- (no list fields on ResolvedUpdateModeChange currently, but guard stays)
+        end
+    end
+    -- Fix apply_result.results if present
+    if type(sess['apply_result']) == 'table' then
+        local ar = sess['apply_result']
+        if type(ar['results']) == 'table' and next(ar['results']) == nil then
+            ar['results'] = cjson.empty_array
+        end
+    end
+    return sess
+end
+"""
+
+# ---------------------------------------------------------------------------
 # Lua script for atomic review update
 # ---------------------------------------------------------------------------
 # KEYS[1] = redis key
@@ -85,7 +134,9 @@ class ApplyConflictError(UpdateModeError):
 # ARGV[2] = json array of rejected change_ids
 # ARGV[3] = new TTL seconds
 # Returns: updated session JSON string, or error string prefixed with "ERR:"
-_REVIEW_LUA = """
+_REVIEW_LUA = (
+    _LUA_FIX_ARRAYS
+    + """
 local raw = redis.call('GET', KEYS[1])
 if not raw then
     return 'ERR:session_expired'
@@ -116,12 +167,16 @@ for _, cid in ipairs(rejected) do
     ch['status'] = 'rejected'
 end
 
+session = _fix_session_arrays(session)
 local updated = cjson.encode(session)
 redis.call('SET', KEYS[1], updated, 'EX', ttl)
 return updated
 """
+)
 
+# ---------------------------------------------------------------------------
 # Lua script for atomic apply_begin
+# ---------------------------------------------------------------------------
 # KEYS[1] = redis key
 # ARGV[1] = apply_id — MUST be a non-empty UUID string; caller is responsible
 #           for generating it before calling this script (see begin_apply).
@@ -131,7 +186,9 @@ return updated
 #   "ERR:session_expired"           key not found
 #   "ERR:apply_conflict:{existing}" different apply_id already set
 #   "ERR:missing_apply_id"          ARGV[1] was empty (programming error)
-_APPLY_BEGIN_LUA = """
+_APPLY_BEGIN_LUA = (
+    _LUA_FIX_ARRAYS
+    + """
 local raw = redis.call('GET', KEYS[1])
 if not raw then
     return 'ERR:session_expired'
@@ -148,6 +205,7 @@ if session['apply_id'] and session['apply_id'] ~= cjson.null then
     -- Already has an apply_id
     if requested == session['apply_id'] then
         -- Same ID: idempotent retry — return existing session unchanged
+        session = _fix_session_arrays(session)
         return cjson.encode(session)
     else
         return 'ERR:apply_conflict:' .. session['apply_id']
@@ -157,12 +215,16 @@ end
 session['apply_id'] = requested
 session['apply_started_at'] = started_at
 
+session = _fix_session_arrays(session)
 local updated = cjson.encode(session)
 redis.call('SET', KEYS[1], updated, 'EX', ttl)
 return updated
 """
+)
 
-# Lua script for atomic apply completion.
+# ---------------------------------------------------------------------------
+# Lua script for atomic apply completion
+# ---------------------------------------------------------------------------
 # Writes apply_result + transitions apply_state -> "completed".
 #
 # KEYS[1] = redis key
@@ -170,7 +232,9 @@ return updated
 # ARGV[2] = new TTL seconds
 # Returns: updated session JSON, or:
 #   "ERR:session_expired"  — key not found (session expired between apply start and completion)
-_APPLY_COMPLETE_LUA = """
+_APPLY_COMPLETE_LUA = (
+    _LUA_FIX_ARRAYS
+    + """
 local raw = redis.call('GET', KEYS[1])
 if not raw then
     return 'ERR:session_expired'
@@ -181,10 +245,38 @@ local ttl = tonumber(ARGV[2])
 session['apply_result'] = cjson.decode(ARGV[1])
 session['apply_state'] = 'completed'
 
+session = _fix_session_arrays(session)
 local updated = cjson.encode(session)
 redis.call('SET', KEYS[1], updated, 'EX', ttl)
 return updated
 """
+)
+
+
+# ---------------------------------------------------------------------------
+# Python-side defence: normalise any {} that slipped through (back-compat)
+# ---------------------------------------------------------------------------
+# Applied in all result parsers BEFORE model_validate. Handles sessions
+# written by code before this patch (e.g. still cached in Redis on deploy).
+_SESSION_LIST_FIELDS = ("warnings", "vault_ids", "candidate_document_ids", "changes")
+
+
+def _normalize_session_lists(data: dict[str, Any]) -> dict[str, Any]:
+    """Replace empty dicts with empty lists for known list fields.
+
+    cjson may have encoded an empty Lua table as {} instead of [].
+    This guard converts them back so Pydantic validation does not fail.
+    Works on sessions produced by old code before the Lua fix was deployed.
+    """
+    for field in _SESSION_LIST_FIELDS:
+        if isinstance(data.get(field), dict) and not data[field]:
+            data[field] = []
+    # Nested: apply_result.results
+    apply_result = data.get("apply_result")
+    if isinstance(apply_result, dict):
+        if isinstance(apply_result.get("results"), dict) and not apply_result["results"]:
+            apply_result["results"] = []
+    return data
 
 
 # ---------------------------------------------------------------------------
@@ -217,7 +309,8 @@ class UpdateModeStore:
         raw = await redis.get(self._key(chat_id))
         if raw is None:
             return None
-        return UpdateModeSession.model_validate(json.loads(raw))
+        data = _normalize_session_lists(json.loads(raw))
+        return UpdateModeSession.model_validate(data)
 
     async def create(self, redis: "aioredis.Redis", session: UpdateModeSession) -> None:
         key = self._key(session.chat_id)
@@ -318,15 +411,20 @@ class UpdateModeStore:
                     result.apply_id,
                 )
                 return None
-        return UpdateModeSession.model_validate(json.loads(raw))
+        data = _normalize_session_lists(json.loads(raw))
+        return UpdateModeSession.model_validate(data)
 
     async def delete(self, redis: "aioredis.Redis", chat_id: str) -> None:
         await redis.delete(self._key(chat_id))
         logger.info("update_mode session deleted chat_id=%s", chat_id)
 
     # ------------------------------------------------------------------
-    # Lua helpers
+    # Lua script loaders
     # ------------------------------------------------------------------
+    # SHA cache is class-level so it survives across requests. A NOSCRIPT
+    # response from Redis (after a SCRIPT FLUSH or restart) would cause
+    # evalsha to raise — the fix is to clear the cached SHA and reload.
+    # That edge case is not handled here; a process restart recovers it.
 
     async def _ensure_review_script(self, redis: "aioredis.Redis") -> str:
         if UpdateModeStore._review_sha is None:
@@ -348,7 +446,9 @@ class UpdateModeStore:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _parse_review_result(result: str, chat_id: str) -> UpdateModeSession:
+    def _parse_review_result(result: str | bytes, chat_id: str) -> UpdateModeSession:
+        if isinstance(result, bytes):
+            result = result.decode()
         if result.startswith("ERR:"):
             err = result[4:]
             if err == "session_expired":
@@ -360,10 +460,13 @@ class UpdateModeStore:
             if err.startswith("review_conflict:"):
                 raise ReviewConflictError(err.split(":", 1)[1])
             raise UpdateModeError("lua_error", f"Unexpected Lua error: {err}")
-        return UpdateModeSession.model_validate(json.loads(result))
+        data = _normalize_session_lists(json.loads(result))
+        return UpdateModeSession.model_validate(data)
 
     @staticmethod
-    def _parse_apply_result(result: str, chat_id: str, requested_apply_id: str) -> UpdateModeSession:
+    def _parse_apply_result(result: str | bytes, chat_id: str, requested_apply_id: str) -> UpdateModeSession:
+        if isinstance(result, bytes):
+            result = result.decode()
         if result.startswith("ERR:"):
             err = result[4:]
             if err == "session_expired":
@@ -374,7 +477,8 @@ class UpdateModeStore:
                 existing = err.split(":", 1)[1]
                 raise ApplyConflictError(requested_apply_id, existing)
             raise UpdateModeError("lua_error", f"Unexpected Lua error: {err}")
-        return UpdateModeSession.model_validate(json.loads(result))
+        data = _normalize_session_lists(json.loads(result))
+        return UpdateModeSession.model_validate(data)
 
 
 # Module-level singleton — same pattern as domain_service / settings_service
