@@ -47,6 +47,9 @@ log = logging.getLogger(__name__)
 
 _MAX_CONTENT_BYTES = 10 * 1024 * 1024  # 10 MB guard
 
+# UTF-8 BOM that some editors prepend to files.
+_UTF8_BOM = "\ufeff"
+
 
 # ---------------------------------------------------------------------------
 # Helpers: apply operations in-memory
@@ -81,19 +84,28 @@ def _append_after_section(original: str, heading: str, content: str) -> str | No
 
     Returns None if the heading is not found.
     """
-    # Normalise the anchor so '# Foo' and 'Foo' both match a '# Foo' line.
     heading_text = _normalise_heading_text(heading)
+    log.debug(
+        "_append_after_section: searching for heading %r (normalised: %r)",
+        heading,
+        heading_text,
+    )
 
     lines = original.splitlines(keepends=True)
     insert_at: int | None = None
 
     for i, line in enumerate(lines):
         stripped = line.strip()
-        # Match heading prefix: # Heading or ## Heading etc.
         if stripped.startswith("#"):
             text = _normalise_heading_text(stripped)
+            log.debug(
+                "_append_after_section: line %d heading %r (normalised: %r) match=%s",
+                i,
+                stripped,
+                text,
+                text.lower() == heading_text.lower(),
+            )
             if text.lower() == heading_text.lower():
-                # Find the end of this section (next heading at same or higher level)
                 level = len(stripped) - len(stripped.lstrip("#"))
                 j = i + 1
                 while j < len(lines):
@@ -107,9 +119,20 @@ def _append_after_section(original: str, heading: str, content: str) -> str | No
                 break
 
     if insert_at is None:
+        # Log repr of all headings found to help diagnose invisible-char mismatches.
+        found_headings = [
+            _normalise_heading_text(line.strip())
+            for line in lines
+            if line.strip().startswith("#")
+        ]
+        log.warning(
+            "_append_after_section: heading not found. searched=%r; "
+            "headings in file (normalised): %r",
+            heading_text,
+            found_headings,
+        )
         return None
 
-    # Ensure blank line before and after inserted block
     block = "\n" + content.rstrip("\n") + "\n"
     lines.insert(insert_at, block)
     return "".join(lines)
@@ -186,7 +209,6 @@ async def _resolve_one(
         except PathValidationError as exc:
             return _fail(exc.code, str(exc))
 
-        # Normalise: ensure _campaign_notes/ prefix for new files
         if not filename.startswith("_campaign_notes/"):
             filename = f"_campaign_notes/{filename}"
 
@@ -213,12 +235,12 @@ async def _resolve_one(
             original_content=original,
             proposed_content=proposed,
             unified_diff=unified_diff,
-            expected_sha256=None,  # CREATE: no CAS guard needed
+            expected_sha256=None,
             status=UpdateModeChangeStatus.PENDING,
         )
 
     # ── UPDATE action ────────────────────────────────────────────────────────────────────
-    assert intent.action == UpdateModeAction.UPDATE  # validated by Pydantic
+    assert intent.action == UpdateModeAction.UPDATE
     assert intent.document_id is not None
 
     doc = await _lookup_document(db, intent.document_id)
@@ -249,9 +271,15 @@ async def _resolve_one(
     except FileReadError as exc:
         return _fail(exc.code, str(exc))
 
+    # Strip UTF-8 BOM if present. Some editors (Obsidian on Windows, Excel
+    # exports, etc.) prepend \ufeff. With the BOM the first line starts with
+    # '\ufeff#' so startswith('#') is False and the heading is never matched.
+    if original.startswith(_UTF8_BOM):
+        log.debug("_resolve_one: stripping UTF-8 BOM from %s", source_path)
+        original = original[len(_UTF8_BOM):]
+
     original_sha256 = _sha256_str(original)
 
-    # Apply operation
     proposed: str | None = None
     op = intent.operation
 
