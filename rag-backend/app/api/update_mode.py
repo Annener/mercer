@@ -31,7 +31,8 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime, timedelta, timezone
+from collections import defaultdict
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -72,12 +73,15 @@ from shared_contracts.models import (
     ApplyUpdateModeRequest,
     ApplyUpdateModeResponse,
     CancelUpdateModeResponse,
+    ResolvedUpdateModeChange,
     StartUpdateModeRequest,
     StartUpdateModeResponse,
     UpdateModeAction,
-    UpdateModeApplyChange,
     UpdateModeApplyRequest,
     UpdateModeChangeStatus,
+    UpdateModeFileChangeBatch,
+    UpdateModeFileOp,
+    UpdateModeOperation,
     UpdateModeResolveRequest,
     UpdateModeReviewRequest,
     UpdateModeSession,
@@ -136,6 +140,93 @@ async def _write_audit_log(
         await db.commit()
     except Exception:
         logger.warning("audit log write failed action=%s entity_id=%s", action, entity_id, exc_info=True)
+
+
+def _build_file_batches(
+    accepted: list[ResolvedUpdateModeChange],
+) -> list[UpdateModeFileChangeBatch]:
+    """Group accepted changes by (vault_id, file_path) and build file_batches.
+
+    Sorting by resolve_order guarantees that multiple ops on the same file are
+    applied in the order they were originally resolved (which matches the order
+    LLM produced them and the order patch hunks were computed).
+
+    Backward-compat: if a change has no operation field (session was written
+    before this PR), fall back to a single APPEND_TO_FILE op using
+    proposed_content — mirrors pre-fix single-patch behaviour.
+    """
+    # Group by (vault_id, file_path), preserving vault/file_path from change
+    groups: dict[tuple[str, str], list[ResolvedUpdateModeChange]] = defaultdict(list)
+    skipped = 0
+    for ch in accepted:
+        if ch.vault_id is None or ch.file_path is None:
+            logger.warning(
+                "Skipping change %s: missing vault_id or file_path", ch.change_id
+            )
+            skipped += 1
+            continue
+        groups[(ch.vault_id, ch.file_path)].append(ch)
+
+    if skipped:
+        logger.info("_build_file_batches: skipped %d incomplete changes", skipped)
+
+    batches: list[UpdateModeFileChangeBatch] = []
+    for (vault_id, file_path), changes in groups.items():
+        # Sort by resolve_order so multi-op patches are applied in correct sequence
+        changes.sort(key=lambda c: c.resolve_order)
+
+        ops: list[UpdateModeFileOp] = []
+        for i, ch in enumerate(changes):
+            if ch.operation is not None:
+                # New-style change: has operation + anchor + op_content
+                ops.append(
+                    UpdateModeFileOp(
+                        change_id=ch.change_id,
+                        operation=ch.operation,
+                        anchor_value=ch.anchor.value if ch.anchor else None,
+                        content=ch.op_content,
+                        # CAS check only on first op of UPDATE batches
+                        expected_sha256=(
+                            ch.expected_sha256
+                            if i == 0 and ch.action == UpdateModeAction.UPDATE
+                            else None
+                        ),
+                    )
+                )
+            else:
+                # Backward-compat: old session written before this PR.
+                # Reconstruct a single APPEND_TO_FILE op from proposed_content.
+                # This is only valid for single-change-per-file sessions; if
+                # there are multiple legacy changes for the same file, only the
+                # last one wins — same behaviour as the old code path.
+                logger.warning(
+                    "Change %s has no operation field — using legacy APPEND_TO_FILE fallback",
+                    ch.change_id,
+                )
+                ops.append(
+                    UpdateModeFileOp(
+                        change_id=ch.change_id,
+                        operation=UpdateModeOperation.APPEND_TO_FILE,
+                        anchor_value=None,
+                        content=ch.proposed_content,
+                        expected_sha256=(
+                            ch.expected_sha256
+                            if i == 0 and ch.action == UpdateModeAction.UPDATE
+                            else None
+                        ),
+                    )
+                )
+
+        batches.append(
+            UpdateModeFileChangeBatch(
+                vault_id=vault_id,
+                file_path=file_path,
+                action=changes[0].action,
+                ops=ops,
+            )
+        )
+
+    return batches
 
 
 # ---------------------------------------------------------------------------
@@ -271,6 +362,9 @@ async def apply_changes(
 ) -> ApplyUpdateModeResponse:
     """Delegate writing + reindex to rag-indexer. Idempotent for same apply_id.
 
+    Builds file_batches from accepted session changes so the indexer can apply
+    multiple ops to the same file in a single atomic read-modify-write cycle.
+
     After receiving the indexer response:
     - persists apply_result in the Redis session via complete_apply()
     - writes an AuditLog row
@@ -294,23 +388,9 @@ async def apply_changes(
             detail="No accepted changes to apply. Use PATCH /review to accept changes first.",
         )
 
-    apply_changes_list = []
-    for ch in accepted:
-        if ch.vault_id is None or ch.file_path is None:
-            logger.warning("Skipping change %s: missing vault_id or file_path", ch.change_id)
-            continue
-        apply_changes_list.append(
-            UpdateModeApplyChange(
-                change_id=ch.change_id,
-                vault_id=ch.vault_id,
-                file_path=ch.file_path,
-                action=ch.action,
-                proposed_content=ch.proposed_content,
-                expected_sha256=ch.expected_sha256,
-            )
-        )
+    file_batches = _build_file_batches(accepted)
 
-    if not apply_changes_list:
+    if not file_batches:
         raise HTTPException(
             status_code=422,
             detail="No complete changes to apply (missing vault_id or file_path).",
@@ -320,7 +400,7 @@ async def apply_changes(
         apply_id=session.apply_id or str(uuid.uuid4()),
         chat_id=chat_id,
         campaign_id=session.campaign_id,
-        accepted_changes=apply_changes_list,
+        file_batches=file_batches,
     )
 
     try:
