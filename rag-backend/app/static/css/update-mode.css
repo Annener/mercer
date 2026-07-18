@@ -13,7 +13,7 @@
     display: flex;
     flex-direction: column;
     gap: 12px;
-    max-width: 720px;
+    max-width: 1000px;
 }
 
 /* ---- Header ---- */
@@ -296,7 +296,7 @@
 
 .um-change-diff__pre {
     margin-top: 6px;
-    padding: 8px 10px;
+    padding: 6px 0;
     background: #f8f8f8;
     border: 1px solid var(--border-color, #e0e0e0);
     border-radius: 6px;
@@ -304,8 +304,29 @@
     font-family: 'Courier New', Courier, monospace;
     white-space: pre;
     overflow-x: auto;
-    max-height: 260px;
+    max-height: 320px;
     line-height: 1.5;
+}
+
+/* ---- Diff line highlighting ---- */
+.um-diff-line {
+    display: block;
+    padding: 0 10px;
+    min-width: max-content;
+}
+
+.um-diff-line--add {
+    background: rgba(39, 174, 96, 0.13);
+    color: #145a32;
+}
+
+.um-diff-line--del {
+    background: rgba(231, 76, 60, 0.13);
+    color: #641e16;
+}
+
+.um-diff-line--meta {
+    color: #888;
 }
 
 /* ---- Change action buttons ---- */
