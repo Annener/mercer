@@ -311,7 +311,16 @@ def _delete_section(original: str, heading: str) -> str | None:
 
     anchor_idx = matching[0]
     anchor_level = _heading_level(lines[anchor_idx])
-    assert anchor_level is not None  # line starts with '#', guaranteed above
+    # anchor_level cannot be None here: the loop above guarantees the line
+    # starts with '#' and _heading_level only returns None for lines that do
+    # not conform to CommonMark ATX syntax.  Guard defensively to avoid
+    # AssertionError when Python is run with -O (optimisations strip assert).
+    if anchor_level is None:  # pragma: no cover
+        log.error(
+            "_delete_section: matched line is not a valid ATX heading: %r",
+            lines[anchor_idx],
+        )
+        return None
 
     # Find end of section: first heading at same or higher level after anchor
     end_idx = len(lines)
