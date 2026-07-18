@@ -8,6 +8,7 @@
 | Роутер | Prefix | Файл | Назначение |
 |---|---|---|---|
 | `chat_router` | `/api/chat` | `api/chat.py` | Чаты, сообщения, стриминг |
+| `update_mode_router` | `/api/chats` | `api/update_mode.py` | Campaign Update Mode (review, apply, git) |
 | `pipeline_resume_router` | `/api/pipeline` | `api/pipeline_resume.py` | Подтверждение/resume пайплайнов |
 | `config_router` | `/api/config` | `api/config_api.py` | Системные настройки |
 | `settings_router` | `/api/settings` | `api/settings/__init__.py` | Настройки платформы (агрегирует все sub-роутеры ниже) |
@@ -51,6 +52,74 @@ DELETE /api/chat/{chat_id}/messages         — очистить историю
 
 GET    /api/chat/{chat_id}/clarification    — состояние ClarificationFSM
 POST   /api/chat/{chat_id}/clarification/reset — сбросить уточнение
+```
+
+---
+
+## Campaign Update Mode API (`api/update_mode.py`)
+
+Режим актуализации markdown-контекста кампаний. Доступен только для campaign-чатов.
+
+```
+POST   /api/chats/{chat_id}/update-mode/start
+    — Старт update mode: retrieval → LLM edit intents → resolve в indexer
+    — Body: {"note": str (max 20000 chars)}
+    — Response: {session, warnings}
+    — 409 если сессия уже активна; 422 если нет tags / vault / indexed md
+
+GET    /api/chats/{chat_id}/update-mode/session
+    — Получить текущее состояние review-сессии из Redis
+    — 410 + Cache-Control: no-store если сессия истекла
+
+PATCH  /api/chats/{chat_id}/update-mode/review
+    — Обновить accepted/rejected статус правок в Redis
+    — Body: {"changes": [{"change_id": str, "status": "accepted" | "rejected"}]}
+
+POST   /api/chats/{chat_id}/update-mode/apply
+    — Применить accepted changes: checksum verify → snapshot → write → commit → reindex
+    — Body: {"apply_id": UUID (idempotency key)}
+    — Response: ApplyUpdateModeResponse (per-vault results, commit SHA, reindex_task_id)
+    — 409 при file_modified, vault_lock_timeout, apply_already_started
+
+DELETE /api/chats/{chat_id}/update-mode/session
+    — Отменить сессию, удалить из Redis
+```
+
+### Коды ошибок (application-level)
+
+| Код | HTTP | Смысл |
+|---|---|---|
+| `campaign_required` | 422 | Чат не связан с campaign |
+| `campaign_tags_required` | 422 | Нет tags у campaign |
+| `no_enabled_vaults` | 422 | Нет enabled vault в domain |
+| `campaign_has_no_indexed_markdown` | 422 | Нет tagged indexed `.md` |
+| `no_relevant_campaign_context` | 422 | Retrieval не нашёл релевантный context |
+| `no_usable_indexed_context` | 422 | Context reconstruction/limits не дали usable docs |
+| `generation_provider_unavailable` | 503 | Нет active LLM provider |
+| `indexer_unavailable` | 503/502 | Indexer недоступен |
+| `session_already_active` | 409 | Review session уже есть |
+| `session_expired` | 410 | Redis TTL истёк |
+| `file_modified` | 409 | Файл изменился после review |
+| `target_exists` | 409 | Create target уже существует |
+| `vault_root_missing` | 409 | Нет vault directory |
+| `vault_lock_timeout` | 409 | Vault занят другой операцией |
+| `git_unavailable` | 503 | Git отсутствует/недоступен |
+| `git_identity_missing` | 503 | Нет git identity (ни DB, ни env fallback) |
+| `git_ignored_target` | 409 | Git игнорирует target `.md` |
+| `apply_already_started` | 409 | Другой apply ID уже выполняется |
+| `apply_id_payload_mismatch` | 409 | Тот же apply ID, другой payload |
+| `apply_in_progress` | 409 | Apply с тем же ID ещё выполняется |
+
+### Internal Indexer API (внутри Docker-сети, не публичный)
+
+```
+POST   /internal/update-mode/resolve
+    — LLM intent → original-file diff, SHA-256, unified_diff
+    — Вызывается через indexer_client.py из rag-backend
+
+POST   /internal/update-mode/apply
+    — Checksum verify → snapshot → atomic write → git commit → targeted reindex
+    — Apply idempotency: apply_id хранится в Redis/shared state; повтор с тем же apply_id возвращает тот же результат
 ```
 
 ---
@@ -178,19 +247,6 @@ POST   /api/settings/sidecar/stop            — остановить sidecar
 POST   /api/settings/sidecar/restart         — перезапустить sidecar
 GET    /api/settings/sidecar/install/stream  — SSE-поток вывода install.sh (установка)
 ```
-
-Пример ответа `GET /api/settings/sidecar/status` (agent доступен):
-```json
-{"running": true, "pid": 12345, "installed": true, "sidecar_dir": "/opt/mercer/pdf-sidecar"}
-```
-
-Пример ответа при недоступном agent:
-```json
-{"running": false, "installed": false, "agent_unavailable": true}
-```
-
-`GET /api/settings/sidecar/install/stream` проксирует SSE-поток напрямую из host-agent
-(`media_type: text/event-stream`), отключая nginx-буферизацию (`X-Accel-Buffering: no`).
 
 ---
 
