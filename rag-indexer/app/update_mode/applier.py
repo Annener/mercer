@@ -222,13 +222,21 @@ async def _apply_vault(
         vault_identity = None
 
     # 4. Sort ops within each batch by deterministic operation order.
-    for batch in batches:
-        batch.ops.sort(key=_sort_op)
+    #    Use sorted() to avoid mutating the incoming Pydantic model in-place.
+    sorted_batches = [
+        UpdateModeFileChangeBatch(
+            vault_id=batch.vault_id,
+            file_path=batch.file_path,
+            action=batch.action,
+            ops=sorted(batch.ops, key=_sort_op),
+        )
+        for batch in batches
+    ]
 
     # 5. Preflight CAS check (read-only, before any writes).
     #    For UPDATE batches: ops[0].expected_sha256 must match on-disk sha256.
     preflight_conflicts: list[str] = []
-    for batch in batches:
+    for batch in sorted_batches:
         if batch.action != UpdateModeAction.UPDATE:
             continue
         first_op = batch.ops[0]
@@ -261,7 +269,7 @@ async def _apply_vault(
 
     # 6. Snapshot commit (pre-apply) for UPDATE files.
     snapshot_paths: list[Path] = []
-    for batch in batches:
+    for batch in sorted_batches:
         if batch.action == UpdateModeAction.UPDATE:
             try:
                 abs_path = resolve_file_path(vault_root, batch.file_path)
@@ -291,7 +299,7 @@ async def _apply_vault(
     written_rel_paths: list[str] = []
     total_ops_applied: int = 0
 
-    for batch in batches:
+    for batch in sorted_batches:
         file_path = batch.file_path
         try:
             abs_path = resolve_file_path(vault_root, file_path)
@@ -328,8 +336,8 @@ async def _apply_vault(
                 )
             except AnchorNotFoundError as exc:
                 log.error(
-                    "update-mode anchor not found vault=%s path=%s change_id=%s anchor=%r",
-                    vault_id, file_path, op.change_id, exc.anchor_value,
+                    "update-mode anchor not found vault=%s path=%s change_id=%s anchor=%r written_paths=%s",
+                    vault_id, file_path, op.change_id, exc.anchor_value, written_paths,
                 )
                 return _fail(
                     "anchor_not_found",
@@ -338,8 +346,8 @@ async def _apply_vault(
                 )
             except AnchorAmbiguousError as exc:
                 log.error(
-                    "update-mode anchor ambiguous vault=%s path=%s change_id=%s anchor=%r",
-                    vault_id, file_path, op.change_id, exc.anchor_value,
+                    "update-mode anchor ambiguous vault=%s path=%s change_id=%s anchor=%r written_paths=%s",
+                    vault_id, file_path, op.change_id, exc.anchor_value, written_paths,
                 )
                 return _fail(
                     "anchor_ambiguous",
@@ -427,7 +435,9 @@ async def _apply_vault(
     return UpdateModeVaultApplyResult(
         vault_id=vault_id,
         status=UpdateModeVaultApplyStatus.APPLIED,
-        applied_count=len(written_paths),
+        # applied_count reflects total ops applied across all files in this
+        # vault, not just the number of files written.
+        applied_count=total_ops_applied,
         snapshot_commit_sha=snapshot_sha,
         commit_sha=commit_sha,
         commit_message=commit_msg,
