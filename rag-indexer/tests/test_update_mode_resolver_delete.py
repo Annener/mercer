@@ -1,21 +1,42 @@
-"""Tests for delete_section and delete_unique_text operations in resolver.py.
+"""Tests for delete operations in rag-indexer/app/update_mode/resolver.py
 
-All tests are pure unit tests — no DB, no filesystem, no Docker required.
-They exercise the in-memory helpers _resolve_delete_section,
-_resolve_delete_unique_text, _find_unique_heading, _heading_level, and
-_collapse_consecutive_blank_lines directly, plus the full _resolve_one
-pipeline via mocked DB and tmp vault fixtures.
+All tests are pure unit tests on the in-memory helpers:
+  _delete_section, _delete_unique_text, _heading_level,
+  _collapse_consecutive_blank_lines, _AnchorAmbiguousError.
+
+No DB, no filesystem, no Docker required.
+
+Test matrix:
+  _heading_level             — H1-H6 recognised; non-headings return None
+  _collapse_blank_lines      — 3+ blanks collapsed to 2
+  _delete_section
+    ✓ H2 section removed, sibling H2 untouched
+    ✓ H2 body (list items) fully removed
+    ✓ nested H3 removed, parent H2 survives
+    ✓ anchor_not_found → returns None
+    ✓ anchor_ambiguous → raises _AnchorAmbiguousError
+    ✓ only section in file → empty string (not error)
+    ✓ no 3+ consecutive blank lines after removal
+    ✓ anchor supplied with/without leading '#' both match
+  _delete_unique_text
+    ✓ list item removed, siblings untouched
+    ✓ line count decreases by 1
+    ✓ anchor_not_found → returns None
+    ✓ anchor_ambiguous → raises _AnchorAmbiguousError
+    ✓ only line in file → empty string (not error)
+    ✓ no 3+ consecutive blank lines after removal
+    ✓ leading/trailing whitespace stripped in fragment match
 """
 from __future__ import annotations
 
 import pytest
 
 from app.update_mode.resolver import (
+    _AnchorAmbiguousError,
     _collapse_consecutive_blank_lines,
-    _find_unique_heading,
+    _delete_section,
+    _delete_unique_text,
     _heading_level,
-    _resolve_delete_section,
-    _resolve_delete_unique_text,
 )
 
 
@@ -25,225 +46,178 @@ from app.update_mode.resolver import (
 
 class TestHeadingLevel:
     def test_h1(self):
-        assert _heading_level("# Title") == 1
+        assert _heading_level("# Title\n") == 1
 
     def test_h2(self):
-        assert _heading_level("## Section") == 2
+        assert _heading_level("## Section\n") == 2
 
     def test_h3(self):
-        assert _heading_level("### Sub") == 3
+        assert _heading_level("### Sub\n") == 3
 
     def test_h6(self):
-        assert _heading_level("###### Deep") == 6
+        assert _heading_level("###### Deep\n") == 6
 
-    def test_no_space_after_hashes_is_not_heading(self):
-        # CommonMark requires a space after '#' for ATX headings.
-        assert _heading_level("##NoSpace") == 0
+    def test_not_a_heading_plain(self):
+        assert _heading_level("plain text\n") is None
 
-    def test_non_heading_line(self):
-        assert _heading_level("Regular text") == 0
+    def test_not_a_heading_hash_no_space(self):
+        # '#hashtag' is not a CommonMark ATX heading
+        assert _heading_level("#hashtag\n") is None
 
     def test_empty_line(self):
-        assert _heading_level("") == 0
+        assert _heading_level("\n") is None
 
-    def test_with_trailing_whitespace(self):
-        assert _heading_level("## Section   ") == 2
-
-
-# ---------------------------------------------------------------------------
-# _find_unique_heading
-# ---------------------------------------------------------------------------
-
-class TestFindUniqueHeading:
-    def _lines(self, text: str) -> list[str]:
-        return text.splitlines(keepends=True)
-
-    def test_h2_found_returns_correct_bounds(self):
-        doc = "# Top\n\n## Section\nBody\n\n## Next\n"
-        lines = self._lines(doc)
-        result = _find_unique_heading(lines, "## Section")
-        assert result is not None
-        start, end = result
-        assert lines[start].strip() == "## Section"
-        # end should point at "## Next" line
-        assert lines[end].strip() == "## Next"
-
-    def test_h3_section_ends_at_parent_h2(self):
-        doc = "## Parent\n\n### Child\nchild body\n\n## Sibling\n"
-        lines = self._lines(doc)
-        result = _find_unique_heading(lines, "### Child")
-        assert result is not None
-        start, end = result
-        # end points at "## Sibling" — same or higher level than H3
-        assert lines[end].strip() == "## Sibling"
-
-    def test_section_extends_to_eof(self):
-        doc = "# Top\n\n## Last\nfinal body\n"
-        lines = self._lines(doc)
-        result = _find_unique_heading(lines, "Last")
-        assert result is not None
-        start, end = result
-        assert end == len(lines)
-
-    def test_heading_not_found_returns_none(self):
-        doc = "# Top\n\n## Other\n"
-        lines = self._lines(doc)
-        assert _find_unique_heading(lines, "Missing") is None
-
-    def test_ambiguous_heading_returns_sentinel(self):
-        doc = "## Section\nfirst\n\n## Section\nsecond\n"
-        lines = self._lines(doc)
-        result = _find_unique_heading(lines, "## Section")
-        assert result == (-1, -1)
-
-    def test_match_is_case_insensitive(self):
-        doc = "## MY SECTION\nbody\n"
-        lines = self._lines(doc)
-        result = _find_unique_heading(lines, "my section")
-        assert result is not None
-        assert result != (-1, -1)
-
-    def test_anchor_with_hashes_normalised(self):
-        doc = "## Summary\nbody\n"
-        lines = self._lines(doc)
-        # Anchor supplied with leading hashes — should still match.
-        result = _find_unique_heading(lines, "## Summary")
-        assert result is not None
-        assert result != (-1, -1)
-
-
-# ---------------------------------------------------------------------------
-# _resolve_delete_section
-# ---------------------------------------------------------------------------
-
-class TestResolveDeleteSection:
-    def test_delete_h2_removes_heading_and_body(self):
-        doc = "# Doc\n\n## Remove Me\nsome content\n\n## Keep\nkeep content\n"
-        proposed, err = _resolve_delete_section(doc, "## Remove Me")
-        assert err is None
-        assert "Remove Me" not in proposed
-        assert "some content" not in proposed
-        assert "Keep" in proposed
-        assert "keep content" in proposed
-
-    def test_delete_h3_does_not_remove_sibling_h3(self):
-        doc = (
-            "## Parent\n\n"
-            "### Alpha\nalpha body\n\n"
-            "### Beta\nbeta body\n"
-        )
-        proposed, err = _resolve_delete_section(doc, "### Alpha")
-        assert err is None
-        assert "Alpha" not in proposed
-        assert "alpha body" not in proposed
-        assert "Beta" in proposed
-        assert "beta body" in proposed
-
-    def test_delete_section_at_eof(self):
-        doc = "# Doc\n\n## Last Section\nonly content\n"
-        proposed, err = _resolve_delete_section(doc, "## Last Section")
-        assert err is None
-        assert "Last Section" not in proposed
-        assert "only content" not in proposed
-
-    def test_heading_not_found_returns_anchor_not_found(self):
-        doc = "# Doc\n\n## Real\nbody\n"
-        proposed, err = _resolve_delete_section(doc, "## Nonexistent")
-        assert proposed is None
-        assert err == "anchor_not_found"
-
-    def test_ambiguous_heading_returns_anchor_ambiguous(self):
-        doc = "## Section\nfirst\n\n## Section\nsecond\n"
-        proposed, err = _resolve_delete_section(doc, "## Section")
-        assert proposed is None
-        assert err == "anchor_ambiguous"
-
-    def test_file_becomes_empty_returns_empty_string_not_error(self):
-        """Deleting the only section should return '' without error."""
-        doc = "## Only\ncontent\n"
-        proposed, err = _resolve_delete_section(doc, "## Only")
-        assert err is None
-        assert proposed.strip() == ""
-
-    def test_no_extra_blank_lines_after_removal(self):
-        doc = "# Doc\n\n\n\n## Remove\nbody\n\n\n\n## Keep\ncontent\n"
-        proposed, err = _resolve_delete_section(doc, "## Remove")
-        assert err is None
-        # No triple blank lines should remain
-        assert "\n\n\n" not in proposed
-
-
-# ---------------------------------------------------------------------------
-# _resolve_delete_unique_text
-# ---------------------------------------------------------------------------
-
-class TestResolveDeleteUniqueText:
-    def test_removes_unique_line(self):
-        doc = "Line one\nRemove this line\nLine three\n"
-        proposed, err = _resolve_delete_unique_text(doc, "Remove this line")
-        assert err is None
-        assert "Remove this line" not in proposed
-        assert "Line one" in proposed
-        assert "Line three" in proposed
-
-    def test_removes_unique_list_item(self):
-        doc = "- Item A\n- Delete me\n- Item C\n"
-        proposed, err = _resolve_delete_unique_text(doc, "- Delete me")
-        assert err is None
-        assert "Delete me" not in proposed
-        assert "Item A" in proposed
-        assert "Item C" in proposed
-
-    def test_anchor_not_found_returns_error(self):
-        doc = "Line one\nLine two\n"
-        proposed, err = _resolve_delete_unique_text(doc, "Nonexistent text")
-        assert proposed is None
-        assert err == "anchor_not_found"
-
-    def test_file_becomes_empty_returns_empty_string_not_error(self):
-        """Deleting the only content should return '' without error."""
-        doc = "Only content here"
-        proposed, err = _resolve_delete_unique_text(doc, "Only content here")
-        assert err is None
-        assert proposed.strip() == ""
-
-    def test_whitespace_tolerant_match(self):
-        """Anchor from LLM (single-line) matches multi-line occurrence in file."""
-        doc = "Line one\nword1\nword2\nLine three\n"
-        # LLM anchor collapses newline between word1 and word2 to space
-        proposed, err = _resolve_delete_unique_text(doc, "word1 word2")
-        assert err is None
-        assert "word1" not in proposed
-        assert "word2" not in proposed
-
-    def test_no_triple_blank_lines_after_removal(self):
-        doc = "\n\n\nTarget text\n\n\n"
-        proposed, err = _resolve_delete_unique_text(doc, "Target text")
-        assert err is None
-        assert "\n\n\n" not in proposed
+    def test_heading_no_trailing_newline(self):
+        assert _heading_level("## Title") == 2
 
 
 # ---------------------------------------------------------------------------
 # _collapse_consecutive_blank_lines
 # ---------------------------------------------------------------------------
 
-class TestCollapseConsecutiveBlankLines:
-    def test_three_newlines_collapsed_to_two(self):
-        result = _collapse_consecutive_blank_lines("a\n\n\nb")
-        assert result == "a\n\nb"
+class TestCollapseBlankLines:
+    def test_no_blanks_unchanged(self):
+        lines = ["line1\n", "line2\n"]
+        assert _collapse_consecutive_blank_lines(lines) == lines
 
-    def test_four_newlines_collapsed(self):
-        result = _collapse_consecutive_blank_lines("a\n\n\n\nb")
-        assert result == "a\n\nb"
+    def test_two_blanks_unchanged(self):
+        lines = ["a\n", "\n", "\n", "b\n"]
+        assert _collapse_consecutive_blank_lines(lines) == lines
 
-    def test_two_newlines_unchanged(self):
-        result = _collapse_consecutive_blank_lines("a\n\nb")
-        assert result == "a\n\nb"
+    def test_three_blanks_collapsed_to_two(self):
+        lines = ["a\n", "\n", "\n", "\n", "b\n"]
+        result = _collapse_consecutive_blank_lines(lines)
+        assert result == ["a\n", "\n", "\n", "b\n"]
 
-    def test_single_newline_unchanged(self):
-        result = _collapse_consecutive_blank_lines("a\nb")
-        assert result == "a\nb"
+    def test_five_blanks_collapsed_to_two(self):
+        lines = ["a\n"] + ["\n"] * 5 + ["b\n"]
+        result = _collapse_consecutive_blank_lines(lines)
+        blank_count = sum(1 for l in result if l.strip() == "")
+        assert blank_count == 2
 
-    def test_empty_string_unchanged(self):
-        result = _collapse_consecutive_blank_lines("")
-        assert result == ""
+
+# ---------------------------------------------------------------------------
+# _delete_section
+# ---------------------------------------------------------------------------
+
+_DOC_MULTIHEADING = """\
+# Задачи на неделю
+
+## Административное
+
+- [x] Оплатить интернет
+- [ ] Сходить к Ивану
+
+## Встречи
+
+### Встреча с Иваном (пятница)
+
+Обсудить детали проекта.
+"""
+
+
+class TestDeleteSection:
+    def test_delete_h2_leaves_sibling_h2(self):
+        result = _delete_section(_DOC_MULTIHEADING, "## Административное")
+        assert result is not None
+        assert "Административное" not in result
+        assert "Задачи на неделю" in result
+        assert "Встречи" in result
+
+    def test_delete_h2_removes_body(self):
+        result = _delete_section(_DOC_MULTIHEADING, "Административное")  # without ##
+        assert result is not None
+        assert "Оплатить интернет" not in result
+        assert "Сходить к Ивану" not in result
+
+    def test_delete_h3_nested_leaves_parent_h2(self):
+        result = _delete_section(_DOC_MULTIHEADING, "### Встреча с Иваном (пятница)")
+        assert result is not None
+        assert "Встреча с Иваном" not in result
+        assert "Обсудить детали" not in result
+        assert "Встречи" in result
+
+    def test_anchor_not_found_returns_none(self):
+        result = _delete_section(_DOC_MULTIHEADING, "## Несуществующий раздел")
+        assert result is None
+
+    def test_anchor_ambiguous_raises(self):
+        doc = "## Одинаковый\nТекст 1\n\n## Одинаковый\nТекст 2\n"
+        with pytest.raises(_AnchorAmbiguousError):
+            _delete_section(doc, "Одинаковый")
+
+    def test_only_section_returns_empty_string(self):
+        doc = "## Единственный раздел\n\nКакой-то текст.\n"
+        result = _delete_section(doc, "Единственный раздел")
+        assert result is not None
+        assert result.strip() == ""
+
+    def test_no_triple_blank_lines_after_removal(self):
+        doc = "# Док\n\n## Удалить\n\nТекст.\n\n## Остаться\n\nЧто-то.\n"
+        result = _delete_section(doc, "Удалить")
+        assert result is not None
+        assert "\n\n\n" not in result
+
+    def test_anchor_matches_with_or_without_hashes(self):
+        """Both '## Summary' and 'Summary' as anchor should match."""
+        doc = "# Doc\n\n## Summary\nbody\n\n## Other\nstuff\n"
+        r1 = _delete_section(doc, "## Summary")
+        r2 = _delete_section(doc, "Summary")
+        assert r1 is not None
+        assert r2 is not None
+        assert r1 == r2
+
+
+# ---------------------------------------------------------------------------
+# _delete_unique_text
+# ---------------------------------------------------------------------------
+
+_DOC_TASKS = """\
+# Задачи
+
+- [x] Оплатить интернет
+- [ ] Сходить к Ивану
+- [ ] Записаться к врачу
+"""
+
+
+class TestDeleteUniqueText:
+    def test_delete_list_item_leaves_siblings(self):
+        result = _delete_unique_text(_DOC_TASKS, "- [ ] Сходить к Ивану")
+        assert result is not None
+        assert "Сходить к Ивану" not in result
+        assert "Оплатить интернет" in result
+        assert "Записаться к врачу" in result
+
+    def test_delete_decreases_line_count_by_one(self):
+        lines_before = _DOC_TASKS.splitlines()
+        result = _delete_unique_text(_DOC_TASKS, "- [ ] Сходить к Ивану")
+        assert result is not None
+        assert len(result.splitlines()) == len(lines_before) - 1
+
+    def test_anchor_not_found_returns_none(self):
+        result = _delete_unique_text(_DOC_TASKS, "- [ ] Несуществующая задача")
+        assert result is None
+
+    def test_anchor_ambiguous_raises(self):
+        doc = "- [ ] Дубль\n- [ ] Дубль\n"
+        with pytest.raises(_AnchorAmbiguousError):
+            _delete_unique_text(doc, "- [ ] Дубль")
+
+    def test_only_line_returns_empty_string(self):
+        doc = "- [ ] Единственная задача\n"
+        result = _delete_unique_text(doc, "- [ ] Единственная задача")
+        assert result is not None
+        assert result.strip() == ""
+
+    def test_no_triple_blank_lines_after_removal(self):
+        doc = "# Док\n\n\n- [ ] Удалить\n\n\nЧто-то.\n"
+        result = _delete_unique_text(doc, "- [ ] Удалить")
+        assert result is not None
+        assert "\n\n\n" not in result
+
+    def test_strips_whitespace_in_fragment_for_match(self):
+        """Fragment match is strip()-based; leading/trailing spaces are ignored."""
+        result = _delete_unique_text(_DOC_TASKS, "  - [ ] Сходить к Ивану  ")
+        assert result is not None
+        assert "Сходить к Ивану" not in result
