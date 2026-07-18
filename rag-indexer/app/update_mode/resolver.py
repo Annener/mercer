@@ -82,76 +82,6 @@ def _normalise_heading_text(raw: str) -> str:
     return raw.lstrip("#").strip()
 
 
-def _heading_level(line: str) -> int:
-    """Return the heading level (1-6) of a stripped markdown heading line.
-
-    Returns 0 if the line is not a heading.
-    """
-    stripped = line.strip()
-    if not stripped.startswith("#"):
-        return 0
-    level = len(stripped) - len(stripped.lstrip("#"))
-    # Heading must have a space after the hashes (CommonMark rule).
-    if level > 6:
-        return 0
-    if len(stripped) > level and stripped[level] not in (" ", "\t"):
-        return 0
-    return level
-
-
-def _find_unique_heading(
-    lines: list[str],
-    heading: str,
-) -> tuple[int, int] | None:
-    """Find the unique heading matching `heading` and return (start_idx, end_idx).
-
-    start_idx: index of the heading line itself.
-    end_idx: index of the first line that belongs to the *next* section at the
-             same or higher level, or len(lines) if the section extends to EOF.
-
-    Returns None if the heading is not found or is found more than once
-    (ambiguous). A None return should be converted to anchor_not_found or
-    anchor_ambiguous by the caller.
-    """
-    heading_text = _normalise_heading_text(heading)
-    matches: list[int] = []
-
-    for i, line in enumerate(lines):
-        stripped = line.strip()
-        level = _heading_level(stripped)
-        if level == 0:
-            continue
-        if _normalise_heading_text(stripped).lower() == heading_text.lower():
-            matches.append(i)
-
-    if len(matches) == 0:
-        return None
-    if len(matches) > 1:
-        # Signal ambiguity with a sentinel tuple (-1, -1).
-        return (-1, -1)
-
-    start = matches[0]
-    level = _heading_level(lines[start].strip())
-    end = len(lines)
-    for j in range(start + 1, len(lines)):
-        lvl = _heading_level(lines[j].strip())
-        if lvl != 0 and lvl <= level:
-            end = j
-            break
-
-    return (start, end)
-
-
-def _collapse_consecutive_blank_lines(text: str) -> str:
-    """Replace runs of 3+ consecutive blank lines with at most 2 blank lines.
-
-    After removing a section the surrounding content may end up separated by
-    many blank lines.  This normalises the result without touching intentional
-    single or double blank lines used for paragraph separation.
-    """
-    return re.sub(r"\n{3,}", "\n\n", text)
-
-
 def _append_after_section(original: str, heading: str, content: str) -> str | None:
     """Insert content after the first markdown heading that matches `heading`.
 
@@ -305,64 +235,163 @@ def _replace_unique_text(original: str, anchor_text: str, content: str) -> str |
     return result
 
 
-def _resolve_delete_section(
-    original: str,
-    heading: str,
-) -> tuple[str, str] | None:
-    """Remove the section identified by `heading` from `original`.
+# ---------------------------------------------------------------------------
+# Helpers: delete operations
+# ---------------------------------------------------------------------------
 
-    Returns (proposed, error_code) where error_code is None on success, or one
-    of 'anchor_not_found' / 'anchor_ambiguous' on failure.
+def _heading_level(line: str) -> int | None:
+    """Return heading level (1-6) or None if the line is not a heading."""
+    stripped = line.lstrip()
+    if stripped.startswith("#"):
+        count = len(stripped) - len(stripped.lstrip("#"))
+        if 1 <= count <= 6 and (len(stripped) <= count or stripped[count] == " "):
+            return count
+    return None
 
-    The heading line itself and all lines belonging to its body (up to the next
-    sibling/parent heading or EOF) are removed.  Consecutive blank lines left
-    behind by the removal are collapsed to at most two newlines.
 
-    If the file would become empty after the deletion, the result is an empty
-    string — the caller logs a warning but still returns a valid resolved change.
+def _collapse_consecutive_blank_lines(lines: list[str]) -> list[str]:
+    """Collapse 3+ consecutive blank lines down to 2."""
+    result: list[str] = []
+    blank_count = 0
+    for line in lines:
+        if line.strip() == "":
+            blank_count += 1
+            if blank_count <= 2:
+                result.append(line)
+        else:
+            blank_count = 0
+            result.append(line)
+    return result
+
+
+def _delete_section(original: str, heading: str) -> str | None:
+    """Delete the markdown section that starts with `heading`.
+
+    Deletes from the matched heading line up to (but not including) the next
+    heading of the same or higher level.  Trailing blank lines before the next
+    heading are also removed to avoid leaving double blank lines.
+
+    `heading` may be supplied with or without leading '#' characters — the
+    comparison is normalised the same way as _append_after_section.
+
+    Returns None if the heading is not found (anchor_not_found).
+    Raises _AnchorAmbiguousError if the heading matches more than once.
     """
+    heading_text = _normalise_heading_text(heading)
     lines = original.splitlines(keepends=True)
-    result = _find_unique_heading(lines, heading)
 
-    if result is None:
+    matching: list[int] = []
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            if _normalise_heading_text(stripped).lower() == heading_text.lower():
+                matching.append(i)
+
+    if len(matching) == 0:
+        found_headings = [
+            _normalise_heading_text(line.strip())
+            for line in lines
+            if line.strip().startswith("#")
+        ]
         log.warning(
-            "_resolve_delete_section: heading not found: %r",
-            heading,
+            "_delete_section: heading not found. searched=%r; "
+            "headings in file (normalised): %r",
+            heading_text,
+            found_headings,
         )
-        return None, "anchor_not_found"
+        return None
 
-    start, end = result
-    if start == -1:
+    if len(matching) > 1:
         log.warning(
-            "_resolve_delete_section: heading is ambiguous: %r",
-            heading,
+            "_delete_section: heading matches %d times — anchor is ambiguous: %r",
+            len(matching),
+            heading_text,
         )
-        return None, "anchor_ambiguous"
+        raise _AnchorAmbiguousError(heading)
 
-    remaining = lines[:start] + lines[end:]
-    proposed = _collapse_consecutive_blank_lines("".join(remaining))
-    return proposed, None
+    anchor_idx = matching[0]
+    anchor_level = _heading_level(lines[anchor_idx])
+    assert anchor_level is not None  # line starts with '#', guaranteed above
+
+    # Find end of section: first heading at same or higher level after anchor
+    end_idx = len(lines)
+    for i in range(anchor_idx + 1, len(lines)):
+        lvl = _heading_level(lines[i])
+        if lvl is not None and lvl <= anchor_level:
+            end_idx = i
+            break
+
+    # Trim trailing blank lines before the next heading
+    while end_idx > anchor_idx and lines[end_idx - 1].strip() == "":
+        end_idx -= 1
+
+    new_lines = lines[:anchor_idx] + lines[end_idx:]
+    new_lines = _collapse_consecutive_blank_lines(new_lines)
+    result = "".join(new_lines)
+
+    if result.strip() == "":
+        log.warning(
+            "_delete_section: deleting heading=%r will result in an empty file",
+            heading_text,
+        )
+
+    return result
 
 
-def _resolve_delete_unique_text(
-    original: str,
-    anchor_text: str,
-) -> tuple[str, str] | None:
-    """Remove the unique occurrence of `anchor_text` from `original`.
+def _delete_unique_text(original: str, fragment: str) -> str | None:
+    """Delete the unique line whose stripped content matches `fragment`.
 
-    Uses the same whitespace-tolerant matching as _replace_unique_text.
-    Returns (proposed, error_code) where error_code is None on success.
+    The match is performed on stripped line content vs stripped fragment.
+    Consecutive blank lines introduced by the removal are collapsed.
 
-    If the file would become empty after the deletion, the result is an empty
-    string — the caller logs a warning but still returns a valid resolved change.
+    Returns None if no match is found (anchor_not_found).
+    Raises _AnchorAmbiguousError if the fragment matches more than once.
     """
-    proposed = _replace_unique_text(original, anchor_text, "")
-    if proposed is None:
-        return None, "anchor_not_found"
+    fragment_stripped = fragment.strip()
+    lines = original.splitlines(keepends=True)
 
-    # After removing the text, clean up any resulting triple+ blank lines.
-    proposed = _collapse_consecutive_blank_lines(proposed)
-    return proposed, None
+    matching_indices = [
+        i for i, line in enumerate(lines)
+        if line.strip() == fragment_stripped
+    ]
+
+    if len(matching_indices) == 0:
+        excerpt = original[:200].replace("\n", "↵")
+        log.warning(
+            "_delete_unique_text: fragment not found. fragment=%r; "
+            "original_excerpt=%r",
+            fragment_stripped,
+            excerpt,
+        )
+        return None
+
+    if len(matching_indices) > 1:
+        log.warning(
+            "_delete_unique_text: fragment matches %d times — anchor is ambiguous: %r",
+            len(matching_indices),
+            fragment_stripped,
+        )
+        raise _AnchorAmbiguousError(fragment)
+
+    target_idx = matching_indices[0]
+    new_lines = lines[:target_idx] + lines[target_idx + 1:]
+    new_lines = _collapse_consecutive_blank_lines(new_lines)
+    result = "".join(new_lines)
+
+    if result.strip() == "":
+        log.warning(
+            "_delete_unique_text: deleting fragment=%r will result in an empty file",
+            fragment_stripped,
+        )
+
+    return result
+
+
+class _AnchorAmbiguousError(Exception):
+    """Raised internally when an anchor matches more than once."""
+    def __init__(self, anchor_value: str) -> None:
+        self.anchor_value = anchor_value
+        super().__init__(anchor_value)
 
 
 def _sha256_str(text: str) -> str:
@@ -520,36 +549,32 @@ async def _resolve_one(
 
     elif op == UpdateModeOperation.DELETE_SECTION:
         assert intent.anchor is not None
-        proposed, error_code = _resolve_delete_section(original, intent.anchor.value)
+        try:
+            proposed = _delete_section(original, intent.anchor.value)
+        except _AnchorAmbiguousError as exc:
+            return _fail(
+                "anchor_ambiguous",
+                f"heading matches more than once: {exc.anchor_value!r}",
+            )
         if proposed is None:
             return _fail(
-                error_code,
-                f"delete_section anchor: {intent.anchor.value!r}",
-            )
-        if not proposed.strip():
-            log.warning(
-                "_resolve_one: delete_section would leave file empty: "
-                "document_id=%s path=%s anchor=%r — proceeding",
-                intent.document_id,
-                source_path,
-                intent.anchor.value,
+                "anchor_not_found",
+                f"heading not found: {intent.anchor.value!r}",
             )
 
     elif op == UpdateModeOperation.DELETE_UNIQUE_TEXT:
         assert intent.anchor is not None
-        proposed, error_code = _resolve_delete_unique_text(original, intent.anchor.value)
+        try:
+            proposed = _delete_unique_text(original, intent.anchor.value)
+        except _AnchorAmbiguousError as exc:
+            return _fail(
+                "anchor_ambiguous",
+                f"fragment matches more than once: {exc.anchor_value!r}",
+            )
         if proposed is None:
             return _fail(
-                error_code,
-                f"delete_unique_text anchor: {intent.anchor.value!r}",
-            )
-        if not proposed.strip():
-            log.warning(
-                "_resolve_one: delete_unique_text would leave file empty: "
-                "document_id=%s path=%s anchor=%r — proceeding",
-                intent.document_id,
-                source_path,
-                intent.anchor.value,
+                "anchor_not_found",
+                f"fragment not found: {intent.anchor.value!r}",
             )
 
     else:
