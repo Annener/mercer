@@ -7,6 +7,9 @@
 Текущие миграции:
 - `0001_initial` — чистая стартовая, полная схема (содержит seed-данные)
 - `0002_watchdog_interval` — добавляет `watchdog.interval_sec` в `platform_settings`
+- `0003_vault_enabled` — добавляет поле `Vault.enabled` (фильтр волтов для Update Mode)
+- `0004_campaign_update_mode` — добавляет таблицу `audit_log`, изменения в `chats` (vault_id, pipeline_versions)
+- `0005_campaign_update_git_identity` — добавляет `Vault.git_author_name`, `Vault.git_author_email`
 
 ## Ключевые сущности и связи
 
@@ -96,12 +99,17 @@ Chat (1) ──► (N) PipelineDecision
 ### Vault
 - PK: `id` (UUID). `vault_id` (String(128), UNIQUE) — например `"dnd-vault"`
 - `domain_id` FK → domains — **без CASCADE** (`ON DELETE SET NULL`), nullable
+- `enabled` (Boolean, default True) — флаг доступности vault для Update Mode и retrieval
 - `embedding_model_id` (String(128), не FK — хранит `model_id` строкой)
 - `expected_dimensions` — фиксируется при bind
 - `chunk_size`, `overlap`, `entity_aware_mode`
 - `semantic_threshold` (Float, default 0.3)
 - `binding_status`: `unbound | indexing | bound | error`
 - `chunk_count` — счётчик, обновляется при индексации
+- `git_author_name` (String(255), nullable) — git identity override (добавлено в 0005)
+- `git_author_email` (String(255), nullable) — git identity override (добавлено в 0005)
+
+> Физический `path` vault **не хранится** в БД. Root определяется deployment mount: `/data/vaults/{vault_id}`.
 
 ### Document
 - PK: `id` (UUID)
@@ -163,6 +171,10 @@ Chat (1) ──► (N) PipelineDecision
 
 ### AuditLog
 - `action`, `entity_type`, `entity_id`, `details` (JSONB)
+- Используется для логирования событий Campaign Update Mode:
+  - `action = "campaign_update_apply"` — запись после apply
+  - `details` содержит: `chat_id`, `campaign_id`, `apply_id`, vault results, commit SHA, accepted `change_id`s, reindex task IDs
+  - `action = "pipeline_router_failure"` — ошибка pipeline router
 
 ## Индексы
 
