@@ -274,6 +274,16 @@ async def apply_changes(
     After receiving the indexer response:
     - persists apply_result in the Redis session via complete_apply()
     - writes an AuditLog row
+
+    Notes on deduplication:
+    - UpdateModeApplyRequest enforces unique (vault_id, file_path) pairs.
+    - A session may legitimately contain several accepted changes for the same
+      file (e.g. DELETE_SECTION + APPEND_AFTER_SECTION).  The indexer currently
+      supports only one write operation per file per request, so we keep only the
+      first accepted change per (vault_id, file_path) pair and warn about skipped
+      duplicates.
+    - TODO: once the indexer supports ordered multi-op batches per file, remove
+      the dedup logic below and pass all accepted changes through unchanged.
     """
     redis = request.app.state.redis
 
@@ -294,11 +304,34 @@ async def apply_changes(
             detail="No accepted changes to apply. Use PATCH /review to accept changes first.",
         )
 
-    apply_changes_list = []
+    # Build apply list, deduplicating by (vault_id, file_path).
+    # The indexer accepts only one operation per file per request.
+    # When the same file appears in multiple accepted changes we keep the first
+    # and emit a warning for every skipped duplicate.
+    seen_file_keys: set[tuple[str, str]] = set()
+    apply_changes_list: list[UpdateModeApplyChange] = []
+
     for ch in accepted:
         if ch.vault_id is None or ch.file_path is None:
-            logger.warning("Skipping change %s: missing vault_id or file_path", ch.change_id)
+            logger.warning(
+                "apply_changes: skipping change %s — missing vault_id or file_path",
+                ch.change_id,
+            )
             continue
+
+        file_key = (ch.vault_id, ch.file_path)
+        if file_key in seen_file_keys:
+            logger.warning(
+                "apply_changes: skipping duplicate (vault_id=%s, file_path=%s) "
+                "for change_id=%s — only the first accepted change per file is sent "
+                "to the indexer in this request",
+                ch.vault_id,
+                ch.file_path,
+                ch.change_id,
+            )
+            continue
+
+        seen_file_keys.add(file_key)
         apply_changes_list.append(
             UpdateModeApplyChange(
                 change_id=ch.change_id,
