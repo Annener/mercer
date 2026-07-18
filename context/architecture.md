@@ -6,6 +6,10 @@ Mercer — мультидоменная RAG-платформа для работ
 Поддерживает несколько доменов знаний (dnd, work, default), каждый со своими промптами,
 кампаниями, хранилищами документов (Vault) и пайплайнами обработки запросов.
 
+С версии Campaign Update Mode платформа поддерживает управляемый процесс актуализации
+markdown-контекста кампаний: пользователь вводит заметку, LLM предлагает правки,
+Indexer применяет их с git-фиксацией и запускает targeted reindex.
+
 ## Сервисы
 
 ```
@@ -19,6 +23,7 @@ Mercer — мультидоменная RAG-платформа для работ
 │       └──────→  rag-db (PostgreSQL :5432)                        │
 │                 redis :6379                                      │
 │                 lancedb (volume /data/lancedb)                   │
+│                 /data/vaults (shared mount)                      │
 └──────────────────────────────────────────────────────────────────┘
          │
          │ HTTP → host.docker.internal:9090
@@ -36,23 +41,25 @@ Mercer — мультидоменная RAG-платформа для работ
 - Обрабатывает чаты, пайплайны, настройки, документы
 - Проксирует запросы к rag-indexer через внутренний HTTP
 - Проксирует запросы управления pdf-sidecar к host-agent через `api/settings/sidecar.py`
-- Хранит состояние в PostgreSQL, сессии чатов в Redis
+- Хранит состояние в PostgreSQL, сессии чатов и review-сессии Update Mode в Redis
 - Раздаёт SPA-фронтенд из `app/static/` (ванильный JS, без фреймворков)
+- **Campaign Update Mode**: orchestrates retrieval → LLM edit intents → review session; управляет через `api/update_mode.py`
 
 ### rag-indexer
-- **Роль**: асинхронный воркер индексации документов
+- **Роль**: асинхронный воркер индексации документов; единственный filesystem/git writer
 - **Стек**: FastAPI (HTTP API для управления) + собственный воркер
 - **Расположение**: `rag-indexer/`
 - Не доступен снаружи — только через rag-backend
 - Читает файлы из vault (`/data/vaults`), парсит через pdf-sidecar
 - Создаёт чанки, вычисляет эмбеддинги, сохраняет в LanceDB через db-api-server
 - Watchdog: периодически проверяет изменения файлов в vault
+- **Campaign Update Mode**: обрабатывает internal endpoints `/internal/update-mode/resolve` и `/internal/update-mode/apply`; единолично читает/пишет `.md`-файлы, выполняет git snapshot/commit, запускает targeted reindex
 
 ### db-api-server
 - **Роль**: HTTP-обёртка над LanceDB (векторное хранилище)
 - **Расположение**: `db-api-server/`
 - Один экземпляр LanceDB на весь проект (файловая БД: `/data/lancedb`)
-- API: CRUD чанков, векторный поиск, BM25 full-text search
+- API: CRUD чанков, векторный поиск, BM25 full-text search, восстановление полного текста документа по chunks
 - Конфиг: `config/storage.config.yaml`
 
 ### pdf-sidecar
@@ -78,13 +85,15 @@ Mercer — мультидоменная RAG-платформа для работ
 
 ### PostgreSQL (rag-db)
 - Основная реляционная БД
-- Хранит: домены, вольты, документы, чаты, сообщения, пайплайны, модели
+- Хранит: домены, вольты, документы, чаты, сообщения, пайплайны, модели, audit log
 - Миграции: **Alembic** (`rag-backend/migrations/`), запускаются при старте через `run_migrations()` в `rag-backend/app/db/migrations.py`
+- Текущий head миграций: `0005_campaign_update_git_identity`
 
 ### Redis
-- Используется для: состояния индексатора (IndexState), кэширования
+- Используется для: состояния индексатора (IndexState), кэширования, review-сессий Campaign Update Mode
 - `RedisStateManager` живёт в rag-indexer
 - rag-backend читает состояние напрямую через `redis.asyncio`
+- Campaign Update Mode: ключ `update_mode:{chat_id}`, TTL 3 часа; vault lock `update_mode:vault_lock:{vault_id}`, TTL 60 сек
 
 ## Общая структура репозитория
 
@@ -95,19 +104,27 @@ mercer/
 │   ├── migrations/      # Alembic-миграции
 │   └── app/
 │       ├── api/         # HTTP роутеры
+│       │   └── update_mode.py          # Campaign Update Mode public API
 │       ├── db/          # ORM-модели, сессии, запуск Alembic
 │       ├── services/    # Бизнес-логика (retrieval, pipeline, planner...)
+│       │   ├── update_mode_executor.py # Orchestrator: retrieval → LLM → resolve
+│       │   ├── update_mode_store.py    # Redis review session CRUD
+│       │   └── indexer_client.py       # HTTP-клиент к rag-indexer internal API
 │       ├── providers/   # Провайдеры генерации (OpenAI-compatible)
 │       ├── domains/     # Домены (dnd, work, default) + registry
 │       ├── pipelines/   # Pipeline registry
 │       └── static/      # SPA-фронтенд (ванильный JS, без фреймворков)
-├── rag-indexer/         # Индексатор
+├── rag-indexer/         # Индексатор + filesystem/git writer
 │   ├── app/             # FastAPI app + db_client
 │   ├── api/             # API роутеры индексатора
+│   │   └── update_mode.py              # Internal update-mode API
+│   ├── services/        # Сервисы (в т.ч. Update Mode)
+│   │   ├── update_mode_file_service.py # Чтение файлов, diff, path validation
+│   │   └── vault_git_service.py        # Git: init, snapshot, commit
 │   ├── embedding/       # Провайдеры эмбеддингов (ollama, openai, sidecar)
 │   ├── parser/          # Парсеры документов
 │   ├── storage/         # HTTP-клиент к db-api-server
-│   └── indexer_worker.py # Основной воркер индексации
+│   └── indexer_worker.py # Основной воркер индексации (поддерживает targeted reindex по source_paths)
 ├── db-api-server/       # LanceDB HTTP API
 │   ├── api/             # Роутеры
 │   └── storage/
@@ -116,7 +133,7 @@ mercer/
 │   └── agent/           # Копия host-agent для macOS (launchd)
 ├── host-agent/          # HTTP-агент управления pdf-sidecar (на хосте)
 ├── shared_contracts/
-│   └── models.py        # Общие Pydantic-схемы между сервисами
+│   └── models.py        # Общие Pydantic-схемы между сервисами (вкл. Update Mode contracts)
 ├── config/
 │   └── storage.config.yaml  # Конфиг LanceDB
 ├── tests/               # Интеграционные тесты
@@ -137,3 +154,24 @@ mercer/
 | `WATCHDOG_INTERVAL_SEC` | indexer | Интервал watchdog (сек) |
 | `HOST_AGENT_URL` | backend | URL host-agent (`http://host.docker.internal:9090`) |
 | `HOST_AGENT_TOKEN` | backend | Shared secret для аутентификации host-agent |
+| `VAULTS_PATH` | backend, indexer | Host-side путь к vault root (монтируется как `/data/vaults`) |
+| `GIT_AUTHOR_NAME` | indexer | Deployment-level fallback git identity (дефолт: `Mercer`) |
+| `GIT_AUTHOR_EMAIL` | indexer | Deployment-level fallback git identity (дефолт: `mercer@local`) |
+
+## Campaign Update Mode — краткое описание
+
+Полная документация: `context/campaign-update-mode.md`
+
+Режим позволяет пользователю актуализировать markdown-документы vault через review-цикл:
+
+1. **Start** — backend ищет релевантные `.md` chunks, восстанавливает полный indexed text, вызывает LLM для получения `edit intents`
+2. **Resolve** — indexer читает оригинальные файлы, вычисляет SHA-256, строит unified diff
+3. **Review** — пользователь принимает/отклоняет каждую правку через UI
+4. **Apply** — indexer проверяет checksums, делает snapshot-commit, применяет atomic writes, выполняет `git commit`, запускает targeted reindex
+
+Архитектурные инварианты:
+- `rag-indexer` — единственный владелец filesystem/git операций
+- `rag-backend` не читает и не пишет vault файлы напрямую
+- Настройки vault хранятся только в PostgreSQL (`vaults` таблица)
+- Vault physical root: `/data/vaults/{vault_id}` (не хранится в БД)
+- Поддерживаются только `.md` файлы; только `update`, `append`, `create`
