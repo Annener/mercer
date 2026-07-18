@@ -672,7 +672,7 @@ function _buildPanel(chatId, initialSession) {
             // BUG-9 fix: set flag and re-render — hint stays alive through subsequent render() calls
             _showApplyHint = true;
             render();
-            retturn;
+            return;
         }
         _applying = true;
         state = 'applying';
