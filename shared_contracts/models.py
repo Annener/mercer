@@ -709,17 +709,11 @@ class PipelineExecutionContext(BaseModel):
         Также поддерживает {query} — подставляется напрямую через format_map.
         Делегирует в resolve_step_vars() из prompt_pack.
         """
-        # Импорт здесь во избежание циклических зависимостей:
-        # shared_contracts не должен импортировать rag-backend напрямую.
-        # В продакшне resolve_step_vars будет доступен как пакет в sys.path.
         try:
             from app.services.prompt_pack import resolve_step_vars  # type: ignore[import]
         except ImportError:
-            # Fallback для контекстов где rag-backend не в sys.path (тесты shared_contracts)
             from prompt_pack import resolve_step_vars  # type: ignore[import]
 
-        # Сначала разворачиваем {query} через простой .replace, чтобы не ломать
-        # паттерн {STEP_ID.xxx} для resolve_step_vars
         resolved = template.replace("{query}", self.query)
         return resolve_step_vars(resolved, self.step_results)
 
@@ -1079,6 +1073,18 @@ class ResolvedUpdateModeChange(BaseModel):
     action: UpdateModeAction
     description: str
 
+    # --- Operation metadata — persisted in session for multi-op batch builder ---
+    # These fields allow rag-backend to reconstruct the ordered file_batches from
+    # the session without re-resolving. Added in fix/update-mode-multi-patch-per-file.
+    operation: UpdateModeOperation | None = None
+    anchor: UpdateModeAnchor | None = None
+    # Raw intent content (the text to insert/replace). For delete ops this is "".
+    # NOT the same as proposed_content (which is the full proposed file after the op).
+    op_content: str = ""
+    # Stable index preserving the order in which intents were resolved (0-based).
+    # Used by the batch builder to sort ops targeting the same file.
+    resolve_order: int = 0
+
     original_content: str = ""
     proposed_content: str = ""
     unified_diff: str = ""
@@ -1094,12 +1100,24 @@ class UpdateModeResolveResponse(BaseModel):
 
 
 class UpdateModeApplyChange(BaseModel):
+    """Single-change apply unit — deprecated in favour of UpdateModeFileChangeBatch.
+
+    Kept for backward compatibility. rag-backend still produces these when
+    talking to an old indexer; UpdateModeApplyRequest.model_validator converts
+    them to file_batches automatically.
+    """
     change_id: str
     vault_id: str
     file_path: str
     action: UpdateModeAction
     proposed_content: str
     expected_sha256: str | None = None
+    # Fields added for multi-op backward-compat conversion.
+    # Old clients that only set proposed_content will get the legacy single-op
+    # path; new clients set operation + anchor + op_content.
+    operation: UpdateModeOperation | None = None
+    anchor: UpdateModeAnchor | None = None
+    op_content: str = ""
 
     @model_validator(mode="after")
     def _validate_sha_policy(self) -> "UpdateModeApplyChange":
@@ -1110,21 +1128,100 @@ class UpdateModeApplyChange(BaseModel):
         return self
 
 
+# ---------------------------------------------------------------------------
+# Multi-op apply contracts (fix/update-mode-multi-patch-per-file)
+# ---------------------------------------------------------------------------
+
+class UpdateModeFileOp(BaseModel):
+    """A single ordered operation within an UpdateModeFileChangeBatch.
+
+    One UpdateModeFileChangeBatch may contain 1..20 ops targeting the same
+    (vault_id, file_path). The applier reads the file once, applies all ops
+    sequentially in-memory, then writes the final result atomically.
+    """
+    change_id: str
+    operation: UpdateModeOperation
+    anchor_value: str | None = None   # anchor.value from intent; None for APPEND_TO_FILE
+    content: str                      # intent content (‘‘ for delete ops)
+    # SHA-256 of the original file content at resolve time.
+    # Required for ops[0] of UPDATE batches (CAS check before first write).
+    # None for all subsequent ops and for CREATE batches.
+    expected_sha256: str | None = None
+
+
+class UpdateModeFileChangeBatch(BaseModel):
+    """All operations targeting one (vault_id, file_path) pair, in apply order."""
+    vault_id: str
+    file_path: str
+    action: UpdateModeAction            # UPDATE or CREATE
+    ops: list[UpdateModeFileOp] = Field(min_length=1, max_length=20)
+
+
 class UpdateModeApplyRequest(BaseModel):
     apply_id: str
     chat_id: str
     campaign_id: str
-    accepted_changes: list[UpdateModeApplyChange] = Field(min_length=1, max_length=10)
+
+    # Primary field — new clients send this.
+    file_batches: list[UpdateModeFileChangeBatch] = Field(default_factory=list)
+
+    # Deprecated: accepted for backward compatibility.
+    # Converted to file_batches by _normalize_and_validate below.
+    accepted_changes: list[UpdateModeApplyChange] = Field(default_factory=list)
 
     @model_validator(mode="after")
-    def _validate_apply_request(self) -> "UpdateModeApplyRequest":
-        # change_id must be unique — each change is a distinct intent.
-        change_ids = [c.change_id for c in self.accepted_changes]
-        if len(change_ids) != len(set(change_ids)):
-            raise ValueError("change_id must be unique in accepted_changes")
-        # NOTE: multiple changes targeting the same (vault_id, file_path) are
-        # intentionally allowed — the applier groups them and applies all patches
-        # to the file in a single atomic write (delete → replace → append order).
+    def _normalize_and_validate(self) -> "UpdateModeApplyRequest":
+        # --- Backward-compat conversion ---
+        if self.accepted_changes and not self.file_batches:
+            from collections import defaultdict
+            groups: dict[tuple[str, str], list[UpdateModeApplyChange]] = defaultdict(list)
+            for ch in self.accepted_changes:
+                groups[(ch.vault_id, ch.file_path)].append(ch)
+            batches: list[UpdateModeFileChangeBatch] = []
+            for (vault_id, file_path), changes in groups.items():
+                if changes[0].operation is not None:
+                    # New-style UpdateModeApplyChange: has operation + anchor + op_content
+                    ops = [
+                        UpdateModeFileOp(
+                            change_id=ch.change_id,
+                            operation=ch.operation,  # type: ignore[arg-type]
+                            anchor_value=ch.anchor.value if ch.anchor else None,
+                            content=ch.op_content,
+                            expected_sha256=ch.expected_sha256 if i == 0 else None,
+                        )
+                        for i, ch in enumerate(changes)
+                    ]
+                else:
+                    # Legacy-style: only proposed_content is available.
+                    # Reconstruct a single APPEND_TO_FILE op that replaces the
+                    # full file content (best-effort regression to pre-fix behaviour).
+                    ops = [
+                        UpdateModeFileOp(
+                            change_id=ch.change_id,
+                            operation=UpdateModeOperation.APPEND_TO_FILE,
+                            anchor_value=None,
+                            content=ch.proposed_content,
+                            expected_sha256=ch.expected_sha256 if i == 0 else None,
+                        )
+                        for i, ch in enumerate(changes)
+                    ]
+                batches.append(UpdateModeFileChangeBatch(
+                    vault_id=vault_id,
+                    file_path=file_path,
+                    action=changes[0].action,
+                    ops=ops,
+                ))
+            self.file_batches = batches
+
+        # --- Require at least one batch ---
+        if not self.file_batches:
+            raise ValueError("file_batches or accepted_changes must be non-empty")
+
+        # --- Uniqueness of (vault_id, file_path) ---
+        pairs = [(b.vault_id, b.file_path) for b in self.file_batches]
+        if len(pairs) != len(set(pairs)):
+            raise ValueError("(vault_id, file_path) pairs must be unique in file_batches")
+
         return self
 
 
