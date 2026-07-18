@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 from typing import Any
 
 from app.db_client import IndexerDBClient
@@ -138,17 +139,87 @@ def _append_after_section(original: str, heading: str, content: str) -> str | No
     return "".join(lines)
 
 
-def _replace_unique_text(original: str, anchor_text: str, content: str) -> str | None:
-    """Replace the first (and must-be-unique) occurrence of anchor_text with content.
+def _build_anchor_pattern(anchor_text: str) -> re.Pattern[str]:
+    """Build a regex that matches anchor_text tolerating any whitespace between words.
 
-    Returns None if not found or if the anchor_text appears more than once.
+    The LLM receives indexed (normalised) text where newlines and repeated
+    whitespace may have been collapsed.  The real file may contain the same
+    words separated by '\\n', '\\r\\n', multiple spaces, etc.
+
+    Strategy: split anchor on whitespace → escape each token → join with \\s+.
+    Flags: DOTALL so '.' inside re.escape'd tokens never matters; no IGNORECASE
+    because anchor text is expected to be verbatim word content.
     """
+    tokens = re.split(r"\s+", anchor_text.strip())
+    tokens = [t for t in tokens if t]  # drop empty strings from leading/trailing ws
+    pattern = r"\s+".join(re.escape(t) for t in tokens)
+    return re.compile(pattern, re.DOTALL)
+
+
+def _replace_unique_text_exact(original: str, anchor_text: str, content: str) -> str | None:
+    """Literal replacement — original behaviour, used as fallback."""
     count = original.count(anchor_text)
-    if count == 0:
-        return None
-    if count > 1:
+    if count != 1:
         return None
     return original.replace(anchor_text, content, 1)
+
+
+def _replace_unique_text(original: str, anchor_text: str, content: str) -> str | None:
+    """Replace the unique occurrence of anchor_text in original with content.
+
+    Matching is whitespace-tolerant: any run of whitespace (spaces, newlines,
+    tabs, \\r\\n …) in the file is treated as equivalent to any whitespace in
+    the anchor coming from the LLM.  This handles the common case where the
+    indexed text sent to the model had newlines collapsed but the real file
+    contains line-breaks inside the anchor span.
+
+    Algorithm (variant 2 — word-sequence regex):
+      1. Split anchor into word tokens.
+      2. Build regex: token1 \\s+ token2 \\s+ … (re.escape on each token).
+      3. Find all non-overlapping matches in original.
+      4. Require exactly 1 match → replace that span.
+      5. Fallback to exact literal match if regex yields 0 or >1 results.
+
+    Returns None if anchor is not found uniquely (both strategies exhausted).
+    """
+    pattern = _build_anchor_pattern(anchor_text)
+    matches = list(pattern.finditer(original))
+
+    if len(matches) == 1:
+        m = matches[0]
+        log.debug(
+            "_replace_unique_text: fuzzy match at [%d:%d] for anchor %r",
+            m.start(),
+            m.end(),
+            anchor_text[:80],
+        )
+        return original[: m.start()] + content + original[m.end() :]
+
+    if len(matches) > 1:
+        log.warning(
+            "_replace_unique_text: anchor matches %d times (fuzzy); "
+            "falling back to exact search. anchor=%r",
+            len(matches),
+            anchor_text[:120],
+        )
+    else:
+        # 0 matches — log useful diagnostic before trying exact fallback
+        excerpt = original[:200].replace("\n", "↵")
+        log.warning(
+            "_replace_unique_text: fuzzy search found 0 matches. "
+            "anchor_tokens=%r; original_excerpt=%r",
+            re.split(r"\s+", anchor_text.strip())[:10],
+            excerpt,
+        )
+
+    # Fallback: exact literal match (pre-patch behaviour)
+    result = _replace_unique_text_exact(original, anchor_text, content)
+    if result is not None:
+        log.debug(
+            "_replace_unique_text: exact fallback succeeded for anchor %r",
+            anchor_text[:80],
+        )
+    return result
 
 
 def _sha256_str(text: str) -> str:
