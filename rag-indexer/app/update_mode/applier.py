@@ -239,9 +239,15 @@ async def _apply_vault(
         if change.action == UpdateModeAction.CREATE:
             abs_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # DELETE operations: proposed_content is "" (empty string).
-        # Warn if the file will become empty after apply.
-        # This is NOT a blocking error — the user explicitly accepted the change.
+        # DELETE operations result in proposed_content == "" when the entire file
+        # content was removed (i.e. the deleted section/line was the only content).
+        # This is a valid outcome — the user explicitly accepted the change.
+        # We emit a warning so operators can spot unintentional empty-file results
+        # in logs, but we do NOT block the apply.
+        #
+        # Note: proposed_content == "" does NOT mean a delete operation was used —
+        # it specifically means the file will be written as empty.  A partial delete
+        # (other content remains) produces a non-empty proposed_content.
         if (
             change.action == UpdateModeAction.UPDATE
             and change.proposed_content == ""

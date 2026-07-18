@@ -35,8 +35,10 @@ Test matrix:
     ✓ DELETE_SECTION anchor_not_found → RESOLUTION_FAILED error_code=anchor_not_found
     ✓ DELETE_UNIQUE_TEXT anchor_ambiguous → RESOLUTION_FAILED error_code=anchor_ambiguous
     ✓ DELETE_UNIQUE_TEXT anchor_not_found → RESOLUTION_FAILED error_code=anchor_not_found
-    ✓ DELETE_SECTION success → PENDING, proposed_content is empty string
-    ✓ DELETE_UNIQUE_TEXT success → PENDING, proposed_content is empty string
+    ✓ DELETE_SECTION success → PENDING, proposed_content retains remaining file content
+    ✓ DELETE_UNIQUE_TEXT success → PENDING, deleted line absent from proposed_content
+    ✓ DELETE_SECTION only section → PENDING, proposed_content is empty string (empty file, not error)
+    ✓ DELETE_UNIQUE_TEXT only line → PENDING, proposed_content is empty string (empty file, not error)
 """
 from __future__ import annotations
 
@@ -254,7 +256,13 @@ class TestDeleteUniqueText:
 # These tests verify that the dispatcher correctly translates
 # _AnchorAmbiguousError → error_code="anchor_ambiguous" and
 # None return → error_code="anchor_not_found" for both delete operations,
-# and that successful deletes yield PENDING status with proposed_content="".
+# and that successful deletes yield PENDING status with correct proposed_content.
+#
+# proposed_content semantics for delete operations:
+#   - On partial delete (other content remains): proposed_content contains the
+#     remaining file content (not empty string).
+#   - On total delete (only section/line in file): proposed_content == "" and
+#     status is still PENDING — empty file is a warning, not an error.
 # ---------------------------------------------------------------------------
 
 _VAULT_ID = "vault-test-001"
@@ -266,6 +274,9 @@ _FILE_WITH_SECTION = "## Удалить меня\n\nТекст раздела.\n
 _FILE_DUPLICATE_SECTION = "## Дубль\nТекст.\n\n## Дубль\nЕщё текст.\n"
 _FILE_WITH_LINE = "# Задачи\n\n- [ ] Удалить эту строку\n- [ ] Оставить эту\n"
 _FILE_DUPLICATE_LINE = "- [ ] Дубль\n- [ ] Дубль\n"
+# Files where the deleted element is the only content → empty file after delete
+_FILE_ONLY_SECTION = "## Единственный раздел\n\nТекст раздела.\n"
+_FILE_ONLY_LINE = "- [ ] Единственная строка\n"
 
 
 def _sha256(text: str) -> str:
@@ -352,7 +363,8 @@ class TestResolveOneDeleteSection:
         assert result.error_code == "anchor_not_found"
 
     @pytest.mark.asyncio
-    async def test_success_returns_pending_with_empty_proposed(self):
+    async def test_success_returns_pending_with_remaining_content(self):
+        """Partial delete: sibling section survives in proposed_content."""
         intent = _make_intent(UpdateModeOperation.DELETE_SECTION, "## Удалить меня")
         request = _make_request()
         db = _mock_db()
@@ -362,10 +374,28 @@ class TestResolveOneDeleteSection:
 
         assert result.status == UpdateModeChangeStatus.PENDING
         assert result.proposed_content is not None
-        # After deleting the only H2 section the file retains the sibling;
-        # the key invariant is that proposed_content != original and is not None.
         assert "Удалить меня" not in (result.proposed_content or "")
+        assert "Оставить" in (result.proposed_content or "")
         assert result.expected_sha256 == _sha256(_FILE_WITH_SECTION)
+
+    @pytest.mark.asyncio
+    async def test_only_section_returns_pending_with_empty_proposed(self):
+        """Total delete: file becomes empty → proposed_content == "", status PENDING (not error).
+
+        The empty-file warning is logged by _delete_section but must NOT cause
+        RESOLUTION_FAILED.  The change is applied as-is; the user explicitly accepted it.
+        """
+        intent = _make_intent(UpdateModeOperation.DELETE_SECTION, "Единственный раздел")
+        request = _make_request()
+        db = _mock_db()
+
+        with _patch_fs(_FILE_ONLY_SECTION):
+            result = await _resolve_one(intent, request, db)
+
+        assert result.status == UpdateModeChangeStatus.PENDING
+        assert result.proposed_content is not None
+        assert result.proposed_content.strip() == ""
+        assert result.expected_sha256 == _sha256(_FILE_ONLY_SECTION)
 
 
 class TestResolveOneDeleteUniqueText:
@@ -403,6 +433,7 @@ class TestResolveOneDeleteUniqueText:
 
     @pytest.mark.asyncio
     async def test_success_returns_pending_with_deleted_line(self):
+        """Partial delete: sibling line survives in proposed_content."""
         intent = _make_intent(
             UpdateModeOperation.DELETE_UNIQUE_TEXT,
             "- [ ] Удалить эту строку",
@@ -419,3 +450,26 @@ class TestResolveOneDeleteUniqueText:
         assert "Удалить эту строку" not in (result.proposed_content or "")
         assert "Оставить эту" in (result.proposed_content or "")
         assert result.expected_sha256 == _sha256(_FILE_WITH_LINE)
+
+    @pytest.mark.asyncio
+    async def test_only_line_returns_pending_with_empty_proposed(self):
+        """Total delete: file becomes empty → proposed_content == "", status PENDING (not error).
+
+        The empty-file warning is logged by _delete_unique_text but must NOT cause
+        RESOLUTION_FAILED.  The change is applied as-is; the user explicitly accepted it.
+        """
+        intent = _make_intent(
+            UpdateModeOperation.DELETE_UNIQUE_TEXT,
+            "- [ ] Единственная строка",
+            anchor_kind="exact_text",
+        )
+        request = _make_request()
+        db = _mock_db()
+
+        with _patch_fs(_FILE_ONLY_LINE):
+            result = await _resolve_one(intent, request, db)
+
+        assert result.status == UpdateModeChangeStatus.PENDING
+        assert result.proposed_content is not None
+        assert result.proposed_content.strip() == ""
+        assert result.expected_sha256 == _sha256(_FILE_ONLY_LINE)

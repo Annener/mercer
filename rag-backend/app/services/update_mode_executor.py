@@ -322,6 +322,12 @@ If the note is ambiguous about whether content should be removed, choose
 replace_unique_text with a note marker (e.g. add "✓ выполнено" prefix)
 or append_after_section to record the outcome, rather than deleting.
 
+ANCHOR KIND RULES (mandatory — must be followed exactly):
+- delete_section   → anchor.kind MUST be "markdown_heading"
+- delete_unique_text → anchor.kind MUST be "exact_text"
+- append_after_section → anchor.kind MUST be "markdown_heading"
+- replace_unique_text  → anchor.kind MUST be "exact_text"
+
 Return JSON with this schema:
 {
   "intents": [...],         // list of 0-10 intent objects
