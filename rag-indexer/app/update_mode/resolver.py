@@ -15,6 +15,14 @@ never raises 500 for per-intent errors.
 
 The LLM is *not* called here: the backend sends note content already embedded
 in the stub intent.  rag-indexer's role is purely file-system + diff work.
+
+Each returned ResolvedUpdateModeChange now carries:
+  operation    — the UpdateModeOperation enum value from the intent
+  anchor       — the UpdateModeAnchor from the intent (or None)
+  op_content   — intent.content (the fragment to insert/replace; "" for deletes)
+  resolve_order — 0-based position within this resolve request, used by the
+                  backend to reconstruct per-file application order when
+                  assembling file_batches for the apply request.
 """
 from __future__ import annotations
 
@@ -91,6 +99,7 @@ async def _resolve_one(
     intent: UpdateModeIntent,
     request: UpdateModeResolveRequest,
     db: IndexerDBClient,
+    resolve_order: int,
 ) -> ResolvedUpdateModeChange:
     """Resolve a single intent → ResolvedUpdateModeChange.
 
@@ -105,9 +114,15 @@ async def _resolve_one(
             status=UpdateModeChangeStatus.RESOLUTION_FAILED,
             error_code=code,
             error_message=msg,
+            # Still carry operation/anchor/op_content so failed changes can be
+            # displayed with context in the review UI.
+            operation=intent.operation,
+            anchor=intent.anchor,
+            op_content=intent.content,
+            resolve_order=resolve_order,
         )
 
-    # ── CREATE action ────────────────────────────────────────────────────────────────────────────────────
+    # ── CREATE action ────────────────────────────────────────────────────────
     if intent.action == UpdateModeAction.CREATE:
         vault_id = request.default_vault_id
         filename = intent.suggested_filename or "_note.md"
@@ -145,9 +160,13 @@ async def _resolve_one(
             unified_diff=unified_diff,
             expected_sha256=None,
             status=UpdateModeChangeStatus.PENDING,
+            operation=intent.operation,
+            anchor=intent.anchor,
+            op_content=intent.content,
+            resolve_order=resolve_order,
         )
 
-    # ── UPDATE action ────────────────────────────────────────────────────────────────────────────────────
+    # ── UPDATE action ────────────────────────────────────────────────────────
     assert intent.action == UpdateModeAction.UPDATE
     assert intent.document_id is not None
 
@@ -262,6 +281,10 @@ async def _resolve_one(
         unified_diff=unified_diff,
         expected_sha256=original_sha256,
         status=UpdateModeChangeStatus.PENDING,
+        operation=intent.operation,
+        anchor=intent.anchor,
+        op_content=intent.content,
+        resolve_order=resolve_order,
     )
 
 
@@ -280,9 +303,9 @@ async def resolve_changes(
     """
     changes: list[ResolvedUpdateModeChange] = []
 
-    for intent in request.intents:
+    for idx, intent in enumerate(request.intents):
         try:
-            change = await _resolve_one(intent, request, db)
+            change = await _resolve_one(intent, request, db, resolve_order=idx)
         except Exception as exc:
             log.exception(
                 "Unexpected error resolving intent change_id=%s",
@@ -295,12 +318,17 @@ async def resolve_changes(
                 status=UpdateModeChangeStatus.RESOLUTION_FAILED,
                 error_code="internal_error",
                 error_message=str(exc),
+                operation=intent.operation,
+                anchor=intent.anchor,
+                op_content=intent.content,
+                resolve_order=idx,
             )
         changes.append(change)
         log.info(
-            "resolve change_id=%s status=%s",
+            "resolve change_id=%s status=%s order=%d",
             change.change_id,
             change.status.value,
+            idx,
         )
 
     return UpdateModeResolveResponse(changes=changes)
