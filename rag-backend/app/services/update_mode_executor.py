@@ -37,9 +37,11 @@ from shared_contracts.models import (
     IndexedContextDocument,
     UpdateModeGenerationResult,
     UpdateModeIntent,
+    UpdateModeOperation,
     UpdateModeResolveRequest,
     UpdateModeSession,
     UpdateModeResolveResponse,
+    _DELETE_OPERATIONS,
 )
 
 logger = logging.getLogger(__name__)
@@ -282,6 +284,8 @@ CONTENT FORMATTING RULE (mandatory):
 The "content" field must NOT start or end with blank lines.
 Write only the markdown body — no leading or trailing empty lines (\\n).
 The system handles spacing between existing document content and your addition.
+For delete operations (delete_section, delete_unique_text) the "content" field
+MUST be an empty string "".
 
 LANGUAGE RULE (mandatory):
 Detect the language of the user note.
@@ -292,6 +296,37 @@ Write the following fields in that same language:
 - the stem of suggested_filename for create actions (extension stays .md)
 The anchor.value field must reproduce the exact heading or text as it appears
 in the source document — do NOT translate it.
+
+DELETE OPERATIONS — when to use and safety rules:
+
+USE delete_section when:
+- The note explicitly states that a section is completed, obsolete, or should be
+  removed (e.g. "встреча прошла, убрать блок встречи", "задача выполнена — удали
+  раздел").
+- The section is a placeholder or to-do that is now fully resolved.
+
+USE delete_unique_text when:
+- The note explicitly states that a specific line or short passage should be
+  removed (e.g. "убери эту строку", "эта запись больше не актуальна").
+- The text to remove appears exactly once in the document.
+
+DO NOT use delete operations when:
+- The note merely updates or supersedes content — prefer replace_unique_text
+  or append_after_section instead.
+- The content records a historical fact, a dated event, or a decision log.
+- You are uncertain whether the content should be permanently removed.
+- The text to remove appears more than once (anchor would be ambiguous).
+
+SAFETY RULE — when in doubt, do not delete:
+If the note is ambiguous about whether content should be removed, choose
+replace_unique_text with a note marker (e.g. add "✓ выполнено" prefix)
+or append_after_section to record the outcome, rather than deleting.
+
+ANCHOR KIND RULES (mandatory — must be followed exactly):
+- delete_section   → anchor.kind MUST be "markdown_heading"
+- delete_unique_text → anchor.kind MUST be "exact_text"
+- append_after_section → anchor.kind MUST be "markdown_heading"
+- replace_unique_text  → anchor.kind MUST be "exact_text"
 
 Return JSON with this schema:
 {
@@ -306,10 +341,10 @@ Each intent object schema:
   "description": "<what this change does, 1-2000 chars>",
   "document_id": "<existing doc ID for update action, null for create>",
   "parent_document_id": "<existing doc ID for create with parent, null otherwise>",
-  "operation": "append_after_section" | "append_to_file" | "replace_unique_text" | "create_file",
-  "anchor": {"kind": "markdown_heading" | "exact_text", "value": "..."},  // null when not needed
+  "operation": "append_after_section" | "append_to_file" | "replace_unique_text" | "create_file" | "delete_section" | "delete_unique_text",
+  "anchor": {"kind": "markdown_heading" | "exact_text", "value": "..."},  // null when not needed; required for delete ops
   "suggested_filename": "<filename.md for create action, null for update>",
-  "content": "<the markdown content to write, 1-65536 chars>"
+  "content": "<markdown content to write, or empty string \"\" for delete operations>"
 }"""
 
 
@@ -418,8 +453,9 @@ def _validate_intents_domain(
     Checks:
     - document_id and parent_document_id are within usable_doc_ids
     - the vault that owns each referenced document is within vault_ids_set
-    - content is non-empty (defensive check independent of Pydantic min_length)
-    - content byte limit
+    - content is non-empty for non-delete operations (defensive check)
+    - content is empty for delete operations (defensive check)
+    - content byte limit for non-delete operations
     - no duplicate create targets
     - no duplicate update anchors
 
@@ -454,20 +490,28 @@ def _validate_intents_domain(
                 )
             _check_doc_vault(intent.parent_document_id, "parent_document_id", intent.change_id)
 
-        # content non-empty — defensive check independent of Pydantic min_length=1.
-        # Pydantic guards deserialization from LLM output, but does NOT re-validate
-        # if an UpdateModeIntent is constructed programmatically with an empty string.
-        # This layer is the authoritative gate before data reaches the indexer.
-        if not intent.content or not intent.content.strip():
-            raise UpdateModeInvalidGenerationOutputError(
-                f"intent {intent.change_id}: content must not be empty"
-            )
+        is_delete = intent.operation in _DELETE_OPERATIONS
 
-        # content byte limit (64 KiB)
-        if len(intent.content.encode("utf-8")) > 65_536:
-            raise UpdateModeInvalidGenerationOutputError(
-                f"intent {intent.change_id}: content exceeds 64 KiB UTF-8 limit"
-            )
+        # content validation — delete ops must have empty content; others must not
+        if is_delete:
+            if intent.content != "":
+                raise UpdateModeInvalidGenerationOutputError(
+                    f"intent {intent.change_id}: {intent.operation.value} requires empty content"
+                )
+        else:
+            # Defensive check independent of Pydantic min_length=1.
+            # Pydantic guards deserialization from LLM output, but does NOT re-validate
+            # if an UpdateModeIntent is constructed programmatically with an empty string.
+            # This layer is the authoritative gate before data reaches the indexer.
+            if not intent.content or not intent.content.strip():
+                raise UpdateModeInvalidGenerationOutputError(
+                    f"intent {intent.change_id}: content must not be empty"
+                )
+            # content byte limit (64 KiB)
+            if len(intent.content.encode("utf-8")) > 65_536:
+                raise UpdateModeInvalidGenerationOutputError(
+                    f"intent {intent.change_id}: content exceeds 64 KiB UTF-8 limit"
+                )
 
         # duplicate create targets
         if intent.action.value == "create":

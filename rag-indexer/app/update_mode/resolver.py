@@ -235,6 +235,174 @@ def _replace_unique_text(original: str, anchor_text: str, content: str) -> str |
     return result
 
 
+# ---------------------------------------------------------------------------
+# Helpers: delete operations
+# ---------------------------------------------------------------------------
+
+def _heading_level(line: str) -> int | None:
+    """Return heading level (1-6) or None if the line is not a heading."""
+    stripped = line.lstrip()
+    if stripped.startswith("#"):
+        count = len(stripped) - len(stripped.lstrip("#"))
+        if 1 <= count <= 6 and (len(stripped) <= count or stripped[count] == " "):
+            return count
+    return None
+
+
+def _collapse_consecutive_blank_lines(lines: list[str]) -> list[str]:
+    """Collapse 3+ consecutive blank lines down to 2."""
+    result: list[str] = []
+    blank_count = 0
+    for line in lines:
+        if line.strip() == "":
+            blank_count += 1
+            if blank_count <= 2:
+                result.append(line)
+        else:
+            blank_count = 0
+            result.append(line)
+    return result
+
+
+def _delete_section(original: str, heading: str) -> str | None:
+    """Delete the markdown section that starts with `heading`.
+
+    Deletes from the matched heading line up to (but not including) the next
+    heading of the same or higher level.  Trailing blank lines before the next
+    heading are also removed to avoid leaving double blank lines.
+
+    `heading` may be supplied with or without leading '#' characters — the
+    comparison is normalised the same way as _append_after_section.
+
+    Returns None if the heading is not found (anchor_not_found).
+    Raises _AnchorAmbiguousError if the heading matches more than once.
+    """
+    heading_text = _normalise_heading_text(heading)
+    lines = original.splitlines(keepends=True)
+
+    matching: list[int] = []
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            if _normalise_heading_text(stripped).lower() == heading_text.lower():
+                matching.append(i)
+
+    if len(matching) == 0:
+        found_headings = [
+            _normalise_heading_text(line.strip())
+            for line in lines
+            if line.strip().startswith("#")
+        ]
+        log.warning(
+            "_delete_section: heading not found. searched=%r; "
+            "headings in file (normalised): %r",
+            heading_text,
+            found_headings,
+        )
+        return None
+
+    if len(matching) > 1:
+        log.warning(
+            "_delete_section: heading matches %d times — anchor is ambiguous: %r",
+            len(matching),
+            heading_text,
+        )
+        raise _AnchorAmbiguousError(heading)
+
+    anchor_idx = matching[0]
+    anchor_level = _heading_level(lines[anchor_idx])
+    # anchor_level cannot be None here: the loop above guarantees the line
+    # starts with '#' and _heading_level only returns None for lines that do
+    # not conform to CommonMark ATX syntax.  Guard defensively to avoid
+    # AssertionError when Python is run with -O (optimisations strip assert).
+    if anchor_level is None:  # pragma: no cover
+        log.error(
+            "_delete_section: matched line is not a valid ATX heading: %r",
+            lines[anchor_idx],
+        )
+        return None
+
+    # Find end of section: first heading at same or higher level after anchor
+    end_idx = len(lines)
+    for i in range(anchor_idx + 1, len(lines)):
+        lvl = _heading_level(lines[i])
+        if lvl is not None and lvl <= anchor_level:
+            end_idx = i
+            break
+
+    # Trim trailing blank lines before the next heading
+    while end_idx > anchor_idx and lines[end_idx - 1].strip() == "":
+        end_idx -= 1
+
+    new_lines = lines[:anchor_idx] + lines[end_idx:]
+    new_lines = _collapse_consecutive_blank_lines(new_lines)
+    result = "".join(new_lines)
+
+    if result.strip() == "":
+        log.warning(
+            "_delete_section: deleting heading=%r will result in an empty file",
+            heading_text,
+        )
+
+    return result
+
+
+def _delete_unique_text(original: str, fragment: str) -> str | None:
+    """Delete the unique line whose stripped content matches `fragment`.
+
+    The match is performed on stripped line content vs stripped fragment.
+    Consecutive blank lines introduced by the removal are collapsed.
+
+    Returns None if no match is found (anchor_not_found).
+    Raises _AnchorAmbiguousError if the fragment matches more than once.
+    """
+    fragment_stripped = fragment.strip()
+    lines = original.splitlines(keepends=True)
+
+    matching_indices = [
+        i for i, line in enumerate(lines)
+        if line.strip() == fragment_stripped
+    ]
+
+    if len(matching_indices) == 0:
+        excerpt = original[:200].replace("\n", "↵")
+        log.warning(
+            "_delete_unique_text: fragment not found. fragment=%r; "
+            "original_excerpt=%r",
+            fragment_stripped,
+            excerpt,
+        )
+        return None
+
+    if len(matching_indices) > 1:
+        log.warning(
+            "_delete_unique_text: fragment matches %d times — anchor is ambiguous: %r",
+            len(matching_indices),
+            fragment_stripped,
+        )
+        raise _AnchorAmbiguousError(fragment)
+
+    target_idx = matching_indices[0]
+    new_lines = lines[:target_idx] + lines[target_idx + 1:]
+    new_lines = _collapse_consecutive_blank_lines(new_lines)
+    result = "".join(new_lines)
+
+    if result.strip() == "":
+        log.warning(
+            "_delete_unique_text: deleting fragment=%r will result in an empty file",
+            fragment_stripped,
+        )
+
+    return result
+
+
+class _AnchorAmbiguousError(Exception):
+    """Raised internally when an anchor matches more than once."""
+    def __init__(self, anchor_value: str) -> None:
+        self.anchor_value = anchor_value
+        super().__init__(anchor_value)
+
+
 def _sha256_str(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
@@ -386,6 +554,36 @@ async def _resolve_one(
             return _fail(
                 "anchor_not_unique",
                 f"anchor text not found or appears multiple times: {intent.anchor.value!r}",
+            )
+
+    elif op == UpdateModeOperation.DELETE_SECTION:
+        assert intent.anchor is not None
+        try:
+            proposed = _delete_section(original, intent.anchor.value)
+        except _AnchorAmbiguousError as exc:
+            return _fail(
+                "anchor_ambiguous",
+                f"heading matches more than once: {exc.anchor_value!r}",
+            )
+        if proposed is None:
+            return _fail(
+                "anchor_not_found",
+                f"heading not found: {intent.anchor.value!r}",
+            )
+
+    elif op == UpdateModeOperation.DELETE_UNIQUE_TEXT:
+        assert intent.anchor is not None
+        try:
+            proposed = _delete_unique_text(original, intent.anchor.value)
+        except _AnchorAmbiguousError as exc:
+            return _fail(
+                "anchor_ambiguous",
+                f"fragment matches more than once: {exc.anchor_value!r}",
+            )
+        if proposed is None:
+            return _fail(
+                "anchor_not_found",
+                f"fragment not found: {intent.anchor.value!r}",
             )
 
     else:

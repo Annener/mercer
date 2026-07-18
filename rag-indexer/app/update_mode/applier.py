@@ -239,6 +239,28 @@ async def _apply_vault(
         if change.action == UpdateModeAction.CREATE:
             abs_path.parent.mkdir(parents=True, exist_ok=True)
 
+        # DELETE operations result in proposed_content == "" when the entire file
+        # content was removed (i.e. the deleted section/line was the only content).
+        # This is a valid outcome — the user explicitly accepted the change.
+        # We emit a warning so operators can spot unintentional empty-file results
+        # in logs, but we do NOT block the apply.
+        #
+        # Note: proposed_content == "" does NOT mean a delete operation was used —
+        # it specifically means the file will be written as empty.  A partial delete
+        # (other content remains) produces a non-empty proposed_content.
+        if (
+            change.action == UpdateModeAction.UPDATE
+            and change.proposed_content == ""
+            and abs_path.exists()
+        ):
+            log.warning(
+                "update-mode file_would_become_empty: vault=%s path=%s change_id=%s — "
+                "delete operation will result in an empty file; applying as accepted",
+                vault_id,
+                change.file_path,
+                change.change_id,
+            )
+
         try:
             atomic_write(abs_path, change.proposed_content)
         except AtomicWriteError as exc:
