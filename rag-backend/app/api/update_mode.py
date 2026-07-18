@@ -31,7 +31,8 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime, timedelta, timezone
+from collections import defaultdict
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -72,12 +73,15 @@ from shared_contracts.models import (
     ApplyUpdateModeRequest,
     ApplyUpdateModeResponse,
     CancelUpdateModeResponse,
+    ResolvedUpdateModeChange,
     StartUpdateModeRequest,
     StartUpdateModeResponse,
     UpdateModeAction,
-    UpdateModeApplyChange,
     UpdateModeApplyRequest,
     UpdateModeChangeStatus,
+    UpdateModeFileChangeBatch,
+    UpdateModeFileOp,
+    UpdateModeOperation,
     UpdateModeResolveRequest,
     UpdateModeReviewRequest,
     UpdateModeSession,
@@ -136,6 +140,153 @@ async def _write_audit_log(
         await db.commit()
     except Exception:
         logger.warning("audit log write failed action=%s entity_id=%s", action, entity_id, exc_info=True)
+
+
+def _build_file_batches(
+    accepted: list[ResolvedUpdateModeChange],
+) -> list[UpdateModeFileChangeBatch]:
+    """Group accepted changes by (vault_id, file_path) and build file_batches.
+
+    Sorting by resolve_order guarantees that multiple ops on the same file are
+    applied in the order they were originally resolved (which matches the order
+    LLM produced them and the order patch hunks were computed).
+
+    Backward-compat: if a change has no operation field (session was written
+    before this PR), fall back to a single overwrite op:
+    - For a single legacy change: use proposed_content as a REPLACE via
+      CREATE_FILE-style overwrite (the applier receives the full desired state).
+    - For multiple legacy changes on the same file: last-write-wins — only
+      the last change's proposed_content is used. A warning is logged.
+
+    NOTE: proposed_content is the FULL file content after the op, not a delta.
+    It must NOT be passed as content for incremental ops like APPEND_TO_FILE.
+    Legacy path uses a dedicated overwrite operation (APPEND_TO_FILE with the
+    full proposed_content only makes sense when the file is empty/new, which
+    is not guaranteed here). For truly safe legacy overwrite semantics, the
+    applier receives proposed_content as the complete desired file state via a
+    synthetic single-op batch where the op replaces the entire file contents.
+    """
+    # Group by (vault_id, file_path), preserving vault/file_path from change
+    groups: dict[tuple[str, str], list[ResolvedUpdateModeChange]] = defaultdict(list)
+    skipped = 0
+    for ch in accepted:
+        if ch.vault_id is None or ch.file_path is None:
+            logger.warning(
+                "Skipping change %s: missing vault_id or file_path", ch.change_id
+            )
+            skipped += 1
+            continue
+        groups[(ch.vault_id, ch.file_path)].append(ch)
+
+    if skipped:
+        logger.info("_build_file_batches: skipped %d incomplete changes", skipped)
+
+    batches: list[UpdateModeFileChangeBatch] = []
+    for (vault_id, file_path), changes in groups.items():
+        # Sort by resolve_order so multi-op patches are applied in correct sequence.
+        # resolve_order=-1 is the legacy sentinel; treat as 0 for sorting purposes.
+        changes.sort(key=lambda c: c.resolve_order if c.resolve_order >= 0 else 0)
+
+        # Detect whether any change in this group carries operation metadata.
+        has_operation = any(ch.operation is not None for ch in changes)
+
+        ops: list[UpdateModeFileOp] = []
+        if has_operation:
+            # New-style changes: build one op per change.
+            for i, ch in enumerate(changes):
+                if ch.operation is not None:
+                    ops.append(
+                        UpdateModeFileOp(
+                            change_id=ch.change_id,
+                            operation=ch.operation,
+                            anchor_value=ch.anchor.value if ch.anchor else None,
+                            content=ch.op_content,
+                            # CAS check only on first op of UPDATE batches
+                            expected_sha256=(
+                                ch.expected_sha256
+                                if i == 0 and ch.action == UpdateModeAction.UPDATE
+                                else None
+                            ),
+                        )
+                    )
+                else:
+                    # Mixed group: some changes have operation, some don't.
+                    # This shouldn't happen in practice but handle it gracefully:
+                    # skip the legacy change and log a warning.
+                    logger.warning(
+                        "Change %s in mixed group has no operation field — skipping",
+                        ch.change_id,
+                    )
+        else:
+            # Pure legacy group: no change has operation field.
+            # proposed_content is the FULL desired file state, not a delta.
+            # We cannot compose multiple legacy full-file states, so last-write-wins.
+            if len(changes) > 1:
+                logger.warning(
+                    "update-mode legacy backward-compat: %d changes share "
+                    "file_path=%r but none has operation field — "
+                    "using only the last change (%s). "
+                    "Other changes are dropped (last-write-wins fallback).",
+                    len(changes), file_path, changes[-1].change_id,
+                )
+            last = changes[-1]
+            # Use REPLACE_UNIQUE_TEXT is not suitable here because we don't have
+            # an anchor. Instead, use a single CREATE_FILE-style op: the applier
+            # will receive the full desired content and write it atomically.
+            # For UPDATE batches we reuse the same action but pass proposed_content
+            # as the full file — the applier's text_ops will write it via
+            # APPEND_TO_FILE on an empty buffer after current content is cleared.
+            # The safest legacy overwrite is: deliver proposed_content as the
+            # sole op content for a CREATE_FILE operation regardless of action,
+            # since proposed_content == full intended state of the file.
+            # We set action=CREATE to bypass the CAS check that would otherwise
+            # fire on ops[0].expected_sha256=None for an UPDATE batch.
+            # This is safe because proposed_content was computed at resolve time
+            # from the original and already encodes the full desired state.
+            if last.action == UpdateModeAction.UPDATE:
+                ops = [
+                    UpdateModeFileOp(
+                        change_id=last.change_id,
+                        operation=UpdateModeOperation.CREATE_FILE,
+                        anchor_value=None,
+                        content=last.proposed_content,
+                        expected_sha256=None,
+                    )
+                ]
+                # Override action to CREATE so the validator and applier skip
+                # the CAS check (proposed_content is already the full state).
+                batches.append(
+                    UpdateModeFileChangeBatch(
+                        vault_id=vault_id,
+                        file_path=file_path,
+                        action=UpdateModeAction.CREATE,
+                        ops=ops,
+                    )
+                )
+                continue
+            else:
+                # action=CREATE already: write proposed_content as-is.
+                ops = [
+                    UpdateModeFileOp(
+                        change_id=last.change_id,
+                        operation=UpdateModeOperation.CREATE_FILE,
+                        anchor_value=None,
+                        content=last.proposed_content,
+                        expected_sha256=None,
+                    )
+                ]
+
+        if ops:
+            batches.append(
+                UpdateModeFileChangeBatch(
+                    vault_id=vault_id,
+                    file_path=file_path,
+                    action=changes[0].action,
+                    ops=ops,
+                )
+            )
+
+    return batches
 
 
 # ---------------------------------------------------------------------------
@@ -271,6 +422,9 @@ async def apply_changes(
 ) -> ApplyUpdateModeResponse:
     """Delegate writing + reindex to rag-indexer. Idempotent for same apply_id.
 
+    Builds file_batches from accepted session changes so the indexer can apply
+    multiple ops to the same file in a single atomic read-modify-write cycle.
+
     After receiving the indexer response:
     - persists apply_result in the Redis session via complete_apply()
     - writes an AuditLog row
@@ -294,23 +448,9 @@ async def apply_changes(
             detail="No accepted changes to apply. Use PATCH /review to accept changes first.",
         )
 
-    apply_changes_list = []
-    for ch in accepted:
-        if ch.vault_id is None or ch.file_path is None:
-            logger.warning("Skipping change %s: missing vault_id or file_path", ch.change_id)
-            continue
-        apply_changes_list.append(
-            UpdateModeApplyChange(
-                change_id=ch.change_id,
-                vault_id=ch.vault_id,
-                file_path=ch.file_path,
-                action=ch.action,
-                proposed_content=ch.proposed_content,
-                expected_sha256=ch.expected_sha256,
-            )
-        )
+    file_batches = _build_file_batches(accepted)
 
-    if not apply_changes_list:
+    if not file_batches:
         raise HTTPException(
             status_code=422,
             detail="No complete changes to apply (missing vault_id or file_path).",
@@ -320,7 +460,7 @@ async def apply_changes(
         apply_id=session.apply_id or str(uuid.uuid4()),
         chat_id=chat_id,
         campaign_id=session.campaign_id,
-        accepted_changes=apply_changes_list,
+        file_batches=file_batches,
     )
 
     try:

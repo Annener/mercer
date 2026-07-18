@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging as _logging
 import uuid as _uuid
 from datetime import datetime
 from enum import Enum
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+_log = _logging.getLogger(__name__)
 
 
 class ORMModel(BaseModel):
@@ -709,17 +712,11 @@ class PipelineExecutionContext(BaseModel):
         Также поддерживает {query} — подставляется напрямую через format_map.
         Делегирует в resolve_step_vars() из prompt_pack.
         """
-        # Импорт здесь во избежание циклических зависимостей:
-        # shared_contracts не должен импортировать rag-backend напрямую.
-        # В продакшне resolve_step_vars будет доступен как пакет в sys.path.
         try:
             from app.services.prompt_pack import resolve_step_vars  # type: ignore[import]
         except ImportError:
-            # Fallback для контекстов где rag-backend не в sys.path (тесты shared_contracts)
             from prompt_pack import resolve_step_vars  # type: ignore[import]
 
-        # Сначала разворачиваем {query} через простой .replace, чтобы не ломать
-        # паттерн {STEP_ID.xxx} для resolve_step_vars
         resolved = template.replace("{query}", self.query)
         return resolve_step_vars(resolved, self.step_results)
 
@@ -1079,6 +1076,19 @@ class ResolvedUpdateModeChange(BaseModel):
     action: UpdateModeAction
     description: str
 
+    # --- Operation metadata — persisted in session for multi-op batch builder ---
+    # These fields allow rag-backend to reconstruct the ordered file_batches from
+    # the session without re-resolving. Added in fix/update-mode-multi-patch-per-file.
+    operation: UpdateModeOperation | None = None
+    anchor: UpdateModeAnchor | None = None
+    # Raw intent content (the text to insert/replace). For delete ops this is "".
+    # NOT the same as proposed_content (which is the full proposed file after the op).
+    op_content: str = ""
+    # Stable index preserving the order in which intents were resolved (0-based).
+    # Used by the batch builder to sort ops targeting the same file.
+    # Default -1 signals a legacy session where the field was not persisted.
+    resolve_order: int = -1
+
     original_content: str = ""
     proposed_content: str = ""
     unified_diff: str = ""
@@ -1094,12 +1104,24 @@ class UpdateModeResolveResponse(BaseModel):
 
 
 class UpdateModeApplyChange(BaseModel):
+    """Single-change apply unit — deprecated in favour of UpdateModeFileChangeBatch.
+
+    Kept for backward compatibility. rag-backend still produces these when
+    talking to an old indexer; UpdateModeApplyRequest.model_validator converts
+    them to file_batches automatically.
+    """
     change_id: str
     vault_id: str
     file_path: str
     action: UpdateModeAction
     proposed_content: str
     expected_sha256: str | None = None
+    # Fields added for multi-op backward-compat conversion.
+    # Old clients that only set proposed_content will get the legacy single-op
+    # path; new clients set operation + anchor + op_content.
+    operation: UpdateModeOperation | None = None
+    anchor: UpdateModeAnchor | None = None
+    op_content: str = ""
 
     @model_validator(mode="after")
     def _validate_sha_policy(self) -> "UpdateModeApplyChange":
@@ -1110,20 +1132,140 @@ class UpdateModeApplyChange(BaseModel):
         return self
 
 
+# ---------------------------------------------------------------------------
+# Multi-op apply contracts (fix/update-mode-multi-patch-per-file)
+# ---------------------------------------------------------------------------
+
+class UpdateModeFileOp(BaseModel):
+    """A single ordered operation within an UpdateModeFileChangeBatch.
+
+    One UpdateModeFileChangeBatch may contain 1..20 ops targeting the same
+    (vault_id, file_path). The applier reads the file once, applies all ops
+    sequentially in-memory, then writes the final result atomically.
+    """
+    change_id: str
+    operation: UpdateModeOperation
+    anchor_value: str | None = None   # anchor.value from intent; None for APPEND_TO_FILE
+    content: str                      # intent content ('' for delete ops)
+    # SHA-256 of the original file content at resolve time.
+    # Required for ops[0] of UPDATE batches (CAS check before first write).
+    # None for all subsequent ops and for CREATE batches.
+    expected_sha256: str | None = None
+
+
+class UpdateModeFileChangeBatch(BaseModel):
+    """All operations targeting one (vault_id, file_path) pair, in apply order."""
+    vault_id: str
+    file_path: str
+    action: UpdateModeAction            # UPDATE or CREATE
+    ops: list[UpdateModeFileOp] = Field(min_length=1, max_length=20)
+
+    @model_validator(mode="after")
+    def _validate_sha_policy(self) -> "UpdateModeFileChangeBatch":
+        """Enforce CAS / SHA-256 policy for ops list.
+
+        Rules:
+        - UPDATE batches: ops[0].expected_sha256 is required (CAS check);
+          ops[1..] must have expected_sha256 == None.
+        - CREATE batches: all ops must have expected_sha256 == None.
+        """
+        for i, op in enumerate(self.ops):
+            if self.action == UpdateModeAction.CREATE:
+                if op.expected_sha256 is not None:
+                    raise ValueError(
+                        f"CREATE batch: ops[{i}].expected_sha256 must be None"
+                    )
+            elif self.action == UpdateModeAction.UPDATE:
+                if i == 0 and op.expected_sha256 is None:
+                    raise ValueError(
+                        "UPDATE batch: ops[0].expected_sha256 is required for CAS check"
+                    )
+                if i > 0 and op.expected_sha256 is not None:
+                    raise ValueError(
+                        f"UPDATE batch: ops[{i}].expected_sha256 must be None "
+                        "(CAS check is only performed on ops[0])"
+                    )
+        return self
+
+
 class UpdateModeApplyRequest(BaseModel):
     apply_id: str
     chat_id: str
     campaign_id: str
-    accepted_changes: list[UpdateModeApplyChange] = Field(min_length=1, max_length=10)
+
+    # Primary field — new clients send this.
+    file_batches: list[UpdateModeFileChangeBatch] = Field(default_factory=list)
+
+    # Deprecated: accepted for backward compatibility.
+    # Converted to file_batches by _normalize_and_validate below.
+    accepted_changes: list[UpdateModeApplyChange] = Field(default_factory=list)
 
     @model_validator(mode="after")
-    def _validate_apply_request(self) -> "UpdateModeApplyRequest":
-        change_ids = [c.change_id for c in self.accepted_changes]
-        if len(change_ids) != len(set(change_ids)):
-            raise ValueError("change_id must be unique in accepted_changes")
-        path_pairs = [(c.vault_id, c.file_path) for c in self.accepted_changes]
-        if len(path_pairs) != len(set(path_pairs)):
-            raise ValueError("(vault_id, file_path) pairs must be unique in accepted_changes")
+    def _normalize_and_validate(self) -> "UpdateModeApplyRequest":
+        # --- Backward-compat conversion ---
+        if self.accepted_changes and not self.file_batches:
+            from collections import defaultdict
+            groups: dict[tuple[str, str], list[UpdateModeApplyChange]] = defaultdict(list)
+            for ch in self.accepted_changes:
+                groups[(ch.vault_id, ch.file_path)].append(ch)
+            batches: list[UpdateModeFileChangeBatch] = []
+            for (vault_id, file_path), changes in groups.items():
+                # Sort by resolve_order so ops are applied in correct sequence.
+                # resolve_order=-1 (legacy sentinel) sorts before 0, which is
+                # acceptable for single-change-per-file legacy sessions.
+                changes.sort(key=lambda c: c.resolve_order if c.resolve_order >= 0 else 0)
+                if changes[0].operation is not None:
+                    # New-style UpdateModeApplyChange: has operation + anchor + op_content
+                    ops = [
+                        UpdateModeFileOp(
+                            change_id=ch.change_id,
+                            operation=ch.operation,  # type: ignore[arg-type]
+                            anchor_value=ch.anchor.value if ch.anchor else None,
+                            content=ch.op_content,
+                            expected_sha256=ch.expected_sha256 if i == 0 else None,
+                        )
+                        for i, ch in enumerate(changes)
+                    ]
+                else:
+                    # Legacy-style: only proposed_content is available.
+                    # proposed_content is the FULL file state after the op, not a delta.
+                    # We cannot meaningfully apply multiple legacy changes to the same
+                    # file — use only the last one (last-write-wins fallback).
+                    if len(changes) > 1:
+                        _log.warning(
+                            "update-mode legacy backward-compat: %d changes share "
+                            "file_path=%r but none has operation field — "
+                            "using only the last change (%s) as a single "
+                            "APPEND_TO_FILE op. Other changes are dropped.",
+                            len(changes), file_path, changes[-1].change_id,
+                        )
+                    last = changes[-1]
+                    ops = [
+                        UpdateModeFileOp(
+                            change_id=last.change_id,
+                            operation=UpdateModeOperation.APPEND_TO_FILE,
+                            anchor_value=None,
+                            content=last.proposed_content,
+                            expected_sha256=changes[0].expected_sha256,
+                        )
+                    ]
+                batches.append(UpdateModeFileChangeBatch(
+                    vault_id=vault_id,
+                    file_path=file_path,
+                    action=changes[0].action,
+                    ops=ops,
+                ))
+            self.file_batches = batches
+
+        # --- Require at least one batch ---
+        if not self.file_batches:
+            raise ValueError("file_batches or accepted_changes must be non-empty")
+
+        # --- Uniqueness of (vault_id, file_path) ---
+        pairs = [(b.vault_id, b.file_path) for b in self.file_batches]
+        if len(pairs) != len(set(pairs)):
+            raise ValueError("(vault_id, file_path) pairs must be unique in file_batches")
+
         return self
 
 
