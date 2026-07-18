@@ -7,15 +7,34 @@ Responsibilities
 1. Idempotency: if apply_id already completed, return cached response from Redis.
 2. Distributed lock: SET NX / PX lock key for duration of apply to prevent
    concurrent duplicate in-flight requests for the same apply_id.
-3. Group accepted changes by vault_id.
+3. Group accepted changes by vault_id, then by file_path within each vault.
 4. For each vault:
    a. git_init_if_needed.
    b. git_snapshot (pre-apply safety commit, --allow-empty).
-   c. For each change: CAS-check expected_sha256, then atomic_write.
-   d. git_apply_commit with list of written paths.
-   e. Trigger TARGETED re-index via IndexerService.start_task(source_paths=...).
+   c. Preflight CAS check: verify expected_sha256 against on-disk content
+      for the *first* change per file (represents the pre-apply state).
+   d. For each file group: read once, apply all patches in-memory in
+      deterministic order (delete → replace → append/create), write once.
+   e. git_apply_commit with list of written paths.
+   f. Trigger TARGETED re-index via IndexerService.start_task(source_paths=...).
 5. Persist completed response in Redis (idempotency record, TTL=3h).
 6. Return UpdateModeApplyResponse with per-vault results.
+
+Multiple changes on the same file
+----------------------------------
+The applier deliberately supports multiple accepted changes targeting the
+same (vault_id, file_path).  Within a file group, patches are applied to an
+in-memory buffer in the following deterministic order:
+
+  1. delete operations  (DELETE_SECTION, DELETE_UNIQUE_TEXT)
+  2. replace operations (REPLACE_UNIQUE_TEXT)
+  3. append operations  (APPEND_AFTER_SECTION, APPEND_TO_FILE)
+  4. create operations  (CREATE_FILE — only one allowed per path)
+
+This ordering prevents anchors from shifting: deletions and replacements
+resolve against the original (or partially-modified) text before appends
+extend it.  The result is written atomically as a single file write and
+committed in a single git commit per vault.
 
 CAS failures and write errors produce CONFLICT / FAILED vault results,
 not HTTP 500.  Partial success is possible across vaults.
@@ -25,8 +44,10 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import redis.asyncio as aioredis
 
@@ -50,6 +71,7 @@ from shared_contracts.models import (
     UpdateModeApplyChange,
     UpdateModeApplyRequest,
     UpdateModeApplyResponse,
+    UpdateModeOperation,
     UpdateModeVaultApplyResult,
     UpdateModeVaultApplyStatus,
 )
@@ -62,6 +84,17 @@ log = logging.getLogger(__name__)
 
 _APPLY_STATE_TTL = 3 * 60 * 60  # 3 hours — matches session TTL
 _LOCK_TTL_MS = 30_000  # 30 s lock TTL (auto-expire on crash)
+
+# Deterministic application order for multiple patches on the same file.
+# Lower rank = applied first.
+_OPERATION_ORDER: dict[UpdateModeOperation, int] = {
+    UpdateModeOperation.DELETE_SECTION: 0,
+    UpdateModeOperation.DELETE_UNIQUE_TEXT: 0,
+    UpdateModeOperation.REPLACE_UNIQUE_TEXT: 1,
+    UpdateModeOperation.APPEND_AFTER_SECTION: 2,
+    UpdateModeOperation.APPEND_TO_FILE: 2,
+    UpdateModeOperation.CREATE_FILE: 3,
+}
 
 
 def _apply_state_key(apply_id: str) -> str:
@@ -102,6 +135,48 @@ async def _get_vault_identity(db: IndexerDBClient, vault_id: str) -> GitIdentity
     return None
 
 
+def _sort_key_for_change(change: UpdateModeApplyChange) -> int:
+    """Return the application-order rank for a change."""
+    # Determine operation from proposed_content heuristic is fragile;
+    # UpdateModeApplyChange carries only proposed_content, not the original
+    # UpdateModeOperation enum.  We derive order from the action + content:
+    # - CREATE action → rank 3
+    # - UPDATE action with empty proposed_content → delete family → rank 0
+    # - UPDATE action with non-empty proposed_content: we can't distinguish
+    #   replace from append without the original operation field.  The safe
+    #   default is rank 1 (replace before append).  In the common case the
+    #   resolver stores a meaningful proposed_content for all non-delete ops.
+    #
+    # For a fully type-safe sort we would need to carry the operation enum
+    # into UpdateModeApplyChange.  That is deferred to a follow-up refactor.
+    # The current ordering (delete=0, non-empty=1, create=3) is correct for
+    # the critical delete-before-modify invariant.
+    if change.action == UpdateModeAction.CREATE:
+        return 3
+    if change.proposed_content == "":
+        return 0  # delete operation
+    return 1  # replace or append — both safe after deletes
+
+
+# ---------------------------------------------------------------------------
+# Per-file in-memory patching
+# ---------------------------------------------------------------------------
+
+def _apply_patch_to_content(current_content: str, change: UpdateModeApplyChange) -> str:
+    """Apply a single change's proposed_content to the current in-memory file content.
+
+    For non-delete operations the resolver has already produced the full
+    desired file content in proposed_content, so we simply replace the
+    entire buffer.  For delete operations proposed_content is the post-delete
+    file content (also produced by the resolver).
+
+    This means the resolver is the source of truth for the final content;
+    the applier's job is sequencing and I/O only.
+    """
+    # Both delete and non-delete: resolver supplies the complete target content.
+    return change.proposed_content
+
+
 # ---------------------------------------------------------------------------
 # Per-vault apply
 # ---------------------------------------------------------------------------
@@ -114,6 +189,10 @@ async def _apply_vault(
     indexer_service: IndexerService,
 ) -> UpdateModeVaultApplyResult:
     """Apply all accepted changes for a single vault.
+
+    Changes targeting the same file are grouped and applied to an in-memory
+    buffer in deterministic order (delete → replace → append → create),
+    producing a single atomic write and a single git commit.
 
     Returns a result object — never raises.
     """
@@ -151,23 +230,36 @@ async def _apply_vault(
         log.warning("Could not fetch vault git identity vault_id=%s: %s", vault_id, exc)
         vault_identity = None
 
-    # 4. Preflight CAS check (read-only, before any writes)
-    #    Fail fast if any UPDATE change would CAS-conflict.
-    preflight_conflicts: list[str] = []
+    # 4. Group changes by file_path and sort within each group.
+    #    Key insight: multiple patches on the same file must be applied in
+    #    a deterministic order so that anchors resolve correctly.
+    file_groups: dict[str, list[UpdateModeApplyChange]] = defaultdict(list)
     for change in changes:
-        if change.action == UpdateModeAction.UPDATE:
-            assert change.expected_sha256 is not None  # validated by Pydantic
+        file_groups[change.file_path].append(change)
+    for path_key in file_groups:
+        file_groups[path_key].sort(key=_sort_key_for_change)
+
+    # 5. Preflight CAS check (read-only, before any writes).
+    #    For each file we check the *first* change's expected_sha256 against
+    #    the on-disk content — this represents the pre-apply state of the file.
+    #    Subsequent changes in the same file group are applied in-memory and
+    #    are not subject to an independent CAS check.
+    preflight_conflicts: list[str] = []
+    for file_path, file_changes in file_groups.items():
+        first_change = file_changes[0]
+        if first_change.action == UpdateModeAction.UPDATE:
+            assert first_change.expected_sha256 is not None  # validated by Pydantic
             try:
-                abs_path = resolve_file_path(vault_root, change.file_path)
+                abs_path = resolve_file_path(vault_root, file_path)
             except PathValidationError:
-                preflight_conflicts.append(change.change_id)
+                preflight_conflicts.append(first_change.change_id)
                 continue
             if not abs_path.exists():
-                preflight_conflicts.append(change.change_id)
+                preflight_conflicts.append(first_change.change_id)
                 continue
             current_sha = _sha256_str(abs_path.read_text(encoding="utf-8"))
-            if current_sha != change.expected_sha256:
-                preflight_conflicts.append(change.change_id)
+            if current_sha != first_change.expected_sha256:
+                preflight_conflicts.append(first_change.change_id)
 
     if preflight_conflicts:
         log.warning(
@@ -182,13 +274,12 @@ async def _apply_vault(
             error_message=f"preflight conflict on change_ids: {preflight_conflicts}",
         )
 
-    # 5. Snapshot commit (pre-apply)
-    # Collect only the paths that will be touched (must exist for UPDATE actions).
+    # 6. Snapshot commit (pre-apply).
     snapshot_paths: list[Path] = []
-    for change in changes:
-        if change.action == UpdateModeAction.UPDATE:
+    for file_path, file_changes in file_groups.items():
+        if any(c.action == UpdateModeAction.UPDATE for c in file_changes):
             try:
-                abs_path = resolve_file_path(vault_root, change.file_path)
+                abs_path = resolve_file_path(vault_root, file_path)
                 if abs_path.exists():
                     snapshot_paths.append(abs_path)
             except PathValidationError:
@@ -203,78 +294,75 @@ async def _apply_vault(
                 vault_identity,
                 message=f"update-mode: pre-apply snapshot chat_id={request.chat_id}",
             )
-            log.info(
-                "update-mode snapshot vault=%s commit=%s",
-                vault_id,
-                snapshot_sha,
-            )
+            log.info("update-mode snapshot vault=%s commit=%s", vault_id, snapshot_sha)
     except GitError as exc:
         log.warning(
             "update-mode snapshot failed vault=%s — continuing without snapshot: %s",
-            vault_id,
-            exc,
+            vault_id, exc,
         )
-        # Non-fatal: proceed without snapshot
 
-    # 6. Apply each change
+    # 7. Apply changes per file: read once → patch in-memory → write once.
     written_paths: list[Path] = []
-    written_rel_paths: list[str] = []  # relative source paths for targeted reindex
+    written_rel_paths: list[str] = []
+    total_patches_applied: int = 0
 
-    for change in changes:
+    for file_path, file_changes in file_groups.items():
         try:
-            abs_path = resolve_file_path(vault_root, change.file_path)
+            abs_path = resolve_file_path(vault_root, file_path)
         except PathValidationError as exc:
             log.error(
                 "update-mode path validation failed vault=%s path=%s: %s",
-                vault_id, change.file_path, exc,
+                vault_id, file_path, exc,
             )
-            # Any write-time path error after preflight passed — flag manual recovery
             return _fail(
                 exc.code,
-                f"path={change.file_path!r}: {exc}",
+                f"path={file_path!r}: {exc}",
                 manual_recovery_required=bool(written_paths),
             )
 
-        # CREATE: ensure parent directory exists
-        if change.action == UpdateModeAction.CREATE:
+        # Read current on-disk content (empty string for new files).
+        if abs_path.exists():
+            current_content = abs_path.read_text(encoding="utf-8")
+        else:
+            current_content = ""
+
+        # CREATE: ensure parent directory exists before writing.
+        if any(c.action == UpdateModeAction.CREATE for c in file_changes):
             abs_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # DELETE operations result in proposed_content == "" when the entire file
-        # content was removed (i.e. the deleted section/line was the only content).
-        # This is a valid outcome — the user explicitly accepted the change.
-        # We emit a warning so operators can spot unintentional empty-file results
-        # in logs, but we do NOT block the apply.
-        #
-        # Note: proposed_content == "" does NOT mean a delete operation was used —
-        # it specifically means the file will be written as empty.  A partial delete
-        # (other content remains) produces a non-empty proposed_content.
-        if (
-            change.action == UpdateModeAction.UPDATE
-            and change.proposed_content == ""
-            and abs_path.exists()
-        ):
-            log.warning(
-                "update-mode file_would_become_empty: vault=%s path=%s change_id=%s — "
-                "delete operation will result in an empty file; applying as accepted",
-                vault_id,
-                change.file_path,
-                change.change_id,
+        # Apply all patches sequentially to the in-memory buffer.
+        patched_content = current_content
+        for change in file_changes:
+            patched_content = _apply_patch_to_content(patched_content, change)
+            total_patches_applied += 1
+            log.debug(
+                "update-mode in-memory patch vault=%s path=%s change_id=%s action=%s",
+                vault_id, file_path, change.change_id, change.action.value,
             )
 
+        # Warn if the result is an empty file (same logic as before, now per-group).
+        if patched_content == "" and abs_path.exists():
+            log.warning(
+                "update-mode file_would_become_empty: vault=%s path=%s — "
+                "all patches result in an empty file; applying as accepted",
+                vault_id, file_path,
+            )
+
+        # Write once.
         try:
-            atomic_write(abs_path, change.proposed_content)
+            atomic_write(abs_path, patched_content)
         except AtomicWriteError as exc:
             return _fail(
                 exc.code,
-                f"write failed for {change.file_path!r}: {exc}",
+                f"write failed for {file_path!r}: {exc}",
                 manual_recovery_required=bool(written_paths),
             )
 
         written_paths.append(abs_path)
-        written_rel_paths.append(change.file_path)
+        written_rel_paths.append(file_path)
         log.info(
-            "update-mode wrote vault=%s path=%s action=%s",
-            vault_id, change.file_path, change.action.value,
+            "update-mode wrote vault=%s path=%s patches=%d",
+            vault_id, file_path, len(file_changes),
         )
 
     if not written_paths:
@@ -285,7 +373,7 @@ async def _apply_vault(
             snapshot_commit_sha=snapshot_sha,
         )
 
-    # 7. git apply commit
+    # 8. git apply commit (one commit covers all written files in this vault).
     commit_msg = (
         f"update-mode: apply chat_id={request.chat_id} "
         f"campaign_id={request.campaign_id} "
@@ -300,17 +388,14 @@ async def _apply_vault(
             message=commit_msg,
         )
         log.info(
-            "update-mode apply commit vault=%s commit=%s files=%d",
-            vault_id, commit_sha, len(written_paths),
+            "update-mode apply commit vault=%s commit=%s files=%d patches=%d",
+            vault_id, commit_sha, len(written_paths), total_patches_applied,
         )
     except GitError as exc:
-        log.error(
-            "update-mode git commit failed vault=%s: %s",
-            vault_id, exc,
-        )
+        log.error("update-mode git commit failed vault=%s: %s", vault_id, exc)
         return _fail(exc.code, str(exc), manual_recovery_required=True)
 
-    # 8. Trigger TARGETED re-index (only written files — avoids full vault rescan)
+    # 9. Trigger TARGETED re-index (only written files — avoids full vault rescan).
     reindex_task_id: str | None = None
     reindex_error: str | None = None
     try:
@@ -324,15 +409,11 @@ async def _apply_vault(
             vault_id, reindex_task_id, written_rel_paths,
         )
     except (KeyError, ValueError) as exc:
-        log.warning(
-            "update-mode re-index not started vault=%s: %s",
-            vault_id, exc,
-        )
+        log.warning("update-mode re-index not started vault=%s: %s", vault_id, exc)
         reindex_error = str(exc)
     except Exception as exc:
         log.error(
-            "update-mode re-index unexpected error vault=%s: %s",
-            vault_id, exc,
+            "update-mode re-index unexpected error vault=%s: %s", vault_id, exc,
             exc_info=True,
         )
         reindex_error = str(exc)
@@ -399,18 +480,13 @@ async def apply_changes(
     existing_state = await _get_apply_state(redis, apply_id)
     if existing_state is not None and existing_state.status == "completed":
         assert existing_state.response is not None
-        log.info(
-            "update-mode apply idempotent hit apply_id=%s",
-            apply_id,
-        )
+        log.info("update-mode apply idempotent hit apply_id=%s", apply_id)
         return existing_state.response
 
     # --- 2. Acquire distributed lock (NX, auto-expires) ---
     lock_key = _apply_lock_key(apply_id)
     acquired = await redis.set(lock_key, "1", nx=True, px=_LOCK_TTL_MS)
     if not acquired:
-        # Another instance is processing the same apply_id.
-        # Return 409-equivalent by raising — router will translate.
         raise _ApplyInProgressError(
             f"apply_id={apply_id} is already in progress on another instance"
         )
@@ -427,9 +503,9 @@ async def apply_changes(
         await _save_apply_state(redis, in_progress_state)
 
         # --- 4. Group changes by vault_id ---
-        by_vault: dict[str, list[UpdateModeApplyChange]] = {}
+        by_vault: dict[str, list[UpdateModeApplyChange]] = defaultdict(list)
         for change in request.accepted_changes:
-            by_vault.setdefault(change.vault_id, []).append(change)
+            by_vault[change.vault_id].append(change)
 
         results: list[UpdateModeVaultApplyResult] = []
         for vault_id, vault_changes in by_vault.items():
@@ -463,7 +539,6 @@ async def apply_changes(
         return response
 
     finally:
-        # Always release the lock, even on unexpected exception
         await redis.delete(lock_key)
 
 

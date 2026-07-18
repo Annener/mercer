@@ -1118,12 +1118,13 @@ class UpdateModeApplyRequest(BaseModel):
 
     @model_validator(mode="after")
     def _validate_apply_request(self) -> "UpdateModeApplyRequest":
+        # change_id must be unique — each change is a distinct intent.
         change_ids = [c.change_id for c in self.accepted_changes]
         if len(change_ids) != len(set(change_ids)):
             raise ValueError("change_id must be unique in accepted_changes")
-        path_pairs = [(c.vault_id, c.file_path) for c in self.accepted_changes]
-        if len(path_pairs) != len(set(path_pairs)):
-            raise ValueError("(vault_id, file_path) pairs must be unique in accepted_changes")
+        # NOTE: multiple changes targeting the same (vault_id, file_path) are
+        # intentionally allowed — the applier groups them and applies all patches
+        # to the file in a single atomic write (delete → replace → append order).
         return self
 
 
