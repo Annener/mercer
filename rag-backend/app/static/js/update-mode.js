@@ -91,6 +91,30 @@ function _actionLabel(action) {
 }
 
 // ---------------------------------------------------------------------------
+// Render unified diff with per-line colour coding.
+// Lines starting with '+' → green background (.um-diff-line--add)
+// Lines starting with '-' → red background  (.um-diff-line--del)
+// Lines starting with '@' → muted meta style (.um-diff-line--meta)
+// Everything else          → plain           (.um-diff-line)
+// ---------------------------------------------------------------------------
+function _renderDiffHtml(rawDiff) {
+    return rawDiff
+        .split('\n')
+        .map(line => {
+            let cls = 'um-diff-line';
+            if (line.startsWith('+') && !line.startsWith('+++')) {
+                cls += ' um-diff-line--add';
+            } else if (line.startsWith('-') && !line.startsWith('---')) {
+                cls += ' um-diff-line--del';
+            } else if (line.startsWith('@')) {
+                cls += ' um-diff-line--meta';
+            }
+            return `<span class="${cls}">${_escapeHtml(line)}</span>`;
+        })
+        .join('\n');
+}
+
+// ---------------------------------------------------------------------------
 // Change card
 // ---------------------------------------------------------------------------
 function _createChangeCard(change, onToggle) {
@@ -107,11 +131,11 @@ function _createChangeCard(change, onToggle) {
 
     let diffHtml = '';
     if (change.unified_diff) {
-        const escaped = _escapeHtml(change.unified_diff);
+        const lines = _renderDiffHtml(change.unified_diff);
         diffHtml = `
             <details class="um-change-diff">
                 <summary class="um-change-diff__toggle">Показать diff</summary>
-                <pre class="um-change-diff__pre">${escaped}</pre>
+                <pre class="um-change-diff__pre">${lines}</pre>
             </details>
         `;
     }
@@ -648,7 +672,7 @@ function _buildPanel(chatId, initialSession) {
             // BUG-9 fix: set flag and re-render — hint stays alive through subsequent render() calls
             _showApplyHint = true;
             render();
-            return;
+            retturn;
         }
         _applying = true;
         state = 'applying';
