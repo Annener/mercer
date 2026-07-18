@@ -412,6 +412,8 @@ class ChatManager {
         this._streamingDone = false;
         this._abortController = null;
         this._streamEnabled = true;
+        // --- smart scroll: флаг «пользователь отлистал вверх» ---
+        this._userScrolledUp = false;
         this.messagesContainer = document.getElementById('messages-container');
         this.inputArea = document.getElementById('input-area');
         this.messageInput = document.getElementById('message-input');
@@ -428,6 +430,7 @@ class ChatManager {
         this.currentChat = null;
         this._lastUserMessage = null;
         this.initEventListeners();
+        this._initScrollDetector();
         this.pendingBanner = new PendingFilesBanner('chat-banner-area');
         this._loadStreamSetting();
     }
@@ -440,6 +443,39 @@ class ChatManager {
         } catch (e) {
             console.warn('chat.js: could not load stream_answers setting, defaulting to true', e);
         }
+    }
+
+    // -------------------------------------------------------
+    // Smart scroll — детектор ручного скролла вверх
+    // -------------------------------------------------------
+
+    /**
+     * Слушает скролл контейнера сообщений.
+     * Если пользователь отлистал вверх (> 120px от низа) — устанавливает флаг
+     * _userScrolledUp = true, что блокирует автоскролл во время стрима.
+     * Флаг сбрасывается при отправке нового сообщения.
+     */
+    _initScrollDetector() {
+        if (!this.messagesContainer) return;
+        this.messagesContainer.addEventListener('scroll', () => {
+            const distanceFromBottom =
+                this.messagesContainer.scrollHeight -
+                this.messagesContainer.scrollTop -
+                this.messagesContainer.clientHeight;
+            this._userScrolledUp = distanceFromBottom > 120;
+        }, { passive: true });
+    }
+
+    /**
+     * Прокручивает контейнер так, чтобы переданный элемент
+     * оказался у верхнего края видимой области.
+     * Используется для позиционирования нового сообщения пользователя.
+     */
+    _scrollToUserMessage(messageEl) {
+        const containerTop = this.messagesContainer.getBoundingClientRect().top;
+        const msgTop = messageEl.getBoundingClientRect().top;
+        const offset = msgTop - containerTop;
+        this.messagesContainer.scrollTop += offset;
     }
 
     // -------------------------------------------------------
@@ -603,6 +639,8 @@ class ChatManager {
             this.messageInput.value = '';
             this.messageInput.style.height = 'auto';
         }
+        // --- smart scroll: сбрасываем флаг при каждой отправке ---
+        this._userScrolledUp = false;
         this.addMessage('user', content);
         this._lastUserMessage = content;
         this.isStreaming = true;
@@ -712,7 +750,7 @@ class ChatManager {
                                     handleNestedStream
                                 );
                                 this.messagesContainer.appendChild(card);
-                                this.scrollToBottom();
+                                if (!this._userScrolledUp) this.scrollToBottom();
                             }
 
                             if (parsed.type === 'validation_required') {
@@ -725,13 +763,13 @@ class ChatManager {
                                     handleNestedStream
                                 );
                                 this.messagesContainer.appendChild(card);
-                                this.scrollToBottom();
+                                if (!this._userScrolledUp) this.scrollToBottom();
                             }
 
                             if (parsed.type === 'pipeline_resumed' || parsed.type === 'pipeline_cancelled') {
                                 const statusLine = createPipelineStatusLine(parsed.type, parsed);
                                 this.messagesContainer.appendChild(statusLine);
-                                this.scrollToBottom();
+                                if (!this._userScrolledUp) this.scrollToBottom();
                             }
 
                             // Full Document Mode: пауза для выбора документов
@@ -743,7 +781,7 @@ class ChatManager {
                                     handleNestedStream
                                 );
                                 this.messagesContainer.appendChild(panel);
-                                this.scrollToBottom();
+                                if (!this._userScrolledUp) this.scrollToBottom();
                             }
 
                             if (parsed.type === 'progress') this.updateProgressBar(assistantMessage, parsed.step, parsed.total, parsed.step_name);
@@ -797,6 +835,7 @@ class ChatManager {
             if (sourcesHtml) assistantMessage.insertAdjacentHTML('beforeend', sourcesHtml);
         }
 
+        // Финальный скролл по завершении стрима — всегда, независимо от флага
         this.scrollToBottom();
 
         if (!(signal && signal.aborted) && window.sidebarManager) {
@@ -935,7 +974,7 @@ class ChatManager {
             const text = contentGetter();
             if (text) {
                 this.renderAssistantMarkdown(element, text);
-                this.scrollToBottom();
+                if (!this._userScrolledUp) this.scrollToBottom();
             }
         });
     }
@@ -992,7 +1031,12 @@ class ChatManager {
         }
         if (clarificationId) messageDiv.dataset.clarificationId = clarificationId;
         this.messagesContainer.appendChild(messageDiv);
-        this.scrollToBottom();
+        // --- smart scroll: сообщение юзера — в топ, остальные — вниз (если не листали) ---
+        if (role === 'user') {
+            this._scrollToUserMessage(messageDiv);
+        } else if (!this._userScrolledUp) {
+            this.scrollToBottom();
+        }
         return messageDiv;
     }
 
