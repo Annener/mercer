@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging as _logging
 import uuid as _uuid
 from datetime import datetime
 from enum import Enum
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+_log = _logging.getLogger(__name__)
 
 
 class ORMModel(BaseModel):
@@ -1083,7 +1086,8 @@ class ResolvedUpdateModeChange(BaseModel):
     op_content: str = ""
     # Stable index preserving the order in which intents were resolved (0-based).
     # Used by the batch builder to sort ops targeting the same file.
-    resolve_order: int = 0
+    # Default -1 signals a legacy session where the field was not persisted.
+    resolve_order: int = -1
 
     original_content: str = ""
     proposed_content: str = ""
@@ -1142,7 +1146,7 @@ class UpdateModeFileOp(BaseModel):
     change_id: str
     operation: UpdateModeOperation
     anchor_value: str | None = None   # anchor.value from intent; None for APPEND_TO_FILE
-    content: str                      # intent content (‘‘ for delete ops)
+    content: str                      # intent content ('' for delete ops)
     # SHA-256 of the original file content at resolve time.
     # Required for ops[0] of UPDATE batches (CAS check before first write).
     # None for all subsequent ops and for CREATE batches.
@@ -1155,6 +1159,29 @@ class UpdateModeFileChangeBatch(BaseModel):
     file_path: str
     action: UpdateModeAction            # UPDATE or CREATE
     ops: list[UpdateModeFileOp] = Field(min_length=1, max_length=20)
+
+    @model_validator(mode="after")
+    def _validate_sha_policy(self) -> "UpdateModeFileChangeBatch":
+        """Enforce CAS / SHA-256 policy for ops list.
+
+        Rules:
+        - UPDATE batches: ops[0].expected_sha256 is required;
+          ops[1..] must have expected_sha256 == None.
+        - CREATE batches: all ops must have expected_sha256 == None.
+        """
+        for i, op in enumerate(self.ops):
+            if self.action == UpdateModeAction.CREATE:
+                if op.expected_sha256 is not None:
+                    raise ValueError(
+                        f"CREATE batch: ops[{i}].expected_sha256 must be None"
+                    )
+            elif self.action == UpdateModeAction.UPDATE:
+                if i > 0 and op.expected_sha256 is not None:
+                    raise ValueError(
+                        f"UPDATE batch: ops[{i}].expected_sha256 must be None "
+                        "(CAS check is only performed on ops[0])"
+                    )
+        return self
 
 
 class UpdateModeApplyRequest(BaseModel):
@@ -1193,17 +1220,28 @@ class UpdateModeApplyRequest(BaseModel):
                     ]
                 else:
                     # Legacy-style: only proposed_content is available.
-                    # Reconstruct a single APPEND_TO_FILE op that replaces the
-                    # full file content (best-effort regression to pre-fix behaviour).
+                    # proposed_content is the FULL file state, not a delta.
+                    # For multiple legacy changes on the same file the last one
+                    # (highest resolve_order position in the list) wins — it was
+                    # computed from the same original, so taking the last one is
+                    # the safest single-op fallback.
+                    if len(changes) > 1:
+                        _log.warning(
+                            "update-mode legacy backward-compat: %d changes share "
+                            "file_path=%r but none has operation field — "
+                            "using only the last change (%s) as a single "
+                            "APPEND_TO_FILE op. Other changes are dropped.",
+                            len(changes), file_path, changes[-1].change_id,
+                        )
+                    last = changes[-1]
                     ops = [
                         UpdateModeFileOp(
-                            change_id=ch.change_id,
+                            change_id=last.change_id,
                             operation=UpdateModeOperation.APPEND_TO_FILE,
                             anchor_value=None,
-                            content=ch.proposed_content,
-                            expected_sha256=ch.expected_sha256 if i == 0 else None,
+                            content=last.proposed_content,
+                            expected_sha256=changes[0].expected_sha256,
                         )
-                        for i, ch in enumerate(changes)
                     ]
                 batches.append(UpdateModeFileChangeBatch(
                     vault_id=vault_id,
