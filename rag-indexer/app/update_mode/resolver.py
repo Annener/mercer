@@ -57,7 +57,13 @@ _UTF8_BOM = "\ufeff"
 # ---------------------------------------------------------------------------
 
 def _append_to_file(original: str, content: str) -> str:
-    """Append content to end of file, ensuring a blank line separator."""
+    """Append content to end of file, ensuring a single blank line separator.
+
+    content is lstrip'd of leading newlines so that a model that returns
+    content starting with '\n' does not produce a double blank line between
+    the existing text and the new block.
+    """
+    content = content.lstrip("\n")
     if original and not original.endswith("\n"):
         original += "\n"
     if original:
@@ -82,6 +88,11 @@ def _append_after_section(original: str, heading: str, content: str) -> str | No
     `heading` may be supplied with or without leading '#' characters
     (both formats are valid per the LLM prompt contract).  The match is
     case-insensitive and whitespace-normalised on both sides.
+
+    content is strip'd of ALL leading and trailing bare newlines before
+    wrapping so that a model returning content that starts or ends with '\n'
+    does not produce extra blank lines.  The block is wrapped with exactly
+    one leading '\n' separator and one trailing '\n'.
 
     Returns None if the heading is not found.
     """
@@ -134,7 +145,9 @@ def _append_after_section(original: str, heading: str, content: str) -> str | No
         )
         return None
 
-    block = "\n" + content.rstrip("\n") + "\n"
+    # strip("\n") removes both leading and trailing bare newlines from the
+    # LLM-supplied content before we add exactly one \n separator on each side.
+    block = "\n" + content.strip("\n") + "\n"
     lines.insert(insert_at, block)
     return "".join(lines)
 

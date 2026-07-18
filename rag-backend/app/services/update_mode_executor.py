@@ -273,6 +273,16 @@ Never remove or overwrite unrelated content.
 Return 1 to 10 intents.
 Return no intent only when the note contains no actionable campaign knowledge.
 
+MULTI-DOCUMENT RULE (mandatory):
+If the note contains information that clearly belongs to multiple distinct
+documents, generate a separate intent for each document.
+Do not merge updates that target different documents into a single intent.
+
+CONTENT FORMATTING RULE (mandatory):
+The "content" field must NOT start or end with blank lines.
+Write only the markdown body — no leading or trailing empty lines (\\n).
+The system handles spacing between existing document content and your addition.
+
 LANGUAGE RULE (mandatory):
 Detect the language of the user note.
 Write the following fields in that same language:
