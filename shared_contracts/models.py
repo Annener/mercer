@@ -1165,7 +1165,7 @@ class UpdateModeFileChangeBatch(BaseModel):
         """Enforce CAS / SHA-256 policy for ops list.
 
         Rules:
-        - UPDATE batches: ops[0].expected_sha256 is required;
+        - UPDATE batches: ops[0].expected_sha256 is required (CAS check);
           ops[1..] must have expected_sha256 == None.
         - CREATE batches: all ops must have expected_sha256 == None.
         """
@@ -1176,6 +1176,10 @@ class UpdateModeFileChangeBatch(BaseModel):
                         f"CREATE batch: ops[{i}].expected_sha256 must be None"
                     )
             elif self.action == UpdateModeAction.UPDATE:
+                if i == 0 and op.expected_sha256 is None:
+                    raise ValueError(
+                        "UPDATE batch: ops[0].expected_sha256 is required for CAS check"
+                    )
                 if i > 0 and op.expected_sha256 is not None:
                     raise ValueError(
                         f"UPDATE batch: ops[{i}].expected_sha256 must be None "
@@ -1206,6 +1210,10 @@ class UpdateModeApplyRequest(BaseModel):
                 groups[(ch.vault_id, ch.file_path)].append(ch)
             batches: list[UpdateModeFileChangeBatch] = []
             for (vault_id, file_path), changes in groups.items():
+                # Sort by resolve_order so ops are applied in correct sequence.
+                # resolve_order=-1 (legacy sentinel) sorts before 0, which is
+                # acceptable for single-change-per-file legacy sessions.
+                changes.sort(key=lambda c: c.resolve_order if c.resolve_order >= 0 else 0)
                 if changes[0].operation is not None:
                     # New-style UpdateModeApplyChange: has operation + anchor + op_content
                     ops = [
@@ -1220,11 +1228,9 @@ class UpdateModeApplyRequest(BaseModel):
                     ]
                 else:
                     # Legacy-style: only proposed_content is available.
-                    # proposed_content is the FULL file state, not a delta.
-                    # For multiple legacy changes on the same file the last one
-                    # (highest resolve_order position in the list) wins — it was
-                    # computed from the same original, so taking the last one is
-                    # the safest single-op fallback.
+                    # proposed_content is the FULL file state after the op, not a delta.
+                    # We cannot meaningfully apply multiple legacy changes to the same
+                    # file — use only the last one (last-write-wins fallback).
                     if len(changes) > 1:
                         _log.warning(
                             "update-mode legacy backward-compat: %d changes share "

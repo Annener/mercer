@@ -44,11 +44,8 @@ from app.update_mode.fs_git import (
 from app.update_mode.text_ops import (
     AnchorAmbiguousError,
     AnchorNotFoundError,
-    _append_to_file,
-    _append_after_section,
-    _replace_unique_text,
-    _delete_section,
-    _delete_unique_text,
+    UnsupportedOperationError,
+    apply_op,
 )
 from shared_contracts.models import (
     ResolvedUpdateModeChange,
@@ -66,9 +63,6 @@ _MAX_CONTENT_BYTES = 10 * 1024 * 1024  # 10 MB guard
 
 # UTF-8 BOM that some editors prepend to files.
 _UTF8_BOM = "\ufeff"
-
-# Internal alias kept for backward compat with any code that catches _AnchorAmbiguousError.
-_AnchorAmbiguousError = AnchorAmbiguousError
 
 
 def _sha256_str(text: str) -> str:
@@ -104,6 +98,8 @@ async def _resolve_one(
     """Resolve a single intent → ResolvedUpdateModeChange.
 
     Never raises — errors are captured as RESOLUTION_FAILED status.
+    Uses the public apply_op() from text_ops (not private helpers) so that
+    error handling is consistent with the applier.
     """
 
     def _fail(code: str, msg: str) -> ResolvedUpdateModeChange:
@@ -205,62 +201,35 @@ async def _resolve_one(
 
     original_sha256 = _sha256_str(original)
 
-    proposed: str | None = None
-    op = intent.operation
-
-    if op == UpdateModeOperation.APPEND_TO_FILE:
-        proposed = _append_to_file(original, intent.content)
-
-    elif op == UpdateModeOperation.APPEND_AFTER_SECTION:
-        assert intent.anchor is not None
-        proposed = _append_after_section(original, intent.anchor.value, intent.content)
-        if proposed is None:
-            return _fail(
-                "anchor_not_found",
-                f"heading not found: {intent.anchor.value!r}",
-            )
-
-    elif op == UpdateModeOperation.REPLACE_UNIQUE_TEXT:
-        assert intent.anchor is not None
-        proposed = _replace_unique_text(original, intent.anchor.value, intent.content)
-        if proposed is None:
+    # Apply operation via the public apply_op() — same entry-point used by the
+    # applier. This ensures resolver and applier use identical logic and that
+    # AnchorNotFoundError / AnchorAmbiguousError are raised consistently.
+    try:
+        proposed = apply_op(
+            text=original,
+            op=intent.operation,
+            anchor_value=intent.anchor.value if intent.anchor else None,
+            content=intent.content,
+        )
+    except AnchorNotFoundError as exc:
+        op = intent.operation
+        if op in (UpdateModeOperation.APPEND_AFTER_SECTION, UpdateModeOperation.DELETE_SECTION):
+            return _fail("anchor_not_found", f"heading not found: {exc.anchor_value!r}")
+        if op in (UpdateModeOperation.REPLACE_UNIQUE_TEXT, UpdateModeOperation.DELETE_UNIQUE_TEXT):
+            return _fail("anchor_not_found", f"anchor text not found: {exc.anchor_value!r}")
+        return _fail("anchor_not_found", f"anchor not found: {exc.anchor_value!r}")
+    except AnchorAmbiguousError as exc:
+        op = intent.operation
+        if op == UpdateModeOperation.DELETE_SECTION:
+            return _fail("anchor_ambiguous", f"heading matches more than once: {exc.anchor_value!r}")
+        if op in (UpdateModeOperation.REPLACE_UNIQUE_TEXT, UpdateModeOperation.DELETE_UNIQUE_TEXT):
             return _fail(
                 "anchor_not_unique",
-                f"anchor text not found or appears multiple times: {intent.anchor.value!r}",
+                f"anchor text not found or appears multiple times: {exc.anchor_value!r}",
             )
-
-    elif op == UpdateModeOperation.DELETE_SECTION:
-        assert intent.anchor is not None
-        try:
-            proposed = _delete_section(original, intent.anchor.value)
-        except AnchorAmbiguousError as exc:
-            return _fail(
-                "anchor_ambiguous",
-                f"heading matches more than once: {exc.anchor_value!r}",
-            )
-        if proposed is None:
-            return _fail(
-                "anchor_not_found",
-                f"heading not found: {intent.anchor.value!r}",
-            )
-
-    elif op == UpdateModeOperation.DELETE_UNIQUE_TEXT:
-        assert intent.anchor is not None
-        try:
-            proposed = _delete_unique_text(original, intent.anchor.value)
-        except AnchorAmbiguousError as exc:
-            return _fail(
-                "anchor_ambiguous",
-                f"fragment matches more than once: {exc.anchor_value!r}",
-            )
-        if proposed is None:
-            return _fail(
-                "anchor_not_found",
-                f"fragment not found: {intent.anchor.value!r}",
-            )
-
-    else:
-        return _fail("unsupported_operation", f"operation={op!r}")
+        return _fail("anchor_ambiguous", f"anchor ambiguous: {exc.anchor_value!r}")
+    except UnsupportedOperationError:
+        return _fail("unsupported_operation", f"operation={intent.operation!r}")
 
     proposed_bytes = proposed.encode("utf-8")
     if len(proposed_bytes) > _MAX_CONTENT_BYTES:

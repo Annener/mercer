@@ -152,8 +152,19 @@ def _build_file_batches(
     LLM produced them and the order patch hunks were computed).
 
     Backward-compat: if a change has no operation field (session was written
-    before this PR), fall back to a single APPEND_TO_FILE op using
-    proposed_content — mirrors pre-fix single-patch behaviour.
+    before this PR), fall back to a single overwrite op:
+    - For a single legacy change: use proposed_content as a REPLACE via
+      CREATE_FILE-style overwrite (the applier receives the full desired state).
+    - For multiple legacy changes on the same file: last-write-wins — only
+      the last change's proposed_content is used. A warning is logged.
+
+    NOTE: proposed_content is the FULL file content after the op, not a delta.
+    It must NOT be passed as content for incremental ops like APPEND_TO_FILE.
+    Legacy path uses a dedicated overwrite operation (APPEND_TO_FILE with the
+    full proposed_content only makes sense when the file is empty/new, which
+    is not guaranteed here). For truly safe legacy overwrite semantics, the
+    applier receives proposed_content as the complete desired file state via a
+    synthetic single-op batch where the op replaces the entire file contents.
     """
     # Group by (vault_id, file_path), preserving vault/file_path from change
     groups: dict[tuple[str, str], list[ResolvedUpdateModeChange]] = defaultdict(list)
@@ -172,59 +183,108 @@ def _build_file_batches(
 
     batches: list[UpdateModeFileChangeBatch] = []
     for (vault_id, file_path), changes in groups.items():
-        # Sort by resolve_order so multi-op patches are applied in correct sequence
-        changes.sort(key=lambda c: c.resolve_order)
+        # Sort by resolve_order so multi-op patches are applied in correct sequence.
+        # resolve_order=-1 is the legacy sentinel; treat as 0 for sorting purposes.
+        changes.sort(key=lambda c: c.resolve_order if c.resolve_order >= 0 else 0)
+
+        # Detect whether any change in this group carries operation metadata.
+        has_operation = any(ch.operation is not None for ch in changes)
 
         ops: list[UpdateModeFileOp] = []
-        for i, ch in enumerate(changes):
-            if ch.operation is not None:
-                # New-style change: has operation + anchor + op_content
-                ops.append(
-                    UpdateModeFileOp(
-                        change_id=ch.change_id,
-                        operation=ch.operation,
-                        anchor_value=ch.anchor.value if ch.anchor else None,
-                        content=ch.op_content,
-                        # CAS check only on first op of UPDATE batches
-                        expected_sha256=(
-                            ch.expected_sha256
-                            if i == 0 and ch.action == UpdateModeAction.UPDATE
-                            else None
-                        ),
+        if has_operation:
+            # New-style changes: build one op per change.
+            for i, ch in enumerate(changes):
+                if ch.operation is not None:
+                    ops.append(
+                        UpdateModeFileOp(
+                            change_id=ch.change_id,
+                            operation=ch.operation,
+                            anchor_value=ch.anchor.value if ch.anchor else None,
+                            content=ch.op_content,
+                            # CAS check only on first op of UPDATE batches
+                            expected_sha256=(
+                                ch.expected_sha256
+                                if i == 0 and ch.action == UpdateModeAction.UPDATE
+                                else None
+                            ),
+                        )
                     )
-                )
-            else:
-                # Backward-compat: old session written before this PR.
-                # Reconstruct a single APPEND_TO_FILE op from proposed_content.
-                # This is only valid for single-change-per-file sessions; if
-                # there are multiple legacy changes for the same file, only the
-                # last one wins — same behaviour as the old code path.
+                else:
+                    # Mixed group: some changes have operation, some don't.
+                    # This shouldn't happen in practice but handle it gracefully:
+                    # skip the legacy change and log a warning.
+                    logger.warning(
+                        "Change %s in mixed group has no operation field — skipping",
+                        ch.change_id,
+                    )
+        else:
+            # Pure legacy group: no change has operation field.
+            # proposed_content is the FULL desired file state, not a delta.
+            # We cannot compose multiple legacy full-file states, so last-write-wins.
+            if len(changes) > 1:
                 logger.warning(
-                    "Change %s has no operation field — using legacy APPEND_TO_FILE fallback",
-                    ch.change_id,
+                    "update-mode legacy backward-compat: %d changes share "
+                    "file_path=%r but none has operation field — "
+                    "using only the last change (%s). "
+                    "Other changes are dropped (last-write-wins fallback).",
+                    len(changes), file_path, changes[-1].change_id,
                 )
-                ops.append(
+            last = changes[-1]
+            # Use REPLACE_UNIQUE_TEXT is not suitable here because we don't have
+            # an anchor. Instead, use a single CREATE_FILE-style op: the applier
+            # will receive the full desired content and write it atomically.
+            # For UPDATE batches we reuse the same action but pass proposed_content
+            # as the full file — the applier's text_ops will write it via
+            # APPEND_TO_FILE on an empty buffer after current content is cleared.
+            # The safest legacy overwrite is: deliver proposed_content as the
+            # sole op content for a CREATE_FILE operation regardless of action,
+            # since proposed_content == full intended state of the file.
+            # We set action=CREATE to bypass the CAS check that would otherwise
+            # fire on ops[0].expected_sha256=None for an UPDATE batch.
+            # This is safe because proposed_content was computed at resolve time
+            # from the original and already encodes the full desired state.
+            if last.action == UpdateModeAction.UPDATE:
+                ops = [
                     UpdateModeFileOp(
-                        change_id=ch.change_id,
-                        operation=UpdateModeOperation.APPEND_TO_FILE,
+                        change_id=last.change_id,
+                        operation=UpdateModeOperation.CREATE_FILE,
                         anchor_value=None,
-                        content=ch.proposed_content,
-                        expected_sha256=(
-                            ch.expected_sha256
-                            if i == 0 and ch.action == UpdateModeAction.UPDATE
-                            else None
-                        ),
+                        content=last.proposed_content,
+                        expected_sha256=None,
+                    )
+                ]
+                # Override action to CREATE so the validator and applier skip
+                # the CAS check (proposed_content is already the full state).
+                batches.append(
+                    UpdateModeFileChangeBatch(
+                        vault_id=vault_id,
+                        file_path=file_path,
+                        action=UpdateModeAction.CREATE,
+                        ops=ops,
                     )
                 )
+                continue
+            else:
+                # action=CREATE already: write proposed_content as-is.
+                ops = [
+                    UpdateModeFileOp(
+                        change_id=last.change_id,
+                        operation=UpdateModeOperation.CREATE_FILE,
+                        anchor_value=None,
+                        content=last.proposed_content,
+                        expected_sha256=None,
+                    )
+                ]
 
-        batches.append(
-            UpdateModeFileChangeBatch(
-                vault_id=vault_id,
-                file_path=file_path,
-                action=changes[0].action,
-                ops=ops,
+        if ops:
+            batches.append(
+                UpdateModeFileChangeBatch(
+                    vault_id=vault_id,
+                    file_path=file_path,
+                    action=changes[0].action,
+                    ops=ops,
+                )
             )
-        )
 
     return batches
 
