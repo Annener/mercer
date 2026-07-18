@@ -10,7 +10,7 @@
 - `from_attributes=True`
 - `_coerce_uuid_fields`: автоматически конвертирует `uuid.UUID` в `str`
 - **ВАЖНО**: намеренно пропускает list-поля (relationships), чтобы избежать
-  `MissingGreenlet` в async-контексте. List-поля заполняются вручную в роутах.
+  `MissingGreenlet` в async-контексте. List-поля заполняются вручную в роутах/хелперах.
 
 ## Состояние индексатора (Redis)
 
@@ -165,10 +165,14 @@ RerankModelUpdate: все поля optional
 ```python
 VaultRead(ORMModel): vault_id, domain_id, display_name, enabled, embedding_model_id,
                      expected_dimensions, chunk_size, overlap, entity_aware_mode,
-                     semantic_threshold, binding_status, chunk_count, created_at, updated_at
+                     semantic_threshold, binding_status, chunk_count,
+                     git_author_name, git_author_email,   # Campaign Update Mode git identity
+                     created_at, updated_at
 VaultCreate: vault_id, domain_id, display_name?, embedding_model_id?, expected_dimensions?,
-             chunk_size?, overlap?, entity_aware_mode?, semantic_threshold
-VaultUpdate: все поля optional (включая binding_status, chunk_count)
+             chunk_size?, overlap?, entity_aware_mode?, semantic_threshold,
+             git_author_name?, git_author_email?
+VaultUpdate: все поля optional (включая binding_status, chunk_count,
+             git_author_name, git_author_email)
 ```
 
 ### Document
@@ -192,7 +196,7 @@ DocumentCandidate(BaseModel):  # НЕ ORMModel, чистый DTO
   already_sent: bool  # True если document_id уже в Chat.sent_full_document_ids
 ```
 
-Iспользуется в `full_document_service.py` и `pipeline_executor.py` для Full Document Mode паузы.
+Используется в `full_document_service.py` и `pipeline_executor.py` для Full Document Mode паузы.
 
 ### Tag / Campaign
 ```python
@@ -319,4 +323,118 @@ RetrievalContext:  query, vault_ids, vault_id (deprecated), domain_id, campaign_
 RetrievalResult:  chunk_id, document_id, vault_id, text, score, metadata
 PipelineStepResult: step_id, step_name, retrieval_results, llm_output, error
 PipelineResult: pipeline_id, pipeline_version, steps, final_answer, error
+```
+
+---
+
+## Campaign Update Mode контракты
+
+Обмен между rag-backend и rag-indexer через `indexer_client.py`.
+
+### EditIntent — LLM output
+
+LLM возвращает намерения правок, не готовые перезаписанные файлы.
+
+```python
+class EditAnchor(BaseModel):
+    kind: Literal["markdown_heading", "text_fragment"]
+    value: str
+
+class EditIntent(BaseModel):                   # action = "update"
+    change_id: str                             # uuid4
+    action: Literal["update"]
+    document_id: str                           # из переданного бэкендом контекста
+    description: str
+    anchor: EditAnchor | None
+    operation: Literal["append_after_section", "append_to_file", "replace_unique_text"]
+    content: str
+
+class CreateIntent(BaseModel):                 # action = "create"
+    change_id: str
+    action: Literal["create"]
+    parent_document_id: str | None
+    suggested_filename: str
+    description: str
+    content: str
+
+AnyIntent = EditIntent | CreateIntent
+```
+
+### ResolvedChange — indexer output (Redis)
+
+Indexer возвращает resolved change; backend хранит в Redis, не raw intent.
+
+```python
+class ResolvedChange(BaseModel):
+    change_id: str
+    vault_id: str
+    document_id: str | None
+    file_path: str
+    action: Literal["update", "create"]
+    description: str
+    original_content: str       # из оригинального файла, не из indexed text
+    proposed_content: str       # из оригинального файла
+    unified_diff: str
+    expected_sha256: str | None # None для create
+    status: Literal["pending", "accepted", "rejected", "resolution_failed"] = "pending"
+    error_code: str | None = None
+    error_message: str | None = None
+```
+
+### UpdateModeSession — Redis key `update_mode:{chat_id}`
+
+```python
+class UpdateModeSession(BaseModel):
+    session_id: str             # uuid4
+    chat_id: str
+    campaign_id: str
+    created_at: datetime
+    expires_at: datetime        # created_at + 3h
+    changes: list[ResolvedChange]
+    warnings: list[str]         # например, док превысил per-doc limit
+```
+
+### Resolve — internal API запрос/ответ
+
+```python
+class ResolveUpdateModeRequest(BaseModel):
+    session_id: str
+    vault_id: str
+    intents: list[AnyIntent]
+
+class ResolveUpdateModeResponse(BaseModel):
+    resolved_changes: list[ResolvedChange]
+```
+
+### Apply — public API запрос/ответ
+
+```python
+class ApplyUpdateModeRequest(BaseModel):
+    apply_id: str               # UUID, idempotency key
+
+class VaultApplyResult(BaseModel):
+    vault_id: str
+    status: Literal["applied", "skipped", "conflict", "error"]
+    applied_count: int
+    snapshot_commit_sha: str | None
+    commit_sha: str | None
+    commit_message: str | None
+    reindex_task_id: str | None
+    reindex_error: str | None
+    error_code: str | None
+    error_message: str | None
+
+class ApplyUpdateModeResponse(BaseModel):
+    apply_id: str
+    results: list[VaultApplyResult]
+```
+
+### Internal apply — indexer request
+
+```python
+class InternalApplyRequest(BaseModel):
+    apply_id: str
+    vault_id: str
+    accepted_changes: list[ResolvedChange]  # только status="accepted"
+    commit_message: str | None              # LLM-generated, max 72 символа
 ```
