@@ -882,6 +882,16 @@ class UpdateModeOperation(str, Enum):
     APPEND_TO_FILE = "append_to_file"
     REPLACE_UNIQUE_TEXT = "replace_unique_text"
     CREATE_FILE = "create_file"
+    # Phase 5: delete operations
+    DELETE_SECTION = "delete_section"
+    DELETE_UNIQUE_TEXT = "delete_unique_text"
+
+
+#: Operations that remove content — content field MUST be empty string for these.
+_DELETE_OPERATIONS: frozenset[UpdateModeOperation] = frozenset({
+    UpdateModeOperation.DELETE_SECTION,
+    UpdateModeOperation.DELETE_UNIQUE_TEXT,
+})
 
 
 class UpdateModeChangeStatus(str, Enum):
@@ -917,10 +927,27 @@ class UpdateModeIntent(BaseModel):
     anchor: UpdateModeAnchor | None = None
 
     suggested_filename: str | None = None
-    content: str = Field(min_length=1, max_length=65_536)
+    # For delete operations content must be empty string "".
+    # For all other operations content must be non-empty (min_length=1 enforced below).
+    content: str = Field(max_length=65_536)
 
     @model_validator(mode="after")
     def _validate_intent_invariants(self) -> "UpdateModeIntent":
+        is_delete = self.operation in _DELETE_OPERATIONS
+
+        # --- content rules ---
+        if is_delete:
+            if self.content != "":
+                raise ValueError(
+                    f"{self.operation.value} operation requires content == empty string"
+                )
+        else:
+            if not self.content:
+                raise ValueError(
+                    f"{self.operation.value} operation requires non-empty content"
+                )
+
+        # --- update action rules ---
         if self.action == UpdateModeAction.UPDATE:
             if self.document_id is None:
                 raise ValueError("update action requires document_id")
@@ -932,6 +959,8 @@ class UpdateModeIntent(BaseModel):
                 UpdateModeOperation.APPEND_AFTER_SECTION,
                 UpdateModeOperation.APPEND_TO_FILE,
                 UpdateModeOperation.REPLACE_UNIQUE_TEXT,
+                UpdateModeOperation.DELETE_SECTION,
+                UpdateModeOperation.DELETE_UNIQUE_TEXT,
             }
             if self.operation not in valid_ops:
                 raise ValueError(f"update action requires operation in {[o.value for o in valid_ops]}")
@@ -944,7 +973,14 @@ class UpdateModeIntent(BaseModel):
             if self.operation == UpdateModeOperation.APPEND_TO_FILE:
                 if self.anchor is not None:
                     raise ValueError("append_to_file must not have anchor")
+            if self.operation == UpdateModeOperation.DELETE_SECTION:
+                if self.anchor is None or self.anchor.kind != "markdown_heading":
+                    raise ValueError("delete_section requires anchor.kind == markdown_heading")
+            if self.operation == UpdateModeOperation.DELETE_UNIQUE_TEXT:
+                if self.anchor is None or self.anchor.kind != "exact_text":
+                    raise ValueError("delete_unique_text requires anchor.kind == exact_text")
 
+        # --- create action rules ---
         if self.action == UpdateModeAction.CREATE:
             if self.document_id is not None:
                 raise ValueError("create action must not have document_id")
