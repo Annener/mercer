@@ -405,7 +405,10 @@ def extract_raw_fragment(
     -------
     str
         Фрагмент исходного raw-текста, соответствующий [norm_start, norm_end).
+        Возвращает пустую строку если диапазон пустой (norm_start >= norm_end).
     """
+    if norm_start >= norm_end:
+        return ""
     raw_start = char_map[norm_start]
     raw_end = char_map[norm_end - 1] + 1
     return raw[raw_start:raw_end]
