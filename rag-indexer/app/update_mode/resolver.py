@@ -300,14 +300,15 @@ async def _resolve_one(
     except AnchorNotFoundError as exc:
         # ── Token-anchor fallback ─────────────────────────────────────────
         if intent.operation in _FALLBACK_OPS and exc.anchor_value.strip():
+            anchor_val = exc.anchor_value
             log.warning(
-                "direct anchor search failed for anchor=%r, trying token-anchor fallback",
-                exc.anchor_value[:80],
+                "_resolve_one: direct anchor search failed for anchor=%r, trying token-anchor fallback",
+                anchor_val[:80],
             )
-            raw_fragment = resolve_anchor_in_raw(exc.anchor_value, original)
+            raw_fragment = resolve_anchor_in_raw(anchor_val, original)
             if raw_fragment is not None:
                 log.info(
-                    "token-anchor fallback succeeded, raw_fragment=%r",
+                    "_resolve_one: token-anchor fallback succeeded, raw_fragment=%r",
                     raw_fragment[:80],
                 )
                 try:
@@ -331,13 +332,19 @@ async def _resolve_one(
                     except ContentTooLargeError:
                         return _fail("content_too_large", "proposed content exceeds 10 MB")
                 except AnchorAmbiguousError:
-                    log.warning("token-anchor fallback: raw_fragment is ambiguous")
+                    log.warning(
+                        "_resolve_one: token-anchor fallback: raw_fragment is ambiguous for anchor=%r",
+                        anchor_val[:80],
+                    )
                     return _fail(
                         "anchor_ambiguous",
-                        f"anchor maps to ambiguous raw fragment: {exc.anchor_value!r}",
+                        f"anchor maps to ambiguous raw fragment: {anchor_val!r}",
                     )
                 except AnchorNotFoundError:
-                    log.warning("token-anchor fallback also failed")
+                    log.warning(
+                        "_resolve_one: token-anchor fallback also failed for anchor=%r",
+                        anchor_val[:80],
+                    )
                     # fall through to original error handling below
         # ── Original error handling ───────────────────────────────────────
         op = intent.operation
