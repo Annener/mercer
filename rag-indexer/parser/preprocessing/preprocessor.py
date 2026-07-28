@@ -4,6 +4,8 @@ import logging
 import re
 import unicodedata
 
+from app.update_mode.text_ops_utils import CHAR_MAP_MARKER as _NL_MARKER
+
 logger = logging.getLogger(__name__)
 
 # Карта замен проблемных символов, характерных для PDF-экстракции
@@ -128,9 +130,13 @@ def preprocess(text: str, source_hint: str = "") -> str:
     # 5. Нормализация структуры абзацев:
     # Одиночный \n внутри текста → пробел (сшивает разорванные строки PDF)
     # \n\n или более → сохраняет как разделитель абзацев
-    text = text.replace("\n\n", "\u2400\u2400")  # Временный маркер для двойного переноса
-    text = text.replace("\n", " ")                # Одинарные переносы → пробелы
-    text = text.replace("\u2400\u2400", "\n\n")   # Восстанавливаем абзацы
+    #
+    # Используем безопасный PUA-маркер (U+E000 U+E001), гарантированно отсутствующий
+    # в нормальных документах. Маркер совпадает с тем, что используется в
+    # text_ops_utils / token_anchor (build_char_map шаг 5) для консистентности.
+    text = text.replace("\n\n", _NL_MARKER)  # Временный маркер для двойного переноса
+    text = text.replace("\n", " ")            # Одинарные переносы → пробелы
+    text = text.replace(_NL_MARKER, "\n\n")   # Восстанавливаем абзацы
 
     # 6. Финальная нормализация пробелов и чистка мусора
     text = re.sub(r"[ \t]+", " ", text)           # Множественные пробелы/табы → один
