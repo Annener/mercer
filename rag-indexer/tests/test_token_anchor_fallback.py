@@ -32,7 +32,7 @@ def _make_intent(
     op: UpdateModeOperation = UpdateModeOperation.REPLACE_UNIQUE_TEXT,
     new_content: str = "REPLACED",
 ) -> UpdateModeIntent:
-    """Construct a minimal UPDATE intent for tests."""
+    """Сонструировать минимальный UPDATE intent для тестов."""
     return UpdateModeIntent(
         change_id=str(uuid.uuid4()),
         action=UpdateModeAction.UPDATE,
@@ -45,7 +45,7 @@ def _make_intent(
 
 
 def _make_request(vault_id: str = "vault-1") -> UpdateModeResolveRequest:
-    """Construct a minimal resolve request."""
+    """Сонструировать минимальный resolve request."""
     return UpdateModeResolveRequest(
         intents=[],
         vault_ids=[vault_id],
@@ -66,7 +66,7 @@ def _fake_file_path() -> Path:
 # ---------------------------------------------------------------------------
 
 class _ResolverMocks:
-    """Patch everything resolver.py touches outside of text_ops / token_anchor."""
+    """Патчить всё, что resolver.py трогает за пределами text_ops / token_anchor."""
 
     def __init__(self, raw_content: str, vault_id: str = "vault-1"):
         self.raw_content = raw_content
@@ -114,7 +114,7 @@ class _ResolverMocks:
 
 @pytest.mark.asyncio
 async def test_fallback_newline_to_space():
-    """Anchor 'задача А задача Б' должен найтись в raw 'задача А\nзадача Б'.
+    """Якорь 'задача А задача Б' должен найтись в raw 'задача А\nзадача Б'.
 
     Прямой поиск завершится AnchorNotFoundError (нормализованный пробел ≠ raw \\n),
     fallback через token-anchor должен вернуть PENDING.
@@ -140,7 +140,7 @@ async def test_fallback_newline_to_space():
 
 @pytest.mark.asyncio
 async def test_fallback_em_dash():
-    """Anchor 'Кот - животное' должен найтись в raw 'Кот — животное'.
+    """Якорь 'Кот - животное' должен найтись в raw 'Кот — животное'.
 
     CHAR_MAP нормализует em-dash (\u2014) → дефис (-),
     fallback восстанавливает сырой фрагмент с em-dash и успешно применяет op.
@@ -211,4 +211,42 @@ async def test_fallback_ambiguous_raw_fragment():
     assert result.status == UpdateModeChangeStatus.RESOLUTION_FAILED
     assert result.error_code == "anchor_ambiguous", (
         f"Expected 'anchor_ambiguous', got {result.error_code!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Тест 5: fallback с реальной нормализацией em-dash + дублированный raw-фрагмент
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_fallback_em_dash_ambiguous_raw():
+    """Fallback с em-dash: нормализация \u2014→'-' активирует char-map,
+    а восстановленный raw-фрагмент встречается в документе дважды.
+
+    Проверяет именно fallback-сценарий с реальной нормализацией preprocess(),
+    а не только общий ambiguous-кейс с чистыми пробелами.
+    """
+    # raw содержит два идентичных фрагмента с em-dash
+    raw = (
+        "Правило — важно соблюдать.\n"
+        "Подраздел а.\n"
+        "Правило — важно соблюдать.\n"
+        "Подраздел б.\n"
+    )
+    # LLM видел нормализованный текст: em-dash → '-'
+    anchor = "Правило - важно соблюдать"
+    intent = _make_intent(raw, anchor)
+    request = _make_request()
+
+    db = MagicMock()
+
+    with _ResolverMocks(raw):
+        result = await _resolve_one(intent, request, db, resolve_order=0)
+
+    # raw-фрагмент 'Правило — важно соблюдать' встречается в документе дважды
+    # → REPLACE_UNIQUE_TEXT должен поднять AnchorAmbiguousError
+    assert result.status == UpdateModeChangeStatus.RESOLUTION_FAILED
+    assert result.error_code == "anchor_ambiguous", (
+        f"Expected 'anchor_ambiguous', got {result.error_code!r}; "
+        f"error={result.error_message}"
     )
