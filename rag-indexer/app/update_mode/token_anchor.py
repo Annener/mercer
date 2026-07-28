@@ -6,7 +6,7 @@
 
 Public API
 ----------
-build_char_map(raw, normalized) -> list[int]
+build_char_map(raw, normalized) -> list[int] | None
 find_anchor_offset(anchor_value, normalized_text) -> tuple[int, int] | None
 extract_raw_fragment(raw, char_map, norm_start, norm_end) -> str
 resolve_anchor_in_raw(anchor_value, raw) -> str | None
@@ -19,13 +19,18 @@ import logging
 import re
 import unicodedata
 
-from parser.preprocessing.preprocessor import CHAR_MAP, _HEADING_FULL_LINE_RE, preprocess
-from app.update_mode.text_ops_utils import build_anchor_pattern
+from parser.preprocessing.preprocessor import CHAR_MAP, preprocess
+from app.update_mode.text_ops_utils import build_anchor_pattern, CHAR_MAP_MARKER
 
 log = logging.getLogger(__name__)
 
+# Локальная копия паттерна Markdown-заголовка.
+# Источник истины — preprocessor._HEADING_FULL_LINE_RE; паттерн намеренно
+# дублируется здесь, чтобы не импортировать приватный символ.
+_HEADING_FULL_LINE_RE = re.compile(r"^(#{1,6}\s[^\n]*)", re.MULTILINE)
 
-def build_char_map(raw: str, normalized: str) -> list[int]:
+
+def build_char_map(raw: str, normalized: str) -> list[int] | None:
     """Построить карту ``normalized_pos -> raw_pos``.
 
     Воспроизводит каждый шаг ``preprocess()`` через ``re.finditer`` **до**
@@ -41,10 +46,11 @@ def build_char_map(raw: str, normalized: str) -> list[int]:
 
     Returns
     -------
-    list[int]
+    list[int] | None
         ``char_map[i]`` — позиция i-го символа normalized в raw-строке.
         ``len(char_map) == len(normalized)``. Монотонно неубывает.
-        При несовпадении длин возвращает частичную карту без IndexError.
+        Возвращает ``None`` при рассинхроне длин — это означает баг
+        алгоритма (шаг build_char_map воспроизводит preprocess() некорректно).
     """
     # current_text и current_offsets движутся синхронно через каждый шаг
     current_text: str = raw
@@ -91,6 +97,14 @@ def build_char_map(raw: str, normalized: str) -> list[int]:
     for i, ch in enumerate(current_text):
         if ch in CHAR_MAP:
             replacement = CHAR_MAP[ch]
+            # Каждое значение CHAR_MAP должно быть не длиннее 1 символа:
+            # build_char_map добавляет ровно одну позицию на каждый входной
+            # символ. Многосимвольная замена рассинхронизирует карту.
+            assert len(replacement) <= 1, (
+                f"CHAR_MAP value must be at most 1 char, got {replacement!r} "
+                f"for key {ch!r} (U+{ord(ch):04X}). "
+                "Update build_char_map to handle multi-char replacements."
+            )
             if replacement:          # замена 1-к-1
                 new_text += replacement
                 new_offsets.append(current_offsets[i])
@@ -210,9 +224,11 @@ def build_char_map(raw: str, normalized: str) -> list[int]:
     current_text, current_offsets = _collapse_excess_newlines(current_text, current_offsets)
 
     # ------------------------------------------------------------------
-    # Шаг 5: одинарный \n → пробел (через маркер \u2400\u2400)
+    # Шаг 5: одинарный \n → пробел (через маркер из text_ops_utils)
+    # Маркер — два PUA-символа (\uE000\uE001), гарантированно отсутствующих
+    # в нормальных документах после шага 2 (CHAR_MAP).
     # ------------------------------------------------------------------
-    _MARKER = "\u2400\u2400"
+    _MARKER = CHAR_MAP_MARKER
     # 5a: \n\n → маркер (2-к-2)
     new_text = ""
     new_offsets = []
@@ -311,13 +327,11 @@ def build_char_map(raw: str, normalized: str) -> list[int]:
     if len(final_offsets) != len(normalized):
         log.warning(
             "build_char_map: length mismatch — char_map=%d, normalized=%d; "
-            "returning partial map",
+            "returning None (algorithm bug: build_char_map does not reproduce preprocess() correctly)",
             len(final_offsets),
             len(normalized),
         )
-        # возвращаем минимально-корректную частичную карту
-        min_len = min(len(final_offsets), len(normalized))
-        return final_offsets[:min_len]
+        return None
 
     return final_offsets
 
@@ -414,10 +428,18 @@ def resolve_anchor_in_raw(anchor_value: str, raw: str) -> str | None:
     -------
     str | None
         Raw-фрагмент, соответствующий якорю, или ``None`` если якорь
-        не найден в нормализованном тексте.
+        не найден в нормализованном тексте либо build_char_map вернул None
+        (рассинхрон длин).
     """
     normalized_raw = preprocess(raw, source_hint="token_anchor")
     char_map = build_char_map(raw, normalized_raw)
+    if char_map is None:
+        log.warning(
+            "resolve_anchor_in_raw: build_char_map returned None (length mismatch), "
+            "anchor lookup skipped (anchor_value=%r)",
+            anchor_value[:80],
+        )
+        return None
     offset = find_anchor_offset(anchor_value, normalized_raw)
     if offset is None:
         log.debug(

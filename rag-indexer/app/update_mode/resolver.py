@@ -299,7 +299,7 @@ async def _resolve_one(
         )
     except AnchorNotFoundError as exc:
         # ── Token-anchor fallback ─────────────────────────────────────────
-        if intent.operation in _FALLBACK_OPS and exc.anchor_value:
+        if intent.operation in _FALLBACK_OPS and exc.anchor_value.strip():
             log.warning(
                 "direct anchor search failed for anchor=%r, trying token-anchor fallback",
                 exc.anchor_value[:80],
@@ -330,8 +330,6 @@ async def _resolve_one(
                         )
                     except ContentTooLargeError:
                         return _fail("content_too_large", "proposed content exceeds 10 MB")
-                except ContentTooLargeError:
-                    return _fail("content_too_large", "proposed content exceeds 10 MB")
                 except AnchorAmbiguousError:
                     log.warning("token-anchor fallback: raw_fragment is ambiguous")
                     return _fail(

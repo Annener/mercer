@@ -209,6 +209,6 @@ async def test_fallback_ambiguous_raw_fragment():
         result = await _resolve_one(intent, request, db, resolve_order=0)
 
     assert result.status == UpdateModeChangeStatus.RESOLUTION_FAILED
-    assert result.error_code in ("anchor_ambiguous", "anchor_not_unique"), (
-        f"Unexpected error_code={result.error_code!r}"
+    assert result.error_code == "anchor_ambiguous", (
+        f"Expected 'anchor_ambiguous', got {result.error_code!r}"
     )
