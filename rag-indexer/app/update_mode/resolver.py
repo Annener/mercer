@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from pathlib import Path
 from typing import Any
 
 from app.db_client import IndexerDBClient
@@ -47,6 +48,7 @@ from app.update_mode.text_ops import (
     UnsupportedOperationError,
     apply_op,
 )
+from app.update_mode.token_anchor import resolve_anchor_in_raw
 from shared_contracts.models import (
     ResolvedUpdateModeChange,
     UpdateModeAction,
@@ -63,6 +65,18 @@ _MAX_CONTENT_BYTES = 10 * 1024 * 1024  # 10 MB guard
 
 # UTF-8 BOM that some editors prepend to files.
 _UTF8_BOM = "\ufeff"
+
+# Operations eligible for token-anchor fallback.
+_FALLBACK_OPS = (
+    UpdateModeOperation.REPLACE_UNIQUE_TEXT,
+    UpdateModeOperation.DELETE_UNIQUE_TEXT,
+    UpdateModeOperation.APPEND_AFTER_SECTION,
+    UpdateModeOperation.DELETE_SECTION,
+)
+
+
+class ContentTooLargeError(Exception):
+    """Raised when proposed content exceeds _MAX_CONTENT_BYTES."""
 
 
 def _sha256_str(text: str) -> str:
@@ -83,6 +97,78 @@ async def _lookup_document(
         document_id,
     )
     return dict(row) if row is not None else None
+
+
+# ---------------------------------------------------------------------------
+# Build helper
+# ---------------------------------------------------------------------------
+
+def _build_pending_change(
+    *,
+    intent: UpdateModeIntent,
+    original: str,
+    proposed: str,
+    file_path: Path,
+    vault_root: Path,
+    vault_id: str,
+    original_sha256: str,
+    resolve_order: int,
+) -> ResolvedUpdateModeChange:
+    """Build a PENDING ResolvedUpdateModeChange after a successful apply_op().
+
+    Parameters
+    ----------
+    intent:
+        The source UpdateModeIntent.
+    original:
+        Original file content (raw UTF-8 string, already stripped of BOM).
+    proposed:
+        Resulting file content after applying the operation.
+    file_path:
+        Absolute path to the target file.
+    vault_root:
+        Absolute path to the vault root directory.
+    vault_id:
+        Vault identifier string.
+    original_sha256:
+        SHA-256 hex digest of `original` encoded as UTF-8.
+    resolve_order:
+        0-based index of this change within the resolve request.
+
+    Returns
+    -------
+    ResolvedUpdateModeChange
+        A change with status=PENDING and all fields populated.
+
+    Raises
+    ------
+    ContentTooLargeError
+        If the UTF-8 encoding of `proposed` exceeds _MAX_CONTENT_BYTES.
+    """
+    proposed_bytes = proposed.encode("utf-8")
+    if len(proposed_bytes) > _MAX_CONTENT_BYTES:
+        raise ContentTooLargeError("proposed content exceeds 10 MB")
+
+    rel_path = str(file_path.relative_to(vault_root))
+    unified_diff = build_unified_diff(original, proposed, rel_path)
+
+    return ResolvedUpdateModeChange(
+        change_id=intent.change_id,
+        vault_id=vault_id,
+        document_id=intent.document_id,
+        file_path=rel_path,
+        action=intent.action,
+        description=intent.description,
+        original_content=original,
+        proposed_content=proposed,
+        unified_diff=unified_diff,
+        expected_sha256=original_sha256,
+        status=UpdateModeChangeStatus.PENDING,
+        operation=intent.operation,
+        anchor=intent.anchor,
+        op_content=intent.content,
+        resolve_order=resolve_order,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -212,6 +298,55 @@ async def _resolve_one(
             content=intent.content,
         )
     except AnchorNotFoundError as exc:
+        # ── Token-anchor fallback ─────────────────────────────────────────
+        if intent.operation in _FALLBACK_OPS and exc.anchor_value.strip():
+            anchor_val = exc.anchor_value
+            log.warning(
+                "_resolve_one: direct anchor search failed for anchor=%r, trying token-anchor fallback",
+                anchor_val[:80],
+            )
+            raw_fragment = resolve_anchor_in_raw(anchor_val, original)
+            if raw_fragment is not None:
+                log.info(
+                    "_resolve_one: token-anchor fallback succeeded, raw_fragment=%r",
+                    raw_fragment[:80],
+                )
+                try:
+                    proposed = apply_op(
+                        text=original,
+                        op=intent.operation,
+                        anchor_value=raw_fragment,
+                        content=intent.content,
+                    )
+                    try:
+                        return _build_pending_change(
+                            intent=intent,
+                            original=original,
+                            proposed=proposed,
+                            file_path=file_path,
+                            vault_root=vault_root,
+                            vault_id=vault_id,
+                            original_sha256=original_sha256,
+                            resolve_order=resolve_order,
+                        )
+                    except ContentTooLargeError:
+                        return _fail("content_too_large", "proposed content exceeds 10 MB")
+                except AnchorAmbiguousError:
+                    log.warning(
+                        "_resolve_one: token-anchor fallback: raw_fragment is ambiguous for anchor=%r",
+                        anchor_val[:80],
+                    )
+                    return _fail(
+                        "anchor_ambiguous",
+                        f"anchor maps to ambiguous raw fragment: {anchor_val!r}",
+                    )
+                except AnchorNotFoundError:
+                    log.warning(
+                        "_resolve_one: token-anchor fallback also failed for anchor=%r",
+                        anchor_val[:80],
+                    )
+                    # fall through to original error handling below
+        # ── Original error handling ───────────────────────────────────────
         op = intent.operation
         if op in (UpdateModeOperation.APPEND_AFTER_SECTION, UpdateModeOperation.DELETE_SECTION):
             return _fail("anchor_not_found", f"heading not found: {exc.anchor_value!r}")
@@ -231,30 +366,19 @@ async def _resolve_one(
     except UnsupportedOperationError:
         return _fail("unsupported_operation", f"operation={intent.operation!r}")
 
-    proposed_bytes = proposed.encode("utf-8")
-    if len(proposed_bytes) > _MAX_CONTENT_BYTES:
+    try:
+        return _build_pending_change(
+            intent=intent,
+            original=original,
+            proposed=proposed,
+            file_path=file_path,
+            vault_root=vault_root,
+            vault_id=vault_id,
+            original_sha256=original_sha256,
+            resolve_order=resolve_order,
+        )
+    except ContentTooLargeError:
         return _fail("content_too_large", "proposed content exceeds 10 MB")
-
-    rel_path = str(file_path.relative_to(vault_root))
-    unified_diff = build_unified_diff(original, proposed, rel_path)
-
-    return ResolvedUpdateModeChange(
-        change_id=intent.change_id,
-        vault_id=vault_id,
-        document_id=intent.document_id,
-        file_path=rel_path,
-        action=intent.action,
-        description=intent.description,
-        original_content=original,
-        proposed_content=proposed,
-        unified_diff=unified_diff,
-        expected_sha256=original_sha256,
-        status=UpdateModeChangeStatus.PENDING,
-        operation=intent.operation,
-        anchor=intent.anchor,
-        op_content=intent.content,
-        resolve_order=resolve_order,
-    )
 
 
 # ---------------------------------------------------------------------------
