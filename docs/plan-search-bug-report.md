@@ -1,7 +1,7 @@
 # Bug Report: ветка `plan-search` — Token-Map Anchoring
 
-> Сгенерировано по результатам code review ветки `plan-search`.  
-> Основан на реальном анализе кода через GitHub API.  
+> Основан на прямом анализе кода через GitHub API.  
+> Сверён с `preprocessor.py` (источник истины).  
 > Каждый баг — самостоятельный шаг. Фиксить по порядку приоритета.
 
 ---
@@ -10,7 +10,7 @@
 
 LLM генерирует `anchor.value` из нормализованного текста (после `preprocess()`), а resolver ищет якорь в raw-файле на диске. Из-за трансформаций `preprocess()` (newline→space, em-dash→дефис, дефисные переносы, мягкий дефис, NFC) прямой поиск падает с `AnchorNotFoundError`.
 
-Решение реализовано через построение char-map (`normalized_pos → raw_pos`), поиск якоря в нормализованном тексте, извлечение raw-фрагмента и повторный `apply_op` с ним.
+Решение: построить char-map (`normalized_pos → raw_pos`), найти якорь в нормализованном тексте, извлечь raw-фрагмент и повторить `apply_op` с ним.
 
 ### Затронутые файлы
 
@@ -20,7 +20,7 @@ LLM генерирует `anchor.value` из нормализованного т
 | `rag-indexer/app/update_mode/text_ops.py` | ИЗМЕНЁН |
 | `rag-indexer/app/update_mode/token_anchor.py` | НОВЫЙ |
 | `rag-indexer/app/update_mode/resolver.py` | ИЗМЕНЁН |
-| `rag-indexer/parser/preprocessing/preprocessor.py` | ИСТОЧНИК ИСТИНЫ (не менять без сверки) |
+| `rag-indexer/parser/preprocessing/preprocessor.py` | ИСТОЧНИК ИСТИНЫ (не менять) |
 | `rag-indexer/tests/test_token_anchor.py` | ТЕСТЫ unit |
 | `rag-indexer/tests/test_token_anchor_fallback.py` | ТЕСТЫ integration |
 
@@ -34,110 +34,172 @@ LLM генерирует `anchor.value` из нормализованного т
 - `build_anchor_pattern` публичная, логика идентична оригинальной `_build_anchor_pattern`.
 - `text_ops.py` — `def _build_anchor_pattern` удалена, импорт: `from app.update_mode.text_ops_utils import build_anchor_pattern as _build_anchor_pattern`.
 - Все вызовы `_build_anchor_pattern(...)` внутри `text_ops.py` не изменены.
-- Никакая другая логика `text_ops.py` не тронута.
 
 ---
 
 ## 🔴 БАГ 1 — Шаг 3 `build_char_map`: `\n` после строки-из-цифр не удаляется
 
 **Файл:** `rag-indexer/app/update_mode/token_anchor.py`, функция `build_char_map`, шаг 3  
-**Серьёзность:** Критично — гарантированный length mismatch → `None` → fallback всегда падает для документов с нумерацией строк
+**Серьёзность:** Критично — гарантированный length mismatch → `None` → fallback всегда падает для документов с нумерацией страниц
 
 ### Описание
 
-Паттерн `re.compile(r"^\s*\d+\s*$", re.MULTILINE)` с флагом `re.MULTILINE` в Python: `$` совпадает **перед** `\n`, но **не захватывает** `\n`. Т.е. `m.end()` указывает на позицию `\n`, а не после неё.
-
-Код делает `last = m.end()` — в результате символ `\n` (сразу после цифровой строки) остаётся в `current_text`. Тем временем `preprocess()` удаляет строку целиком вместе с переносом через `re.sub(r"^\s*\d+\s*$", "", text, flags=re.MULTILINE)`.
-
-**Воспроизводящий кейс:**
-```python
-raw = "Глава\n42\nТекст"
-# preprocess() → "Глава\nТекст" → "Глава Текст"  (len=11)
-# build_char_map после шага 3: "Глава\n\nТекст"  (лишний \n)
-# → после шага 5b: "Глава  Текст"  (два пробела, len=12)
-# → length mismatch 12 != 11 → build_char_map вернёт None
-```
-
-### Что нужно знать для фикса
-
-Нужно также пропускать `\n` после совпадения, если он есть. В шаге 3 заменить:
+В `preprocessor.py` шаг 3:
 
 ```python
-last = m.end()
+text = re.sub(r"^\s*\d+\s*$", "", text, flags=re.MULTILINE)
 ```
 
-на:
+`re.sub` с `re.MULTILINE` и паттерном `^\s*\d+\s*$` — в Python `$` совпадает **перед** `\n`, но `re.sub` заменяет только саму совпавшую подстроку (без `\n`). Однако стандартное поведение `re.sub` здесь убирает `\n` — **проверим точнее**:
 
 ```python
-end = m.end()
-if end < len(current_text) and current_text[end] == "\n":
-    end += 1
-last = end
+>>> import re
+>>> re.sub(r"^\s*\d+\s*$", "", "Глава\n42\nТекст", flags=re.MULTILINE)
+'Глава\n\nТекст'
 ```
 
-Альтернатива — использовать паттерн `r"^\s*\d+\s*\n"` (без `re.MULTILINE` для `$`), но тогда нужно проверить, что `preprocess()` использует именно такой вариант, а не `re.MULTILINE`.
+В `preprocessor.py` остаётся `"Глава\n\nТекст"` (две `\n`). Затем шаги 4b + 5 обрабатывают это через `\n\n` → маркер → `\n\n`, итоговый результат после `.strip()` = `"Глава\n\nТекст"` (или `"Глава Текст"` если оба `\n` одиночные — зависит от контекста).
+
+В `build_char_map` (шаг 3) после `last = m.end()` символ `\n` **остаётся** в `current_text` (потому что `m.end()` при `re.MULTILINE $` указывает на позицию перед `\n`). Поведение **совпадает с preprocessor** — оба оставляют `\n`.
+
+**Вывод: БАГ 1 переоценён.** Поведение `build_char_map` и `preprocessor.py` в шаге 3 идентично — оба оставляют пустую строку (`\n\n`). Последующие шаги (4b, 5) обработают это одинаково.
+
+> ⚠️ Однако если `\n\n` появляется в `build_char_map` на шаге 3, а потом шаг 4b добавляет `\n\n` вокруг заголовка — могут возникнуть тройные `\n{3,}`. Оба места вызывают `_collapse_excess_newlines` / `re.sub(r"\n{3,}", ...)` — это покрыто. **Баг 1 закрыт ✅.**
 
 ---
 
-## 🔴 БАГ 2 — `preprocess(raw, source_hint=...)` — параметр не верифицирован
+## 🔴 БАГ 2 — Маркер `\u2400\u2400` в preprocessor vs `\uE000\uE001` в token_anchor
+
+**Файл:** `rag-indexer/app/update_mode/text_ops_utils.py` (`CHAR_MAP_MARKER = "\uE000\uE001"`)  
+vs `rag-indexer/parser/preprocessing/preprocessor.py` (использует `"\u2400\u2400"`)  
+**Серьёзность:** Критично — `build_char_map` шаг 5 не совпадает с `preprocess()` → length mismatch для ЛЮБОГО документа с двойными переносами строк (заголовки, пустые строки между абзацами)
+
+### Описание
+
+В `preprocessor.py` шаг 5:
+
+```python
+text = text.replace("\n\n", "\u2400\u2400")  # маркер = U+2400 U+2400
+text = text.replace("\n", " ")
+text = text.replace("\u2400\u2400", "\n\n")
+```
+
+В `text_ops_utils.py`:
+
+```python
+CHAR_MAP_MARKER: str = "\uE000\uE001"  # маркер = U+E000 U+E001 (PUA)
+```
+
+В `token_anchor.py` шаг 5 использует `CHAR_MAP_MARKER = "\uE000\uE001"`. Это **другой маркер**.
+
+**Последствие:** При обработке любого документа с заголовками или пустыми строками:
+1. `preprocessor.py` заменяет `\n\n` → `\u2400\u2400`, затем восстанавливает → `\n\n`.
+2. `build_char_map` заменяет `\n\n` → `\uE000\uE001` (другой маркер) — OK, логика та же.
+3. НО: если в тексте уже присутствовал `\u2400` (U+2400 входит в разрешённый диапазон `0x2000–0x206F`!), то в `preprocessor.py` он будет ложно совпадать с маркером. В `build_char_map` — нет, потому что PUA-символ там гарантированно отсутствует.
+
+**Реальный баг:** `CHAR_MAP_MARKER` в `text_ops_utils.py` и маркер в `preprocessor.py` — **разные строки**. Это не влияет на длину (оба маркера — 2 символа), и логика шага 5 идентична по структуре. Length mismatch из-за этого **не возникает**.
+
+> ⚠️ Однако есть риск коллизии в `preprocessor.py`: символ `\u2400` входит в `_ALLOWED_RANGES` (диапазон `0x2000–0x206F`) и **не фильтруется** `_detect_suspicious_chars`. Если документ содержит `\u2400`, preprocessor испортит его содержимое. В `build_char_map` этой проблемы нет благодаря PUA-маркеру. Это баг в `preprocessor.py`, не в `token_anchor.py`.
+
+### Что нужно знать для фикса
+
+В `preprocessor.py` заменить маркер на тот же PUA, что используется в `text_ops_utils.py`:
+
+```python
+# preprocessor.py шаг 5 — вместо \u2400\u2400 использовать PUA:
+from app.update_mode.text_ops_utils import CHAR_MAP_MARKER as _MARKER
+text = text.replace("\n\n", _MARKER)
+text = text.replace("\n", " ")
+text = text.replace(_MARKER, "\n\n")
+```
+
+Либо — вынести константу в `text_ops_utils.py` (уже сделано) и сделать `preprocessor.py` зависимым от неё. Если архитектурно нежелательно импортировать `app.*` из `parser.*` — определить `CHAR_MAP_MARKER` в отдельном `shared_consts.py` и импортировать оттуда обоими модулями.
+
+---
+
+## 🔴 БАГ 3 — `source_hint` в `preprocess()`: параметр существует, вызов корректен
 
 **Файл:** `rag-indexer/app/update_mode/token_anchor.py`, функция `resolve_anchor_in_raw`  
-**Серьёзность:** Критично — `TypeError` в runtime при первом же fallback-вызове, если сигнатура не совпадает
+**Серьёзность:** ~~Критично~~ → **Закрыт ✅**
 
 ### Описание
 
-В `resolve_anchor_in_raw` вызов:
+После просмотра `preprocessor.py`: сигнатура функции:
 
 ```python
-normalized_raw = preprocess(raw, source_hint="token_anchor")
+def preprocess(text: str, source_hint: str = "") -> str:
 ```
 
-Параметр `source_hint` используется как именованный. Если `preprocess()` в `preprocessor.py` не имеет этого параметра (или он называется иначе), при первом же вызове будет `TypeError: preprocess() got an unexpected keyword argument 'source_hint'`.
+Параметр `source_hint` существует и имеет значение по умолчанию `""`. Вызов `preprocess(raw, source_hint="token_anchor")` в `resolve_anchor_in_raw` — **корректен**. `TypeError` не возникнет.
 
-Весь fallback-механизм станет нерабочим, причём ошибка будет маскирована: в `_resolve_one` вызов `resolve_anchor_in_raw` не обёрнут в try/except TypeError, поэтому исключение всплывёт до `resolve_changes`, где поймается общим `except Exception` и запишется как `internal_error`.
-
-### Что нужно знать для фикса
-
-Открыть `preprocessor.py` и проверить сигнатуру функции `preprocess()`:
-
-- Если параметра `source_hint` нет — убрать его из вызова: `preprocess(raw)`.
-- Если есть — оставить как есть.
-- Если параметр есть, но называется иначе — исправить имя.
-
-Независимо от результата: добавить тест в `test_token_anchor.py`, который вызывает `resolve_anchor_in_raw(...)` и проверяет, что `TypeError` не бросается (smoke test на сигнатуру).
+> Баг 3 закрыт. ✅
 
 ---
 
-## 🔴 БАГ 3 — Маркер `CHAR_MAP_MARKER` не верифицирован против `preprocessor.py`
+## 🔴 БАГ 4 — Шаг 4a `build_char_map`: паттерн отличается от `preprocessor.py`
 
-**Файл:** `rag-indexer/app/update_mode/text_ops_utils.py` (константа `CHAR_MAP_MARKER = "\uE000\uE001"`)  
-**Серьёзность:** Критично — при расхождении маркеров `\n\n` в документах не восстанавливаются → length mismatch для всех документов с заголовками или двойными переносами
+**Файл:** `rag-indexer/app/update_mode/token_anchor.py`, шаг 4a  
+**Серьёзность:** Критично — дефис+пробел внутри слова не убирается из char_map → length mismatch
 
 ### Описание
 
-В шаге 5 `build_char_map` используется маркер `_MARKER = CHAR_MAP_MARKER = "\uE000\uE001"` (PUA-символы) для временного сохранения `\n\n` перед заменой одинарных `\n → пробел`.
+В `preprocessor.py` шаг 4a:
 
-Вся логика шага 5 (`5a: \n\n → маркер`, `5b: \n → пробел`, `5c: маркер → \n\n`) **должна воспроизводить** точно такой же шаг в `preprocess()`. Если `preprocess()` использует другой маркер (например, оригинальный `\u2400\u2400`), то:
+```python
+text = re.sub(r"(\w+)-\s+(\w)", r"\1\2", text)
+```
 
-- `build_char_map` ищет `"\uE000\uE001"` в тексте на шаге 5c — не находит (маркер другой).
-- Двойные переносы строк не восстанавливаются.
-- Результат `current_text` после шага 5 отличается от `normalized` → length mismatch → `None`.
+В `token_anchor.py` шаг 4a:
 
-### Что нужно знать для фикса
+```python
+_pattern4a = re.compile(r"(\w+)-\s+(\w)")
+```
 
-1. Открыть `preprocessor.py` и найти переменную маркера в шаге 5 (замена `\n\n`).
-2. Убедиться, что маркер в `preprocessor.py` — это тоже `"\uE000\uE001"`.
-3. Если маркер другой (например, `"\u2400\u2400"`):
-   - **Либо** обновить `preprocessor.py`, чтобы использовал `CHAR_MAP_MARKER` из `text_ops_utils.py` (импорт публичной константы — архитектурно чисто).
-   - **Либо** изменить `CHAR_MAP_MARKER` в `text_ops_utils.py` на тот, что использует preprocessor.
-4. Правило: маркер должен быть определён **в одном месте** и импортироваться из него. Сейчас `text_ops_utils.py` уже является кандидатом на роль источника истины — нужно только убедиться, что preprocessor его тоже использует.
+Паттерн **идентичен** — ✅.
+
+Но есть структурная проблема: в `preprocessor.py` шаги 4 и 4a применяются **последовательно** через два независимых `re.sub`. В `token_anchor.py` — тоже последовательно. Порядок совпадает ✅.
+
+Однако шаг 4 (`re.sub(r"(\w+)-\s*\n\s*(\w+)", ...)`) может создать новые совпадения для шага 4a: после склейки `"за-\nда- ча"` → `"зада- ча"` появляется `"зада- "` — это совпадение шага 4a. В `preprocessor.py` оно будет поймано шагом 4a (отдельный `re.sub`). В `build_char_map` тоже — шаг 4a запускается на уже изменённом `current_text`. **Поведение идентично** ✅.
+
+> Паттерны шагов 4 и 4a совпадают с preprocessor. ✅
 
 ---
 
-## 🟡 БАГ 4 — `extract_raw_fragment`: неверный результат при `norm_end == norm_start`
+## 🔴 БАГ 5 — Шаг 4b `build_char_map`: prepend `\n\n` перед заголовком в начале файла
+
+**Файл:** `rag-indexer/app/update_mode/token_anchor.py`, шаг 4b  
+**Серьёзность:** Критично — length mismatch для любого документа, начинающегося с Markdown-заголовка
+
+### Описание
+
+В `preprocessor.py` шаг 4b:
+
+```python
+text = _HEADING_FULL_LINE_RE.sub(r"\n\n\1\n\n", text)
+```
+
+Это безусловно добавляет `\n\n` до и после **каждого** заголовка, включая первый заголовок в начале файла.
+
+В `token_anchor.py` шаг 4b:
+
+```python
+for m in _HEADING_FULL_LINE_RE.finditer(current_text):
+    # ...
+    new_text += "\n\n"   # prepend — ВСЕГДА
+    # ... тело заголовка ...
+    new_text += "\n\n"   # append — ВСЕГДА
+```
+
+Поведение **идентично** preprocessor — `\n\n` добавляется безусловно ✅. После этого оба вызывают `re.sub(r"\n{3,}", "\n\n", ...)` / `_collapse_excess_newlines`. Рассинхрона нет.
+
+> Баг 5 закрыт. ✅
+
+---
+
+## 🟡 БАГ 6 — `extract_raw_fragment`: неверный результат при `norm_end == norm_start`
 
 **Файл:** `rag-indexer/app/update_mode/token_anchor.py`, функция `extract_raw_fragment`  
-**Серьёзность:** Средняя — `find_anchor_offset` не вернёт `norm_start == norm_end` в нормальной работе, но функция не защищена от этого edge case
+**Серьёзность:** Средняя — практически не достигается (пустой якорь блокируется в resolver), но функция не защищена
 
 ### Описание
 
@@ -148,122 +210,105 @@ raw_start = char_map[norm_start]
 raw_end = char_map[norm_end - 1] + 1
 ```
 
-При `norm_end == norm_start` (пустой диапазон): `char_map[norm_end - 1]` = `char_map[norm_start - 1]` — это позиция символа **перед** началом якоря. Функция вернёт `raw[char_map[norm_start - 1] : char_map[norm_start - 1] + 1]` — один символ перед якорем вместо пустой строки. При `norm_start == 0` будет `char_map[-1]` — последний элемент списка (Python не падает, но возвращает мусор).
+При `norm_end == norm_start` (пустой диапазон): `char_map[norm_end - 1]` = `char_map[norm_start - 1]` — индекс на 1 **меньше** начала якоря. При `norm_start == 0`: `char_map[-1]` — последний элемент списка (Python не падает, но возвращает мусор).
 
-Пустой якорь `build_anchor_pattern("")` компилирует паттерн `""`, который сматчит позицию 0 с `m.start() == m.end() == 0` — это реальный путь к `norm_start == norm_end == 0`.
+Цепочка до этой ситуации:
+1. Якорь состоит из пробелов → `build_anchor_pattern("")` компилирует `re.compile("", re.DOTALL)`.
+2. `pattern.search(normalized_text)` → совпадение с `m.start() == m.end() == 0`.
+3. `find_anchor_offset` возвращает `(0, 0)`.
+4. `extract_raw_fragment(raw, char_map, 0, 0)` → `char_map[-1] + 1` → неверный фрагмент.
+
+Guard в `resolver.py` (`exc.anchor_value.strip()`) блокирует пробельный якорь **до** вызова `resolve_anchor_in_raw`, но `extract_raw_fragment` — публичная функция и должна быть защищена независимо.
 
 ### Что нужно знать для фикса
 
 Добавить guard в начало `extract_raw_fragment`:
 
 ```python
-if norm_start >= norm_end:
-    return ""
+def extract_raw_fragment(
+    raw: str,
+    char_map: list[int],
+    norm_start: int,
+    norm_end: int,
+) -> str:
+    if norm_start >= norm_end:
+        return ""
+    raw_start = char_map[norm_start]
+    raw_end = char_map[norm_end - 1] + 1
+    return raw[raw_start:raw_end]
 ```
-
-Дополнительно: в `resolver.py` guard `exc.anchor_value.strip()` (Баг 5) предотвращает пустой якорь на уровне выше, но `extract_raw_fragment` должна быть защищена независимо.
 
 ---
 
-## 🟡 БАГ 5 — Паттерны шагов 4 и 4a не верифицированы против `preprocessor.py`
+## 🟡 БАГ 7 — `preprocessor.py` использует `\u2400\u2400` как маркер, который не фильтруется
 
-**Файл:** `rag-indexer/app/update_mode/token_anchor.py`, шаги 4 и 4a  
-**Серьёзность:** Средняя — при расхождении паттернов часть трансформаций не будет отражена в char_map
+**Файл:** `rag-indexer/parser/preprocessing/preprocessor.py`, шаг 5  
+**Серьёзность:** Средняя — ведёт к тихой порче документов с символом U+2400 (OCR-артефакты)
 
 ### Описание
 
-В `token_anchor.py`:
-- Шаг 4: `re.compile(r"(\w+)-\s*\n\s*(\w+)")`
-- Шаг 4a: `re.compile(r"(\w+)-\s+(\w)")`
+В `preprocessor.py`:
 
-Эти паттерны должны быть **идентичны** паттернам в `preprocessor.py`. Если preprocessor использует, например, `r"(\w)-\n(\w)"` (без `\s*`) или добавляет флаг `re.UNICODE` — поведение разойдётся. Вхождения дефисных переносов будут не замечены в `build_char_map` → length mismatch или неверная позиция.
+```python
+text = text.replace("\n\n", "\u2400\u2400")  # временный маркер
+```
 
-Отдельный риск для шага 4a: если `preprocess()` применяет шаги 4 и 4a в одном `re.sub` через `|` (альтернацию), то порядок применения иной — шаг 4 в `token_anchor.py` может создать новые совпадения для шага 4a, которых не было в оригинале.
+Символ `\u2400` (U+2400, SYMBOL FOR NULL) входит в диапазон `_ALLOWED_RANGES`:
+
+```python
+(0x2000, 0x206F),  # General punctuation
+```
+
+Поэтому `_detect_suspicious_chars` **не логирует** и не фильтрует этот символ. Если документ содержит `\u2400` (например, PDF с OCR-артефактами), то:
+
+1. Шаг 5: `text.replace("\n\n", "\u2400\u2400")` — не затрагивает существующий `\u2400`.
+2. `text.replace("\u2400\u2400", "\n\n")` — ЛОЖНОЕ СРАБАТЫВАНИЕ: оба рядом стоящих `\u2400` заменятся на `\n\n`.
+3. В документе появляется пустая строка там, где её не было.
+
+При этом в `build_char_map` используется PUA-маркер `\uE000\uE001` — он безопасен, т.к. не входит в `_ALLOWED_RANGES`.
 
 ### Что нужно знать для фикса
 
-1. Открыть `preprocessor.py` и найти строки, соответствующие шагам 4 и 4a.
-2. Скопировать паттерны **дословно** в `token_anchor.py`.
-3. Проверить: применяются ли шаги 4 и 4a в preprocessor **последовательно** (два отдельных `re.sub`) или через один `re.sub` с `|`. В `token_anchor.py` они идут последовательно — это должно совпадать.
-4. Если preprocessor применяет их в одном sub — переписать шаги 4/4a в `build_char_map` соответственно.
-
----
-
-## 🟡 БАГ 6 — Заголовок в начале файла: лишний `\n\n` при prepend
-
-**Файл:** `rag-indexer/app/update_mode/token_anchor.py`, шаг 4b  
-**Серьёзность:** Средняя — для документов, начинающихся с Markdown-заголовка, length mismatch
-
-### Описание
-
-В шаге 4b для каждого заголовка добавляется `\n\n` до и после:
+**Вариант А (рекомендуется):** Использовать `CHAR_MAP_MARKER` из `text_ops_utils.py` в `preprocessor.py`:
 
 ```python
-new_text += "\n\n"   # prepend
-# ... тело заголовка ...
-new_text += "\n\n"   # append
+# В preprocessor.py:
+from app.update_mode.text_ops_utils import CHAR_MAP_MARKER as _NL_MARKER
+# ...
+text = text.replace("\n\n", _NL_MARKER)
+text = text.replace("\n", " ")
+text = text.replace(_NL_MARKER, "\n\n")
 ```
 
-Если заголовок стоит в позиции 0 (начало файла), prepend `\n\n` добавляется безусловно. В `preprocess()` нужно проверить: добавляется ли `\n\n` перед заголовком, если он стоит в начале текста. Если preprocessor пропускает prepend для первого заголовка (т.к. перед ним нечего отделять), то `build_char_map` добавит 2 лишних символа → length mismatch.
+**Вариант Б:** Если импорт `app.*` из `parser.*` архитектурно нежелателен — вынести константу в `shared_consts.py` и импортировать из обоих мест.
 
-### Что нужно знать для фикса
-
-1. Открыть `preprocessor.py`, найти шаг с обёрткой заголовков в `\n\n`.
-2. Проверить: есть ли там условие вроде `if m.start() > 0` для prepend?
-3. Если есть — добавить аналогичное условие в шаг 4b `token_anchor.py`:
-   ```python
-   if m.start() > 0:
-       new_text += "\n\n"
-       new_offsets.extend([first_raw, first_raw])
-   ```
-4. Если preprocessor добавляет `\n\n` безусловно — оставить как есть.
-
----
-
-## 🟡 БАГ 7 — Пробельный якорь проходит fallback-guard в `resolver.py`
-
-**Файл:** `rag-indexer/app/update_mode/resolver.py`, функция `_resolve_one`  
-**Серьёзность:** Низкая — редкий кейс, но ведёт к ложному match
-
-### Описание
-
-Guard активации fallback:
+**Вариант В (минимальный):** Изменить только `preprocessor.py`, задублировав PUA-маркер:
 
 ```python
-if intent.operation in _FALLBACK_OPS and exc.anchor_value.strip():
+_NL_MARKER = "\uE000\uE001"  # PUA, никогда не встречается в документах
+text = text.replace("\n\n", _NL_MARKER)
+text = text.replace("\n", " ")
+text = text.replace(_NL_MARKER, "\n\n")
 ```
 
-Это уже корректно — `exc.anchor_value.strip()` используется. Баг отсутствует. ✅
-
-> Данный пункт оставлен для протокола: в предыдущей версии отчёта здесь был указан баг с `exc.anchor_value` (без `.strip()`). В реальном коде `.strip()` уже применяется.
-
 ---
 
-## 🟡 БАГ 8 — Мёртвый код: структура `except ContentTooLargeError` в fallback-блоке
+## 🟢 Закрытые пункты (проверены, не являются багами)
 
-**Файл:** `rag-indexer/app/update_mode/resolver.py`, функция `_resolve_one`  
-**Серьёзность:** Низкая — не влияет на логику, но создаёт путаницу при чтении кода
-
-### Описание
-
-В fallback-блоке после `apply_op(...)` структура обработки `ContentTooLargeError` правильная: `try/except ContentTooLargeError` обёртывает только `_build_pending_change`. `apply_op` не бросает `ContentTooLargeError`. Баг в текущем коде **отсутствует** — рефактор через `_build_pending_change` уже устранил проблему.
-
-> Данный пункт оставлен для протокола: описанный в концепте «внешний except ContentTooLargeError вокруг apply_op» в реальном коде не присутствует — он уже убран. ✅
-
----
-
-## 🟢 Тесты — статус
-
-| Файл | Статус |
-|------|--------|
-| `test_token_anchor.py` | ✅ Существует (8.9 KB) |
-| `test_token_anchor_fallback.py` | ✅ Существует (7.9 KB) |
-| Моки в fallback-тестах | ✅ `_lookup_document`, `resolve_vault_root`, `resolve_file_path`, `read_original_utf8` |
-| `test_fallback_ambiguous_raw_fragment` проверяет `error_code == "anchor_ambiguous"` | ✅ Строгий assert (не `in (...)`) |
-
-### ⚠️ Слабое место в тесте 4 (`test_fallback_ambiguous_raw_fragment`)
-
-`raw` содержит `"задача А задача Б"` дважды **без нормализационных трансформаций** (пробелы уже стоят, не `\n`). Значит прямой `apply_op` тоже упадёт с `AnchorAmbiguousError` — без захода в fallback. Тест проверяет общий путь ambiguous, но не проверяет именно fallback-ветку с рассинхроном нормализации. Для полного покрытия нужен тест где `raw` содержит трансформируемые символы (например, em-dash в паттерне который встречается дважды).
+| Пункт | Статус | Причина |
+|-------|--------|---------|
+| `source_hint` в `preprocess()` | ✅ | Параметр существует: `def preprocess(text: str, source_hint: str = "")` |
+| Паттерн шага 4 (`\w+)-\s*\n\s*(\w+)`) | ✅ | Идентичен preprocessor.py |
+| Паттерн шага 4a (`(\w+)-\s+(\w)`) | ✅ | Идентичен preprocessor.py |
+| Порядок шагов 4 → 4a | ✅ | Оба последовательные `re.sub`/`finditer` |
+| `_HEADING_FULL_LINE_RE` не импортируется | ✅ | Паттерн задублирован локально |
+| Prepend `\n\n` перед заголовком в начале файла | ✅ | preprocessor тоже добавляет безусловно |
+| Шаг 3 (`\n` после цифр) | ✅ | `re.sub` оставляет `\n`, `build_char_map` тоже |
+| Guard `exc.anchor_value.strip()` в resolver | ✅ | Уже применяется |
+| Мёртвый `except ContentTooLargeError` | ✅ | Уже убран рефактором через `_build_pending_change` |
+| `assert len(replacement) <= 1` в CHAR_MAP | ✅ | Уже есть |
+| `build_char_map` возвращает `None` при mismatch | ✅ | Уже реализовано |
+| `_HEADING_FULL_LINE_RE` паттерн совпадает | ✅ | `r"^(#{1,6}\s[^\n]*)"` — идентичен в обоих файлах |
 
 ---
 
@@ -271,35 +316,39 @@ if intent.operation in _FALLBACK_OPS and exc.anchor_value.strip():
 
 | # | Баг | Файл | Приоритет |
 |---|-----|------|-----------|
-| 1 | `\n` после строки-из-цифр не удаляется в шаге 3 | `token_anchor.py` | 🔴 Сначала |
-| 2 | Верифицировать сигнатуру `preprocess()` на `source_hint` | `token_anchor.py` / `preprocessor.py` | 🔴 Сначала |
-| 3 | Верифицировать и синхронизировать `CHAR_MAP_MARKER` с preprocessor | `text_ops_utils.py` / `preprocessor.py` | 🔴 Сначала |
-| 4 | Верифицировать паттерны шагов 4/4a против preprocessor | `token_anchor.py` / `preprocessor.py` | 🟡 Второй проход |
-| 5 | Верифицировать prepend `\n\n` для заголовка в начале файла | `token_anchor.py` / `preprocessor.py` | 🟡 Второй проход |
-| 6 | Guard в `extract_raw_fragment` при `norm_end == norm_start` | `token_anchor.py` | 🟡 Второй проход |
-| 7 | Улучшить тест 4 fallback: добавить кейс с реальной нормализацией | `test_token_anchor_fallback.py` | 🟢 Последний |
+| 1 | Маркер `\u2400\u2400` в preprocessor → заменить на PUA | `preprocessor.py` | 🔴 Сначала |
+| 2 | Guard в `extract_raw_fragment` при `norm_end == norm_start` | `token_anchor.py` | 🟡 Второй |
+| 3 | Улучшить тест 4 fallback: добавить кейс с em-dash дважды | `test_token_anchor_fallback.py` | 🟢 Последний |
 
 ---
 
 ## Инварианты для проверки после всех фиксов
 
 ```python
-# Инвариант 1: длина char_map всегда совпадает с длиной normalized
-raw = "Любой текст"
-assert len(build_char_map(raw, preprocess(raw))) == len(preprocess(raw))
+# Инвариант 1: длина char_map всегда == длине normalized
+from parser.preprocessing.preprocessor import preprocess
+from app.update_mode.token_anchor import build_char_map
+
+for raw in [
+    "Кот \u2014 животное",
+    "задача А\nзадача Б",
+    "# Заголовок\nТекст абзаца",
+    "Глава\n42\nТекст",
+    "при-\nмер",
+]:
+    norm = preprocess(raw)
+    cm = build_char_map(raw, norm)
+    assert cm is not None, f"None для raw={raw!r}"
+    assert len(cm) == len(norm), f"mismatch: {len(cm)} != {len(norm)} для raw={raw!r}"
 
 # Инвариант 2: em-dash
+from app.update_mode.token_anchor import resolve_anchor_in_raw
 assert resolve_anchor_in_raw("Кот - животное", "Кот \u2014 животное") == "Кот \u2014 животное"
 
 # Инвариант 3: newline→space
 assert resolve_anchor_in_raw("задача А задача Б", "задача А\nзадача Б") == "задача А\nзадача Б"
 
-# Инвариант 4: документ с нумерацией строк (Баг 1)
-raw = "Глава\n42\nТекст"
-result = build_char_map(raw, preprocess(raw))
-assert result is not None  # не было бы до фикса
-
-# Инвариант 5: все unit-тесты проходят
-# pytest rag-indexer/tests/test_token_anchor.py
-# pytest rag-indexer/tests/test_token_anchor_fallback.py
+# Инвариант 4: пустой диапазон не падает
+from app.update_mode.token_anchor import extract_raw_fragment
+assert extract_raw_fragment("текст", [0, 1, 2, 3, 4], 2, 2) == ""
 ```
