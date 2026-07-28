@@ -25,6 +25,7 @@ import logging
 import re
 
 from shared_contracts.models import UpdateModeOperation
+from app.update_mode.text_ops_utils import build_anchor_pattern as _build_anchor_pattern
 
 log = logging.getLogger(__name__)
 
@@ -133,14 +134,6 @@ def _append_after_section(original: str, heading: str, content: str) -> str | No
     block = "\n" + content.strip("\n") + "\n"
     lines.insert(insert_at, block)
     return "".join(lines)
-
-
-def _build_anchor_pattern(anchor_text: str) -> re.Pattern[str]:
-    """Build a regex that matches *anchor_text* tolerating any whitespace between words."""
-    tokens = re.split(r"\s+", anchor_text.strip())
-    tokens = [t for t in tokens if t]
-    pattern = r"\s+".join(re.escape(t) for t in tokens)
-    return re.compile(pattern, re.DOTALL)
 
 
 def _replace_unique_text_exact(original: str, anchor_text: str, content: str) -> str | None:
