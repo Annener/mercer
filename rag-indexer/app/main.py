@@ -5,6 +5,7 @@ import logging
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 import redis.asyncio as aioredis
@@ -117,6 +118,26 @@ async def _rebuild_one_vault(
             vault_id, vault_path,
         )
         return
+
+    # --- Git init + .gitignore (best-effort, не блокирует rebuild) ---
+    try:
+        from app.update_mode.fs_git import git_init_if_needed, ensure_vault_gitignore
+
+        vault_root = Path(vault_path)
+        inited = await asyncio.to_thread(git_init_if_needed, vault_root)
+        if inited:
+            logger.info("git init performed for vault: vault_id=%s", vault_id)
+
+        changed = await asyncio.to_thread(ensure_vault_gitignore, vault_root)
+        if changed:
+            logger.info(".gitignore created/updated for vault: vault_id=%s", vault_id)
+    except Exception:
+        logger.warning(
+            "git init / .gitignore setup failed (non-fatal): vault_id=%s",
+            vault_id, exc_info=True,
+        )
+    # --- конец git init блока ---
+
     try:
         pg_docs = await db_client.get_all_documents(vault_id)
         disk_files = await asyncio.to_thread(scan_vault, vault_path)
