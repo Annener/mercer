@@ -5,8 +5,8 @@ Rules enforced here:
 - All paths validated via Path.resolve() containment, never prefix string checks.
 - Git subprocess always uses argument list, never shell=True.
 - git add . / git add -A / git add -f are never used.
-- No automatic initial commit.
 - Snapshot and apply commits stage only explicit .md path lists.
+- Initial commit stages all existing .md files explicitly after git init.
 """
 from __future__ import annotations
 
@@ -242,6 +242,86 @@ def git_init_if_needed(vault_root: Path) -> bool:
         log.error("git init failed", extra={"vault_root": str(vault_root)})
         raise GitError("git_init_failed", "git init returned non-zero")
     return True
+
+
+def git_initial_commit(
+    vault_root: Path,
+    vault_identity: GitIdentity | None,
+) -> str | None:
+    """Stage all existing .md files and create the initial commit.
+
+    Called after git_init_if_needed + ensure_vault_gitignore on vault startup.
+    No-op if HEAD already exists (commits already present).
+
+    Returns commit SHA string, or None if no .md files found or HEAD exists.
+    Raises GitError on failure.
+    Never uses git add . / git add -A / git add -f.
+    """
+    # No-op if repository already has commits
+    result = _run_git(["rev-parse", "--verify", "HEAD"], cwd=vault_root)
+    if result.returncode == 0:
+        return None
+
+    identity = _resolve_identity(vault_identity)
+    env = _identity_env(identity)
+
+    # Collect all .md files recursively with explicit list — never glob via shell
+    md_files = sorted(vault_root.rglob("*.md"))
+    if not md_files:
+        log.info(
+            "git_initial_commit: no .md files found, skipping initial commit: vault_root=%s",
+            vault_root,
+        )
+        return None
+
+    for path in md_files:
+        rel = str(path.relative_to(vault_root))
+        r = subprocess.run(
+            ["git", "add", "--", rel],
+            cwd=vault_root,
+            capture_output=True,
+            text=True,
+            shell=False,
+            env=env,
+        )
+        if r.returncode != 0:
+            raise GitError("git_add_failed", f"git add failed for {rel!r}: {r.stderr.strip()}")
+
+    # Also stage .gitignore if present (must be created before calling this)
+    gitignore_path = vault_root / ".gitignore"
+    if gitignore_path.exists():
+        subprocess.run(
+            ["git", "add", "--", ".gitignore"],
+            cwd=vault_root,
+            capture_output=True,
+            text=True,
+            shell=False,
+            env=env,
+        )
+
+    r = subprocess.run(
+        ["git", "commit", "-m", "init: initial vault snapshot"],
+        cwd=vault_root,
+        capture_output=True,
+        text=True,
+        shell=False,
+        env=env,
+    )
+    if r.returncode != 0:
+        raise GitError(
+            "git_commit_failed",
+            f"initial commit failed: {r.stderr.strip()}",
+        )
+
+    sha_result = _run_git(["rev-parse", "HEAD"], cwd=vault_root)
+    sha = sha_result.stdout.strip()
+    log.info(
+        "git_initial_commit: committed %d .md files, vault_root=%s sha=%s",
+        len(md_files),
+        vault_root,
+        sha,
+    )
+    return sha
 
 
 def _identity_env(identity: GitIdentity) -> dict[str, str]:
