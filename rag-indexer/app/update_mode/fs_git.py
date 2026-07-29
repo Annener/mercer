@@ -358,3 +358,93 @@ def git_apply_commit(
 
     sha_result = _run_git(["rev-parse", "HEAD"], cwd=vault_root)
     return sha_result.stdout.strip()
+
+
+# ---------------------------------------------------------------------------
+# .gitignore management
+# ---------------------------------------------------------------------------
+
+_VAULT_GITIGNORE_MARKER = "# Mercer — vault .gitignore"
+
+_VAULT_GITIGNORE_CONTENT = """\
+# Mercer — vault .gitignore
+# Only .md files are tracked by git.
+
+# macOS metadata
+.DS_Store
+**/.DS_Store
+
+# Documents (non-markdown)
+*.pdf
+**/*.pdf
+*.csv
+**/*.csv
+*.xlsx
+**/*.xlsx
+*.xls
+**/*.xls
+
+# Images
+*.png
+**/*.png
+*.jpg
+**/*.jpg
+*.jpeg
+**/*.jpeg
+*.gif
+**/*.gif
+*.svg
+**/*.svg
+*.webp
+**/*.webp
+
+# Excalidraw
+*.excalidraw
+**/*.excalidraw
+
+# update-mode temp files
+.~update_mode_*.tmp
+**/.~update_mode_*.tmp
+"""
+
+
+def ensure_vault_gitignore(vault_root: Path) -> bool:
+    """Create or update .gitignore in vault_root.
+
+    Behaviour:
+    - If .gitignore does not exist: create it with the full Mercer block.
+    - If .gitignore exists and already contains the Mercer marker: no-op.
+    - If .gitignore exists but was created by someone else: append the
+      Mercer block at the end so user rules are preserved.
+
+    Returns True if the file was created or modified, False otherwise.
+    """
+    gitignore_path = vault_root / ".gitignore"
+
+    if not gitignore_path.exists():
+        try:
+            gitignore_path.write_text(_VAULT_GITIGNORE_CONTENT, encoding="utf-8")
+            log.info("Created .gitignore in vault: %s", vault_root)
+            return True
+        except OSError as exc:
+            log.warning("Failed to create .gitignore: %s: %s", vault_root, exc)
+            return False
+
+    try:
+        existing = gitignore_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        log.warning("Failed to read .gitignore: %s: %s", vault_root, exc)
+        return False
+
+    if _VAULT_GITIGNORE_MARKER in existing:
+        return False  # already managed by Mercer, leave it alone
+
+    # File exists but was not created by Mercer — append our block
+    try:
+        with gitignore_path.open("a", encoding="utf-8") as fh:
+            fh.write("\n" + _VAULT_GITIGNORE_CONTENT)
+        log.info("Appended Mercer section to existing .gitignore: %s", vault_root)
+        return True
+    except OSError as exc:
+        log.warning("Failed to append to .gitignore: %s: %s", vault_root, exc)
+        return False
