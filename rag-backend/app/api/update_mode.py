@@ -207,6 +207,7 @@ def _build_file_batches(
                                 if i == 0 and ch.action == UpdateModeAction.UPDATE
                                 else None
                             ),
+                            description=ch.description,
                         )
                     )
                 else:
@@ -251,6 +252,7 @@ def _build_file_batches(
                         anchor_value=None,
                         content=last.proposed_content,
                         expected_sha256=None,
+                        # Legacy path: description intentionally left empty
                     )
                 ]
                 # Override action to CREATE so the validator and applier skip
@@ -273,6 +275,7 @@ def _build_file_batches(
                         anchor_value=None,
                         content=last.proposed_content,
                         expected_sha256=None,
+                        # Legacy path: description intentionally left empty
                     )
                 ]
 

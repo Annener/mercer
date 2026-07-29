@@ -145,6 +145,48 @@ def _sort_op(op: UpdateModeFileOp) -> int:
     return _OPERATION_ORDER.get(op.operation, 2)
 
 
+def _build_apply_commit_message(
+    file_batches: list[UpdateModeFileChangeBatch],
+    request: UpdateModeApplyRequest,
+) -> str:
+    """Build a human-readable git commit message for an apply operation.
+
+    Collects unique non-empty descriptions from all ops across all batches
+    (in the order they appear in sorted_batches) and formats them as a
+    bullet list in the commit body.  Duplicate descriptions are deduplicated
+    while preserving first-occurrence order.
+
+    Format with descriptions:
+        update-mode: apply
+
+        - <description 1>
+        - <description 2>
+
+        chat_id=... campaign_id=... apply_id=...
+
+    Format without descriptions (all ops have empty description):
+        update-mode: apply chat_id=... campaign_id=... apply_id=...
+    """
+    seen: set[str] = set()
+    lines: list[str] = []
+    for batch in file_batches:
+        for op in batch.ops:
+            desc = op.description.strip()
+            if desc and desc not in seen:
+                seen.add(desc)
+                lines.append(f"- {desc}")
+
+    ids = (
+        f"chat_id={request.chat_id} "
+        f"campaign_id={request.campaign_id} "
+        f"apply_id={request.apply_id}"
+    )
+    if lines:
+        summary = "\n".join(lines)
+        return f"update-mode: apply\n\n{summary}\n\n{ids}"
+    return f"update-mode: apply {ids}"
+
+
 # ---------------------------------------------------------------------------
 # Apply a single op to the in-memory buffer
 # ---------------------------------------------------------------------------
@@ -388,11 +430,7 @@ async def _apply_vault(
         )
 
     # 8. git apply commit.
-    commit_msg = (
-        f"update-mode: apply chat_id={request.chat_id} "
-        f"campaign_id={request.campaign_id} "
-        f"apply_id={request.apply_id}"
-    )
+    commit_msg = _build_apply_commit_message(sorted_batches, request)
     commit_sha: str | None = None
     try:
         commit_sha = git_apply_commit(
