@@ -52,6 +52,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 db_client,
                 vault["vault_id"],
                 f"{VAULT_DATA_ROOT}/{vault['vault_id']}",
+                git_author_name=vault.get("git_author_name"),
+                git_author_email=vault.get("git_author_email"),
             )
             for vault in vaults
         ]
@@ -111,6 +113,9 @@ async def _rebuild_one_vault(
     db_client: IndexerDBClient,
     vault_id: str,
     vault_path: str,
+    *,
+    git_author_name: str | None = None,
+    git_author_email: str | None = None,
 ) -> None:
     if not os.path.isdir(vault_path):
         logger.warning(
@@ -119,11 +124,22 @@ async def _rebuild_one_vault(
         )
         return
 
-    # --- Git init + .gitignore (best-effort, не блокирует rebuild) ---
+    # --- Git init + .gitignore + initial commit (best-effort, не блокирует rebuild) ---
     try:
-        from app.update_mode.fs_git import git_init_if_needed, ensure_vault_gitignore
+        from app.update_mode.fs_git import (
+            GitIdentity,
+            git_init_if_needed,
+            git_initial_commit,
+            ensure_vault_gitignore,
+        )
 
         vault_root = Path(vault_path)
+
+        # Resolve vault git identity: DB override → env fallback (handled inside git_initial_commit)
+        vault_identity: GitIdentity | None = None
+        if git_author_name and git_author_email:
+            vault_identity = GitIdentity(name=git_author_name, email=git_author_email)
+
         inited = await asyncio.to_thread(git_init_if_needed, vault_root)
         if inited:
             logger.info("git init performed for vault: vault_id=%s", vault_id)
@@ -131,9 +147,18 @@ async def _rebuild_one_vault(
         changed = await asyncio.to_thread(ensure_vault_gitignore, vault_root)
         if changed:
             logger.info(".gitignore created/updated for vault: vault_id=%s", vault_id)
+
+        # Initial commit: stages all existing .md files if no commits yet.
+        # No-op when HEAD already exists.
+        sha = await asyncio.to_thread(git_initial_commit, vault_root, vault_identity)
+        if sha:
+            logger.info(
+                "Initial vault commit created: vault_id=%s sha=%s",
+                vault_id, sha,
+            )
     except Exception:
         logger.warning(
-            "git init / .gitignore setup failed (non-fatal): vault_id=%s",
+            "git init / .gitignore / initial commit failed (non-fatal): vault_id=%s",
             vault_id, exc_info=True,
         )
     # --- конец git init блока ---
@@ -182,7 +207,7 @@ async def list_index_tasks(request: Request) -> dict[str, list[str]]:
 async def cancel_index_task(task_id: str, request: Request) -> dict[str, bool | str]:
     cancelled = await _indexer_service(request).cancel_task(task_id)
     if not cancelled:
-        raise HTTPException(status_code=404, detail="Active task not found")
+        raise HTTPException(status_code=404, detail="Task not found")
     return {"task_id": task_id, "cancelled": True}
 
 
