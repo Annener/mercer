@@ -1122,6 +1122,7 @@ class UpdateModeApplyChange(BaseModel):
     operation: UpdateModeOperation | None = None
     anchor: UpdateModeAnchor | None = None
     op_content: str = ""
+    description: str = ""
 
     @model_validator(mode="after")
     def _validate_sha_policy(self) -> "UpdateModeApplyChange":
@@ -1151,6 +1152,7 @@ class UpdateModeFileOp(BaseModel):
     # Required for ops[0] of UPDATE batches (CAS check before first write).
     # None for all subsequent ops and for CREATE batches.
     expected_sha256: str | None = None
+    description: str = ""             # human-readable description for git commit message
 
 
 class UpdateModeFileChangeBatch(BaseModel):
