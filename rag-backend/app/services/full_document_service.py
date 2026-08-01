@@ -29,6 +29,54 @@ logger = logging.getLogger(__name__)
 # Максимальный размер документа, который можно добавить целиком (в токенах).
 FULL_DOC_TOKEN_LIMIT = 32_000
 
+# ---------------------------------------------------------------------------
+# HTTP client singleton
+# ---------------------------------------------------------------------------
+# Один AsyncClient на весь процесс: TCP keep-alive и connection pool
+# используются повторно между вызовами reconstruct_full_text(), в том числе
+# параллельными (asyncio.gather в Fix #3).
+#
+# Лимиты: max_connections=50 покрывает пик (MAX_DOCS=15) с запасом на
+# параллельные пайплайны других пользователей.
+# keepalive=20 — разумный размер пула для одного upstream (db-api-server).
+
+_http_client: httpx.AsyncClient | None = None
+
+
+def _get_http_client() -> httpx.AsyncClient:
+    """Возвращает module-level singleton AsyncClient, создавая его при первом вызове."""
+    global _http_client
+    if _http_client is None or _http_client.is_closed:
+        _http_client = httpx.AsyncClient(
+            timeout=httpx.Timeout(connect=5.0, read=60.0, write=10.0, pool=5.0),
+            limits=httpx.Limits(
+                max_connections=50,
+                max_keepalive_connections=20,
+                keepalive_expiry=30.0,
+            ),
+        )
+        logger.info("full_document_service: httpx singleton client created")
+    return _http_client
+
+
+async def aclose_http_client() -> None:
+    """Закрыть singleton-клиент при завершении приложения (FastAPI lifespan).
+
+    Пример использования в main.py / lifespan:
+
+        from app.services.full_document_service import aclose_http_client
+
+        @asynccontextmanager
+        async def lifespan(app: FastAPI):
+            yield
+            await aclose_http_client()
+    """
+    global _http_client
+    if _http_client is not None and not _http_client.is_closed:
+        await _http_client.aclose()
+        logger.info("full_document_service: httpx singleton client closed")
+        _http_client = None
+
 
 # ---------------------------------------------------------------------------
 # collect_document_candidates
@@ -129,31 +177,34 @@ async def reconstruct_full_text(
 
     Чанки уже сортированы по chunk_index на стороне lancedb_store — сортировка здесь for safety.
 
+    Использует module-level singleton AsyncClient для переиспользования TCP-соединений
+    (keep-alive pool) между вызовами, в том числе параллельными через asyncio.gather.
+
     Возвращает строку с текстом или None при ошибке.
     """
     url = f"{db_api_url.rstrip('/')}/index/document/{document_id}/chunks"
+    client = _get_http_client()
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            resp = await client.get(url, params={"vault_id": vault_id})
-            resp.raise_for_status()
-            data: dict[str, Any] = resp.json()
-            chunks: list[dict[str, Any]] = data.get("chunks", [])
-            if not chunks:
-                logger.warning(
-                    "reconstruct_full_text: no chunks for doc=%s vault=%s",
-                    document_id, vault_id,
-                )
-                return None
-            # Сортировка for safety: lancedb_store уже сортирует, но защищаемся
-            chunks.sort(key=lambda c: int((c.get("metadata") or {}).get("chunk_index", 0)))
-            text = "\n".join(c.get("text", "") for c in chunks)
-            if not text.strip():
-                logger.warning(
-                    "reconstruct_full_text: empty text after join for doc=%s vault=%s",
-                    document_id, vault_id,
-                )
-                return None
-            return text
+        resp = await client.get(url, params={"vault_id": vault_id})
+        resp.raise_for_status()
+        data: dict[str, Any] = resp.json()
+        chunks: list[dict[str, Any]] = data.get("chunks", [])
+        if not chunks:
+            logger.warning(
+                "reconstruct_full_text: no chunks for doc=%s vault=%s",
+                document_id, vault_id,
+            )
+            return None
+        # Сортировка for safety: lancedb_store уже сортирует, но защищаемся
+        chunks.sort(key=lambda c: int((c.get("metadata") or {}).get("chunk_index", 0)))
+        text = "\n".join(c.get("text", "") for c in chunks)
+        if not text.strip():
+            logger.warning(
+                "reconstruct_full_text: empty text after join for doc=%s vault=%s",
+                document_id, vault_id,
+            )
+            return None
+        return text
     except httpx.HTTPStatusError as exc:
         logger.warning(
             "reconstruct_full_text: HTTP %d for doc=%s vault=%s: %s",
