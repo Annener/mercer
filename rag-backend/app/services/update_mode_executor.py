@@ -193,6 +193,7 @@ async def _build_context_documents(
     ranked_doc_ids: list[str],
     doc_vault_map: dict[str, str],
     doc_meta: dict[str, dict[str, Any]],
+    chat_id: str = "",
 ) -> tuple[list[IndexedContextDocument], list[str]]:
     """Fetch full text for each ranked document, apply per-doc and total token limits.
 
@@ -209,6 +210,10 @@ async def _build_context_documents(
             warnings.append(f"missing_vault_for_document:{doc_id}")
             continue
 
+        logger.info(
+            "update_mode reconstruct_full_text start: chat=%s doc=%s vault=%s",
+            chat_id, doc_id, vault_id,
+        )
         text = await reconstruct_full_text(
             document_id=doc_id,
             vault_id=vault_id,
@@ -220,6 +225,10 @@ async def _build_context_documents(
             continue
 
         estimated_tokens = math.ceil(len(text) / 4)
+        logger.info(
+            "update_mode reconstruct_full_text done: chat=%s doc=%s chars=%d est_tokens=%d",
+            chat_id, doc_id, len(text), estimated_tokens,
+        )
 
         if estimated_tokens > _PER_DOC_TOKEN_LIMIT:
             logger.info(
@@ -577,6 +586,7 @@ class UpdateModeExecutor:
         note: str,
     ) -> UpdateModeSession:
         """Run the full Phase 3 pipeline and return the created session."""
+        logger.info("update_mode start: BEGIN chat=%s", chat_id)
 
         # 1. Guard: existing session?
         existing = await self.store.get(redis, chat_id)
@@ -648,10 +658,19 @@ class UpdateModeExecutor:
             doc_vault_map[did] = row.vault_id
             doc_meta[did] = {"source_path": row.source_path, "title": row.title}
 
+        logger.info(
+            "update_mode start: DB validation done chat=%s allowed_docs=%d vaults=%d",
+            chat_id, len(allowed_doc_ids), len(vault_ids),
+        )
+
         # 7. Semantic retrieval scoped to allowed doc ids and vault_ids from this chat.
         # Reranking is skipped: hits serve only for document-level deduplication,
         # and each selected document is subsequently fetched in full via
         # reconstruct_full_text(). Chunk-level ordering does not affect LLM context.
+        logger.info(
+            "update_mode start: retrieval start chat=%s query_len=%d vaults=%d allowed_docs=%d",
+            chat_id, len(note), len(vault_ids), len(allowed_doc_ids),
+        )
         hits = await retrieve_multi_vault(
             note,
             vault_ids,
@@ -661,6 +680,7 @@ class UpdateModeExecutor:
             db=self.db,
             skip_rerank=True,
         )
+        logger.info("update_mode start: retrieval done chat=%s hits=%d", chat_id, len(hits))
         if not hits:
             raise UpdateModeNoRelevantContextError(str(campaign_uuid))
 
@@ -677,8 +697,16 @@ class UpdateModeExecutor:
                 break
 
         # 8. Reconstruct full text, apply per-doc + total budget limits
+        logger.info(
+            "update_mode start: context reconstruction start chat=%s ranked_docs=%d",
+            chat_id, len(ranked_doc_ids),
+        )
         context_docs, warnings = await _build_context_documents(
-            ranked_doc_ids, doc_vault_map, doc_meta
+            ranked_doc_ids, doc_vault_map, doc_meta, chat_id=chat_id
+        )
+        logger.info(
+            "update_mode start: context reconstruction done chat=%s usable_docs=%d warnings=%d",
+            chat_id, len(context_docs), len(warnings),
         )
         if not context_docs:
             raise UpdateModeNoUsableContextError(str(campaign_uuid))
@@ -699,7 +727,15 @@ class UpdateModeExecutor:
         if provider is None:
             raise UpdateModeGenerationProviderUnavailableError()
 
+        logger.info(
+            "update_mode start: LLM generation start chat=%s context_docs=%d",
+            chat_id, len(context_docs),
+        )
         gen_result = await _generate_intents(provider, note, context_docs, chat_id=chat_id)
+        logger.info(
+            "update_mode start: LLM generation done chat=%s intents=%d",
+            chat_id, len(gen_result.intents),
+        )
 
         # Empty intents → no-change session
         if not gen_result.intents:
@@ -727,7 +763,13 @@ class UpdateModeExecutor:
                 created_at=now,
                 expires_at=session_expires_at,
             )
+            logger.info("update_mode start: session store start chat=%s", chat_id)
             await self._store_session(redis, session)
+            logger.info(
+                "update_mode start: session store done chat=%s session_id=%s",
+                chat_id, session.session_id,
+            )
+            logger.info("update_mode start: DONE chat=%s", chat_id)
             return session
 
         # 10. Domain validation of intents (doc membership + vault membership + duplicates)
@@ -749,12 +791,20 @@ class UpdateModeExecutor:
             default_vault_id=default_vault_id,
             candidate_document_ids=usable_doc_ids_list,
         )
+        logger.info(
+            "update_mode start: indexer resolve start chat=%s intents=%d",
+            chat_id, len(gen_result.intents),
+        )
         try:
             resolve_resp: UpdateModeResolveResponse = await self.indexer_client.resolve(resolve_req)
         except IndexerUnavailableError as exc:
             raise UpdateModeIndexerUnavailableError(exc.detail) from exc
         except Exception as exc:
             raise UpdateModeIndexerInvalidResponseError(str(exc)) from exc
+        logger.info(
+            "update_mode start: indexer resolve done chat=%s changes=%d",
+            chat_id, len(resolve_resp.changes),
+        )
 
         # 12. Create Redis session
         # Fix 4: compute now immediately before session construction — no await in between
@@ -774,7 +824,13 @@ class UpdateModeExecutor:
             created_at=now,
             expires_at=session_expires_at,
         )
+        logger.info("update_mode start: session store start chat=%s", chat_id)
         await self._store_session(redis, session)
+        logger.info(
+            "update_mode start: session store done chat=%s session_id=%s",
+            chat_id, session.session_id,
+        )
+        logger.info("update_mode start: DONE chat=%s", chat_id)
         return session
 
     async def _store_session(self, redis: Any, session: UpdateModeSession) -> None:
