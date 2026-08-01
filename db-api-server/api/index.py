@@ -49,8 +49,10 @@ async def search_index(req: SearchRequest, request: Request) -> SearchResponse:
         "HTTP /search vault='%s' top_k=%d filter=%s",
         req.vault_id, req.top_k, req.filter or "none",
     )
+    store = _store(request)
     try:
-        return _store(request).search(req)
+        # LanceDB vector search is synchronous — offload to thread pool.
+        return await asyncio.to_thread(store.search, req)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -61,7 +63,11 @@ async def delete_document(
     request: Request,
     vault_id: str = Query(..., min_length=1),
 ) -> dict[str, int | str]:
-    deleted_count = _store(request).delete_document(vault_id=vault_id, document_id=document_id)
+    store = _store(request)
+    # delete_document calls count_rows() twice + table.delete() — all synchronous.
+    deleted_count = await asyncio.to_thread(
+        store.delete_document, vault_id=vault_id, document_id=document_id
+    )
     return {"status": "ok", "deleted_count": deleted_count}
 
 
@@ -73,7 +79,12 @@ async def list_documents(
     offset: int = Query(default=0, ge=0),
     order_by: str = Query(default="document_id"),
 ) -> DocumentsResponse:
-    documents = _store(request).list_documents(vault_id=vault_id, limit=limit, offset=offset, order_by=order_by)
+    store = _store(request)
+    # list_documents calls _all_rows() = table.to_arrow().to_pylist() — blocking.
+    documents = await asyncio.to_thread(
+        store.list_documents,
+        vault_id=vault_id, limit=limit, offset=offset, order_by=order_by,
+    )
     return DocumentsResponse(documents=documents)
 
 
@@ -83,7 +94,14 @@ async def get_document_chunks(
     request: Request,
     vault_id: str = Query(..., min_length=1),
 ) -> ChunksResponse:
-    return ChunksResponse(chunks=_store(request).get_document_chunks(vault_id=vault_id, document_id=document_id))
+    store = _store(request)
+    # LanceDB .search().where() and .to_list() are synchronous — offload to thread
+    # pool so parallel gather() calls from rag-backend don't serialize on this loop.
+    # This is the prerequisite for Fix #3 (asyncio.gather in _build_context_documents).
+    chunks = await asyncio.to_thread(
+        store.get_document_chunks, vault_id=vault_id, document_id=document_id
+    )
+    return ChunksResponse(chunks=chunks)
 
 
 @router.post("/search/text", response_model=TextSearchResponse)
@@ -92,12 +110,17 @@ async def text_search(req: TextSearchRequest, request: Request) -> TextSearchRes
         "HTTP /search/text vault='%s' query='%s' limit=%d",
         req.vault_id, req.query_text, req.limit,
     )
-    return TextSearchResponse(results=_store(request).text_search(req.vault_id, req.query_text, req.limit))
+    store = _store(request)
+    # FTS search and substring fallback are both synchronous.
+    results = await asyncio.to_thread(store.text_search, req.vault_id, req.query_text, req.limit)
+    return TextSearchResponse(results=results)
 
 
 @router.delete("/vault/{vault_id}")
 async def delete_vault(vault_id: str, request: Request) -> dict[str, int | str]:
-    deleted_count = _store(request).delete_vault(vault_id)
+    store = _store(request)
+    # drop_table is synchronous.
+    deleted_count = await asyncio.to_thread(store.delete_vault, vault_id)
     return {"status": "ok", "deleted_count": deleted_count}
 
 
