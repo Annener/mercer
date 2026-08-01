@@ -4,12 +4,15 @@ Orchestrates the full /start pipeline:
   1. Guard: check no existing Redis session
   2. DB validation: chat → campaign → domain invariant → tags → vaults → .md docs
   3. Semantic retrieval scoped to vault_ids from chat domain (fresh DB read)
-  4. Rerank hits (same reranker as chat flow)
-  5. Reconstruct full indexed text per document (16k token limit, 64k total)
-  6. Build LLM prompt → generate → validate UpdateModeGenerationResult
-  7. Domain validation of intents (document_id membership, vault membership, duplicates, limits)
-  8. UpdateModeResolveRequest → indexer_client.resolve()
-  9. UpdateModeSession → update_mode_store.create()
+  4. Reconstruct full indexed text per document (16k token limit, 64k total)
+  5. Build LLM prompt → generate → validate UpdateModeGenerationResult
+  6. Domain validation of intents (document_id membership, vault membership, duplicates, limits)
+  7. UpdateModeResolveRequest → indexer_client.resolve()
+  8. UpdateModeSession → update_mode_store.create()
+
+Reranking is intentionally skipped in this mode: hits are used only to
+deduplicate document IDs, after which each document is fetched in full.
+Chunk-level relevance ordering has no effect on the final LLM context.
 
 This executor never reads raw vault files, never builds diffs, never touches git.
 All file-system work belongs to rag-indexer.
@@ -30,7 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import Campaign, Chat, Document, DocumentLabel, Tag, Vault
 from app.services.full_document_service import reconstruct_full_text
 from app.services.indexer_client import IndexerClient, IndexerUnavailableError
-from app.services.retrieval import rerank_hits, retrieve_multi_vault
+from app.services.retrieval import retrieve_multi_vault
 from app.services.settings_service import settings_service
 from app.services.update_mode_store import SESSION_TTL_SECONDS, SessionAlreadyActiveError, UpdateModeStore
 from shared_contracts.models import (
@@ -344,7 +347,7 @@ Each intent object schema:
   "operation": "append_after_section" | "append_to_file" | "replace_unique_text" | "create_file" | "delete_section" | "delete_unique_text",
   "anchor": {"kind": "markdown_heading" | "exact_text", "value": "..."},  // null when not needed; required for delete ops
   "suggested_filename": "<filename.md for create action, null for update>",
-  "content": "<markdown content to write, or empty string \"\" for delete operations>"
+  "content": "<markdown content to write, or empty string \\\"\\\" for delete operations>"
 }"""
 
 
@@ -645,7 +648,10 @@ class UpdateModeExecutor:
             doc_vault_map[did] = row.vault_id
             doc_meta[did] = {"source_path": row.source_path, "title": row.title}
 
-        # 7. Semantic retrieval scoped to allowed doc ids and vault_ids from this chat
+        # 7. Semantic retrieval scoped to allowed doc ids and vault_ids from this chat.
+        # Reranking is skipped: hits serve only for document-level deduplication,
+        # and each selected document is subsequently fetched in full via
+        # reconstruct_full_text(). Chunk-level ordering does not affect LLM context.
         hits = await retrieve_multi_vault(
             note,
             vault_ids,
@@ -653,18 +659,10 @@ class UpdateModeExecutor:
             top_k=_RETRIEVAL_TOP_K,
             strategy="hybrid",
             db=self.db,
+            skip_rerank=True,
         )
         if not hits:
             raise UpdateModeNoRelevantContextError(str(campaign_uuid))
-
-        # Rerank hits via the same reranker used in chat flow
-        try:
-            hits = await rerank_hits(note, hits, self.db)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "update_mode start: rerank_hits failed for chat=%s, falling back to retrieval order: %s",
-                chat_id, exc,
-            )
 
         # Deduplicate doc IDs preserving ranked order, cap at _MAX_DOCS
         allowed_set = set(allowed_doc_ids)
