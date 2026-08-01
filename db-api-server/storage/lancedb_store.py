@@ -204,14 +204,47 @@ class LanceDBStore:
         return [DocumentRecord.model_validate(row) for row in rows[offset : offset + limit]]
 
     def get_document_chunks(self, vault_id: str, document_id: str) -> list[ChunkRecord]:
+        """Return all chunks for *document_id* using a pushdown filter.
+
+        LanceDB supports scalar-column filters via .search().where() with
+        prefilter=True, which avoids loading the whole table into Python.
+        This replaces the previous O(N) _all_rows() + Python-loop pattern
+        that scanned the entire vault table for every document.
+
+        Fallback to _all_rows() is preserved in case the installed LanceDB
+        version does not support the prefilter path (older builds raise
+        AttributeError or TypeError on the where() call).
+        """
         if not self._table_exists(vault_id):
             return []
 
-        chunks: list[ChunkRecord] = []
-        for row in self._all_rows(vault_id):
-            if str(row["document_id"]) != document_id:
-                continue
-            chunks.append(_chunk_record(vault_id, row))
+        table = self._open_table(vault_id)
+        escaped = _escape_sql_literal(document_id)
+        sql_filter = f"document_id = '{escaped}'"
+
+        try:
+            rows = (
+                table.search()
+                .where(sql_filter, prefilter=True)
+                .to_list()
+            )
+            logger.debug(
+                "get_document_chunks: pushdown vault=%s doc=%s rows=%d",
+                vault_id, document_id, len(rows),
+            )
+        except Exception:
+            # Fallback: LanceDB version does not support prefilter path.
+            logger.warning(
+                "get_document_chunks: prefilter query failed for vault=%s doc=%s, "
+                "falling back to full table scan",
+                vault_id, document_id, exc_info=True,
+            )
+            rows = [
+                row for row in self._all_rows(vault_id)
+                if str(row["document_id"]) == document_id
+            ]
+
+        chunks = [_chunk_record(vault_id, row) for row in rows]
         chunks.sort(key=lambda chunk: int(chunk.metadata.get("chunk_index", 0)))
         return chunks
 
