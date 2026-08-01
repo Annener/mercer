@@ -19,6 +19,7 @@ All file-system work belongs to rag-indexer.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 import os
@@ -195,32 +196,76 @@ async def _build_context_documents(
     doc_meta: dict[str, dict[str, Any]],
     chat_id: str = "",
 ) -> tuple[list[IndexedContextDocument], list[str]]:
-    """Fetch full text for each ranked document, apply per-doc and total token limits.
+    """Fetch full text for each ranked document in parallel, apply per-doc and total token limits.
+
+    All reconstruct_full_text() calls are fanned out concurrently via
+    asyncio.gather(return_exceptions=True). A single failed fetch does not
+    cancel sibling fetches. Exceptions are treated the same as a None return:
+    logged as warnings and added to the warnings list.
+
+    Token budget is applied in ranked order (ranked_doc_ids order) so the
+    most relevant documents are preferred when the budget is tight.
 
     Returns (usable_docs, warnings).
     """
     usable: list[IndexedContextDocument] = []
     warnings: list[str] = []
-    total_tokens = 0
 
+    # --- fast-path vault validation (no I/O) ---
+    # Separate docs with a known vault from those without, before any I/O.
+    valid_ids: list[str] = []
     for doc_id in ranked_doc_ids:
-        vault_id = doc_vault_map.get(doc_id)
-        if vault_id is None:
-            logger.warning("_build_context_documents: no vault_id for doc=%s, skipping", doc_id)
+        if doc_vault_map.get(doc_id) is None:
+            logger.warning(
+                "_build_context_documents: no vault_id for doc=%s, skipping", doc_id
+            )
             warnings.append(f"missing_vault_for_document:{doc_id}")
-            continue
+        else:
+            valid_ids.append(doc_id)
 
+    if not valid_ids:
+        return usable, warnings
+
+    # --- parallel fetch ---
+    # Log per-doc start *before* gather so timestamps are useful for diagnostics.
+    for doc_id in valid_ids:
+        vault_id = doc_vault_map[doc_id]
         logger.info(
             "update_mode reconstruct_full_text start: chat=%s doc=%s vault=%s",
             chat_id, doc_id, vault_id,
         )
-        text = await reconstruct_full_text(
-            document_id=doc_id,
-            vault_id=vault_id,
-            db_api_url=_DB_API_URL,
-        )
+
+    fetch_results: list[str | None | BaseException] = await asyncio.gather(
+        *[
+            reconstruct_full_text(
+                document_id=doc_id,
+                vault_id=doc_vault_map[doc_id],
+                db_api_url=_DB_API_URL,
+            )
+            for doc_id in valid_ids
+        ],
+        return_exceptions=True,
+    )
+
+    # --- post-fetch: apply token limits in ranked order ---
+    total_tokens = 0
+    for doc_id, result in zip(valid_ids, fetch_results):
+        vault_id = doc_vault_map[doc_id]
+
+        # Handle exception from a single failed fetch
+        if isinstance(result, BaseException):
+            logger.warning(
+                "_build_context_documents: fetch raised for doc=%s vault=%s: %s",
+                doc_id, vault_id, result,
+            )
+            warnings.append(f"reconstruction_failed:{doc_id}")
+            continue
+
+        text: str | None = result
         if not text:
-            logger.warning("_build_context_documents: empty reconstruction for doc=%s", doc_id)
+            logger.warning(
+                "_build_context_documents: empty reconstruction for doc=%s", doc_id
+            )
             warnings.append(f"reconstruction_failed:{doc_id}")
             continue
 
@@ -696,7 +741,7 @@ class UpdateModeExecutor:
             if len(ranked_doc_ids) >= _MAX_DOCS:
                 break
 
-        # 8. Reconstruct full text, apply per-doc + total budget limits
+        # 8. Reconstruct full text in parallel, apply per-doc + total budget limits
         logger.info(
             "update_mode start: context reconstruction start chat=%s ranked_docs=%d",
             chat_id, len(ranked_doc_ids),
