@@ -682,12 +682,26 @@ function _buildPanel(chatId, initialSession) {
             _applying = false;              // BUG-1 fix: reset flag on success path
             // FIX: сброс _applying перед ранним выходом, иначе панель окажется заблокирована
             if (!panel.isConnected) { _applying = false; return; }
+            // FIX(BUG-14-success): чистим серверную сессию сразу после успешного apply.
+            // Раньше сессия жила до TTL (3h) или до ручной отмены — повторное открытие
+            // окна подцепляло её через _restoreUpdateModeSession и требовало
+            // ручного нажатия «Отмена» перед стартом нового обновления.
+            UpdateModeLifecycle.clearSession(chatId, 'apply_done');
             state = 'result';
             render();
         } catch (err) {
             _applying = false;
             // FIX: сброс _applying перед ранним выходом при ошибке
             if (!panel.isConnected) { _applying = false; return; }
+            // FIX(BUG-14-failure): при большинстве ошибок apply чистим сессию тоже —
+            // пользователь начнёт новый цикл, а старая сессия ему только мешает.
+            // Исключения: apply_in_progress / apply_already_started — там работает
+            // параллельная сессия и удалять чужую сессию нельзя.
+            const code = err && err.code;
+            const shouldClear = !code || (code !== 'apply_in_progress' && code !== 'apply_already_started');
+            if (shouldClear) {
+                UpdateModeLifecycle.clearSession(chatId, 'apply_error');
+            }
             _showError(_umErrorMsg(err));
         }
     }
