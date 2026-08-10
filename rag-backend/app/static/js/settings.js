@@ -206,7 +206,7 @@ class SettingsManager {
         if (action === 'new-pipeline') {
             await this.showPipelineModal();
         } else if (action === 'edit-pipeline') {
-            await this.showPipelineModal(id);
+            await this.showPipelineEditModal(id);
         } else if (action === 'activate-pipeline') {
             try {
                 await this.api.activatePipeline(id);

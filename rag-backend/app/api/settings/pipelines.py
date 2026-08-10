@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Campaign, Domain, Pipeline, Tag
 from app.db.session import get_db
-from .helpers import _get_pipeline_by_uuid, _increment_patch, pipeline_dict
+from .helpers import _get_pipeline_by_uuid, pipeline_dict
 from .schemas import PipelineCreateRequest, PipelineUpdateRequest
 
 router = APIRouter()
@@ -97,39 +97,49 @@ async def create_pipeline(req: PipelineCreateRequest, db: AsyncSession = Depends
 
 @router.put("/pipelines/{pipeline_uuid}")
 async def update_pipeline(
-    pipeline_uuid: str, req: PipelineUpdateRequest, db: AsyncSession = Depends(get_db),
+    pipeline_uuid: str,
+    req: PipelineUpdateRequest,
+    db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
+    """Редактирование существующего pipeline in-place.
+
+    Не создаёт новую запись, не инкрементирует version, не деактивирует
+    однофамильцев по pipeline_id — это было бы поведение "создать новую
+    версию", что противоречит UX-ожиданию "отредактировать существующий pipeline".
+
+    Меняет только поля, явно пришедшие в payload (exclude_unset=True).
+    UUID записи не меняется.
+    """
     pipeline = await _get_pipeline_by_uuid(pipeline_uuid, db)
     payload = req.model_dump(exclude_unset=True)
-    steps = payload.get("steps", pipeline.steps)
-    final_composition = payload.get("final_composition", pipeline.final_composition)
 
     # step-6: cross-domain валидация при обновлении campaign_id
     # effective_domain_id — домен который будет у пайплайна после обновления
     effective_domain_id = payload.get("domain_id", pipeline.domain_id)
-    new_campaign_id: uuid.UUID | None = payload.get("campaign_id", None)
-    if "campaign_id" in payload and new_campaign_id is not None:
-        await _check_campaign_domain(new_campaign_id, effective_domain_id, db)
+    if "campaign_id" in payload and payload["campaign_id"] is not None:
+        await _check_campaign_domain(
+            payload["campaign_id"],
+            effective_domain_id,
+            db,
+        )
 
     # Валидация шагов выполняется Pydantic (PipelineStep + FinalComposition из shared_contracts).
     # _validate_pipeline_json удалён — он проверял старое поле 'order' (pre-DAG схема).
-    new_version = _increment_patch(pipeline.version)
-    await db.execute(update(Pipeline).where(Pipeline.pipeline_id == pipeline.pipeline_id).values(is_active=False))
-    new_pipeline = Pipeline(
-        pipeline_id=pipeline.pipeline_id,
-        domain_id=effective_domain_id,
-        campaign_id=new_campaign_id if "campaign_id" in payload else pipeline.campaign_id,
-        version=new_version,
-        name=payload.get("name", pipeline.name),
-        description=payload.get("description", pipeline.description),
-        steps=steps,
-        final_composition=final_composition,
-        is_active=payload.get("is_active", True),
-    )
-    db.add(new_pipeline)
+    for field in (
+        "domain_id",
+        "campaign_id",
+        "name",
+        "description",
+        "steps",
+        "final_composition",
+        "is_active",
+    ):
+        if field in payload:
+            setattr(pipeline, field, payload[field])
+
     await db.commit()
-    await db.refresh(new_pipeline)
-    return pipeline_dict(new_pipeline)
+    await db.refresh(pipeline)
+    return pipeline_dict(pipeline)
 
 
 @router.delete("/pipelines/{pipeline_uuid}", status_code=status.HTTP_204_NO_CONTENT)
