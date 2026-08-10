@@ -241,6 +241,11 @@ class SettingsManager {
             } catch (e) { alert('Ошибка: ' + e.message); }
         } else if (action === 'activate-gen') {
             try {
+                // Кнопка "Активировать" совмещает enable + activate:
+                // если модель выключена — сначала включаем, потом активируем.
+                if (btn?.dataset.enabled === 'false') {
+                    await this.api.updateGenerationModel(id, { enabled: true });
+                }
                 await this.api.setActiveGenerationModel(id);
                 await this.loadTab('models');
             } catch (e) { alert('Ошибка активации: ' + e.message); }
@@ -249,11 +254,6 @@ class SettingsManager {
                 await this.api.deactivateGenerationModel(id);
                 await this.loadTab('models');
             } catch (e) { alert('Ошибка деактивации: ' + e.message); }
-        } else if (action === 'toggle-gen') {
-            try {
-                await this.api.toggleGenerationModel(id);
-                await this.loadTab('models');
-            } catch (e) { alert('Ошибка переключения: ' + e.message); }
         } else if (action === 'check-gen') {
             try {
                 const result = await this.api.checkGenerationModel(id);
@@ -295,14 +295,19 @@ class SettingsManager {
         } else if (action === 'edit-rerank') {
             await this.showRerankModelModal(id);
         } else if (action === 'delete-rerank') {
-            if (!confirm('Удалить модель?')) return;
+            if (!confirm(`Удалить reranker-модель «${id}»?`)) return;
             try {
                 await this.api.deleteRerankModel(id);
                 await this.loadTab('models');
-            } catch (e) { alert('Ошибка: ' + e.message); }
+            } catch (e) { alert('Ошибка удаления: ' + e.message); }
         } else if (action === 'activate-rerank') {
             try {
-                await this.api.setActiveRerankModel(id);
+                // Кнопка "Активировать" совмещает enable + activate:
+                // если модель выключена — сначала включаем, потом активируем.
+                if (btn?.dataset.enabled === 'false') {
+                    await this.api.updateRerankModel(id, { enabled: true });
+                }
+                await this.api.activateRerankModel(id);
                 await this.loadTab('models');
             } catch (e) { alert('Ошибка активации: ' + e.message); }
         } else if (action === 'deactivate-rerank') {
@@ -310,16 +315,11 @@ class SettingsManager {
                 await this.api.deactivateRerankModel(id);
                 await this.loadTab('models');
             } catch (e) { alert('Ошибка деактивации: ' + e.message); }
-        } else if (action === 'toggle-rerank') {
-            try {
-                await this.api.toggleRerankModel(id);
-                await this.loadTab('models');
-            } catch (e) { alert('Ошибка переключения: ' + e.message); }
         } else if (action === 'check-rerank') {
             try {
                 const result = await this.api.checkRerankModel(id);
                 alert(result.ok
-                    ? `✅ Reranker доступен (${result.latency_ms} мс)`
+                    ? `✅ Модель доступна (${result.latency_ms} мс)`
                     : `❌ Ошибка: ${result.error}`);
             } catch (e) { alert('Ошибка проверки: ' + e.message); }
         }

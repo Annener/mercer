@@ -23,6 +23,7 @@ const ModelsTabMixin = {
                     data-action="${this.escapeHtml(item.action)}"
                     data-id="${this.escapeHtml(config.id)}"
                     data-model-type="${this.escapeHtml(config.modelType)}"
+                    data-enabled="${config.isEnabled ? 'true' : 'false'}"
                     ${item.disabled ? 'disabled' : ''}>
                 ${item.label}
             </button>`).join('');
@@ -104,8 +105,7 @@ const ModelsTabMixin = {
                 { action: 'check-gen',      label: '🔍 Проверить' },
                 isActive
                     ? { action: 'deactivate-gen', label: '⏸️ Деактивировать' }
-                    : { action: 'activate-gen',   label: '▶️ Активировать', disabled: !isEnabled },
-                { action: 'toggle-gen',     label: isEnabled ? '🔴 Выключить' : '🟢 Включить' },
+                    : { action: 'activate-gen',   label: '▶️ Активировать' },
                 { action: 'delete-gen',     label: '🗑️ Удалить', danger: true, disabled: isActive },
             ],
         };
@@ -185,8 +185,7 @@ const ModelsTabMixin = {
                 { action: 'check-rerank',  label: '🔍 Проверить' },
                 isActive
                     ? { action: 'deactivate-rerank', label: '⏸️ Деактивировать' }
-                    : { action: 'activate-rerank',   label: '▶️ Активировать', disabled: !isEnabled },
-                { action: 'toggle-rerank', label: isEnabled ? '🔴 Выключить' : '🟢 Включить' },
+                    : { action: 'activate-rerank',   label: '▶️ Активировать' },
                 { action: 'delete-rerank', label: '🗑️ Удалить', danger: true, disabled: isActive },
             ],
         };

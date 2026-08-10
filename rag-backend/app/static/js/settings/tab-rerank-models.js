@@ -18,6 +18,11 @@ const RerankModelsTabMixin = {
 
         } else if (action === 'activate-rerank') {
             try {
+                // Кнопка "Активировать" совмещает enable + activate:
+                // если модель выключена — сначала включаем, потом активируем.
+                if (btn?.dataset.enabled === 'false') {
+                    await this.api.updateRerankModel(id, { enabled: true });
+                }
                 await this.api.activateRerankModel(id);
                 await this.loadTab('models');
             } catch (e) { alert('Ошибка активации: ' + e.message); }
