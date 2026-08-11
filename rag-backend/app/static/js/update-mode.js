@@ -680,19 +680,19 @@ function _buildPanel(chatId, initialSession) {
         try {
             applyResult = await chatAPI.updateModeApply(chatId);
             _applying = false;              // BUG-1 fix: reset flag on success path
-            // FIX: сброс _applying перед ранним выходом, иначе панель окажется заблокирована
-            if (!panel.isConnected) { _applying = false; return; }
-            // FIX(BUG-14-success): чистим серверную сессию сразу после успешного apply.
-            // Раньше сессия жила до TTL (3h) или до ручной отмены — повторное открытие
-            // окна подцепляло её через _restoreUpdateModeSession и требовало
-            // ручного нажатия «Отмена» перед стартом нового обновления.
-            UpdateModeLifecycle.clearSession(chatId, 'apply_done');
+            // BUG-APPLY1 fix: переход в state='result' ДО guard'а isConnected.
+            // Прежний код делал early-return при !isConnected, оставляя state='applying'
+            // и спиннер «Применение изменений…» на экране, даже если apply уже прошёл.
+            // Теперь финальный state ставится всегда; guard остался только для
+            // невозможной ветки (панель уже удалена из DOM кем-то другим).
             state = 'result';
+            UpdateModeLifecycle.clearSession(chatId, 'apply_done');
+            if (!panel.isConnected) { return; }
             render();
         } catch (err) {
             _applying = false;
             // FIX: сброс _applying перед ранним выходом при ошибке
-            if (!panel.isConnected) { _applying = false; return; }
+            if (!panel.isConnected) { return; }
             // FIX(BUG-14-failure): при большинстве ошибок apply чистим сессию тоже —
             // пользователь начнёт новый цикл, а старая сессия ему только мешает.
             // Исключения: apply_in_progress / apply_already_started — там работает
