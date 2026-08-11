@@ -110,6 +110,9 @@ const PipelineBuilder = (() => {
       output_format:   s.output_format || 'text',
       validation_prompt: s.validation_prompt || null,
       options:         s.options || null,
+      // send_full_document — новое поле (Этап 10). Старый формат его не имел,
+      // по умолчанию false.
+      send_full_document: s.send_full_document ?? false,
     }));
   }
 
@@ -471,6 +474,16 @@ const PipelineBuilder = (() => {
             ${tagOptions || '<option disabled>Теги не найдены</option>'}
           </select>
         </div>
+        <div class="form-group">
+          <label class="pb-checkbox-label">
+            <input type="checkbox" id="pbs-send-full-doc"
+              ${step.send_full_document ? 'checked' : ''}>
+            <span class="pb-checkbox-text">
+              <span>Отправить весь контекст из источника</span>
+              <span class="pb-hint">Загрузить полный текст документов вместо top-k чанков (для небольших файлов)</span>
+            </span>
+          </label>
+        </div>
       </div>
 
       <div id="pbs-validation-fields" ${!isValidation ? 'style="display:none"' : ''}>
@@ -535,7 +548,7 @@ const PipelineBuilder = (() => {
     });
 
     ['#pbs-role','#pbs-topk','#pbs-outfmt','#pbs-after','#pbs-tags',
-     '#pbs-prompt','#pbs-val-prompt','#pbs-options'].forEach(sel => {
+     '#pbs-prompt','#pbs-val-prompt','#pbs-options','#pbs-send-full-doc'].forEach(sel => {
       q(sel)?.addEventListener('change', () => _syncStepFromSidebar(step));
     });
     ['#pbs-prompt','#pbs-val-prompt','#pbs-options'].forEach(sel => {
@@ -576,6 +589,9 @@ const PipelineBuilder = (() => {
     step.validation_prompt = q('#pbs-val-prompt')?.value?.trim() || null;
     const optTxt = q('#pbs-options')?.value?.trim();
     step.options = optTxt ? optTxt.split('\n').map(s => s.trim()).filter(Boolean) : null;
+    // send_full_document: bool, default false. Игнорируется для type=validation
+    // (валидация в PipelineStep._validate_step).
+    step.send_full_document = !!q('#pbs-send-full-doc')?.checked;
   }
 
   function _refreshNodeColor(step) {
@@ -603,6 +619,7 @@ const PipelineBuilder = (() => {
       system_prompt: '', after_step_ids: [],
       top_k: null, tag_ids: [], role: 'rules',
       output_format: 'text', validation_prompt: null, options: null,
+      send_full_document: false,
     };
     _steps.push(newStep);
     _addNodeForStep(newStep);
@@ -618,6 +635,7 @@ const PipelineBuilder = (() => {
       system_prompt: '', after_step_ids: [parentId],
       top_k: null, tag_ids: [], role: 'rules',
       output_format: 'text', validation_prompt: null, options: null,
+      send_full_document: false,
     };
     _steps.push(newStep);
     _addNodeForStep(newStep);
@@ -753,6 +771,8 @@ const PipelineBuilder = (() => {
         base.tag_ids       = s.tag_ids || [];
         base.role          = s.role    || null;
         base.output_format = s.output_format || 'text';
+        // send_full_document — новое поле Этапа 10 (полный документ вместо top-k).
+        base.send_full_document = s.send_full_document ?? false;
       } else {
         base.validation_prompt = s.validation_prompt || null;
         base.options           = s.options           || null;
@@ -932,6 +952,19 @@ const PipelineBuilder = (() => {
                  text-transform: none; letter-spacing: 0; margin-left: 0.35rem; }
       .pb-textarea    { min-height: 90px; resize: vertical; font-family: monospace; font-size: 0.83rem; }
       .pb-textarea-sm { min-height: 56px; resize: vertical; font-family: monospace; font-size: 0.81rem; }
+      .pb-checkbox-label {
+        display: flex; align-items: flex-start; gap: 0.5rem;
+        font-size: 0.85rem; font-weight: 500;
+        color: var(--color-text,#222);
+        cursor: pointer;
+        padding: 0.35rem 0;
+      }
+      .pb-checkbox-label input[type="checkbox"] {
+        margin-top: 0.15rem; flex-shrink: 0; cursor: pointer;
+      }
+      .pb-checkbox-text {
+        display: flex; flex-direction: column; gap: 0.15rem;
+      }
       .btn-danger { background: var(--color-error-highlight,#fdecea); color: var(--color-error,#a12c7b); border: 1px solid var(--color-error,#a12c7b); }
       .btn-danger:hover { background: var(--color-error,#a12c7b); color: #fff; }
     `;

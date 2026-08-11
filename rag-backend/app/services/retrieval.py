@@ -25,8 +25,9 @@ STORAGE_API_URL = os.getenv("STORAGE_API_URL", "http://db-api-server:8080")
 # приводит к таймаутам. Значение можно переопределить через env RERANK_OLLAMA_CONCURRENCY.
 _RERANK_OLLAMA_CONCURRENCY = int(os.getenv("RERANK_OLLAMA_CONCURRENCY", "1"))
 
-# Максимум токенов для ответа реранкера. Нужно только "yes"/"no" — хватит 32.
-# Без ограничения Qwen3-Reranker уходит в бесконечный <think>...</think> и зависает.
+# Максимум токенов для ответа реранкера. Нужно только "yes"/
+
+... и зависает.
 _RERANK_OLLAMA_NUM_PREDICT = int(os.getenv("RERANK_OLLAMA_NUM_PREDICT", "32"))
 
 # Количество чанков, возвращаемых retrieve() по умолчанию.
@@ -141,6 +142,57 @@ async def get_document_ids_by_tags(
     )
     result = await db.execute(stmt)
     return [str(row) for row in result.scalars().all()]
+
+
+async def get_documents_by_tag(
+    tag_ids: list[str],
+    domain_id: str,
+    db: AsyncSession,
+) -> list[dict[str, Any]]:
+    """
+    OR-логика: документ попадает если имеет хотя бы один из тегов.
+    Только документы со status='indexed'.
+    Документы ищутся через Vault.domain_id — т.е. по всем Vault'ам домена.
+    Если tag_ids пустой -> вернуть [] без запроса к БД.
+
+    Возвращает список dict с полями:
+        document_id: str
+        vault_id:    str
+        source_path: str
+        title:       str | None
+
+    Используется в pipeline_executor для режима send_full_document — там, помимо id,
+    нужны vault_id (для reconstruct_full_text) и source_path/title (для логов и UI).
+    """
+    if not tag_ids:
+        return []
+    stmt = (
+        select(
+            Document.id,
+            Document.vault_id,
+            Document.source_path,
+            Document.title,
+        )
+        .join(DocumentLabel, DocumentLabel.document_id == Document.id)
+        .join(Vault, Vault.vault_id == Document.vault_id)
+        .where(
+            Vault.domain_id == domain_id,
+            Vault.enabled == True,
+            Document.status == "indexed",
+            DocumentLabel.tag_id.in_([uuid.UUID(t) for t in tag_ids]),
+        )
+        .distinct()
+    )
+    result = await db.execute(stmt)
+    return [
+        {
+            "document_id": str(row.id),
+            "vault_id": row.vault_id,
+            "source_path": row.source_path,
+            "title": row.title,
+        }
+        for row in result.all()
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -615,16 +667,16 @@ def _score_from_response_text(response_text: str) -> float:
     Извлекает relevance score из текстового ответа Ollama.
 
     Qwen3-Reranker и другие instruct-модели могут генерировать цепочку
-    рассуждений (<think>...</think>) перед финальным ответом.
+    рассуждений (...) перед финальным ответом.
     Поэтому ищем yes/no в КОНЦЕ текста, а не в начале.
 
     Логика:
-    1. Убираем <think>...</think> блоки если есть.
+    1. Убираем ... блоки если есть.
     2. Берём последнее непустое слово очищенного текста.
     3. yes-like -> 1.0, no-like -> 0.0, иначе 0.5 (нейтральный fallback).
     """
     # Убираем thinking-блоки
-    cleaned = re.sub(r"<think>.*?</think>", "", response_text, flags=re.DOTALL)
+    cleaned = re.sub(r".*?", "", response_text, flags=re.DOTALL)
     # Берём последний токен (слово) из очищенного ответа
     tokens = cleaned.strip().split()
     last_token = tokens[-1].strip(".,!?;:") if tokens else ""
@@ -659,7 +711,7 @@ async def _rerank_single_ollama(
     По умолчанию concurrency=1 (строго последовательно).
 
     num_predict ограничивает длину ответа: без него Qwen3-Reranker уходит в
-    бесконечный <think>...</think> блок.
+    бесконечный ... блок.
     """
     prompt = _OLLAMA_RERANK_PROMPT_TEMPLATE.format(
         query=query,
@@ -734,7 +786,7 @@ async def rerank_hits(
     db: AsyncSession,
 ) -> list[SearchHit]:
     """
-    Переранжирует hits с помощью активной reranker-модели.
+    Переранживает hits с помощью активной reranker-модели.
     Если активной модели нет, enabled=False или список пуст — возвращает hits без изменений.
     """
     logger.info("RERANK_HITS start: query='%s' hits=%d", query, len(hits))

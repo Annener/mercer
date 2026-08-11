@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import os
 import secrets
 import uuid
@@ -12,11 +13,13 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Chat
+from app.services.full_document_service import reconstruct_full_text
 from app.services.pipeline_dag import get_execution_levels
 from app.services.query_rewriter import query_rewriter
 from app.services.retrieval import (
     format_context_with_role,
     get_document_ids_by_tags,
+    get_documents_by_tag,
     rerank_hits,
     retrieve,
     retrieve_multi_vault,
@@ -46,6 +49,13 @@ _VALIDATION_TTL = timedelta(hours=1)
 # Ключ в ctx.step_results для накопления сырых SearchHit по шагам.
 # Начинается с "_" — _resolve_prompt игнорирует такие ключи.
 _HITS_KEY_PREFIX = "_hits_"
+
+# Token-бюджеты для режима send_full_document (полный документ в шаге retrieval).
+# Значения взяты из update_mode_executor для консистентности между режимами.
+# Per-doc: один документ не должен превышать этот лимит.
+PER_DOC_TOKEN_LIMIT = 16_000
+# Total:  суммарный размер всех документов в шаге ≤ этого лимита.
+TOTAL_TOKEN_BUDGET = 64_000
 
 
 # =============================================================================
@@ -529,7 +539,35 @@ class PipelineExecutor:
                 yield chunk
             return
 
-        # --- Retrieval --------------------------------------------------
+        # --- Retrieval: send_full_document ветка ---
+        # Полный контекст из источника: вместо top-k чанков загружаем полные тексты
+        # документов под tag_ids. Rerank и накопление _hits_* пропускаются —
+        # chunk-уровневая релевантность не применима к полным документам.
+        if step.send_full_document:
+            yield _status(f"Загружаю полные документы: {step.name}...")
+            try:
+                hits = await self._retrieve_full_documents_for_step_dag(step, ctx)
+            except Exception as exc:
+                logger.error(
+                    "Step full-document retrieval error: step=%s err=%s",
+                    step.step_id, exc, exc_info=True,
+                )
+                ctx.step_results[step.step_id] = ""
+                yield {"type": "step_error", "step_id": step.step_id, "message": str(exc)}
+                return
+
+            if not hits:
+                if step.step_id not in ctx.step_results:
+                    ctx.step_results[step.step_id] = ""
+                yield {"type": "step_skipped_no_docs", "step_id": step.step_id, "step_name": step.name}
+                return
+
+            formatted = format_context_with_role(hits, getattr(step, "role", None))
+            ctx.step_results[step.step_id] = formatted
+            yield {"type": "step_complete", "step_id": step.step_id, "step_name": step.name}
+            return
+
+        # --- Retrieval: обычная ветка (top-k чанков) ---
         yield _status(f"Searching knowledge base: {step.name}...")
         try:
             hits = await self._retrieve_for_step_dag(step, ctx, provider)
@@ -716,6 +754,120 @@ class PipelineExecutor:
             document_ids=document_ids, top_k=top_k, db=self.db,
             skip_rerank=True,
         )
+
+    async def _retrieve_full_documents_for_step_dag(
+        self,
+        step: PipelineStep,
+        ctx: PipelineExecutionContext,
+    ) -> list[SearchHit]:
+        """Загрузка полных текстов документов по тегу (send_full_document=True).
+
+        Алгоритм:
+        1. Получить документы под step.tag_ids через get_documents_by_tag().
+        2. Параллельно через reconstruct_full_text() (singleton httpx-клиент
+           из full_document_service с keep-alive pool).
+        3. Применить per-doc (PER_DOC_TOKEN_LIMIT) и total (TOTAL_TOKEN_BUDGET)
+           token-бюджеты.
+        4. Пропустить документы с None/пустым текстом/исключением/превышением бюджета
+           (continue + warning в логе, шаг не валится).
+        5. Вернуть list[SearchHit] с полным текстом в .text — единый формат
+           с обычным retrieval, чтобы format_context_with_role отработал без
+           изменений.
+
+        Не накапливает хиты в _hits_* (chunk-уровневая релевантность не применима
+        к полным документам) — пауза full_document_selection для таких шагов
+        не срабатывает, что согласуется с UX (контекст уже полный).
+        """
+        domain_id = ctx.domain_id
+        if not domain_id:
+            logger.warning(
+                "_retrieve_full_documents_for_step_dag: no domain_id in context, step=%s",
+                step.step_id,
+            )
+            return []
+
+        docs = await get_documents_by_tag(step.tag_ids, domain_id, self.db)
+        if not docs:
+            logger.info(
+                "_retrieve_full_documents_for_step_dag: no documents for tag_ids=%s step=%s",
+                step.tag_ids, step.step_id,
+            )
+            return []
+
+        logger.info(
+            "_retrieve_full_documents_for_step_dag: start step=%s docs=%d",
+            step.step_id, len(docs),
+        )
+
+        # Параллельный fetch через singleton httpx из full_document_service
+        fetch_results: list[str | None | BaseException] = await asyncio.gather(
+            *[
+                reconstruct_full_text(
+                    document_id=d["document_id"],
+                    vault_id=d["vault_id"],
+                    db_api_url=STORAGE_API_URL,
+                )
+                for d in docs
+            ],
+            return_exceptions=True,
+        )
+
+        hits: list[SearchHit] = []
+        total_tokens = 0
+        for doc, result in zip(docs, fetch_results):
+            # Исключение из reconstruct для одного документа не валит шаг
+            if isinstance(result, BaseException):
+                logger.warning(
+                    "_retrieve_full_documents_for_step_dag: fetch raised for doc=%s: %s",
+                    doc["document_id"], result,
+                )
+                continue
+            text: str | None = result
+            if not text:
+                logger.warning(
+                    "_retrieve_full_documents_for_step_dag: empty text for doc=%s",
+                    doc["document_id"],
+                )
+                continue
+
+            estimated_tokens = math.ceil(len(text) / 4)
+            if estimated_tokens > PER_DOC_TOKEN_LIMIT:
+                logger.info(
+                    "_retrieve_full_documents_for_step_dag: doc=%s too large (%d > %d limit), skipping",
+                    doc["document_id"], estimated_tokens, PER_DOC_TOKEN_LIMIT,
+                )
+                continue
+            if total_tokens + estimated_tokens > TOTAL_TOKEN_BUDGET:
+                logger.info(
+                    "_retrieve_full_documents_for_step_dag: total budget exceeded at doc=%s "
+                    "(would be %d > %d), skipping",
+                    doc["document_id"],
+                    total_tokens + estimated_tokens, TOTAL_TOKEN_BUDGET,
+                )
+                continue
+
+            hits.append(SearchHit(
+                # Synthetic chunk_id — единый формат с обычными SearchHit;
+                # используется для дедупликации в format_context (там ключ — document_id,
+                # так что коллизий не будет).
+                chunk_id=f"{doc['document_id']}__full",
+                document_id=doc["document_id"],
+                text=text,
+                metadata={
+                    "vault_id": doc["vault_id"],
+                    "source_path": doc.get("source_path", ""),
+                    "title": doc.get("title"),
+                    "estimated_tokens": estimated_tokens,
+                },
+                score=1.0,
+            ))
+            total_tokens += estimated_tokens
+
+        logger.info(
+            "_retrieve_full_documents_for_step_dag: done step=%s hits=%d total_tokens=%d",
+            step.step_id, len(hits), total_tokens,
+        )
+        return hits
 
     async def _save_pause_state(
         self,

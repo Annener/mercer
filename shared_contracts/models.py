@@ -394,7 +394,7 @@ class PipelineStep(BaseModel):
     Правила:
     - step_id уникален в рамках одного пайплайна (проверяется в Pipeline-валидаторе)
     - after_step_ids не может содержать собственный step_id (self-loop)
-    - Поля top_k, tag_ids, role, output_format — только для type=retrieval
+    - Поля top_k, tag_ids, role, output_format, send_full_document — только для type=retrieval
     - Поля validation_prompt, options — только для type=validation
     """
     step_id: str                                           # user-defined slug, e.g. "analyze"
@@ -408,6 +408,12 @@ class PipelineStep(BaseModel):
     tag_ids: list[str] = Field(default_factory=list)
     role: str | None = None
     output_format: Literal["text", "json"] = "text"
+    # Загрузить полный текст документов под tag_ids вместо top-k чанков.
+    # Источник: документы, попадающие под tag_ids в домене чата.
+    # Полезно когда важный контекст описан в небольшом файле.
+    # При True — top_k игнорируется, rerank не применяется, per-doc/total token-бюджеты
+    # ограничивают объём (см. pipeline_executor.PER_DOC_TOKEN_LIMIT / TOTAL_TOKEN_BUDGET).
+    send_full_document: bool = False
 
     # --- только для type=validation ---
     validation_prompt: str | None = None                   # поддерживает {STEP_ID.result}
@@ -430,6 +436,8 @@ class PipelineStep(BaseModel):
                 raise ValueError("role is only valid for type=retrieval")
             if self.output_format != "text":
                 raise ValueError("output_format is only valid for type=retrieval")
+            if self.send_full_document:
+                raise ValueError("send_full_document is only valid for type=retrieval")
         # поля только для validation
         if self.type == "retrieval":
             if self.validation_prompt is not None:
@@ -1335,7 +1343,7 @@ class UpdateModeReviewRequest(BaseModel):
     accepted_change_ids: list[str] = Field(default_factory=list, max_length=10)
     rejected_change_ids: list[str] = Field(default_factory=list, max_length=10)
 
-    @model_validator(mode="after")
+    @model_validator(mode='after')
     def _validate_no_overlap(self) -> "UpdateModeReviewRequest":
         accepted = set(self.accepted_change_ids)
         rejected = set(self.rejected_change_ids)
