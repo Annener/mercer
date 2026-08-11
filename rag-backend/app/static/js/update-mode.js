@@ -266,6 +266,14 @@ function _buildPanel(chatId, initialSession) {
     let _showApplyHint = false;           // BUG-9 fix: part of render cycle instead of direct DOM
     let _openDiffs = new Set();           // change_ids of <details> that were open before render()
 
+    // BUG-NOTE-PRESERVE fix: хранит последнюю введённую заметку между попытками.
+    // Используется при ошибке (retryBtn в _showError) и при пустом review-list
+    // (retryBtn в _renderReview), чтобы текст не сбрасывался — пользователь
+    // может отредактировать и повторно отправить без повторного ввода.
+    // Записывается в _doStart до любых state-переходов; сбрасывается только
+    // когда пользователь явно нажимает «Назад» из формы или успешно стартовал.
+    let _lastNote = '';
+
     // -------- root element --------
     const panel = document.createElement('div');
     panel.className = 'um-panel';
@@ -329,17 +337,21 @@ function _buildPanel(chatId, initialSession) {
     }
 
     // BUG-13 fix: character counter for note textarea
+    // BUG-NOTE-PRESERVE fix: textarea предзаполняется _lastNote — пользователь
+    // может отредактировать и повторно отправить после ошибки, не вводя текст заново.
+    // Курсор ставится в конец текста для удобства правки.
     function _renderNoteForm() {
         const MAX_LEN = 20000;
+        const initial = _lastNote || '';
         const el = document.createElement('div');
         el.className = 'um-panel__note-form';
         el.innerHTML = `
             <label class="um-note-label" for="um-note-${chatId}">Заметка об изменениях:</label>
             <textarea class="um-note-textarea" id="um-note-${chatId}"
                 placeholder="Например: добавить раздел про новую фичу X в документ Y…"
-                maxlength="${MAX_LEN}" rows="5"></textarea>
+                maxlength="${MAX_LEN}" rows="5">${_escapeHtml(initial)}</textarea>
             <div class="um-note-counter">
-                <span class="um-note-counter__current">0</span> / ${MAX_LEN}
+                <span class="um-note-counter__current">${initial.length}</span> / ${MAX_LEN}
             </div>
             <div class="um-note-actions">
                 <button class="um-note-btn um-note-btn--submit" type="button">Анализировать</button>
@@ -356,6 +368,9 @@ function _buildPanel(chatId, initialSession) {
         });
 
         el.querySelector('.um-note-btn--back').addEventListener('click', () => {
+            // BUG-NOTE-PRESERVE: «Назад» сбрасывает сохранённый текст —
+            // пользователь явно вышел из режима ввода.
+            _lastNote = '';
             state = 'idle'; render();
         });
 
@@ -373,8 +388,18 @@ function _buildPanel(chatId, initialSession) {
             _doStart(note);
         });
 
-        // UX: autofocus textarea after element is appended to DOM
-        textarea.focus();
+        // UX: autofocus textarea + ставим курсор в конец восстановленного текста.
+        // selectionStart/End в конец — пользователь сразу правит продолжение,
+        // а не вынужден кликать в конец строки.
+        if (initial) {
+            textarea.focus();
+            const end = initial.length;
+            try {
+                textarea.setSelectionRange(end, end);
+            } catch (_) { /* некоторые браузеры не поддерживают для textarea */ }
+        } else {
+            textarea.focus();
+        }
 
         return el;
     }
@@ -419,6 +444,10 @@ function _buildPanel(chatId, initialSession) {
             retryBtn.className = 'um-note-btn um-note-btn--submit';
             retryBtn.type = 'button';
             retryBtn.textContent = 'Попробовать снова';
+            // BUG-NOTE-PRESERVE fix: возвращаемся в 'entering_note' (не 'idle'),
+            // чтобы _renderNoteForm() восстановил _lastNote. Серверная сессия
+            // (если была) отменяется fire-and-forget — повторный _doStart
+            // заведёт новую сессию.
             retryBtn.addEventListener('click', () => {
                 chatAPI.updateModeCancel(chatId); // fire-and-forget
                 session = null;
@@ -581,6 +610,9 @@ function _buildPanel(chatId, initialSession) {
         retryBtn.className = 'um-error-retry-btn';
         retryBtn.type = 'button';
         retryBtn.textContent = 'Попробовать снова';
+        // BUG-NOTE-PRESERVE fix: возвращаемся в 'entering_note' (а не 'idle'),
+        // чтобы _renderNoteForm() восстановил _lastNote — пользователь увидит
+        // свой текст и сможет отредактировать/повторить без повторного ввода.
         retryBtn.addEventListener('click', async () => {
             retryBtn.disabled = true;
             retryBtn.textContent = 'Отмена сессии…';
@@ -591,7 +623,7 @@ function _buildPanel(chatId, initialSession) {
                 session = null;
             }
             _pendingReview = {};
-            state = 'idle';
+            state = 'entering_note';
             render();
         });
         errEl.appendChild(retryBtn);
@@ -601,6 +633,11 @@ function _buildPanel(chatId, initialSession) {
     // -------- actions --------
     async function _doStart(note) {
         _showApplyHint = false; // BUG-9 fix: reset hint flag on fresh start
+        // BUG-NOTE-PRESERVE fix: запоминаем текст ДО любых state-переходов —
+        // _lastNote нужен если _doStart упадёт в _showError и пользователь
+        // нажмёт «Попробовать снова». Записываем сюда, а не после успеха,
+        // потому что при ошибке state не дойдёт до успешной ветки.
+        _lastNote = note;
         state = 'starting';
         render();
         try {
