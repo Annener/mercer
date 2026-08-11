@@ -25,9 +25,8 @@ STORAGE_API_URL = os.getenv("STORAGE_API_URL", "http://db-api-server:8080")
 # приводит к таймаутам. Значение можно переопределить через env RERANK_OLLAMA_CONCURRENCY.
 _RERANK_OLLAMA_CONCURRENCY = int(os.getenv("RERANK_OLLAMA_CONCURRENCY", "1"))
 
-# Максимум токенов для ответа реранкера. Нужно только "yes"/
-
-... и зависает.
+# Максимум токенов для ответа реранкера. Нужно только "yes"/"no" — хватит 32.
+# Без ограничения Qwen3-Reranker уходит в бесконечный thinking-блок и зависает.
 _RERANK_OLLAMA_NUM_PREDICT = int(os.getenv("RERANK_OLLAMA_NUM_PREDICT", "32"))
 
 # Количество чанков, возвращаемых retrieve() по умолчанию.
@@ -666,9 +665,9 @@ def _score_from_response_text(response_text: str) -> float:
     """
     Извлекает relevance score из текстового ответа Ollama.
 
-    Qwen3-Reranker и другие instruct-модели могут генерировать цепочку
-    рассуждений (...) перед финальным ответом.
-    Поэтому ищем yes/no в КОНЦЕ текста, а не в начале.
+    Qwen3-Reranker и
+
+/no в КОНЦЕ текста, а не в начале.
 
     Логика:
     1. Убираем ... блоки если есть.
@@ -711,7 +710,7 @@ async def _rerank_single_ollama(
     По умолчанию concurrency=1 (строго последовательно).
 
     num_predict ограничивает длину ответа: без него Qwen3-Reranker уходит в
-    бесконечный ... блок.
+    бесконечный  блок.
     """
     prompt = _OLLAMA_RERANK_PROMPT_TEMPLATE.format(
         query=query,
