@@ -12,3 +12,9 @@ pdf-sidecar/sidecar.pid
 pdf-sidecar/agent/__pycache__/
 node_modules/
 .venv/
+rag-indexer/app/__pycache__/
+rag-indexer/app/update_mode/__pycache__/
+shared_contracts/__pycache__/
+tests/integration/__pycache__/
+tests/shared_contracts/__pycache__/
+tests/update_mode/__pycache__/

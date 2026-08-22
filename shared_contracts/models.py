@@ -385,6 +385,66 @@ class CampaignUpdate(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Campaign State — Stage 1: Field Configuration contracts
+# ---------------------------------------------------------------------------
+
+CampaignStateFieldMode = Literal["single", "list"]
+
+
+class CampaignStateFieldConfigRead(ORMModel):
+    """Конфигурация поля Campaign State (метаданные).
+
+    Актуальные значения state хранятся в отдельной таблице (Stage 2).
+    """
+    id: str
+    campaign_id: str
+    key: str
+    label: str
+    description: str = ""
+    mode: CampaignStateFieldMode
+    enabled: bool = True
+    display_order: int = 0
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class CampaignStateFieldConfigCreate(BaseModel):
+    """Создание поля Campaign State.
+
+    key — стабильный технический идентификатор, immutable после создания.
+    mode — допускается только при создании (смена запрещена).
+    """
+    key: str = Field(min_length=1, max_length=64)
+    label: str = Field(min_length=1, max_length=256)
+    description: str = Field(default="", max_length=8 * 1024)
+    mode: CampaignStateFieldMode
+    enabled: bool = True
+    display_order: int = Field(default=0, ge=0)
+
+
+class CampaignStateFieldConfigUpdate(BaseModel):
+    """Partial update. key и mode — НЕ допускаются (immutable).
+
+    Если клиент пришлёт их явно — сервис вернёт 409.
+    """
+    label: str | None = Field(default=None, min_length=1, max_length=256)
+    description: str | None = Field(default=None, max_length=8 * 1024)
+    enabled: bool | None = None
+    display_order: int | None = Field(default=None, ge=0)
+
+
+class CampaignStateFieldConfigReorderRequest(BaseModel):
+    """Body для POST /state-fields/reorder.
+
+    field_ids должны:
+      - быть уникальными;
+      - принадлежать указанной кампании;
+      - покрывать ровно весь набор полей кампании (len == current count).
+    """
+    field_ids: list[str] = Field(min_length=1)
+
+
+# ---------------------------------------------------------------------------
 # Pipeline contracts — DAG-based execution model
 # ---------------------------------------------------------------------------
 
@@ -1005,7 +1065,7 @@ class UpdateModeIntent(BaseModel):
 class UpdateModeIntentBatch(BaseModel):
     intents: list[UpdateModeIntent] = Field(min_length=1, max_length=10)
 
-    @model_validator(mode="after")
+    @model_validator(mode='after')
     def _validate_unique_change_ids(self) -> "UpdateModeIntentBatch":
         ids = [i.change_id for i in self.intents]
         if len(ids) != len(set(ids)):
@@ -1042,7 +1102,7 @@ class UpdateModeGenerationResult(BaseModel):
     intents: list[UpdateModeIntent] = Field(default_factory=list, max_length=10)
     no_change_reason: str | None = Field(default=None, max_length=1_000)
 
-    @model_validator(mode="after")
+    @model_validator(mode='after')
     def _validate_no_change_invariant(self) -> "UpdateModeGenerationResult":
         if not self.intents and not self.no_change_reason:
             raise ValueError(
@@ -1068,7 +1128,7 @@ class UpdateModeResolveRequest(BaseModel):
         default_factory=list, min_length=0, max_length=15
     )
 
-    @model_validator(mode="after")
+    @model_validator(mode='after')
     def _validate_default_vault(self) -> "UpdateModeResolveRequest":
         if self.default_vault_id not in self.vault_ids:
             raise ValueError("default_vault_id must be in vault_ids")
@@ -1132,7 +1192,7 @@ class UpdateModeApplyChange(BaseModel):
     op_content: str = ""
     description: str = ""
 
-    @model_validator(mode="after")
+    @model_validator(mode='after')
     def _validate_sha_policy(self) -> "UpdateModeApplyChange":
         if self.action == UpdateModeAction.UPDATE and self.expected_sha256 is None:
             raise ValueError("update action requires expected_sha256")
@@ -1170,7 +1230,7 @@ class UpdateModeFileChangeBatch(BaseModel):
     action: UpdateModeAction            # UPDATE or CREATE
     ops: list[UpdateModeFileOp] = Field(min_length=1, max_length=20)
 
-    @model_validator(mode="after")
+    @model_validator(mode='after')
     def _validate_sha_policy(self) -> "UpdateModeFileChangeBatch":
         """Enforce CAS / SHA-256 policy for ops list.
 
@@ -1210,7 +1270,7 @@ class UpdateModeApplyRequest(BaseModel):
     # Converted to file_batches by _normalize_and_validate below.
     accepted_changes: list[UpdateModeApplyChange] = Field(default_factory=list)
 
-    @model_validator(mode="after")
+    @model_validator(mode='after')
     def _normalize_and_validate(self) -> "UpdateModeApplyRequest":
         # --- Backward-compat conversion ---
         if self.accepted_changes and not self.file_batches:

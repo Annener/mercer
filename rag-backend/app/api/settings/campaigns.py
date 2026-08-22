@@ -9,7 +9,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.settings.schemas import CampaignTagCreateRequest
 from app.db.models import Campaign, Tag, campaign_tags
 from app.db.session import get_db
-from shared_contracts.models import CampaignCreate, CampaignRead, CampaignUpdate, TagRead
+from app.services.campaign_state_service import (
+    CampaignStateFieldError,
+    campaign_state_field_service,
+)
+from shared_contracts.models import (
+    CampaignCreate,
+    CampaignRead,
+    CampaignStateFieldConfigCreate,
+    CampaignStateFieldConfigRead,
+    CampaignStateFieldConfigReorderRequest,
+    CampaignStateFieldConfigUpdate,
+    CampaignUpdate,
+    TagRead,
+)
 
 router = APIRouter(prefix="/campaigns", tags=["campaigns"])
 
@@ -114,7 +127,7 @@ async def create_campaign_tag(
     payload: CampaignTagCreateRequest,  # D04 fix: was payload: dict — KeyError → 500
     db: AsyncSession = Depends(get_db),
 ) -> TagRead:
-    """\u0428\u043e\u0440\u0442\u043a\u0430\u0442: \u0441\u043e\u0437\u0434\u0430\u0442\u044c \u0442\u0435\u0433 \u043a\u0430\u043c\u043f\u0430\u043d\u0438\u0438. domain_id \u0431\u0435\u0440\u0451\u0442\u0441\u044f \u0438\u0437 \u043a\u0430\u043c\u043f\u0430\u043d\u0438\u0438."""
+    """Шорткат: создать тег кампании. domain_id берётся из кампании."""
     campaign = await db.get(Campaign, uuid.UUID(campaign_id))
     if not campaign:
         raise HTTPException(404, "Campaign not found")
@@ -138,7 +151,7 @@ async def get_campaign_global_tags(
     campaign_id: str,
     db: AsyncSession = Depends(get_db),
 ) -> list[TagRead]:
-    """\u0412\u0435\u0440\u043d\u0443\u0442\u044c \u0433\u043b\u043e\u0431\u0430\u043b\u044c\u043d\u044b\u0435 \u0442\u0435\u0433\u0438 \u0434\u043e\u043c\u0435\u043d\u0430, \u044f\u0432\u043d\u043e \u043f\u043e\u0434\u043a\u043b\u044e\u0447\u0451\u043d\u043d\u044b\u0435 \u043a \u044d\u0442\u043e\u0439 \u043a\u0430\u043c\u043f\u0430\u043d\u0438\u0438."""
+    """Вернуть глобальные теги домена, явно подключённые к этой кампании."""
     camp_uuid = uuid.UUID(campaign_id)
     stmt = (
         select(Tag)
@@ -158,7 +171,7 @@ async def link_global_tag(
     tag_id: str,
     db: AsyncSession = Depends(get_db),
 ) -> TagRead:
-    """\u041f\u043e\u0434\u043a\u043b\u044e\u0447\u0438\u0442\u044c \u0433\u043b\u043e\u0431\u0430\u043b\u044c\u043d\u044b\u0439 \u0442\u0435\u0433 \u0434\u043e\u043c\u0435\u043d\u0430 \u043a \u043a\u0430\u043c\u043f\u0430\u043d\u0438\u0438."""
+    """Подключить глобальный тег домена к кампании."""
     camp_uuid = uuid.UUID(campaign_id)
     tag_uuid = uuid.UUID(tag_id)
 
@@ -196,7 +209,7 @@ async def unlink_global_tag(
     tag_id: str,
     db: AsyncSession = Depends(get_db),
 ) -> None:
-    """\u041e\u0442\u043a\u043b\u044e\u0447\u0438\u0442\u044c \u0433\u043b\u043e\u0431\u0430\u043b\u044c\u043d\u044b\u0439 \u0442\u0435\u0433 \u043e\u0442 \u043a\u0430\u043c\u043f\u0430\u043d\u0438\u0438 (\u0442\u0435\u0433 \u043d\u0435 \u0443\u0434\u0430\u043b\u044f\u0435\u0442\u0441\u044f, \u0442\u043e\u043b\u044c\u043a\u043e \u0441\u0432\u044f\u0437\u044c)."""
+    """Отключить глобальный тег от кампании (тег не удаляется, только связь)."""
     camp_uuid = uuid.UUID(campaign_id)
     tag_uuid = uuid.UUID(tag_id)
     await db.execute(
@@ -208,10 +221,109 @@ async def unlink_global_tag(
     await db.commit()
 
 
+# ---------------------------------------------------------------------------
+# Campaign State field configuration (Stage 1)
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/{campaign_id}/state-fields",
+    response_model=list[CampaignStateFieldConfigRead],
+)
+async def list_campaign_state_fields(
+    campaign_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> list[CampaignStateFieldConfigRead]:
+    try:
+        return await campaign_state_field_service.list_fields(
+            db, uuid.UUID(campaign_id)
+        )
+    except CampaignStateFieldError as exc:
+        raise HTTPException(status_code=exc.http_status, detail=exc.code) from exc
+
+
+@router.post(
+    "/{campaign_id}/state-fields",
+    response_model=CampaignStateFieldConfigRead,
+    status_code=201,
+)
+async def create_campaign_state_field(
+    campaign_id: str,
+    payload: CampaignStateFieldConfigCreate,
+    db: AsyncSession = Depends(get_db),
+) -> CampaignStateFieldConfigRead:
+    try:
+        return await campaign_state_field_service.create_field(
+            db, uuid.UUID(campaign_id), payload
+        )
+    except CampaignStateFieldError as exc:
+        raise HTTPException(status_code=exc.http_status, detail=exc.code) from exc
+
+
+@router.put(
+    "/{campaign_id}/state-fields/{field_id}",
+    response_model=CampaignStateFieldConfigRead,
+)
+async def update_campaign_state_field(
+    campaign_id: str,
+    field_id: str,
+    payload: CampaignStateFieldConfigUpdate,
+    db: AsyncSession = Depends(get_db),
+) -> CampaignStateFieldConfigRead:
+    """Partial update — поля, отсутствующие в теле, не изменяются.
+
+    Семантика `exclude_unset` согласуется с `PUT /campaigns/{id}`.
+    Попытка передать `key` или `mode` в теле → 409 (immutable).
+    """
+    try:
+        return await campaign_state_field_service.update_field(
+            db, uuid.UUID(campaign_id), uuid.UUID(field_id), payload
+        )
+    except CampaignStateFieldError as exc:
+        raise HTTPException(status_code=exc.http_status, detail=exc.code) from exc
+
+
+@router.delete(
+    "/{campaign_id}/state-fields/{field_id}",
+    status_code=204,
+)
+async def delete_campaign_state_field(
+    campaign_id: str,
+    field_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """Удалить поле Campaign State. История state не сохраняется (Stage 2 не существует)."""
+    try:
+        await campaign_state_field_service.delete_field(
+            db, uuid.UUID(campaign_id), uuid.UUID(field_id)
+        )
+    except CampaignStateFieldError as exc:
+        raise HTTPException(status_code=exc.http_status, detail=exc.code) from exc
+
+
+@router.post(
+    "/{campaign_id}/state-fields/reorder",
+    response_model=list[CampaignStateFieldConfigRead],
+)
+async def reorder_campaign_state_fields(
+    campaign_id: str,
+    payload: CampaignStateFieldConfigReorderRequest,
+    db: AsyncSession = Depends(get_db),
+) -> list[CampaignStateFieldConfigRead]:
+    """Полная перестановка порядка полей. Все ID должны быть UUID-строками и
+    принадлежать кампании; длина списка должна равняться числу полей.
+    """
+    try:
+        return await campaign_state_field_service.reorder_fields(
+            db, uuid.UUID(campaign_id), payload.field_ids
+        )
+    except CampaignStateFieldError as exc:
+        raise HTTPException(status_code=exc.http_status, detail=exc.code) from exc
+
+
 # --- Вспомогательные ---
 
 async def _campaign_with_tags(campaign: Campaign, db: AsyncSession) -> CampaignRead:
-    """\u0418\u0441\u043f\u043e\u043b\u044c\u0437\u0443\u0435\u0442\u0441\u044f \u0434\u043b\u044f \u043e\u0434\u0438\u043d\u043e\u0447\u043d\u044b\u0445 \u043e\u0431\u044a\u0435\u043a\u0442\u043e\u0432 (get/create/update). \u0414\u043b\u044f \u0441\u043f\u0438\u0441\u043a\u0430 — batch \u0432 list_campaigns."""
+    """Используется для одиночных объектов (get/create/update). Для списка — batch в list_campaigns."""
     stmt = select(Tag).where(Tag.campaign_id == campaign.id)
     result = await db.execute(stmt)
     tags = [TagRead.model_validate(t, from_attributes=True) for t in result.scalars().all()]

@@ -237,6 +237,11 @@ class Campaign(Base):
         secondaryjoin="Tag.id == campaign_tags.c.tag_id",
         viewonly=True,
     )
+    state_fields: Mapped[list[CampaignStateFieldConfig]] = relationship(
+        back_populates="campaign",
+        cascade="all, delete-orphan",
+        order_by="CampaignStateFieldConfig.display_order",
+    )
 
 
 from sqlalchemy import Table, Column  # noqa: E402
@@ -247,6 +252,41 @@ campaign_tags = Table(
     Column("campaign_id", UUID(as_uuid=True), ForeignKey("campaigns.id", ondelete="CASCADE"), primary_key=True),
     Column("tag_id", UUID(as_uuid=True), ForeignKey("tags.id", ondelete="CASCADE"), primary_key=True),
 )
+
+
+class CampaignStateFieldConfig(Base):
+    """Конфигурация поля Campaign State (Stage 1).
+
+    Содержит только метаданные полей (key, label, description, mode, enabled, order).
+    Актуальные значения state хранятся в отдельной таблице, которая появится в Stage 2.
+    """
+    __tablename__ = "campaign_state_field_configs"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    campaign_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("campaigns.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    key: Mapped[str] = mapped_column(String(64), nullable=False)
+    label: Mapped[str] = mapped_column(String(256), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    mode: Mapped[str] = mapped_column(String(16), nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
+    display_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        UniqueConstraint("campaign_id", "key", name="uq_state_fields_campaign_key"),
+    )
+
+    campaign: Mapped[Campaign] = relationship(back_populates="state_fields")
 
 
 class Chat(Base):
