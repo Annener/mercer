@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import delete, insert, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.settings.schemas import CampaignTagCreateRequest
 from app.db.models import Campaign, Tag, campaign_tags
 from app.db.session import get_db
+from app.services.campaign_state_initial_service import (
+    CampaignStateInitialError,
+    campaign_state_initial_service,
+)
 from app.services.campaign_state_service import (
     CampaignStateFieldError,
     campaign_state_field_service,
@@ -24,6 +28,9 @@ from shared_contracts.models import (
     CampaignStateFieldConfigRead,
     CampaignStateFieldConfigReorderRequest,
     CampaignStateFieldConfigUpdate,
+    CampaignStateInitialApplyRequest,
+    CampaignStateInitialPreviewRequest,
+    CampaignStateInitialProposalRead,
     CampaignStatePatchRequest,
     CampaignStatePatchResponse,
     CampaignStateVersionRead,
@@ -420,6 +427,104 @@ async def apply_campaign_state_patch(
                 detail={
                     "code": exc.code,
                     "rejection": rejection.model_dump(),
+                },
+            ) from exc
+        raise HTTPException(status_code=exc.http_status, detail=exc.code) from exc
+
+
+# ---------------------------------------------------------------------------
+# Campaign State — Stage 3: Initial State endpoints
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/{campaign_id}/state/initial/preview",
+    response_model=CampaignStateInitialProposalRead,
+)
+async def preview_initial_state(
+    campaign_id: str,
+    payload: CampaignStateInitialPreviewRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> CampaignStateInitialProposalRead:
+    """Сформировать LLM-proposal Initial State из выбранных Markdown-документов.
+
+    404 — кампания не найдена;
+    422 — no_markdown_documents / document_not_markdown / document_not_indexed;
+    503 — generation_provider_unavailable / invalid_generation_output.
+    """
+    redis = request.app.state.redis
+    try:
+        return await campaign_state_initial_service.start_preview(
+            db=db,
+            redis=redis,
+            campaign_id=uuid.UUID(campaign_id),
+            document_ids=payload.document_ids,
+            current_user=None,
+        )
+    except CampaignStateInitialError as exc:
+        raise HTTPException(status_code=exc.http_status, detail=exc.code) from exc
+
+
+@router.get(
+    "/{campaign_id}/state/initial",
+    response_model=CampaignStateInitialProposalRead | None,
+)
+async def get_initial_state_proposal(
+    campaign_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> CampaignStateInitialProposalRead | None:
+    """Вернуть текущий Initial State proposal или null (нет/истёк)."""
+    redis = request.app.state.redis
+    try:
+        await campaign_state_initial_service.assert_campaign_exists(
+            db, uuid.UUID(campaign_id)
+        )
+    except CampaignStateInitialError as exc:
+        raise HTTPException(status_code=exc.http_status, detail=exc.code) from exc
+    return await campaign_state_initial_service.get_proposal(
+        redis, uuid.UUID(campaign_id)
+    )
+
+
+@router.post(
+    "/{campaign_id}/state/initial/apply",
+    response_model=CampaignStateVersionRead,
+)
+async def apply_initial_state(
+    campaign_id: str,
+    payload: CampaignStateInitialApplyRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> CampaignStateVersionRead:
+    """Применить Initial State proposal (review/approval).
+
+    404 — proposal_not_found;
+    409 — initial_already_applied / config_version_conflict / source_snapshot_stale;
+    410 — proposal_expired.
+    """
+    redis = request.app.state.redis
+    try:
+        return await campaign_state_initial_service.apply(
+            db=db,
+            redis=redis,
+            campaign_id=uuid.UUID(campaign_id),
+            request=payload,
+            current_user=None,
+        )
+    except CampaignStateInitialError as exc:
+        raise HTTPException(status_code=exc.http_status, detail=exc.code) from exc
+    except CampaignStateValueError as exc:
+        # SourceSnapshotStaleError / ConfigVersionConflictError / InitialAlreadyAppliedError
+        # — пробрасываем как 409 с расширенным detail для snapshot_stale.
+        if exc.code == "source_snapshot_stale":
+            stale_docs: list[str] = list(getattr(exc, "stale_documents", []) or [])
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": exc.code,
+                    "stale_documents": stale_docs,
                 },
             ) from exc
         raise HTTPException(status_code=exc.http_status, detail=exc.code) from exc

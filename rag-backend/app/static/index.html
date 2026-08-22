@@ -189,6 +189,12 @@
     <script defer src="/static/js/settings/tab-pipelines.js"></script>
     <!-- tag-badge.js должен быть загружен ДО tab-campaigns и tab-documents -->
     <script defer src="/static/js/settings/tag-badge.js"></script>
+    <!-- initial-state.js — UI для Initial State, должен быть загружен ДО tab-campaigns.js
+         (использует window.InitialState из карточки кампании). -->
+    <script defer src="/static/js/settings/initial-state.js"></script>
+    <!-- state-fields.js — редактор конфигурации полей Campaign State.
+         Должен быть загружен ДО tab-campaigns.js (использует window.StateFields из карточки). -->
+    <script defer src="/static/js/settings/state-fields.js"></script>
     <script defer src="/static/js/settings/tab-campaigns.js"></script>
     <script defer src="/static/js/settings/tab-documents.js"></script>
     <script defer src="/static/js/pending-banner.js"></script>

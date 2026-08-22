@@ -24,10 +24,12 @@ from app.db.models import (
     CampaignStateListItem,
     CampaignStateValue,
     CampaignStateVersion,
+    Document,
 )
 from shared_contracts.models import (
     CampaignStateFieldConfigRead,
     CampaignStateFieldValuesRead,
+    CampaignStateInitialProposal,
     CampaignStateListItemRead,
     CampaignStatePatchOperation,
     CampaignStatePatchRejection,
@@ -36,6 +38,7 @@ from shared_contracts.models import (
     CampaignStateSingleValueRead,
     CampaignStateVersionRead,
     CampaignStateVersionSummary,
+    DocumentSnapshot,
 )
 
 logger = logging.getLogger(__name__)
@@ -95,6 +98,23 @@ class PatchValidationError(CampaignStateValueError):
 class InvalidSourceRefError(CampaignStateValueError):
     code = "invalid_source_ref"
     http_status = 422
+
+
+class InitialAlreadyAppliedError(CampaignStateValueError):
+    """Кампания уже имеет хотя бы одну state version — initial применять нельзя."""
+    code = "initial_already_applied"
+    http_status = 409
+
+
+class SourceSnapshotStaleError(CampaignStateValueError):
+    """Между preview и apply изменился хотя бы один source snapshot (Document.md5)."""
+
+    code = "source_snapshot_stale"
+    http_status = 409
+
+    def __init__(self, stale_documents: list[str]) -> None:
+        super().__init__("source_snapshot_stale")
+        self.stale_documents = stale_documents
 
 
 # ---------------------------------------------------------------------------
@@ -410,6 +430,64 @@ def _next_item_key(
         n += 1
 
 
+def _build_initial_state_rows(
+    proposal: CampaignStateInitialProposal,
+    fields_by_key: dict[str, CampaignStateFieldConfig],
+    new_version_id: uuid.UUID,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Преобразует proposal в строки CampaignStateValue / CampaignStateListItem.
+
+    Правила:
+      - поля со status != "proposed" игнорируются;
+      - поля, отсутствующие в fields_by_key (кампания) или с enabled=False, игнорируются;
+      - для single-полей: ожидается заполненный single_value;
+      - для list-полей: ожидается заполненный list_value; item_key генерируется сервером
+        через _next_item_key (стабильный, человекочитаемый).
+    """
+    values_rows: list[dict[str, Any]] = []
+    items_rows: list[dict[str, Any]] = []
+
+    for pf in proposal.fields:
+        field = fields_by_key.get(pf.field_key)
+        if field is None or not field.enabled:
+            continue
+        if pf.status.status != "proposed":
+            continue
+
+        if field.mode == "single":
+            if pf.single_value is None:
+                continue
+            values_rows.append(
+                {
+                    "version_id": new_version_id,
+                    "field_id": field.id,
+                    "text": pf.single_value.text,
+                    "source_refs": list(pf.single_value.source_refs),
+                }
+            )
+        else:  # list
+            if pf.list_value is None:
+                continue
+            existing_keys: set[str] = set()
+            used_prefix = 0
+            for item in pf.list_value.items:
+                new_key = _next_item_key(field.key, existing_keys, used_prefix)
+                existing_keys.add(new_key)
+                used_prefix += 1
+                items_rows.append(
+                    {
+                        "version_id": new_version_id,
+                        "field_id": field.id,
+                        "item_key": new_key,
+                        "text": item.text,
+                        "resolved": False,
+                        "source_refs": list(item.source_refs),
+                    }
+                )
+
+    return values_rows, items_rows
+
+
 # ---------------------------------------------------------------------------
 # Public service API
 # ---------------------------------------------------------------------------
@@ -697,6 +775,136 @@ class CampaignStateValueService:
             applied_operations=applied_types,
             failed_operations=[],
         )
+
+    # -- initial state -----------------------------------------------------
+
+    async def apply_initial(
+        self,
+        db: AsyncSession,
+        campaign_id: uuid.UUID,
+        proposal: CampaignStateInitialProposal,
+        source_snapshot: list[DocumentSnapshot],
+        config_version: int,
+        created_by: str | None = None,
+    ) -> CampaignStateVersionRead:
+        """Применить LLM-proposal как первую active state version кампании.
+
+        Контракт:
+          - кампания должна существовать и не иметь ни одной state version;
+          - config_version в запросе должен совпадать с Campaign.config_version;
+          - для каждого doc_id из source_snapshot текущий Document.md5 должен
+            совпадать с snapshot.content_sha, иначе 409 source_snapshot_stale
+            со списком устаревших doc_id;
+          - enabled-поля кампании, отсутствующие в proposal, трактуются как
+            "empty" (значения не вставляются);
+          - при status='proposed' вставляются CampaignStateValue / CampaignStateListItem;
+          - при status='empty' / 'needs_clarification' значения не вставляются;
+          - config_version НЕ инкрементируется (initial не меняет конфигурацию полей);
+          - пишется audit log action="campaign_state_initial_applied".
+        """
+        campaign = await _lock_campaign(db, campaign_id)
+
+        if config_version != campaign.config_version:
+            raise ConfigVersionConflictError(
+                f"config_version mismatch: client={config_version}, "
+                f"server={campaign.config_version}"
+            )
+
+        latest = await _latest_version(db, campaign_id)
+        if latest is not None:
+            raise InitialAlreadyAppliedError(
+                f"campaign {campaign_id} already has state_version={latest.state_version}"
+            )
+
+        # Snapshot freshness check.
+        if source_snapshot:
+            snapshot_sha: dict[str, str] = {
+                s.document_id: s.content_sha for s in source_snapshot
+            }
+            try:
+                doc_uuids = [uuid.UUID(d) for d in snapshot_sha.keys()]
+            except ValueError as exc:
+                raise SourceSnapshotStaleError(
+                    stale_documents=list(snapshot_sha.keys())
+                ) from exc
+
+            docs_rows = await db.execute(
+                select(Document.id, Document.md5).where(Document.id.in_(doc_uuids))
+            )
+            stale: list[str] = []
+            for did, current_md5 in docs_rows.all():
+                expected = snapshot_sha.get(str(did))
+                if expected is None or current_md5 != expected:
+                    stale.append(str(did))
+            if stale:
+                raise SourceSnapshotStaleError(stale_documents=sorted(stale))
+
+        fields = await _load_fields(db, campaign_id)
+        fields_by_key: dict[str, CampaignStateFieldConfig] = {f.key: f for f in fields}
+
+        # Создаём новую версию-снимок.
+        new_version = CampaignStateVersion(
+            campaign_id=campaign_id,
+            state_version=1,
+            config_version=campaign.config_version,
+            source_kind="initial",
+            base_state_version=None,
+            created_by=created_by,
+        )
+        db.add(new_version)
+        try:
+            await db.flush()
+        except Exception:
+            await db.rollback()
+            raise
+
+        new_version_id = new_version.id
+
+        # Подготовка значений и list-items новой версии из proposal.
+        values_rows, items_rows = _build_initial_state_rows(
+            proposal,
+            fields_by_key,
+            new_version_id,
+        )
+
+        if values_rows:
+            await db.execute(insert(CampaignStateValue).values(values_rows))
+        if items_rows:
+            await db.execute(insert(CampaignStateListItem).values(items_rows))
+
+        # Audit log.
+        from app.db.models import AuditLog  # local import to avoid circular
+
+        await db.execute(
+            insert(AuditLog).values(
+                id=str(uuid.uuid4()),
+                action="campaign_state_initial_applied",
+                entity_type="campaign",
+                entity_id=str(campaign_id),
+                actor=created_by,
+                payload={
+                    "from_state_version": None,
+                    "to_state_version": 1,
+                    "config_version": campaign.config_version,
+                    "source_documents": [s.document_id for s in source_snapshot],
+                    "fields_count": len(proposal.fields),
+                },
+                created_at=func.now(),
+            )
+        )
+
+        await db.commit()
+        await db.refresh(new_version)
+
+        logger.info(
+            "campaign_state_initial.apply: campaign=%s sources=%d values=%d items=%d",
+            campaign_id,
+            len(source_snapshot),
+            len(values_rows),
+            len(items_rows),
+        )
+
+        return await _serialize_version(db, new_version)
 
 
 campaign_state_value_service = CampaignStateValueService()

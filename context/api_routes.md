@@ -212,6 +212,51 @@ PATCH  /api/settings/campaigns/{campaign_id}
 DELETE /api/settings/campaigns/{campaign_id}
 ```
 
+#### Campaign State — Field Configuration (Stage 1)
+```
+GET    /api/settings/campaigns/{campaign_id}/state-fields
+POST   /api/settings/campaigns/{campaign_id}/state-fields
+PUT    /api/settings/campaigns/{campaign_id}/state-fields/{field_id}
+DELETE /api/settings/campaigns/{campaign_id}/state-fields/{field_id}
+POST   /api/settings/campaigns/{campaign_id}/state-fields/reorder
+```
+
+#### Campaign State — Versioned State (Stage 2)
+```
+GET    /api/settings/campaigns/{campaign_id}/state
+GET    /api/settings/campaigns/{campaign_id}/state/versions
+GET    /api/settings/campaigns/{campaign_id}/state/versions/{state_version}
+POST   /api/settings/campaigns/{campaign_id}/state/patch
+```
+
+#### Campaign State — Initial State (Stage 3)
+```
+POST   /api/settings/campaigns/{campaign_id}/state/initial/preview
+GET    /api/settings/campaigns/{campaign_id}/state/initial
+POST   /api/settings/campaigns/{campaign_id}/state/initial/apply
+```
+
+`POST .../state/initial/preview` принимает `{document_ids: string[]}` (1..50,
+только Markdown-индекс-документы кампании). Возвращает
+`CampaignStateInitialProposalRead` с `proposal_id`, `source_snapshot`,
+`proposal.fields`, `warnings`. Proposal сохраняется в Redis с TTL 3 часа.
+
+`GET .../state/initial` возвращает текущий proposal или `null`.
+
+`POST .../state/initial/apply` принимает `{proposal_id, config_version}`.
+Создаёт первую `CampaignStateVersion` (`source_kind="initial"`,
+`state_version=1`, `base_state_version=null`). Возвращает
+`CampaignStateVersionRead`.
+
+Коды ошибок preview: `404 campaign_not_found`, `422 no_markdown_documents /
+document_not_markdown / document_not_indexed`, `503
+generation_provider_unavailable / invalid_generation_output`.
+
+Коды ошибок apply: `404 proposal_not_found / campaign_not_found`, `409
+initial_already_applied / config_version_conflict /
+source_snapshot_stale` (с `stale_documents: string[]`), `410
+proposal_expired`.
+
 ### Теги (`settings/tags.py`)
 ```
 GET    /api/settings/tags/

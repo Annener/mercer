@@ -23,3 +23,5 @@ rag-backend/app/api/settings/__pycache__/
 rag-backend/app/db/__pycache__/
 rag-backend/app/services/__pycache__/
 rag-backend/migrations/versions/__pycache__/
+tests/unit/shared_contracts/__pycache__/
+rag-backend/app/api/settings/__pycache__/

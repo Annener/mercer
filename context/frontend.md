@@ -54,6 +54,7 @@ rag-backend/app/static/
         ├── tab-pipelines.js        # Таб Pipelines (список) (4.3KB)
         ├── tab-campaigns.js        # Таб Кампании (16KB)
         ├── tab-documents.js        # Таб Documents (самый большой, 49KB)
+        ├── initial-state.js        # UI Initial State (Stage 3b): выбор .md → preview → apply
         └── tag-badge.js            # Шард тега (загружать ДО кампаний/документов!)
 ```
 
@@ -223,9 +224,13 @@ window.MercerAPI = {
 **Порядок загрузки `<script>` в `index.html` критичен!**
 Таб-модули зависят от `api.js` и `settings.js`, поэтому загружаются в таком порядке:
 ```
-api/index.js → api/*.js → api.js → pipeline_builder.js → settings.js → tab-*.js → tag-badge.js → tab-campaigns.js → tab-documents.js
+api/index.js → api/*.js → api.js → pipeline_builder.js → settings.js → tab-*.js
+→ tag-badge.js → initial-state.js → tab-campaigns.js → tab-documents.js
 → pending-banner.js → chat.js → sidebar.js → db_management.js
 ```
+
+`initial-state.js` должен быть загружен **ДО** `tab-campaigns.js` (последний
+вызывает `window.InitialState.open()` из обработчика кнопки).
 
 ---
 
@@ -270,8 +275,26 @@ api/index.js → api/*.js → api.js → pipeline_builder.js → settings.js →
 | `models` | `tab-models.js` + подтабы | Подтабы: Generation / Embedding / Rerank |
 | `params` | `tab-params.js` | Редактирование PlatformSetting (сгруппированные по group_name) |
 | `pipelines` | `tab-pipelines.js` + `pipeline_builder.js` | Список + DAG-редактор |
-| `campaigns` | `tab-campaigns.js` | CRUD кампаний, привязка тегов |
+| `campaigns` | `tab-campaigns.js` + `initial-state.js` | CRUD кампаний, привязка тегов, **Initial State UI** (Stage 3b): кнопка «Сформировать начальный контекст» в карточке кампании показывается, если есть `state_fields` и нет active state version; badge «Initial State применён» — после успешного apply. |
 | `documents` | `tab-documents.js` | Просмотр документов, фильтры, статусы, reindex |
+
+### Initial State UI (`initial-state.js`)
+
+Полноэкранный overlay с тремя фазами:
+
+1. **Select** — выбор Markdown-документов кампании (клиентский фильтр `.md` +
+   фильтр по тегам кампании; бэкенд делает обязательную валидацию). Счётчик
+   токенов с предупреждением, если > 64 000.
+2. **Review** — diff по полям (`proposed` / `empty` / `needs_clarification`),
+   свёрнутый source snapshot, warnings. В фоне проверяется свежесть
+   `Document.md5` против snapshot — если расхождение, показывается баннер
+   «Источники изменились».
+3. **Apply** — `POST /state/initial/apply`. Обрабатывает все коды ошибок
+   бэкенда: `initial_already_applied`, `source_snapshot_stale`,
+   `proposal_expired`, `503 generation_provider_unavailable`.
+
+При успехе показывается финальное сообщение и карточка кампании заменяет
+кнопку на badge «Initial State применён» через `loadTab('campaigns')`.
 
 ## CDN-зависимости
 
@@ -299,3 +322,4 @@ api/index.js → api/*.js → api.js → pipeline_builder.js → settings.js →
 4. **Стриминг** — `fetch()` + `ReadableStream`, не `EventSource`. Ответ читается постепенно.
 5. **Сборка не нужна** — добавление нового JS/CSS = подключить в `index.html` + обязательно соблюдать порядок загрузки.
 6. **`tag-badge.js`** должен быть загружен ДО `tab-campaigns.js` и `tab-documents.js` — они импортируют его функции.
+7. **`initial-state.js`** должен быть загружен ДО `tab-campaigns.js` — последний вызывает `window.InitialState.open()` из обработчика кнопки в карточке кампании.

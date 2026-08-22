@@ -619,6 +619,113 @@ class CampaignStatePatchResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Campaign State — Stage 3: Initial State contracts
+# ---------------------------------------------------------------------------
+
+CampaignStateSourceType = Literal["file"]
+
+CampaignStateInitialFieldStatusValue = Literal["proposed", "empty", "needs_clarification"]
+
+
+class DocumentSnapshot(BaseModel):
+    """Снимок файла-источника на момент формирования proposal.
+
+    content_sha хранит md5 hex-дайджест (32 hex символа) — соответствует
+    Document.md5 на момент preview. Используется для проверки неизменности
+    источника между preview и apply.
+    """
+    document_id: str
+    vault_id: str
+    source_path: str
+    title: str | None = None
+    content_sha: str = Field(min_length=32, max_length=32)
+    estimated_tokens: int = Field(ge=0)
+
+
+class CampaignStateInitialSingleValue(BaseModel):
+    """Значение single-поля в proposal."""
+    text: str = Field(min_length=1, max_length=8192)
+    source_refs: list[str] = Field(default_factory=list)
+
+
+class CampaignStateInitialListItem(BaseModel):
+    """Элемент list-поля в proposal. item_key НЕ задаётся LLM — генерируется сервером."""
+    text: str = Field(min_length=1, max_length=8192)
+    source_refs: list[str] = Field(default_factory=list)
+
+
+class CampaignStateInitialListValue(BaseModel):
+    items: list[CampaignStateInitialListItem] = Field(default_factory=list)
+
+
+class CampaignStateInitialFieldStatus(BaseModel):
+    """Статус поля в proposal.
+
+    - "proposed": LLM предлагает значение/элементы, single_value/list_value заполнены.
+    - "empty": надёжных данных нет, поле остаётся пустым.
+    - "needs_clarification": источники противоречат друг другу или данных недостаточно;
+      clarification_question обязателен и показывается пользователю.
+    """
+    status: CampaignStateInitialFieldStatusValue
+    clarification_question: str | None = Field(default=None, max_length=1024)
+
+    @model_validator(mode="after")
+    def _check_clarification_question(self) -> CampaignStateInitialFieldStatus:
+        if self.status == "needs_clarification":
+            if not self.clarification_question or not self.clarification_question.strip():
+                raise ValueError(
+                    "clarification_question is required when status == 'needs_clarification'"
+                )
+        return self
+
+
+class CampaignStateInitialProposalField(BaseModel):
+    """Одно поле в proposal.
+
+    Для mode == "single" ожидается заполненный single_value при status='proposed'.
+    Для mode == "list" ожидается заполненный list_value при status='proposed'.
+    """
+    field_key: str = Field(min_length=1, max_length=64)
+    mode: CampaignStateFieldMode
+    status: CampaignStateInitialFieldStatus
+    single_value: CampaignStateInitialSingleValue | None = None
+    list_value: CampaignStateInitialListValue | None = None
+
+
+class CampaignStateInitialProposal(BaseModel):
+    """Полный LLM-proposal для Initial State.
+
+    Поля списка `fields` должны содержать ровно одну запись на каждое
+    enabled-поле кампании — это валидируется на уровне сервиса.
+    """
+    fields: list[CampaignStateInitialProposalField] = Field(default_factory=list)
+    questions: list[str] = Field(default_factory=list)
+
+
+class CampaignStateInitialProposalRead(BaseModel):
+    """Proposal + мета, возвращается клиенту и хранится в Redis."""
+    proposal_id: str
+    campaign_id: str
+    config_version: int
+    source_snapshot: list[DocumentSnapshot]
+    proposal: CampaignStateInitialProposal
+    warnings: list[str] = Field(default_factory=list)
+    created_at: datetime
+    expires_at: datetime
+
+
+class CampaignStateInitialPreviewRequest(BaseModel):
+    """Запрос на формирование initial proposal из выбранных Markdown-документов."""
+    document_ids: list[str] = Field(min_length=1, max_length=50)
+
+
+class CampaignStateInitialApplyRequest(BaseModel):
+    """Запрос на применение initial proposal (review/approval)."""
+    proposal_id: str = Field(min_length=1, max_length=64)
+    config_version: int = Field(ge=1)
+
+
+# ---------------------------------------------------------------------------
 # Pipeline contracts — DAG-based execution model
 # ---------------------------------------------------------------------------
 

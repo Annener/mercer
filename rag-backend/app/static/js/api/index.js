@@ -1,7 +1,7 @@
 import { chatMixin }        from './chat.js';
 import { pipelineMixin }    from './pipeline.js';
 import { domainsMixin }     from './domains.js';
-import { campaignsMixin }   from './campaigns.js';
+import { campaignsMixin, InitialStateApiError }   from './campaigns.js';
 import { vaultsMixin }      from './vaults.js';
 import { modelsMixin }      from './models.js';
 import { documentsMixin }   from './documents.js';
@@ -32,3 +32,4 @@ Object.assign(
 );
 
 window.chatAPI = new ChatAPI();
+window.InitialStateApiError = InitialStateApiError;

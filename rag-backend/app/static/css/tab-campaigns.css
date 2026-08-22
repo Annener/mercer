@@ -3,3 +3,9 @@
 .world-card {
     min-height: 116px;
 }
+
+/* === Initial State badge в карточке кампании === */
+
+.card-initial-state {
+    margin-top: 0.5rem;
+}
