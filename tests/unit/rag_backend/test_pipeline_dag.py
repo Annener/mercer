@@ -7,13 +7,6 @@ Unit-тесты для pipeline_dag.py.
 
 from __future__ import annotations
 
-import sys
-import os
-
-# Добавляем корень rag-backend в путь, чтобы импортировать shared_contracts
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-
 import pytest
 from pydantic import ValidationError
 

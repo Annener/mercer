@@ -94,7 +94,8 @@ _check_python:
 
 .PHONY: help init-env agent-setup agent-install agent-uninstall agent-start agent-stop \
         agent-status agent-logs up down seed setup _check-macos _check_python _venv-create \
-        setup-dev js-install test js-test test-all lint-py lint-js lint lint-fix _py-venv-create
+        setup-dev js-install test test-rag-backend test-integration test-all js-test \
+        lint-py lint-js lint lint-fix _py-venv-create
 
 help:
 	@echo ""
@@ -116,9 +117,11 @@ help:
 	@echo ""
 	@echo "  $(YELLOW)make setup-dev$(RESET)        Установить dev-окружение (Python venv + npm)"
 	@echo "  $(YELLOW)make js-install$(RESET)       Установить npm-зависимости"
-	@echo "  $(YELLOW)make test$(RESET)             Python pytest"
+	@echo "  $(YELLOW)make test$(RESET)             Python unit-тесты (быстрые, без БД)"
+	@echo "  $(YELLOW)make test-rag-backend$(RESET) Только unit-тесты rag-backend"
+	@echo "  $(YELLOW)make test-integration$(RESET) Интеграционные (требуется Postgres + alembic upgrade)"
 	@echo "  $(YELLOW)make js-test$(RESET)          JS unit-тесты (vitest)"
-	@echo "  $(YELLOW)make test-all$(RESET)         Python + JS тесты"
+	@echo "  $(YELLOW)make test-all$(RESET)         Python unit + JS тесты"
 	@echo "  $(YELLOW)make lint-py$(RESET)          ruff (Python)"
 	@echo "  $(YELLOW)make lint-js$(RESET)          eslint (JS)"
 	@echo "  $(YELLOW)make lint$(RESET)             Все линтеры"
@@ -238,10 +241,20 @@ js-install:
 	@cd "$(STATIC_DIR)" && npm install
 	@echo "$(GREEN)✓ npm зависимости установлены.$(RESET)"
 
-# Python тесты
+# Python unit-тесты (быстрые, без БД)
 test: _py-venv-create
-	@echo "$(YELLOW)→ pytest...$(RESET)"
-	@cd "$(ROOT_DIR)" && $(PY_VENV_PYTHON) -m pytest
+	@echo "$(YELLOW)→ pytest (unit)...$(RESET)"
+	@cd "$(ROOT_DIR)" && $(PY_VENV_PYTHON) -m pytest tests/unit
+
+# Только unit-тесты rag-backend
+test-rag-backend: _py-venv-create
+	@echo "$(YELLOW)→ pytest rag-backend unit...$(RESET)"
+	@cd "$(ROOT_DIR)" && $(PY_VENV_PYTHON) -m pytest tests/unit/rag_backend
+
+# Интеграционные тесты (требуется PostgreSQL + alembic upgrade head)
+test-integration: _py-venv-create
+	@echo "$(YELLOW)→ pytest (integration, требуется PostgreSQL)...$(RESET)"
+	@cd "$(ROOT_DIR)" && $(PY_VENV_PYTHON) -m pytest tests/integration
 
 # JS тесты (vitest, однократный прогон)
 js-test:
