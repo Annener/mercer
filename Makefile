@@ -94,7 +94,6 @@ _check_python:
 
 .PHONY: help init-env agent-setup agent-install agent-uninstall agent-start agent-stop \
         agent-status agent-logs up down seed setup _check-macos _check_python _venv-create \
-        _logs-dir _render-plist _agent-setup-dispatch _agent-setup-launchd \
         setup-dev js-install test js-test test-all lint-py lint-js lint lint-fix _py-venv-create
 
 help:
@@ -242,7 +241,7 @@ js-install:
 # Python тесты
 test: _py-venv-create
 	@echo "$(YELLOW)→ pytest...$(RESET)"
-	@cd "$(ROOT_DIR)" && "$(PY_VENV_PYTHON)" -m pytest
+	@cd "$(ROOT_DIR)" && $(PY_VENV_PYTHON) -m pytest
 
 # JS тесты (vitest, однократный прогон)
 js-test:
@@ -256,7 +255,7 @@ test-all: test js-test
 # Python линтинг (ruff)
 lint-py: _py-venv-create
 	@echo "$(YELLOW)→ ruff check...$(RESET)"
-	@cd "$(ROOT_DIR)" && "$(PY_VENV_PYTHON)" -m ruff check .
+	@cd "$(ROOT_DIR)" && $(PY_VENV_PYTHON) -m ruff check .
 
 # JS линтинг (eslint)
 lint-js:
@@ -270,7 +269,7 @@ lint: lint-py lint-js
 # Авто-фикс линтеров
 lint-fix: _py-venv-create
 	@echo "$(YELLOW)→ ruff check --fix...$(RESET)"
-	@cd "$(ROOT_DIR)" && "$(PY_VENV_PYTHON)" -m ruff check --fix .
+	@cd "$(ROOT_DIR)" && $(PY_VENV_PYTHON) -m ruff check --fix .
 	@echo "$(YELLOW)→ eslint --fix...$(RESET)"
 	@cd "$(STATIC_DIR)" && npm run lint:fix
 
@@ -281,10 +280,10 @@ _py-venv-create:
 		$(MERCER_PYTHON) -m venv "$(PY_VENV_DIR)"; \
 	fi
 	@echo "$(YELLOW)Обновляю pip, ставлю ruff и requirements-dev.txt...$(RESET)"
-	@"$(PY_VENV_PYTHON)" -m pip install -q --upgrade pip
-	@"$(PY_VENV_PYTHON)" -m pip install -q ruff
+	@$(PY_VENV_PYTHON) -m pip install -q --upgrade pip
+	@$(PY_VENV_PYTHON) -m pip install -q ruff
 	@if [ -f "$(ROOT_DIR)/requirements-dev.txt" ]; then \
-		@"$(PY_VENV_PYTHON)" -m pip install -q -r "$(ROOT_DIR)/requirements-dev.txt"; \
+		$(PY_VENV_PYTHON) -m pip install -q -r "$(ROOT_DIR)/requirements-dev.txt"; \
 	else \
 		echo "$(YELLOW)WARNING: requirements-dev.txt не найден, пропускаю.$(RESET)"; \
 	fi
