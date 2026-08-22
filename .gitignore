@@ -18,3 +18,8 @@ shared_contracts/__pycache__/
 tests/integration/__pycache__/
 tests/shared_contracts/__pycache__/
 tests/update_mode/__pycache__/
+tests/unit/rag_backend/__pycache__/
+rag-backend/app/api/settings/__pycache__/
+rag-backend/app/db/__pycache__/
+rag-backend/app/services/__pycache__/
+rag-backend/migrations/versions/__pycache__/

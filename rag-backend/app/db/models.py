@@ -221,7 +221,7 @@ class Campaign(Base):
     __tablename__ = "campaigns"
 
     # Реальная схема после 0009_campaigns_schema_sync:
-    # id, domain_id, name, description, system_prompt, last_session_at, created_at
+    # id, domain_id, name, description, system_prompt, last_session_at, created_at, config_version
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     domain_id: Mapped[str] = mapped_column(String(64), ForeignKey("domains.domain_id", ondelete="CASCADE"), nullable=False)
     name: Mapped[str] = mapped_column(String(256), nullable=False)
@@ -229,6 +229,8 @@ class Campaign(Base):
     system_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_session_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    # Stage 2: incremented by campaign_state_field_service on every CRUD/reorder.
+    config_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
 
     chats: Mapped[list[Chat]] = relationship(back_populates="campaign")
     tags: Mapped[list[Tag]] = relationship(
@@ -242,9 +244,14 @@ class Campaign(Base):
         cascade="all, delete-orphan",
         order_by="CampaignStateFieldConfig.display_order",
     )
+    state_versions: Mapped[list[CampaignStateVersion]] = relationship(
+        back_populates="campaign",
+        cascade="all, delete-orphan",
+        order_by="CampaignStateVersion.state_version.desc()",
+    )
 
 
-from sqlalchemy import Table, Column  # noqa: E402
+from sqlalchemy import Column, Table
 
 campaign_tags = Table(
     "campaign_tags",
@@ -287,6 +294,101 @@ class CampaignStateFieldConfig(Base):
     )
 
     campaign: Mapped[Campaign] = relationship(back_populates="state_fields")
+
+
+class CampaignStateVersion(Base):
+    """Снимок версии state для кампании (Stage 2).
+
+    Каждое применённое patch (или initial) создаёт новую строку с
+    state_version = MAX(state_version) + 1 для кампании. Значения и
+    list-items относятся к этой версии и хранятся отдельными строками.
+    """
+    __tablename__ = "campaign_state_versions"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    campaign_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("campaigns.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    state_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    config_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    # "initial" | "patch".
+    source_kind: Mapped[str] = mapped_column(String(16), nullable=False, default="patch", server_default="patch")
+    # Версия, на которой базировался этот снимок (NULL для первой).
+    base_state_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    created_by: Mapped[str | None] = mapped_column(String(256), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("campaign_id", "state_version", name="uq_state_versions_campaign_version"),
+    )
+
+    campaign: Mapped[Campaign] = relationship(back_populates="state_versions")
+    values: Mapped[list[CampaignStateValue]] = relationship(
+        back_populates="version",
+        cascade="all, delete-orphan",
+    )
+    list_items: Mapped[list[CampaignStateListItem]] = relationship(
+        back_populates="version",
+        cascade="all, delete-orphan",
+    )
+
+
+class CampaignStateValue(Base):
+    """Значение single-поля в конкретной версии state."""
+    __tablename__ = "campaign_state_values"
+
+    version_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("campaign_state_versions.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    field_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("campaign_state_field_configs.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    source_refs: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list, server_default="[]")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    version: Mapped[CampaignStateVersion] = relationship(back_populates="values")
+    field: Mapped[CampaignStateFieldConfig] = relationship()
+
+
+class CampaignStateListItem(Base):
+    """Элемент list-поля в конкретной версии state.
+
+    item_key — стабильный ключ внутри поля (например, "agreements-01").
+    Сохраняется при update/resolve/remove; генерируется сервером на add_list_item.
+    """
+    __tablename__ = "campaign_state_list_items"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    version_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("campaign_state_versions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    field_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("campaign_state_field_configs.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    item_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    resolved: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    source_refs: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list, server_default="[]")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("version_id", "field_id", "item_key", name="uq_state_list_items_version_field_key"),
+    )
+
+    version: Mapped[CampaignStateVersion] = relationship(back_populates="list_items")
+    field: Mapped[CampaignStateFieldConfig] = relationship()
 
 
 class Chat(Base):

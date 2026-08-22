@@ -10,14 +10,19 @@ from __future__ import annotations
 import logging
 import re
 import uuid
-from typing import Sequence
+from collections.abc import Sequence
 
-from fastapi import HTTPException, status
-from sqlalchemy import select, update
+from fastapi import HTTPException
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Campaign, CampaignStateFieldConfig
+from app.db.models import (
+    Campaign,
+    CampaignStateFieldConfig,
+    CampaignStateListItem,
+    CampaignStateValue,
+)
 from shared_contracts.models import (
     CampaignStateFieldConfigCreate,
     CampaignStateFieldConfigRead,
@@ -76,6 +81,13 @@ class InvalidReorderPayloadError(CampaignStateFieldError):
     http_status = 422
 
 
+class FieldInUseError(CampaignStateFieldError):
+    """Удаление/переименование запрещено: на поле ссылаются значения/элементы state."""
+
+    code = "field_in_use"
+    http_status = 409
+
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -120,6 +132,34 @@ async def _get_campaign_or_404(db: AsyncSession, campaign_id: uuid.UUID) -> Camp
     if campaign is None:
         raise CampaignNotFoundError(str(campaign_id))
     return campaign
+
+
+async def _lock_campaign_for_config_change(
+    db: AsyncSession, campaign_id: uuid.UUID
+) -> Campaign:
+    """SELECT … FOR UPDATE строки Campaign для безопасного инкремента config_version.
+
+    Используется во всех мутирующих операциях (create/update/delete/reorder),
+    чтобы гонка с apply_patch не привела к потере инкремента.
+    """
+    stmt = (
+        select(Campaign)
+        .where(Campaign.id == campaign_id)
+        .with_for_update()
+    )
+    result = await db.execute(stmt)
+    campaign = result.scalar_one_or_none()
+    if campaign is None:
+        raise CampaignNotFoundError(str(campaign_id))
+    return campaign
+
+
+async def _bump_config_version(db: AsyncSession, campaign: Campaign) -> None:
+    """Атомарный инкремент Campaign.config_version.
+
+    Campaign уже залочен через SELECT … FOR UPDATE в вызывающем коде.
+    """
+    campaign.config_version = campaign.config_version + 1
 
 
 def _to_read_dto(row: CampaignStateFieldConfig) -> CampaignStateFieldConfigRead:
@@ -179,7 +219,7 @@ class CampaignStateFieldService:
         campaign_id: uuid.UUID,
         payload: CampaignStateFieldConfigCreate,
     ) -> CampaignStateFieldConfigRead:
-        await _get_campaign_or_404(db, campaign_id)
+        campaign = await _lock_campaign_for_config_change(db, campaign_id)
         _validate_field_key(payload.key)
         _validate_mode(payload.mode)
         _validate_description(payload.description)
@@ -194,6 +234,7 @@ class CampaignStateFieldService:
             display_order=payload.display_order,
         )
         db.add(row)
+        await _bump_config_version(db, campaign)
         try:
             await db.commit()
         except IntegrityError as exc:
@@ -203,8 +244,8 @@ class CampaignStateFieldService:
             ) from exc
         await db.refresh(row)
         logger.info(
-            "campaign_state_field.create: campaign=%s key=%s id=%s",
-            campaign_id, payload.key, row.id,
+            "campaign_state_field.create: campaign=%s key=%s id=%s config_version=%d",
+            campaign_id, payload.key, row.id, campaign.config_version,
         )
         return _to_read_dto(row)
 
@@ -224,6 +265,7 @@ class CampaignStateFieldService:
           - payload.mode is not None → 409 (mode immutable).
         """
         row = await self._get_field_or_404(db, campaign_id, field_id)
+        campaign = await _lock_campaign_for_config_change(db, campaign_id)
 
         if "key" in payload.model_fields_set and payload.key is not None:
             raise FieldKeyImmutableError(
@@ -247,6 +289,7 @@ class CampaignStateFieldService:
 
         for field_name, value in data.items():
             setattr(row, field_name, value)
+        await _bump_config_version(db, campaign)
         try:
             await db.commit()
         except IntegrityError as exc:
@@ -256,8 +299,8 @@ class CampaignStateFieldService:
             ) from exc
         await db.refresh(row)
         logger.info(
-            "campaign_state_field.update: campaign=%s field=%s fields=%s",
-            campaign_id, field_id, sorted(data.keys()),
+            "campaign_state_field.update: campaign=%s field=%s fields=%s config_version=%d",
+            campaign_id, field_id, sorted(data.keys()), campaign.config_version,
         )
         return _to_read_dto(row)
 
@@ -269,20 +312,40 @@ class CampaignStateFieldService:
         campaign_id: uuid.UUID,
         field_id: uuid.UUID,
     ) -> None:
-        """Физическое удаление записи конфигурации.
+        """Удаление поля. Stage 2 запрещает удаление, если на поле ссылаются значения.
 
-        В Stage 2 сюда будет добавлена зависимость от active state: если на
-        поле ссылается хотя бы один list-item или single-value, удаление
-        должно отказаться (или пометить как tombstone). Сейчас
-        Stage 2 ещё не существует — следуем спеке §14: текущий этап разрешает
-        физическое удаление.
+        Проверяется наличие строк в campaign_state_values и
+        campaign_state_list_items по данному field_id — даже в неактивных
+        версиях. Если найдено хотя бы одно использование — FieldInUseError (409).
         """
         row = await self._get_field_or_404(db, campaign_id, field_id)
+        campaign = await _lock_campaign_for_config_change(db, campaign_id)
+
+        # Refuse deletion if state values reference this field (any version).
+        used_values = await db.execute(
+            select(func.count(CampaignStateValue.field_id)).where(
+                CampaignStateValue.field_id == field_id
+            )
+        )
+        values_count: int = int(used_values.scalar_one() or 0)
+        used_items = await db.execute(
+            select(func.count(CampaignStateListItem.field_id)).where(
+                CampaignStateListItem.field_id == field_id
+            )
+        )
+        items_count: int = int(used_items.scalar_one() or 0)
+        if values_count or items_count:
+            raise FieldInUseError(
+                f"field {row.key!r} is referenced by state "
+                f"(values={values_count}, list_items={items_count})"
+            )
+
         await db.delete(row)
+        await _bump_config_version(db, campaign)
         await db.commit()
         logger.info(
-            "campaign_state_field.delete: campaign=%s field=%s key=%s",
-            campaign_id, field_id, row.key,
+            "campaign_state_field.delete: campaign=%s field=%s key=%s config_version=%d",
+            campaign_id, field_id, row.key, campaign.config_version,
         )
 
     # -- reorder -----------------------------------------------------------
@@ -300,8 +363,11 @@ class CampaignStateFieldService:
           - len(ordered_field_ids) == текущему числу полей в кампании;
           - ID должны быть уникальны.
         display_order = позиция в списке (0-based).
+
+        Также инкрементирует Campaign.config_version, потому что изменение
+        порядка меняет контракт компиляции state.
         """
-        await _get_campaign_or_404(db, campaign_id)
+        campaign = await _lock_campaign_for_config_change(db, campaign_id)
 
         if not ordered_field_ids:
             raise InvalidReorderPayloadError("field_ids must not be empty")
@@ -347,11 +413,12 @@ class CampaignStateFieldService:
                 )
                 .values(display_order=index)
             )
+        await _bump_config_version(db, campaign)
         await db.commit()
 
         logger.info(
-            "campaign_state_field.reorder: campaign=%s ordered=%d",
-            campaign_id, len(parsed_ids),
+            "campaign_state_field.reorder: campaign=%s ordered=%d config_version=%d",
+            campaign_id, len(parsed_ids), campaign.config_version,
         )
         return await self.list_fields(db, campaign_id)
 

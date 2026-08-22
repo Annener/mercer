@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select, insert, delete
+from sqlalchemy import delete, insert, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.settings.schemas import CampaignTagCreateRequest
@@ -13,6 +13,10 @@ from app.services.campaign_state_service import (
     CampaignStateFieldError,
     campaign_state_field_service,
 )
+from app.services.campaign_state_value_service import (
+    CampaignStateValueError,
+    campaign_state_value_service,
+)
 from shared_contracts.models import (
     CampaignCreate,
     CampaignRead,
@@ -20,6 +24,10 @@ from shared_contracts.models import (
     CampaignStateFieldConfigRead,
     CampaignStateFieldConfigReorderRequest,
     CampaignStateFieldConfigUpdate,
+    CampaignStatePatchRequest,
+    CampaignStatePatchResponse,
+    CampaignStateVersionRead,
+    CampaignStateVersionSummary,
     CampaignUpdate,
     TagRead,
 )
@@ -317,6 +325,103 @@ async def reorder_campaign_state_fields(
             db, uuid.UUID(campaign_id), payload.field_ids
         )
     except CampaignStateFieldError as exc:
+        raise HTTPException(status_code=exc.http_status, detail=exc.code) from exc
+
+
+# ---------------------------------------------------------------------------
+# Campaign State — Stage 2: Versioned State endpoints
+# ---------------------------------------------------------------------------
+
+from typing import Any
+
+
+@router.get(
+    "/{campaign_id}/state",
+    response_model=CampaignStateVersionRead | None,
+)
+async def get_active_campaign_state(
+    campaign_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> CampaignStateVersionRead | None:
+    """Возвращает активную (последнюю) версию state кампании или null, если версий ещё нет."""
+    try:
+        return await campaign_state_value_service.get_active_state(
+            db, uuid.UUID(campaign_id)
+        )
+    except CampaignStateValueError as exc:
+        raise HTTPException(status_code=exc.http_status, detail=exc.code) from exc
+
+
+@router.get(
+    "/{campaign_id}/state/versions",
+    response_model=list[CampaignStateVersionSummary],
+)
+async def list_campaign_state_versions(
+    campaign_id: str,
+    limit: int = 50,
+    offset: int = 0,
+    db: AsyncSession = Depends(get_db),
+) -> list[CampaignStateVersionSummary]:
+    """Краткий список версий state (DESC по state_version)."""
+    try:
+        return await campaign_state_value_service.list_versions(
+            db, uuid.UUID(campaign_id), limit=limit, offset=offset
+        )
+    except CampaignStateValueError as exc:
+        raise HTTPException(status_code=exc.http_status, detail=exc.code) from exc
+
+
+@router.get(
+    "/{campaign_id}/state/versions/{state_version}",
+    response_model=CampaignStateVersionRead | None,
+)
+async def get_campaign_state_version(
+    campaign_id: str,
+    state_version: int,
+    db: AsyncSession = Depends(get_db),
+) -> CampaignStateVersionRead | None:
+    """Полный снимок конкретной версии state. 404, если версия не найдена."""
+    try:
+        return await campaign_state_value_service.get_state_version(
+            db, uuid.UUID(campaign_id), state_version
+        )
+    except CampaignStateValueError as exc:
+        raise HTTPException(status_code=exc.http_status, detail=exc.code) from exc
+
+
+@router.post(
+    "/{campaign_id}/state/patch",
+    response_model=CampaignStatePatchResponse,
+)
+async def apply_campaign_state_patch(
+    campaign_id: str,
+    payload: CampaignStatePatchRequest,
+    db: AsyncSession = Depends(get_db),
+) -> CampaignStatePatchResponse:
+    """Применить patch к Campaign State.
+
+    Контракт:
+      - base_state_version должен совпадать с активной версией кампании (или null,
+        если активной версии ещё нет).
+      - config_version должен совпадать с текущим Campaign.config_version.
+      - При несовпадении любой версии — 409, без частичного применения.
+      - При валидационной ошибке любой операции — 422, без частичного применения.
+    """
+    try:
+        return await campaign_state_value_service.apply_patch(
+            db, uuid.UUID(campaign_id), payload
+        )
+    except CampaignStateValueError as exc:
+        # PatchValidationError несёт rejection; пробрасываем как 422 с деталями.
+        rejection: Any = getattr(exc, "rejection", None)
+        if rejection is not None:
+            raise HTTPException(
+                status_code=exc.http_status,
+                detail={
+                    "code": exc.code,
+                    "rejection": rejection.model_dump(),
+                },
+            ) from exc
         raise HTTPException(status_code=exc.http_status, detail=exc.code) from exc
 
 
