@@ -3,13 +3,8 @@
 // Состояние:
 //   - если Initial State применён → badge «Initial State применён».
 //   - если нет полей → скрыт.
-//   - если есть поля, но не применён → кнопка «Сформировать начальный контекст».
-//
-// Сама логика выбора .md-документов и review/apply НЕ реализована в UI этого этапа:
-// API готов (см. Этап 3 backend), но full-screen overlay flow слишком тяжёлый
-// для MVP и вынесен в отдельный UI-flow (планируется Этап 5 «Initial State Wizard»).
-// Сейчас кнопка «Сформировать начальный контекст» отправляет на placeholder-флоу
-// через console.warn — реальный Wizard появится позже, контракт API стабилен.
+//   - если есть поля, но не применён → кнопка «Сформировать начальный контекст»,
+//     по клику открывается InitialStateWizard (Stage 4).
 
 (function () {
     'use strict';
@@ -78,9 +73,10 @@
             button.addEventListener('click', () => {
                 if (typeof state.onApplyClick === 'function') {
                     state.onApplyClick(state.campaignId);
-                } else {
-                    // Fallback: показать подсказку (до реализации Wizard UI).
-                    alert('Сначала закройте модалку. Полноценный UI-мастер появится в следующих этапах.\n\nAPI Initial State готов, см. backend /api/settings/campaigns/{id}/state/initial/preview.');
+                } else if (window.InitialStateWizard) {
+                    window.InitialStateWizard.open(state.campaignId, {
+                        onApplied: () => state.refresh(state.campaignId),
+                    });
                 }
             });
             body.appendChild(button);

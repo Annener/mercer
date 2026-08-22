@@ -243,8 +243,17 @@ const CampaignsTabMixin = {
                 initialStateSection = window.InitialStateSection.build();
                 initialStateSection.element.style.padding = '0';
                 initialMount.appendChild(initialStateSection.element);
+                const wizardDomainId = effectiveDomainId || campaign.domain_id || null;
                 initialStateSection.load(campaignId, {
                     onChanged: () => this.loadTab('campaigns'),
+                    onApplyClick: (cid) => {
+                        if (window.InitialStateWizard) {
+                            window.InitialStateWizard.open(cid, {
+                                domainId: wizardDomainId,
+                                onApplied: () => initialStateSection.refresh(cid),
+                            });
+                        }
+                    },
                 });
             }
         }

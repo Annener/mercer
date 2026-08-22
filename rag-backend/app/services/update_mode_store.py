@@ -17,8 +17,8 @@ cjson empty-array fix:
   cjson (the JSON library bundled with Redis) cannot distinguish an empty
   Lua table from an empty Lua array — both serialise to "{}". This would
   break Pydantic validation for every list field in UpdateModeSession
-  (warnings, vault_ids, candidate_document_ids, changes) after a Lua
-  round-trip.
+  (warnings, vault_ids, candidate_document_ids, changes,
+  state_patch_operations, state_field_snapshot) after a Lua round-trip.
 
   Each Lua script calls _fix_session_arrays() before cjson.encode to mark
   known list fields with cjson.empty_array_mt, so they are written back as
@@ -28,6 +28,14 @@ cjson empty-array fix:
   result-parser methods as defence-in-depth — it handles any session blob
   written by old code before this patch, or any future field not yet
   covered by the Lua helper.
+
+Stage 5 (state_patch in proposal):
+  update_review accepts three additional ARGV arrays/objects that are merged
+  atomically into the state_patch_operations list of the session:
+    - accepted_state_op_indexes (json array of int)
+    - rejected_state_op_indexes (json array of int)
+    - edited_state_ops          (json object {op_index: text})
+  Empty arrays / objects preserve back-compat with older callers.
 """
 from __future__ import annotations
 
@@ -41,6 +49,7 @@ if TYPE_CHECKING:
     import redis.asyncio as aioredis
 
 from shared_contracts.models import (
+    CampaignStatePatchOperation,
     UpdateModeApplyResponse,
     UpdateModeSession,
 )
@@ -93,6 +102,22 @@ class ApplyConflictError(UpdateModeError):
         )
 
 
+class UnknownStateOpIndexError(UpdateModeError):
+    def __init__(self, op_index: int) -> None:
+        super().__init__(
+            "unknown_state_op_index",
+            f"state_patch op_index {op_index} not found in session",
+        )
+
+
+class StateOpReviewConflictError(UpdateModeError):
+    def __init__(self, op_index: int) -> None:
+        super().__init__(
+            "state_op_review_conflict",
+            f"state_patch op_index {op_index} is not in pending state",
+        )
+
+
 # ---------------------------------------------------------------------------
 # Shared Lua helper: fix empty arrays before cjson.encode
 # ---------------------------------------------------------------------------
@@ -103,7 +128,8 @@ class ApplyConflictError(UpdateModeError):
 # This snippet is embedded verbatim into every Lua script below.
 _LUA_FIX_ARRAYS = """
 local function _fix_session_arrays(sess)
-    local list_fields = {'warnings', 'vault_ids', 'candidate_document_ids', 'changes'}
+    local list_fields = {'warnings', 'vault_ids', 'candidate_document_ids',
+                         'changes', 'state_patch_operations', 'state_field_snapshot'}
     for _, f in ipairs(list_fields) do
         if type(sess[f]) == 'table' and next(sess[f]) == nil then
             sess[f] = cjson.empty_array
@@ -133,7 +159,16 @@ end
 # ARGV[1] = json array of accepted change_ids
 # ARGV[2] = json array of rejected change_ids
 # ARGV[3] = new TTL seconds
+# ARGV[4] = json array of accepted state_patch op_indexes (Stage 5)
+# ARGV[5] = json array of rejected state_patch op_indexes (Stage 5)
+# ARGV[6] = json object {op_index: edited_text} for state_patch inline edits
 # Returns: updated session JSON string, or error string prefixed with "ERR:"
+#
+# For state_patch ops that carry a text payload (replace_single / update_list_item
+# / add_list_item), an inline edit replaces the operation.text AND records
+# edited_text. For ops without text (clear_single / resolve_list_item /
+# remove_list_item), an inline edit is silently ignored (the caller is
+# responsible for keeping state_patch_decisions consistent with op types).
 _REVIEW_LUA = (
     _LUA_FIX_ARRAYS
     + """
@@ -145,14 +180,17 @@ local session = cjson.decode(raw)
 local accepted = cjson.decode(ARGV[1])
 local rejected = cjson.decode(ARGV[2])
 local ttl = tonumber(ARGV[3])
+local accepted_state = cjson.decode(ARGV[4])
+local rejected_state = cjson.decode(ARGV[5])
+local edited_state = cjson.decode(ARGV[6])
 
--- Build lookup
+-- Build lookup for file changes
 local change_map = {}
 for _, ch in ipairs(session['changes']) do
     change_map[ch['change_id']] = ch
 end
 
--- Validate and apply
+-- Validate and apply file changes
 for _, cid in ipairs(accepted) do
     local ch = change_map[cid]
     if not ch then return 'ERR:unknown_change_id:' .. cid end
@@ -165,6 +203,49 @@ for _, cid in ipairs(rejected) do
     if not ch then return 'ERR:unknown_change_id:' .. cid end
     if ch['status'] ~= 'pending' then return 'ERR:review_conflict:' .. cid end
     ch['status'] = 'rejected'
+end
+
+-- Build lookup for state_patch_operations
+local state_ops = session['state_patch_operations'] or {}
+local state_op_map = {}
+for _, op in ipairs(state_ops) do
+    state_op_map[tostring(op['op_index'])] = op
+end
+
+-- Validate and apply state-patch accept/reject decisions
+for _, idx in ipairs(accepted_state) do
+    local op = state_op_map[tostring(idx)]
+    if not op then return 'ERR:unknown_state_op:' .. tostring(idx) end
+    if op['status'] ~= 'pending' then return 'ERR:state_op_review_conflict:' .. tostring(idx) end
+    op['status'] = 'accepted'
+end
+for _, idx in ipairs(rejected_state) do
+    local op = state_op_map[tostring(idx)]
+    if not op then return 'ERR:unknown_state_op:' .. tostring(idx) end
+    if op['status'] ~= 'pending' then return 'ERR:state_op_review_conflict:' .. tostring(idx) end
+    op['status'] = 'rejected'
+end
+
+-- Apply inline edits to text-bearing operations
+-- text-bearing types: replace_single, update_list_item, add_list_item
+for idx_str, new_text in pairs(edited_state) do
+    local op = state_op_map[idx_str]
+    if op == nil then
+        return 'ERR:unknown_state_op:' .. idx_str
+    end
+    if op['status'] ~= 'pending' then
+        return 'ERR:state_op_review_conflict:' .. idx_str
+    end
+    local operation = op['operation'] or {}
+    local op_type = operation['type']
+    if op_type == 'replace_single' or op_type == 'update_list_item' or op_type == 'add_list_item' then
+        operation['text'] = new_text
+        op['edited_text'] = new_text
+    end
+    -- For op types without text field (clear_single / resolve_list_item /
+    -- remove_list_item) we silently skip the edit. The Python caller already
+    -- validates that edited[].op_index targets a text-bearing op; defence in
+    -- depth in case of a misuse.
 end
 
 session = _fix_session_arrays(session)
@@ -258,7 +339,14 @@ return updated
 # ---------------------------------------------------------------------------
 # Applied in all result parsers BEFORE model_validate. Handles sessions
 # written by code before this patch (e.g. still cached in Redis on deploy).
-_SESSION_LIST_FIELDS = ("warnings", "vault_ids", "candidate_document_ids", "changes")
+_SESSION_LIST_FIELDS = (
+    "warnings",
+    "vault_ids",
+    "candidate_document_ids",
+    "changes",
+    "state_patch_operations",
+    "state_field_snapshot",
+)
 
 
 def _normalize_session_lists(data: dict[str, Any]) -> dict[str, Any]:
@@ -327,14 +415,28 @@ class UpdateModeStore:
         chat_id: str,
         accepted_change_ids: set[str],
         rejected_change_ids: set[str],
+        *,
+        accepted_state_op_indexes: set[int] | None = None,
+        rejected_state_op_indexes: set[int] | None = None,
+        edited_state_ops: dict[int, str] | None = None,
     ) -> UpdateModeSession:
         """Atomically accept/reject changes in the session.
+
+        Stage 5: additionally accepts state_patch decisions:
+          - accepted_state_op_indexes / rejected_state_op_indexes: per-op
+            accept/reject decisions for state_patch_operations in the session.
+          - edited_state_ops: inline edits for text-bearing ops (replace_single,
+            update_list_item, add_list_item). Caller must validate that
+            op_index targets a text-bearing op; the Lua script silently
+            ignores edits for ops without text.
 
         Raises:
             SessionExpiredError: key missing.
             UnknownChangeIdError: change_id not in session.
             CannotAcceptFailedChangeError: trying to accept a resolution_failed change.
             ReviewConflictError: change not in pending state.
+            UnknownStateOpIndexError: state_patch op_index not in session.
+            StateOpReviewConflictError: state_patch op not in pending state.
         """
         sha = await self._ensure_review_script(redis)
         result = await redis.evalsha(
@@ -344,6 +446,12 @@ class UpdateModeStore:
             json.dumps(list(accepted_change_ids)),
             json.dumps(list(rejected_change_ids)),
             str(SESSION_TTL_SECONDS),
+            json.dumps(sorted(accepted_state_op_indexes or set())),
+            json.dumps(sorted(rejected_state_op_indexes or set())),
+            json.dumps(
+                {str(k): v for k, v in (edited_state_ops or {}).items()},
+                ensure_ascii=False,
+            ),
         )
         return self._parse_review_result(result, chat_id)
 
@@ -459,6 +567,19 @@ class UpdateModeStore:
                 raise CannotAcceptFailedChangeError(err.split(":", 1)[1])
             if err.startswith("review_conflict:"):
                 raise ReviewConflictError(err.split(":", 1)[1])
+            if err.startswith("unknown_state_op:"):
+                idx = err.split(":", 1)[1]
+                # Lua encodes integer as int; convert if possible.
+                try:
+                    raise UnknownStateOpIndexError(int(idx))
+                except ValueError:
+                    raise UnknownStateOpIndexError(-1) from None
+            if err.startswith("state_op_review_conflict:"):
+                idx = err.split(":", 1)[1]
+                try:
+                    raise StateOpReviewConflictError(int(idx))
+                except ValueError:
+                    raise StateOpReviewConflictError(-1) from None
             raise UpdateModeError("lua_error", f"Unexpected Lua error: {err}")
         data = _normalize_session_lists(json.loads(result))
         return UpdateModeSession.model_validate(data)

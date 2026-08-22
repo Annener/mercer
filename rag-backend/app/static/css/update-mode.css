@@ -598,3 +598,306 @@
     background: #3498db;
     color: #fff;
 }
+
+/* ============================================================
+   Update Mode Panel — Stage 5: Campaign State patch cards
+   Mirrors .um-change-card conventions; renders review UI for
+   UpdateModeStatePatchEntry list returned by POST /start.
+   ============================================================ */
+
+/* ---- Section wrapper ---- */
+.um-state-section {
+    margin-top: 8px;
+    padding-top: 12px;
+    border-top: 1px dashed var(--border-color, #e0e0e0);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.um-state-section__title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-secondary, #555);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.um-state-section__hint {
+    font-size: 12px;
+    color: var(--text-secondary, #888);
+    font-weight: 400;
+    margin-left: 4px;
+}
+
+.um-state-section__bulk {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 4px;
+}
+
+/* ---- Card ---- */
+.um-state-card {
+    border: 1px solid var(--border-color, #e0e0e0);
+    border-radius: 8px;
+    background: var(--surface-1, #fff);
+    padding: 10px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    transition: border-color 0.15s, background 0.15s;
+}
+
+.um-state-card[data-status="accepted"] {
+    border-color: #27ae60;
+    background: rgba(39, 174, 96, 0.06);
+}
+
+.um-state-card[data-status="rejected"] {
+    border-color: #bdc3c7;
+    background: rgba(189, 195, 199, 0.10);
+    opacity: 0.85;
+}
+
+.um-state-card__header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.um-state-card__op-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 600;
+    background: #ecf0f1;
+    color: #34495e;
+    white-space: nowrap;
+}
+
+.um-state-card__op-badge--replace_single,
+.um-state-card__op-badge--add_list_item {
+    background: #3498db;
+    color: #fff;
+}
+
+.um-state-card__op-badge--clear_single,
+.um-state-card__op-badge--remove_list_item {
+    background: #e74c3c;
+    color: #fff;
+}
+
+.um-state-card__op-badge--update_list_item,
+.um-state-card__op-badge--resolve_list_item {
+    background: #f39c12;
+    color: #fff;
+}
+
+.um-state-card__field {
+    font-size: 13px;
+    color: var(--text-primary, #222);
+    font-weight: 500;
+}
+
+.um-state-card__field-key {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11px;
+    color: var(--text-secondary, #777);
+    background: var(--surface-2, #f4f4f4);
+    padding: 1px 5px;
+    border-radius: 3px;
+    margin-left: 4px;
+}
+
+.um-state-card__diff {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 12px;
+    line-height: 1.4;
+}
+
+.um-state-card__diff-label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-secondary, #888);
+    font-weight: 600;
+}
+
+.um-state-card__diff-value {
+    white-space: pre-wrap;
+    word-break: break-word;
+    padding: 4px 8px;
+    border-radius: 4px;
+    background: var(--surface-2, #f4f4f4);
+    border-left: 3px solid #bdc3c7;
+}
+
+.um-state-card__diff-value--from {
+    border-left-color: #e74c3c;
+    color: #555;
+}
+
+.um-state-card__diff-value--to {
+    border-left-color: #27ae60;
+    color: #222;
+}
+
+.um-state-card__diff-value--empty {
+    font-style: italic;
+    color: var(--text-secondary, #999);
+}
+
+.um-state-card__reason {
+    font-size: 12px;
+    color: var(--text-secondary, #666);
+    border-left: 2px solid var(--border-color, #e0e0e0);
+    padding-left: 8px;
+    line-height: 1.4;
+}
+
+.um-state-card__edit-block {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    background: var(--surface-2, #f9f9f9);
+    padding: 8px;
+    border-radius: 6px;
+}
+
+.um-state-card__edit-label {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-secondary, #777);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.um-state-card__edit-textarea {
+    width: 100%;
+    min-height: 60px;
+    resize: vertical;
+    font-family: inherit;
+    font-size: 13px;
+    padding: 6px 8px;
+    border: 1px solid var(--border-color, #ddd);
+    border-radius: 4px;
+    background: #fff;
+    box-sizing: border-box;
+}
+
+.um-state-card__edit-textarea:focus {
+    outline: none;
+    border-color: #3498db;
+    box-shadow: 0 0 0 2px rgba(52, 152, 219, 0.15);
+}
+
+.um-state-card__edit-actions {
+    display: flex;
+    gap: 6px;
+}
+
+.um-state-card__edit-save,
+.um-state-card__edit-cancel {
+    padding: 4px 10px;
+    border-radius: 4px;
+    font-size: 12px;
+    cursor: pointer;
+    border: 1px solid transparent;
+    transition: background 0.15s;
+}
+
+.um-state-card__edit-save {
+    background: #3498db;
+    color: #fff;
+}
+
+.um-state-card__edit-save:hover {
+    background: #2980b9;
+}
+
+.um-state-card__edit-cancel {
+    background: transparent;
+    color: #7f8c8d;
+    border-color: #bdc3c7;
+}
+
+.um-state-card__edit-cancel:hover {
+    background: #ecf0f1;
+}
+
+.um-state-card__actions {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.um-state-card__edit-toggle {
+    background: transparent;
+    color: #3498db;
+    border: 1px solid #3498db;
+    padding: 3px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    cursor: pointer;
+}
+
+.um-state-card__edit-toggle:hover {
+    background: rgba(52, 152, 219, 0.1);
+}
+
+.um-state-card__edit-toggle[disabled] {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* ---- Apply result: state_patch_result section ---- */
+.um-state-result {
+    margin-top: 12px;
+    padding: 10px 12px;
+    border-radius: 8px;
+    background: var(--surface-2, #f9f9f9);
+    border: 1px solid var(--border-color, #e0e0e0);
+}
+
+.um-state-result__headline {
+    font-size: 13px;
+    font-weight: 600;
+    margin-bottom: 6px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.um-state-result__headline--ok {
+    color: #27ae60;
+}
+
+.um-state-result__headline--warn {
+    color: #f39c12;
+}
+
+.um-state-result__headline--error {
+    color: #e74c3c;
+}
+
+.um-state-result__meta {
+    font-size: 12px;
+    color: var(--text-secondary, #666);
+    line-height: 1.5;
+}
+
+.um-state-result__failure-list {
+    margin: 6px 0 0;
+    padding-left: 20px;
+    font-size: 12px;
+    color: #c0392b;
+}
+
+.um-state-result__failure-list li {
+    margin-bottom: 2px;
+}

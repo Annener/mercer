@@ -1381,9 +1381,15 @@ class UpdateModeGenerationResult(BaseModel):
     Инварианты:
     - empty intents → non-empty no_change_reason
     - non-empty intents → no_change_reason must be None
+
+    Stage 5: дополнительно содержит state_patch (точечные операции Campaign State)
+    и state_patch_questions. state_patch может быть пустым даже при наличии intents
+    (Campaign Update Mode §9 — patch может быть пустым).
     """
     intents: list[UpdateModeIntent] = Field(default_factory=list, max_length=10)
     no_change_reason: str | None = Field(default=None, max_length=1_000)
+    state_patch: list[CampaignStatePatchOperation] = Field(default_factory=list)
+    state_patch_questions: list[str] = Field(default_factory=list)
 
     @model_validator(mode='after')
     def _validate_no_change_invariant(self) -> UpdateModeGenerationResult:
@@ -1670,6 +1676,8 @@ class StartUpdateModeResponse(BaseModel):
     expires_at: datetime
     changes: list[ResolvedUpdateModeChange]
     warnings: list[str] = Field(default_factory=list)
+    state_field_snapshot: list[CampaignStateFieldSnapshot] = Field(default_factory=list)
+    state_patch_operations: list[UpdateModeStatePatchEntry] = Field(default_factory=list)
 
 
 class UpdateModeSessionResponse(BaseModel):
@@ -1680,11 +1688,16 @@ class UpdateModeSessionResponse(BaseModel):
     expires_at: datetime
     changes: list[ResolvedUpdateModeChange]
     warnings: list[str] = Field(default_factory=list)
+    state_field_snapshot: list[CampaignStateFieldSnapshot] = Field(default_factory=list)
+    state_patch_operations: list[UpdateModeStatePatchEntry] = Field(default_factory=list)
 
 
 class UpdateModeReviewRequest(BaseModel):
     accepted_change_ids: list[str] = Field(default_factory=list, max_length=10)
     rejected_change_ids: list[str] = Field(default_factory=list, max_length=10)
+
+    # Stage 5: optional state-patch decisions. None для back-compat со старыми клиентами.
+    state_patch_decisions: UpdateModeStatePatchDecisions | None = None
 
     @model_validator(mode='after')
     def _validate_no_overlap(self) -> UpdateModeReviewRequest:
@@ -1693,8 +1706,11 @@ class UpdateModeReviewRequest(BaseModel):
         overlap = accepted & rejected
         if overlap:
             raise ValueError(f"change_ids cannot be both accepted and rejected: {overlap}")
-        if not accepted and not rejected:
-            raise ValueError("review request must contain at least one accepted or rejected change_id")
+        if not accepted and not rejected and self.state_patch_decisions is None:
+            raise ValueError(
+                "review request must contain at least one accepted or rejected change_id, "
+                "or a non-empty state_patch_decisions"
+            )
         return self
 
 
@@ -1705,10 +1721,107 @@ class ApplyUpdateModeRequest(BaseModel):
 class ApplyUpdateModeResponse(BaseModel):
     apply_id: str
     results: list[UpdateModeVaultApplyResult]
+    # Stage 5: state patch apply result. None если нет state field snapshot
+    # или все state-patch ops отклонены.
+    state_patch_result: UpdateModeStatePatchApplyResult | None = None
 
 
 class CancelUpdateModeResponse(BaseModel):
     status: Literal["cancelled"]
+
+
+# ---------------------------------------------------------------------------
+# Campaign Update Mode — Stage 5: state_patch in proposal
+# ---------------------------------------------------------------------------
+
+
+class CampaignStateFieldSnapshot(BaseModel):
+    """Снимок метаданных enabled-поля Campaign State на момент start Update Mode.
+
+    Хранится в Redis-сессии Update Mode, чтобы:
+      - UI мог показывать человеко-читаемые названия (label) без повторного lookup;
+      - сервер мог валидировать edited-текст без обращения к БД.
+    """
+
+    field_id: str
+    key: str = Field(min_length=1, max_length=64)
+    label: str = Field(min_length=1, max_length=256)
+    description: str = Field(default="", max_length=8 * 1024)
+    mode: CampaignStateFieldMode
+    display_order: int = Field(ge=0)
+
+
+class UpdateModeStatePatchEntry(BaseModel):
+    """Одна Campaign State patch-операция в proposal Update Mode.
+
+    op_index — стабильный индекс внутри сессии (0..N-1). Используется в
+    PATCH /review и POST /apply для ссылки на конкретную операцию.
+    """
+
+    op_index: int = Field(ge=0)
+    field_key: str = Field(min_length=1, max_length=64)
+    field_label: str = Field(min_length=1, max_length=256)
+    mode: CampaignStateFieldMode
+    operation: CampaignStatePatchOperation
+    previous_text: str | None = None
+    proposed_text: str | None = None
+    edited_text: str | None = None
+    status: Literal["pending", "accepted", "rejected"] = "pending"
+
+
+class UpdateModeStatePatchEdit(BaseModel):
+    """Inline-правка текста state-patch операции на review-этапе.
+
+    Допустимо только для операций с text-полем (replace_single, update_list_item,
+    add_list_item). Для остальных типов backend игнорирует edit (warning в логах).
+    """
+
+    op_index: int = Field(ge=0)
+    text: str = Field(min_length=1, max_length=8192)
+
+
+class UpdateModeStatePatchDecisions(BaseModel):
+    """Решения пользователя по state-patch операциям в PATCH /review.
+
+    Семантика:
+      - accepted_op_indexes + rejected_op_indexes: пользовательский выбор;
+      - edited: inline-правки текста (применяются поверх operation.text).
+    """
+
+    accepted_op_indexes: list[int] = Field(default_factory=list)
+    rejected_op_indexes: list[int] = Field(default_factory=list)
+    edited: list[UpdateModeStatePatchEdit] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_no_overlap(self) -> UpdateModeStatePatchDecisions:
+        accepted = set(self.accepted_op_indexes)
+        rejected = set(self.rejected_op_indexes)
+        overlap = accepted & rejected
+        if overlap:
+            raise ValueError(
+                f"state_patch op_indexes cannot be both accepted and rejected: {sorted(overlap)}"
+            )
+        edited_indexes = {e.op_index for e in self.edited}
+        if edited_indexes & rejected:
+            raise ValueError(
+                f"edited state_patch op_indexes cannot be rejected: {sorted(edited_indexes & rejected)}"
+            )
+        return self
+
+
+class UpdateModeStatePatchApplyResult(BaseModel):
+    """Результат применения state-patch внутри POST /apply.
+
+    Отсутствует (None), если state_field_snapshot пустой или все state-ops
+    были rejected. Не валится apply file changes, даже если state patch
+    заканчивается failed_operations.
+    """
+
+    applied_state_version: int = 0
+    config_version: int = 0
+    applied_op_indexes: list[int] = Field(default_factory=list)
+    failed_op_indexes: list[int] = Field(default_factory=list)
+    failed_reasons: dict[str, str] = Field(default_factory=dict)
 
 
 # --- Redis session contract ---
@@ -1734,4 +1847,7 @@ class UpdateModeSession(BaseModel):
     apply_started_at: datetime | None = None
     # Phase 4: apply lifecycle state
     apply_state: Literal["review", "in_progress", "completed"] = "review"
+    # Stage 5: state-patch snapshot and operations (Campaign Update Mode §9, §6.2).
+    state_field_snapshot: list[CampaignStateFieldSnapshot] = Field(default_factory=list)
+    state_patch_operations: list[UpdateModeStatePatchEntry] = Field(default_factory=list)
     apply_result: UpdateModeApplyResponse | None = None

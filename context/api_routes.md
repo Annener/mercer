@@ -62,24 +62,29 @@ POST   /api/chat/{chat_id}/clarification/reset — сбросить уточне
 
 ```
 POST   /api/chats/{chat_id}/update-mode/start
-    — Старт update mode: retrieval → LLM edit intents → resolve в indexer
+    — Старт update mode: retrieval → LLM edit intents + state_patch → resolve в indexer
     — Body: {"note": str (max 20000 chars)}
-    — Response: {session, warnings}
+    — Response: {session, warnings, state_field_snapshot, state_patch_operations}
     — 409 если сессия уже активна; 422 если нет tags / vault / indexed md
 
 GET    /api/chats/{chat_id}/update-mode/session
     — Получить текущее состояние review-сессии из Redis
+    — Response: UpdateModeSessionResponse (changes + warnings + state_field_snapshot + state_patch_operations)
     — 410 + Cache-Control: no-store если сессия истекла
 
 PATCH  /api/chats/{chat_id}/update-mode/review
     — Обновить accepted/rejected статус правок в Redis
-    — Body: {"changes": [{"change_id": str, "status": "accepted" | "rejected"}]}
+    — Body: {"accepted_change_ids": [], "rejected_change_ids": [],
+             "state_patch_decisions": { accepted_op_indexes, rejected_op_indexes, edited: [{op_index, text}] } }
+    — 422 при unknown_state_op_index; 409 при state_op_review_conflict
 
 POST   /api/chats/{chat_id}/update-mode/apply
     — Применить accepted changes: checksum verify → snapshot → write → commit → reindex
+    — Также применяет принятый state_patch через campaign_state_value_service.apply_patch
     — Body: {"apply_id": UUID (idempotency key)}
-    — Response: ApplyUpdateModeResponse (per-vault results, commit SHA, reindex_task_id)
+    — Response: ApplyUpdateModeResponse (per-vault results, commit SHA, reindex_task_id, state_patch_result)
     — 409 при file_modified, vault_lock_timeout, apply_already_started
+    — state patch failure (config_version mismatch, source stale) → state_patch_result.failed_op_indexes, file apply продолжается
 
 DELETE /api/chats/{chat_id}/update-mode/session
     — Отменить сессию, удалить из Redis
