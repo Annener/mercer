@@ -253,6 +253,16 @@ POST   /api/settings/campaigns/{campaign_id}/state/initial/apply
 `state_version=1`, `base_state_version=null`). Возвращает
 `CampaignStateVersionRead`.
 
+#### Campaign State — Effective Context (Stage 6)
+```
+GET    /api/settings/campaigns/{campaign_id}/effective-context?chat_id=...
+```
+
+Возвращает `EffectiveContextRead` с блоками `system_prompt`, `campaign_state`,
+`rag_context` (опц.), `history`/`user_message` (опц.), полями `total_tokens`,
+`budget`, `truncated_fields`, `state_version`. Не выполняет retrieval и не
+вызывает LLM. Возвращает 200 даже если active state отсутствует.
+
 Коды ошибок preview: `404 campaign_not_found`, `422 no_markdown_documents /
 document_not_markdown / document_not_indexed`, `503
 generation_provider_unavailable / invalid_generation_output`.

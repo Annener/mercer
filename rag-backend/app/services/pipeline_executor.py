@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Chat
 from app.services.full_document_service import reconstruct_full_text
+from app.services.effective_context import compose_full_system_prompt, compose_state_block_only
 from app.services.pipeline_dag import get_execution_levels
 from app.services.query_rewriter import query_rewriter
 from app.services.retrieval import (
@@ -309,13 +310,11 @@ class PipelineExecutor:
                 "resume_from_full_doc_selection: plain-fallback branch (no pipeline_id). "
                 "chat_id=%s", chat_id,
             )
-            from app.api.chat import _resolve_system_prompt
-
             campaign_id: str | None = context_snapshot.get("campaign_id")
             domain_id: str | None = context_snapshot.get("domain_id")
             original_query: str = context_snapshot.get("original_query") or context_snapshot.get("query", "")
 
-            system_prompt = await _resolve_system_prompt(campaign_id, domain_id, db)
+            system_prompt = await compose_full_system_prompt(campaign_id, domain_id, db)
             full_system = f"{system_prompt}\n\n{context_str}" if system_prompt else context_str
 
             messages: list[dict[str, str]] = []
@@ -677,13 +676,29 @@ class PipelineExecutor:
         provider: Any,
     ) -> AsyncGenerator[dict[str, Any], None]:
         prompt = _resolve_prompt(ctx.final_composition.system_prompt, ctx)
+        # Stage 6: добавляем скомпилированный Campaign State как отдельный блок
+        # после `_resolve_prompt` — не трогаем шаблоны с {query}/{STEP_ID.*}.
+        state_block_text = ""
+        if getattr(ctx, "campaign_id", None):
+            try:
+                state_block_text = await compose_state_block_only(
+                    ctx.campaign_id, self.db
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "_run_final_composition: campaign state compile failed: %s", exc,
+                )
+                state_block_text = ""
+        full_prompt = "\n\n".join(
+            p for p in (prompt, state_block_text) if p
+        )
         # Use the original unmodified user query as the user-role message so the
         # LLM receives the full intent, not the retrieval-optimised short phrase.
         user_content = ctx.original_query if ctx.original_query else ctx.query
         yield _status("Генерирую ответ...")
         try:
             async for token in provider.generate_stream([
-                {"role": "system", "content": prompt},
+                {"role": "system", "content": full_prompt},
                 {"role": "user", "content": user_content},
             ]):
                 yield {"type": "token", "content": token}

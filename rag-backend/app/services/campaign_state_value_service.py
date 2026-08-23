@@ -532,6 +532,31 @@ class CampaignStateValueService:
         rows: Sequence[CampaignStateVersion] = (await db.execute(stmt)).scalars().all()
         return [_summary(r) for r in rows]
 
+    async def list_enabled_fields_ordered(
+        self,
+        db: AsyncSession,
+        campaign_id: uuid.UUID,
+    ) -> list[CampaignStateFieldConfigRead]:
+        """Вернуть enabled-поля кампании в порядке display_order ASC, key ASC.
+
+        Stage 6: Prompt Assembly использует этот порядок для детерминированной
+        компиляции state в prompt. Возвращает Pydantic-DTO, а не ORM.
+        """
+        await _get_campaign_or_404(db, campaign_id)
+        stmt = (
+            select(CampaignStateFieldConfig)
+            .where(
+                CampaignStateFieldConfig.campaign_id == campaign_id,
+                CampaignStateFieldConfig.enabled == True,  # noqa: E712
+            )
+            .order_by(
+                CampaignStateFieldConfig.display_order.asc(),
+                CampaignStateFieldConfig.key.asc(),
+            )
+        )
+        rows = (await db.execute(stmt)).scalars().all()
+        return [_field_read(f) for f in rows]
+
     async def apply_patch(
         self,
         db: AsyncSession,

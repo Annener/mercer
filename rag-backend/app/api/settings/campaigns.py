@@ -21,6 +21,7 @@ from app.services.campaign_state_value_service import (
     CampaignStateValueError,
     campaign_state_value_service,
 )
+from app.services.effective_context import build_effective_context
 from shared_contracts.models import (
     CampaignCreate,
     CampaignRead,
@@ -29,6 +30,7 @@ from shared_contracts.models import (
     CampaignStateFieldConfigReorderRequest,
     CampaignStateFieldConfigUpdate,
     CampaignStateInitialApplyRequest,
+    EffectiveContextRead,
     CampaignStateInitialPreviewRequest,
     CampaignStateInitialProposalRead,
     CampaignStatePatchRequest,
@@ -528,6 +530,53 @@ async def apply_initial_state(
                 },
             ) from exc
         raise HTTPException(status_code=exc.http_status, detail=exc.code) from exc
+
+
+@router.get(
+    "/{campaign_id}/effective-context",
+    response_model=EffectiveContextRead,
+)
+async def get_campaign_effective_context(
+    campaign_id: str,
+    chat_id: str | None = None,
+    db: AsyncSession = Depends(get_db),
+) -> EffectiveContextRead:
+    """Возвращает effective-context для дебага prompt assembly кампании.
+
+    Не выполняет retrieval и не вызывает LLM. Для `chat_id` подгружает
+    domain_id чата (для совпадения с runtime), иначе использует campaign.domain_id.
+
+    Endpoint всегда возвращает 200, даже если state отсутствует (см. §11).
+    """
+    from app.db.models import Campaign as CampaignModel, Chat as ChatModel
+
+    try:
+        campaign_uuid = uuid.UUID(campaign_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    campaign = await db.get(CampaignModel, campaign_uuid)
+    if campaign is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    domain_id: str | None = campaign.domain_id
+
+    if chat_id:
+        try:
+            chat_uuid = uuid.UUID(chat_id)
+        except ValueError:
+            chat_uuid = None
+        if chat_uuid is not None:
+            chat = await db.get(ChatModel, chat_uuid)
+            if chat is not None and chat.domain_id:
+                domain_id = chat.domain_id
+
+    return await build_effective_context(
+        campaign_id=str(campaign_uuid),
+        chat_id=chat_id,
+        domain_id=domain_id,
+        db=db,
+    )
 
 
 # --- Вспомогательные ---

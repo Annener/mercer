@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Chat, Message
 from app.db.session import get_db
+from app.services.effective_context import compose_full_system_prompt
 from app.services.pipeline_executor import PipelineExecutor
 from app.services.settings_service import settings_service
 from shared_contracts.models import (
@@ -322,7 +323,7 @@ async def _plain_rag_stream(
     db: AsyncSession,
 ) -> AsyncIterator[str]:
     """Fallback plain RAG стрим — используется при отмене confirm."""
-    from app.api.chat import _fallback_retrieve, _maybe_set_title, _resolve_system_prompt
+    from app.api.chat import _fallback_retrieve, _maybe_set_title
     from app.services.retrieval import format_context
 
     provider = settings_service.get_active_provider()
@@ -336,7 +337,7 @@ async def _plain_rag_stream(
 
     yield f"data: {json.dumps({'type': 'step_status', 'text': 'Preparing context...'}, ensure_ascii=False)}\n\n"
 
-    system_prompt = await _resolve_system_prompt(ctx.campaign_id, ctx.domain_id, db)
+    system_prompt = await compose_full_system_prompt(ctx.campaign_id, ctx.domain_id, db)
     vault_ids: list[str] = ctx.vault_ids or []
 
     hits: list[SearchHit] = await _fallback_retrieve(

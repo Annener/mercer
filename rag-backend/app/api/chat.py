@@ -32,6 +32,11 @@ from app.services.retrieval import (
     retrieve_multi_vault,
 )
 from app.services.settings_service import settings_service
+from app.services.effective_context import (
+    compose_full_system_prompt,
+    compose_full_system_prompt_with_state,
+    build_effective_context,
+)
 from app.services.vault_config_service import VaultConfigService
 from shared_contracts.models import (
     ChatMessage,
@@ -665,7 +670,7 @@ async def send_message_stream(
         # ── 3. Plain RAG fallback ─────────────────────────────────────────────
         logger.info("No pipeline found for domain_id=%s — falling back to plain LLM stream", domain_id)
 
-        system_prompt = await _resolve_system_prompt(context.campaign_id, domain_id, db)
+        system_prompt = await _compose_full_system_prompt(context.campaign_id, domain_id, db)
 
         hits: list[SearchHit] = []
         if vault_ids:
@@ -821,11 +826,21 @@ async def _resolve_system_prompt(
     domain_id: str | None,
     db: AsyncSession,
 ) -> str:
-    if campaign_id:
-        campaign = await db.get(Campaign, uuid.UUID(campaign_id))
-        if campaign is not None and campaign.system_prompt:
-            return campaign.system_prompt
-    return await domain_service.get_prompt(domain_id or "default", "system", db)
+    """Совместимость со старым контрактом: вернуть только system_prompt.
+
+    Stage 6: для runtime чата используйте `compose_full_system_prompt` из
+    `app.services.effective_context` (включает Campaign State block).
+    """
+    from app.services.effective_context import _resolve_system_prompt_text as _impl
+    return await _impl(campaign_id, domain_id, db)
+
+
+async def _compose_full_system_prompt(
+    campaign_id: str | None,
+    domain_id: str | None,
+    db: AsyncSession,
+) -> str:
+    return await compose_full_system_prompt(campaign_id, domain_id, db)
 
 
 async def _fallback_retrieve(
@@ -901,7 +916,7 @@ async def _plain_llm_reply(
     if provider is None:
         raise HTTPException(503, "No LLM provider configured")
 
-    system_prompt = await _resolve_system_prompt(context.campaign_id, domain_id, db)
+    system_prompt = await _compose_full_system_prompt(context.campaign_id, domain_id, db)
     vault_ids: list[str] = getattr(context, "vault_ids", []) or []
     hits: list[SearchHit] = await _fallback_retrieve(
         query=context.query,

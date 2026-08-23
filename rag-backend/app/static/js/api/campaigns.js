@@ -362,4 +362,26 @@ export const campaignsMixin = {
         }
         return response.json();
     },
+
+    // -----------------------------------------------------------------------
+    // Stage 6: Effective context — debug view скомпилированного prompt.
+    // -----------------------------------------------------------------------
+
+    /**
+     * Получить effective-context для кампании.
+     * GET /api/settings/campaigns/{cid}/effective-context?chat_id=...
+     * Возвращает EffectiveContextRead: blocks[], total_tokens, budget, truncated_fields.
+     */
+    async getEffectiveContext(campaignId, chatId = null) {
+        const qs = chatId ? `?chat_id=${encodeURIComponent(chatId)}` : '';
+        const response = await fetch(
+            `${this.baseUrl}/api/settings/campaigns/${campaignId}/effective-context${qs}`
+        );
+        if (!response.ok) {
+            const err = await response.json().catch(() => ({}));
+            const detail = err && 'detail' in err ? err.detail : err;
+            throw new InitialStateApiError(response.status, detail);
+        }
+        return response.json();
+    },
 };

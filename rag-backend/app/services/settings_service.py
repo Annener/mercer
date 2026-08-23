@@ -28,6 +28,8 @@ DEFAULTS: dict[str, Any] = {
     "pdf_sidecar.url": "http://host.docker.internal:8765",
     "pdf_sidecar.timeout_seconds": 180,
     "pdf_sidecar.fallback_to_pdfminer": True,
+    # Stage 6: token budget for compiled Campaign State block (campaign-state-implementation-spec.md §11).
+    "chat.campaign_state_token_budget": 800,
 }
 
 

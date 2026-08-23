@@ -24,6 +24,13 @@
 | `query_rewriter.py` | ~7 KB | LLM-переформулировка поисковых запросов |
 | `prompt_pack.py` | ~5 KB | Загрузка/форматирование промптов |
 | `vault_config_service.py` | ~3 KB | Настройки Vault (embedding-модель и т.д.) |
+| `campaign_state_compiler.py` | ~7 KB | Детерминированная компиляция Campaign State для prompt (Stage 6) |
+| `campaign_state_value_service.py` | ~32 KB | Versioned state + patch apply (Stage 2/5) |
+| `campaign_state_initial_service.py` | ~26 KB | Initial State proposal/apply (Stage 4) |
+| `campaign_state_initial_store.py` | ~3 KB | Redis-сессии Initial State proposal |
+| `effective_context.py` | ~6 KB | Runtime helper prompt assembly (Stage 6) |
+| `update_mode_executor.py` | ~24 KB | Оркестратор Campaign Update Mode |
+| `update_mode_store.py` | ~22 KB | Redis-сессии Update Mode review/apply |
 
 ---
 
@@ -350,6 +357,70 @@ Fallback: при любом исключении возвращает `original_
 
 ---
 
+## campaign_state_compiler.py — Компилятор Campaign State (Stage 6)
+
+Детерминированный компилятор active версии Campaign State в текстовый блок
+для prompt. Чистая функция, без БД/HTTP.
+
+```python
+from app.services.campaign_state_compiler import (
+    compile_campaign_state,
+    DEFAULT_TOKEN_BUDGET,
+    default_token_counter,
+    get_campaign_state_token_budget,
+)
+
+block = compile_campaign_state(
+    version=active_state_version,        # CampaignStateVersionRead | None
+    fields=enabled_fields_ordered,       # list[CampaignStateFieldConfigRead]
+    budget_tokens=800,
+)
+# block.text         — текст для prompt ("" если state отсутствует)
+# block.used_tokens  — оценка использованных токенов
+# block.truncated_fields
+# block.fields       — per-field метаданные для debug
+```
+
+Правила:
+
+- порядок полей — `display_order ASC, key ASC`;
+- budget ~800 токенов (ключ `chat.campaign_state_token_budget` в
+  `settings_service.DEFAULTS`); поля исключаются целиком, не обрезаются;
+- `single`: `"{label}: {text}"`;
+- `list`: `"{label}:\n- {item}\n- {item}"; resolved=True → префикс `[x]`;
+- empty-поля (single=None или list пуст) попадают в `empty_fields`,
+  не в `truncated_fields`.
+
+Эвристика токенов: `math.ceil(len(text) / 4)` — согласована с
+`update_mode_executor.py`, `pipeline_executor.py`, `full_document_service.py`.
+
+## effective_context.py — Runtime helper (Stage 6)
+
+Общие функции для runtime и debug:
+
+```python
+async def compose_full_system_prompt(campaign_id, domain_id, db) -> str
+async def compose_full_system_prompt_with_state(campaign_id, domain_id, db) -> tuple[str, CampaignStateCompiledBlock | None]
+async def compose_state_block_only(campaign_id, db) -> str
+async def build_effective_context(campaign_id, chat_id, domain_id, db, *, include_rag=False, rag_hits=None) -> EffectiveContextRead
+```
+
+`compose_full_system_prompt` используется в:
+
+- `app/api/chat.py::plain_stream` (SSE plain RAG fallback);
+- `app/api/chat.py::_plain_llm_reply`;
+- `app/api/pipeline_resume.py::_plain_rag_stream`;
+- `app/services/pipeline_executor.py::PipelineExecutor.resume_from_full_doc_selection` (plain-fallback ветка).
+
+`compose_state_block_only` используется в `PipelineExecutor._run_final_composition`
+для добавления state-блока после `_resolve_prompt(...)` без вмешательства в шаблоны
+с `{query}`/`{STEP_ID.*}`.
+
+`build_effective_context` используется в debug endpoint
+`GET /api/settings/campaigns/{id}/effective-context` (см. `context/api_routes.md`).
+
+---
+
 ## Главный поток запроса (chat-путь)
 
 ```
@@ -363,6 +434,8 @@ HTTP POST /chat/stream
     │
     ├─ QueryRewriter.rewrite()              ← история чата
     │
+    ├─ effective_context.compose_full_system_prompt() ← Stage 6: system_prompt + Campaign State
+    │
     ├─ PipelineRouter.select()             ← LLM выбирает пайплайн
     │
     ├─ [есть пайплайн] PipelineExecutor.run_stream()
@@ -372,7 +445,7 @@ HTTP POST /chat/stream
     │       ├─ [validation step] → пауза → resume_from_validation()
     │       ├─ _maybe_pause_for_full_doc() — если full_document_mode_enabled
     │       │     └─ [кандидаты есть] → full_document_selection_required → resume_from_full_doc_selection()
-    │       └─ FinalComposition → LLM stream → SSE tokens
+    │       └─ FinalComposition (+ Campaign State block через compose_state_block_only) → LLM stream
     │
     └─ [нет пайплайна] plain RAG
             ├─ get_allowed_tag_ids() → get_document_ids_by_tags()

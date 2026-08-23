@@ -726,6 +726,69 @@ class CampaignStateInitialApplyRequest(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Campaign State — Stage 6: Prompt Assembly contracts
+# ---------------------------------------------------------------------------
+
+
+class CampaignStateCompiledFieldRead(BaseModel):
+    """Результат компиляции одного поля для prompt.
+
+    included=False — поле исключено из prompt (truncated либо пустое);
+    для empty-полей флаг остаётся False без truncated.
+    """
+    field_key: str
+    field_id: str
+    label: str
+    mode: CampaignStateFieldMode
+    included: bool
+    truncated: bool
+    rendered_text: str
+    estimated_tokens: int
+    items_included: int = 0
+    items_total: int = 0
+
+
+class CampaignStateCompiledBlock(BaseModel):
+    """Детерминированно скомпилированный текст Campaign State для prompt.
+
+    Если active state отсутствует или все поля пустые/исключены — text == "",
+    used_tokens == 0, остальные списки пусты.
+    """
+    state_version: int | None = None
+    config_version: int | None = None
+    budget_tokens: int
+    used_tokens: int
+    truncated_fields: list[str] = Field(default_factory=list)
+    empty_fields: list[str] = Field(default_factory=list)
+    fields: list[CampaignStateCompiledFieldRead] = Field(default_factory=list)
+    text: str = ""
+
+
+class EffectiveContextBlock(BaseModel):
+    """Один блок, попавший в финальный system prompt чата.
+
+    name — стабильный ключ ("system_prompt" | "campaign_state" | "rag_context"
+    | "history" | "user_message"). user_message для debug-эндпойнта всегда "",
+    history рендерится строкой только если расчёт токенов выполнен на полном тексте.
+    """
+    name: str
+    text: str
+    estimated_tokens: int
+
+
+class EffectiveContextRead(BaseModel):
+    """Полный effective-context для дебага prompt assembly."""
+    campaign_id: str | None = None
+    chat_id: str | None = None
+    domain_id: str | None = None
+    blocks: list[EffectiveContextBlock] = Field(default_factory=list)
+    total_tokens: int = 0
+    budget: int = 0
+    truncated_fields: list[str] = Field(default_factory=list)
+    state_version: int | None = None
+
+
+# ---------------------------------------------------------------------------
 # Pipeline contracts — DAG-based execution model
 # ---------------------------------------------------------------------------
 

@@ -571,3 +571,72 @@ shared_contracts/
 6. Audit log `update_mode.reject_state_patch` (отдельная запись) пишется при наличии rejected state ops.
 
 Файл-изменения и state-patch принимаются независимо: файл-apply продолжается даже при провале state-apply (spec §7.1).
+
+---
+
+## Stage 6: prompt assembly с Campaign State
+
+После применения активной версии Campaign State блок попадает в `system_prompt`
+любого чат-turn кампании. Это делает модель осведомлённой о текущем контексте
+кампании без обязательного retrieval.
+
+### Где инжектируется
+
+Скомпилированный блок добавляется через `app/services/effective_context.compose_full_system_prompt`,
+которая склеивает `system_prompt + campaign_state_block` через `filter(None)`.
+
+Точки интеграции:
+
+| Путь | Назначение |
+|---|---|
+| `rag-backend/app/api/chat.py::plain_stream` | SSE-стрим plain RAG fallback |
+| `rag-backend/app/api/chat.py::_plain_llm_reply` | Не-стриминговый путь |
+| `rag-backend/app/api/pipeline_resume.py::_plain_rag_stream` | Подтверждение пайплайна отменено |
+| `rag-backend/app/services/pipeline_executor.py::PipelineExecutor._run_final_composition` | Конечная композиция пайплайна (после `_resolve_prompt`) |
+| `rag-backend/app/services/pipeline_executor.py::PipelineExecutor.resume_from_full_doc_selection` | Plain-fallback ветка full-doc resume |
+
+`_run_final_composition` использует `compose_state_block_only` (только блок state,
+без system_prompt) — это сохраняет существующие шаблоны с `{query}`/`{STEP_ID.*}`
+нетронутыми и добавляет state как дополнительный блок.
+
+### Token budget
+
+По умолчанию ~800 токенов на скомпилированный блок (см. `chat.campaign_state_token_budget`
+в `app/services/settings_service.py`). Поля исключаются целиком, не обрезаются
+посередине. Превышение лимита попадает в `truncated_fields` debug-view.
+
+Эвристика токенов: `math.ceil(len(text) / 4)` — согласована с остальным кодом
+(`update_mode_executor.py`, `pipeline_executor.py`, `full_document_service.py`).
+
+### Debug-view: `GET /api/settings/campaigns/{id}/effective-context`
+
+Возвращает `EffectiveContextRead` с блоками:
+
+- `system_prompt`;
+- `campaign_state` (если есть active state);
+- `rag_context` (если задан `include_rag=True`, для debug не заполняется);
+- `history` / `user_message` (опционально).
+
+Endpoint всегда возвращает 200 даже если state отсутствует. Не выполняет
+retrieval и не запускает LLM. Используется для инспекции prompt assembly.
+
+### Ключевые модули
+
+- `rag-backend/app/services/campaign_state_compiler.py` — детерминированный
+  компилятор (`compile_campaign_state`, чистая функция);
+- `rag-backend/app/services/effective_context.py` — общие helper-функции для
+  runtime и debug (`compose_full_system_prompt`, `build_effective_context`);
+- `rag-backend/app/services/campaign_state_value_service.py::list_enabled_fields_ordered` —
+  загрузка enabled-полей кампании в порядке `display_order ASC, key ASC`;
+- `shared_contracts/models.py::CampaignStateCompiledBlock`, `EffectiveContextRead`,
+  `EffectiveContextBlock`, `CampaignStateCompiledFieldRead` — DTO.
+
+### Чего этап 6 НЕ делает
+
+- Не вводит `search_knowledge` tool и bounded agent loop (§12 — отдельный этап 8);
+- Не меняет `_resolve_system_prompt` контракт (для обратной совместимости
+  `_resolve_system_prompt` остался в `chat.py` и использует helper из
+  `effective_context._resolve_system_prompt_text`);
+- Не хранит compiled state в БД — это чистая функция от active state;
+- Не обновляет UI рендер effective-context — endpoint готов, визуальная
+  панель остаётся отдельной задачей.
