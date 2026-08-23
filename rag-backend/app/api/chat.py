@@ -682,6 +682,7 @@ async def send_message_stream(
         if use_tool:
             # ── 3-tool. Conditional/cyclic RAG via AgentLoop ────────────────
             from app.services.agent_loop import AgentLoop
+            from app.services.effective_context import append_tool_use_rules
 
             loop = AgentLoop()
             history_payload = [
@@ -691,10 +692,13 @@ async def send_message_stream(
             all_hits: list[SearchHit] = []
             full_answer = ""
             cancelled = False
+            # Stage 8.6: append the tool-use rules (§12.1) to the system
+            # prompt. The legacy path keeps the bare system_prompt.
+            tool_system_prompt = append_tool_use_rules(system_prompt)
             try:
                 async for event in loop.run_stream(
                     provider=_provider,
-                    system_prompt=system_prompt,
+                    system_prompt=tool_system_prompt,
                     history=history_payload,
                     user_message=context.original_query or req.content,
                     domain_id=domain_id,
