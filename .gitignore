@@ -26,3 +26,7 @@ rag-backend/migrations/versions/__pycache__/
 tests/unit/shared_contracts/__pycache__/
 rag-backend/app/api/settings/__pycache__/
 .opencode/
+rag-backend/app/providers/generation/__pycache__/
+rag-backend/app/providers/__pycache__/
+rag-backend/app/__pycache__/
+rag-backend/app/api/__pycache__/

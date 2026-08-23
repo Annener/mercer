@@ -384,4 +384,35 @@ export const campaignsMixin = {
         }
         return response.json();
     },
+
+    // -----------------------------------------------------------------------
+    // Stage 7: potentially_stale signal
+    // -----------------------------------------------------------------------
+
+    /**
+     * Получить текущий stale-статус Campaign State.
+     *
+     * GET /api/settings/campaigns/{cid}/state/stale-status
+     * Возвращает CampaignStateStaleStatus: {
+     *   potentially_stale: boolean,
+     *   stale_documents: string[],
+     *   active_state_version: number | null,
+     *   checked_at: ISO-8601 string,
+     * }
+     *
+     * 404 — кампания не найдена.
+     * 200 + potentially_stale=false — нормальный случай (state свежий
+     * или ещё не применён).
+     */
+    async getStateStaleStatus(campaignId) {
+        const response = await fetch(
+            `${this.baseUrl}/api/settings/campaigns/${campaignId}/state/stale-status`
+        );
+        if (!response.ok) {
+            const err = await response.json().catch(() => ({}));
+            const detail = err && 'detail' in err ? err.detail : err;
+            throw new InitialStateApiError(response.status, detail);
+        }
+        return response.json();
+    },
 };

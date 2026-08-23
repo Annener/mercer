@@ -35,6 +35,7 @@ from shared_contracts.models import (
     CampaignStateInitialProposalRead,
     CampaignStatePatchRequest,
     CampaignStatePatchResponse,
+    CampaignStateStaleStatus,
     CampaignStateVersionRead,
     CampaignStateVersionSummary,
     CampaignUpdate,
@@ -577,6 +578,55 @@ async def get_campaign_effective_context(
         domain_id=domain_id,
         db=db,
     )
+
+
+# ---------------------------------------------------------------------------
+# Campaign State — Stage 7: potentially_stale signal
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/{campaign_id}/state/stale-status",
+    response_model=CampaignStateStaleStatus,
+)
+async def get_campaign_state_stale_status(
+    campaign_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> CampaignStateStaleStatus:
+    """Возвращает potentially_stale для активной версии Campaign State.
+
+    Вычисляется на лету из Redis vault-cache + Document.md5:
+      - .md source_refs активной версии сравниваются с фактическим md5
+        и index_status соответствующего документа в Redis.
+      - PDF не учитывается (защита).
+      - Если кампания не имеет active state version → potentially_stale=false.
+
+    Побочный эффект: на переходе false→true (или при появлении нового
+    stale-документа) пишется AuditLog (action=campaign_state_potentially_stale).
+
+    200 всегда (кроме 404 при отсутствии кампании). Endpoint не выполняет
+    индексацию, не меняет state и не вызывает LLM.
+    """
+    from app.services.campaign_state_stale_service import (
+        CampaignStateStaleError,
+        campaign_state_stale_service,
+    )
+
+    try:
+        campaign_uuid = uuid.UUID(campaign_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="campaign_not_found") from None
+
+    redis = request.app.state.redis
+    try:
+        return await campaign_state_stale_service.compute_stale_status(
+            db=db,
+            redis=redis,
+            campaign_id=campaign_uuid,
+        )
+    except CampaignStateStaleError as exc:
+        raise HTTPException(status_code=exc.http_status, detail=exc.code) from exc
 
 
 # --- Вспомогательные ---
