@@ -510,3 +510,51 @@
     color: #526579;
     font-style: italic;
 }
+
+/* Stage 8.5: inline card for tool_call / tool_result events.
+   Appears under the assistant message during the agent loop so the
+   user can see what the model is searching for and what came back. */
+.tool-call-card {
+    margin: 6px 30px 6px 30px;
+    padding: 8px 12px;
+    border-left: 3px solid #6aa9ff;
+    background: #f0f6ff;
+    border-radius: 4px;
+    font-size: 12px;
+    color: #2a3a4d;
+    max-width: 720px;
+}
+
+.tool-call-card .tool-call-header {
+    font-weight: 600;
+    margin-bottom: 4px;
+    color: #2c5282;
+}
+
+.tool-call-card .tool-call-queries {
+    font-family: monospace;
+    font-size: 11.5px;
+    color: #3a4a5e;
+    word-break: break-word;
+}
+
+.tool-call-card .tool-call-reason {
+    font-style: italic;
+    color: #5a6a7e;
+    margin-top: 2px;
+}
+
+.tool-call-card .tool-call-status {
+    margin-top: 4px;
+    color: #526579;
+}
+
+.tool-call-card .tool-call-scope {
+    color: #8898a8;
+    font-style: italic;
+}
+
+.tool-call-card .tool-call-note {
+    color: #b58a2c;
+    font-style: italic;
+}

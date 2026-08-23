@@ -49,26 +49,45 @@ export const updateModeMixin = {
 
     /**
      * PATCH /api/chats/{chatId}/update-mode/review
-     * Body: { accepted_change_ids: string[], rejected_change_ids: string[] }
+     * Body: {
+     *   accepted_change_ids: string[],
+     *   rejected_change_ids: string[],
+     *   state_patch_decisions?: {
+     *     accepted_op_indexes?: number[],
+     *     rejected_op_indexes?: number[],
+     *     edited?: Array<{ op_index: number, text: string }>,
+     *   }
+     * }
      * Returns: UpdateModeSessionResponse
+     *
+     * statePatchDecisions === null  → back-compat (no state-patch block in body).
+     * statePatchDecisions is object → sent as-is (even with empty arrays, which
+     *   clears any previous state decisions on the server).
      */
-    async updateModeReview(chatId, acceptedIds, rejectedIds) {
+    async updateModeReview(chatId, acceptedIds, rejectedIds, statePatchDecisions = null) {
+        const body = {
+            accepted_change_ids: acceptedIds,
+            rejected_change_ids: rejectedIds,
+        };
+        if (statePatchDecisions !== null) {
+            body.state_patch_decisions = statePatchDecisions;
+        }
         const response = await fetch(`${this.baseUrl}/api/chats/${chatId}/update-mode/review`, {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                accepted_change_ids: acceptedIds,
-                rejected_change_ids: rejectedIds,
-            }),
+            body: JSON.stringify(body),
         });
         if (!response.ok) {
             let errMsg = response.statusText;
+            let errCode = null;
             try {
                 const errData = await response.json();
                 errMsg = errData.detail || errData.message || errMsg;
+                errCode = typeof errData.detail === 'string' ? errData.detail : null;
             } catch (_) {}
             const err = new Error(errMsg);
             err.status = response.status;
+            err.code = errCode;
             throw err;
         }
         return response.json();

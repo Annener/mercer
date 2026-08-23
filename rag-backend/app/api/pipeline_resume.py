@@ -12,6 +12,7 @@ POST /chat/{chat_id}/pipeline_resume   — продолжение/отмена �
   pipeline_pause_state:
     {pipeline_id, step_id, resume_token, step_results, query, context_snapshot, expires_at}
 """
+
 from __future__ import annotations
 
 import json
@@ -28,12 +29,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Chat, Message
 from app.db.session import get_db
+from app.services.effective_context import compose_full_system_prompt
 from app.services.pipeline_executor import PipelineExecutor
 from app.services.settings_service import settings_service
+from app.services.source_utils import (
+    dedup_sources,
+    hits_to_sources,
+    sources_to_message_sources,
+)
 from shared_contracts.models import (
-    ChatMessage,
     PipelineExecutionContext,
     SearchHit,
+    Source,
 )
 
 logger = logging.getLogger(__name__)
@@ -43,6 +50,7 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 # ---------------------------------------------------------------------------
 # Request bodies
 # ---------------------------------------------------------------------------
+
 
 class PipelineConfirmRequest(BaseModel):
     confirm_token: str
@@ -58,6 +66,7 @@ class PipelineResumeRequest(BaseModel):
 # ---------------------------------------------------------------------------
 # POST /chat/{chat_id}/pipeline_confirm
 # ---------------------------------------------------------------------------
+
 
 @router.post("/{chat_id}/pipeline_confirm")
 async def pipeline_confirm(
@@ -129,8 +138,12 @@ async def pipeline_confirm(
 
     async def confirmed_stream() -> AsyncIterator[str]:
         from app.api.chat import _maybe_set_title
+
         executor = PipelineExecutor(db)
         full_answer = ""
+        # Если executor не отдал sources event (например, в legacy-ветке),
+        # собираем их из ctx.step_results самостоятельно.
+        fallback_sources: list[Source] = []
 
         async for chunk in executor.run_stream(ctx):
             chunk_type = chunk.get("type", "")
@@ -142,6 +155,10 @@ async def pipeline_confirm(
             if chunk_type == "delta":
                 chunk = {**chunk, "type": "token"}
 
+            if chunk_type == "sources":
+                # Executor отдал — fallback не нужен.
+                fallback_sources = []
+
             data = json.dumps(chunk, ensure_ascii=False)
             yield f"data: {data}\n\n"
             if chunk.get("type") == "token":
@@ -149,11 +166,32 @@ async def pipeline_confirm(
 
         if full_answer:
             pipeline_id = context_snapshot.get("pipeline_id")
+            persisted_sources: list[dict] | None = None
+            if fallback_sources:
+                persisted_sources = [
+                    s.model_dump(mode="json", exclude_none=True)
+                    for s in sources_to_message_sources(fallback_sources)
+                ]
+            elif ctx.step_results:
+                # Если executor не эмитил sources — собираем из step_results.
+                from app.services.pipeline_executor import _collect_step_sources
+
+                step_groups = _collect_step_sources(ctx)
+                all_srcs: list[Source] = []
+                for g in step_groups:
+                    all_srcs.extend(g.sources)
+                all_srcs = dedup_sources(all_srcs)
+                if all_srcs:
+                    persisted_sources = [
+                        s.model_dump(mode="json", exclude_none=True)
+                        for s in sources_to_message_sources(all_srcs)
+                    ]
             assistant_msg = Message(
                 chat_id=uuid.UUID(chat_id),
                 role="assistant",
                 content=full_answer,
                 pipeline_id=pipeline_id,
+                sources=persisted_sources,
             )
             db.add(assistant_msg)
             await db.commit()
@@ -168,6 +206,7 @@ async def pipeline_confirm(
 # ---------------------------------------------------------------------------
 # POST /chat/{chat_id}/pipeline_resume
 # ---------------------------------------------------------------------------
+
 
 @router.post("/{chat_id}/pipeline_resume")
 async def pipeline_resume(
@@ -237,6 +276,7 @@ async def pipeline_resume(
 
     async def resume_stream() -> AsyncIterator[str]:
         from app.api.chat import _maybe_set_title
+
         # Уведомляем фронтенд о возобновлении
         resumed_chunk = json.dumps(
             {
@@ -268,11 +308,25 @@ async def pipeline_resume(
 
         if full_answer:
             pipeline_id = context_snapshot.get("pipeline_id")
+            from app.services.pipeline_executor import _collect_step_sources
+
+            step_groups = _collect_step_sources(ctx)
+            all_srcs: list[Source] = []
+            for g in step_groups:
+                all_srcs.extend(g.sources)
+            all_srcs = dedup_sources(all_srcs)
+            persisted_sources: list[dict] | None = None
+            if all_srcs:
+                persisted_sources = [
+                    s.model_dump(mode="json", exclude_none=True)
+                    for s in sources_to_message_sources(all_srcs)
+                ]
             assistant_msg = Message(
                 chat_id=uuid.UUID(chat_id),
                 role="assistant",
                 content=full_answer,
                 pipeline_id=pipeline_id,
+                sources=persisted_sources,
             )
             db.add(assistant_msg)
             await db.commit()
@@ -288,6 +342,7 @@ async def pipeline_resume(
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 async def _get_chat_or_404(chat_id: str, db: AsyncSession) -> Chat:
     try:
         chat_uuid = uuid.UUID(chat_id)
@@ -299,7 +354,9 @@ async def _get_chat_or_404(chat_id: str, db: AsyncSession) -> Chat:
     return chat
 
 
-def _restore_context(snapshot: dict[str, Any], chat_id: str) -> PipelineExecutionContext:
+def _restore_context(
+    snapshot: dict[str, Any], chat_id: str
+) -> PipelineExecutionContext:
     """Восстанавливает PipelineExecutionContext из JSONB-снапшота.
 
     Гарантирует chat_id — на случай если снапшот не содержит его.
@@ -322,7 +379,7 @@ async def _plain_rag_stream(
     db: AsyncSession,
 ) -> AsyncIterator[str]:
     """Fallback plain RAG стрим — используется при отмене confirm."""
-    from app.api.chat import _fallback_retrieve, _maybe_set_title, _resolve_system_prompt
+    from app.api.chat import _fallback_retrieve, _maybe_set_title
     from app.services.retrieval import format_context
 
     provider = settings_service.get_active_provider()
@@ -336,7 +393,7 @@ async def _plain_rag_stream(
 
     yield f"data: {json.dumps({'type': 'step_status', 'text': 'Preparing context...'}, ensure_ascii=False)}\n\n"
 
-    system_prompt = await _resolve_system_prompt(ctx.campaign_id, ctx.domain_id, db)
+    system_prompt = await compose_full_system_prompt(ctx.campaign_id, ctx.domain_id, db)
     vault_ids: list[str] = ctx.vault_ids or []
 
     hits: list[SearchHit] = await _fallback_retrieve(
@@ -356,7 +413,7 @@ async def _plain_rag_stream(
     messages: list[dict[str, str]] = []
     if full_system:
         messages.append({"role": "system", "content": full_system})
-    for m in (ctx.history or []):
+    for m in ctx.history or []:
         messages.append({"role": m.role, "content": m.content})
     messages.append({"role": "user", "content": ctx.query})
 
@@ -368,11 +425,32 @@ async def _plain_rag_stream(
         chunk = json.dumps({"type": "token", "content": token}, ensure_ascii=False)
         yield f"data: {chunk}\n\n"
 
+    if hits:
+        deduped = hits_to_sources(hits)
+        sources_chunk = json.dumps(
+            {
+                "type": "sources",
+                "grouped_by_step": False,
+                "sources": [
+                    s.model_dump(mode="json", exclude_none=True) for s in deduped
+                ],
+            },
+            ensure_ascii=False,
+        )
+        yield f"data: {sources_chunk}\n\n"
+
     if full_answer:
+        persisted_sources: list[dict] | None = None
+        if hits:
+            persisted_sources = [
+                s.model_dump(mode="json", exclude_none=True)
+                for s in sources_to_message_sources(hits_to_sources(hits))
+            ]
         assistant_msg = Message(
             chat_id=chat.id,
             role="assistant",
             content=full_answer,
+            sources=persisted_sources,
         )
         db.add(assistant_msg)
         await db.commit()

@@ -33,10 +33,12 @@ import logging
 import uuid
 from collections import defaultdict
 from datetime import datetime, timezone
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.models import Campaign
 from app.db.session import get_db
 from app.services.indexer_client import (
     IndexerConflictError,
@@ -66,7 +68,9 @@ from app.services.update_mode_store import (
     CannotAcceptFailedChangeError,
     ReviewConflictError,
     SessionExpiredError,
+    StateOpReviewConflictError,
     UnknownChangeIdError,
+    UnknownStateOpIndexError,
     update_mode_store,
 )
 from shared_contracts.models import (
@@ -86,6 +90,7 @@ from shared_contracts.models import (
     UpdateModeReviewRequest,
     UpdateModeSession,
     UpdateModeSessionResponse,
+    UpdateModeStatePatchApplyResult,
 )
 
 logger = logging.getLogger(__name__)
@@ -110,6 +115,8 @@ def _session_to_response(session: UpdateModeSession) -> UpdateModeSessionRespons
         expires_at=session.expires_at,
         changes=session.changes,
         warnings=session.warnings,
+        state_field_snapshot=session.state_field_snapshot,
+        state_patch_operations=session.state_patch_operations,
     )
 
 
@@ -355,6 +362,8 @@ async def start_update_mode(
         expires_at=session.expires_at,
         changes=session.changes,
         warnings=session.warnings,
+        state_field_snapshot=session.state_field_snapshot,
+        state_patch_operations=session.state_patch_operations,
     )
 
 
@@ -392,12 +401,25 @@ async def review_changes(
 ) -> UpdateModeSessionResponse:
     redis = request.app.state.redis
 
+    accepted_state: set[int] = set()
+    rejected_state: set[int] = set()
+    edited_state: dict[int, str] = {}
+    if body.state_patch_decisions is not None:
+        accepted_state = set(body.state_patch_decisions.accepted_op_indexes)
+        rejected_state = set(body.state_patch_decisions.rejected_op_indexes)
+        edited_state = {
+            e.op_index: e.text for e in body.state_patch_decisions.edited
+        }
+
     try:
         session = await update_mode_store.update_review(
             redis,
             chat_id,
             accepted_change_ids=set(body.accepted_change_ids),
             rejected_change_ids=set(body.rejected_change_ids),
+            accepted_state_op_indexes=accepted_state,
+            rejected_state_op_indexes=rejected_state,
+            edited_state_ops=edited_state,
         )
     except SessionExpiredError as exc:
         raise HTTPException(status_code=410, detail=str(exc))
@@ -406,6 +428,10 @@ async def review_changes(
     except CannotAcceptFailedChangeError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     except ReviewConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except UnknownStateOpIndexError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except StateOpReviewConflictError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
 
     return _session_to_response(session)
@@ -428,9 +454,16 @@ async def apply_changes(
     Builds file_batches from accepted session changes so the indexer can apply
     multiple ops to the same file in a single atomic read-modify-write cycle.
 
+    Stage 5: additionally applies accepted Campaign State patch via
+    campaign_state_value_service.apply_patch. File changes and state patch
+    are accepted independently — failure of one does not roll back the other.
+
     After receiving the indexer response:
     - persists apply_result in the Redis session via complete_apply()
-    - writes an AuditLog row
+    - writes an AuditLog row (update_mode.apply)
+    - writes an AuditLog row (update_mode.reject_state_patch) if any state
+      ops were rejected
+    - applies accepted state_patch ops and records the result in the response
     """
     redis = request.app.state.redis
 
@@ -441,68 +474,217 @@ async def apply_changes(
     except ApplyConflictError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
 
-    accepted = [
+    accepted_changes = [
         ch for ch in session.changes
         if ch.status == UpdateModeChangeStatus.ACCEPTED
     ]
-    if not accepted:
+    file_batches = _build_file_batches(accepted_changes) if accepted_changes else []
+
+    has_file_changes = bool(file_batches)
+    accepted_state_entries = [
+        e for e in session.state_patch_operations if e.status == "accepted"
+    ]
+    rejected_state_entries = [
+        e for e in session.state_patch_operations if e.status == "rejected"
+    ]
+    has_state_changes = bool(accepted_state_entries) or bool(rejected_state_entries)
+
+    if not has_file_changes and not has_state_changes:
         raise HTTPException(
             status_code=422,
-            detail="No accepted changes to apply. Use PATCH /review to accept changes first.",
+            detail=(
+                "No accepted changes to apply. Use PATCH /review to accept "
+                "changes or state_patch_decisions first."
+            ),
         )
 
-    file_batches = _build_file_batches(accepted)
+    apply_resp = None
+    if file_batches:
+        apply_req = UpdateModeApplyRequest(
+            apply_id=session.apply_id or str(uuid.uuid4()),
+            chat_id=chat_id,
+            campaign_id=session.campaign_id,
+            file_batches=file_batches,
+        )
+        try:
+            apply_resp = await indexer_client.apply(apply_req)
+        except IndexerConflictError as exc:
+            raise HTTPException(status_code=409, detail=f"Apply conflict: {exc.detail}")
+        except IndexerUnavailableError as exc:
+            raise HTTPException(status_code=502, detail=f"Indexer unavailable: {exc.detail}")
 
-    if not file_batches:
-        raise HTTPException(
-            status_code=422,
-            detail="No complete changes to apply (missing vault_id or file_path).",
+        # Persist completed result into Redis session (non-fatal if session already expired)
+        await update_mode_store.complete_apply(redis, chat_id, apply_resp)
+
+    # ----- Stage 5: apply accepted state_patch ops -----
+    state_patch_result: UpdateModeStatePatchApplyResult | None = None
+    if accepted_state_entries:
+        state_patch_result = await _apply_state_patch(
+            db=db,
+            campaign_id_str=session.campaign_id,
+            accepted_entries=accepted_state_entries,
+            chat_id=chat_id,
         )
 
-    apply_req = UpdateModeApplyRequest(
-        apply_id=session.apply_id or str(uuid.uuid4()),
-        chat_id=chat_id,
-        campaign_id=session.campaign_id,
-        file_batches=file_batches,
-    )
+    # ----- Audit logs -----
+    audit_payload: dict[str, Any] = {
+        "apply_id": (apply_resp.apply_id if apply_resp else None),
+        "chat_id": chat_id,
+        "campaign_id": session.campaign_id,
+        "vault_results": [],
+        "state_patch": {
+            "accepted_op_indexes": [e.op_index for e in accepted_state_entries],
+            "rejected_op_indexes": [e.op_index for e in rejected_state_entries],
+            "edited_op_indexes": [
+                e.op_index
+                for e in session.state_patch_operations
+                if e.edited_text is not None
+            ],
+            "applied_state_version": (
+                state_patch_result.applied_state_version if state_patch_result else 0
+            ),
+            "config_version": (
+                state_patch_result.config_version if state_patch_result else 0
+            ),
+            "failed_op_indexes": (
+                state_patch_result.failed_op_indexes if state_patch_result else []
+            ),
+            "from_state_version": (
+                state_patch_result.applied_state_version - 1
+                if state_patch_result and state_patch_result.applied_state_version > 0
+                else None
+            ),
+        },
+    }
+    if apply_resp is not None:
+        audit_payload["vault_results"] = [
+            {
+                "vault_id": r.vault_id,
+                "status": r.status.value,
+                "applied_count": r.applied_count,
+                "commit_sha": r.commit_sha,
+                "reindex_task_id": r.reindex_task_id,
+            }
+            for r in apply_resp.results
+        ]
 
-    try:
-        apply_resp = await indexer_client.apply(apply_req)
-    except IndexerConflictError as exc:
-        raise HTTPException(status_code=409, detail=f"Apply conflict: {exc.detail}")
-    except IndexerUnavailableError as exc:
-        raise HTTPException(status_code=502, detail=f"Indexer unavailable: {exc.detail}")
-
-    # Persist completed result into Redis session (non-fatal if session already expired)
-    await update_mode_store.complete_apply(redis, chat_id, apply_resp)
-
-    # Audit log — non-fatal
     await _write_audit_log(
         db=db,
         action="update_mode.apply",
         entity_type="campaign",
         entity_id=session.campaign_id,
         actor=f"chat:{chat_id}",
-        payload={
-            "apply_id": apply_resp.apply_id,
-            "chat_id": chat_id,
-            "campaign_id": session.campaign_id,
-            "vault_results": [
-                {
-                    "vault_id": r.vault_id,
-                    "status": r.status.value,
-                    "applied_count": r.applied_count,
-                    "commit_sha": r.commit_sha,
-                    "reindex_task_id": r.reindex_task_id,
-                }
-                for r in apply_resp.results
-            ],
-        },
+        payload=audit_payload,
     )
 
+    if rejected_state_entries:
+        await _write_audit_log(
+            db=db,
+            action="update_mode.reject_state_patch",
+            entity_type="campaign",
+            entity_id=session.campaign_id,
+            actor=f"chat:{chat_id}",
+            payload={
+                "rejected_op_indexes": [e.op_index for e in rejected_state_entries],
+                "ops": [
+                    {
+                        "op_index": e.op_index,
+                        "field_key": e.field_key,
+                        "type": e.operation.type,
+                        "reason": e.operation.reason,
+                    }
+                    for e in rejected_state_entries
+                ],
+            },
+        )
+
     return ApplyUpdateModeResponse(
-        apply_id=apply_resp.apply_id,
-        results=apply_resp.results,
+        apply_id=(apply_resp.apply_id if apply_resp else (session.apply_id or "")),
+        results=(apply_resp.results if apply_resp is not None else []),
+        state_patch_result=state_patch_result,
+    )
+
+
+async def _apply_state_patch(
+    *,
+    db: AsyncSession,
+    campaign_id_str: str,
+    accepted_entries: list,
+    chat_id: str,
+) -> UpdateModeStatePatchApplyResult | None:
+    """Apply accepted state_patch operations through campaign_state_value_service.
+
+    Returns an UpdateModeStatePatchApplyResult describing what was applied.
+    Never raises on state-patch conflict — the result captures failed op_indexes
+    so the caller can surface them to the client without aborting file apply.
+    """
+    from app.services.campaign_state_value_service import (
+        CampaignStateValueError,
+        campaign_state_value_service,
+    )
+
+    campaign_uuid = uuid.UUID(campaign_id_str)
+
+    active_state = await campaign_state_value_service.get_active_state(
+        db, campaign_uuid
+    )
+    base_state_version = active_state.summary.state_version if active_state else None
+
+    campaign = await db.get(Campaign, campaign_uuid)
+    if campaign is None:
+        return UpdateModeStatePatchApplyResult(
+            applied_state_version=0,
+            config_version=0,
+            applied_op_indexes=[],
+            failed_op_indexes=[e.op_index for e in accepted_entries],
+            failed_reasons={"campaign": "campaign_not_found"},
+        )
+    server_config_version = campaign.config_version
+
+    # Build CampaignStatePatchRequest, applying edited_text where present.
+    operations = []
+    applied_indexes: list[int] = []
+    skipped_due_to_no_text: list[int] = []
+    for e in accepted_entries:
+        op = e.operation
+        if e.edited_text is not None and op.type in (
+            "replace_single",
+            "update_list_item",
+            "add_list_item",
+        ):
+            op = op.model_copy(update={"text": e.edited_text})
+        operations.append(op)
+        applied_indexes.append(e.op_index)
+
+    try:
+        from shared_contracts.models import CampaignStatePatchRequest
+
+        req = CampaignStatePatchRequest(
+            base_state_version=base_state_version,
+            config_version=server_config_version,
+            operations=operations,
+        )
+        resp = await campaign_state_value_service.apply_patch(
+            db=db,
+            campaign_id=campaign_uuid,
+            request=req,
+            created_by=f"chat:{chat_id}",
+        )
+    except CampaignStateValueError as exc:
+        return UpdateModeStatePatchApplyResult(
+            applied_state_version=0,
+            config_version=server_config_version,
+            applied_op_indexes=[],
+            failed_op_indexes=applied_indexes,
+            failed_reasons={str(i): exc.code for i in applied_indexes},
+        )
+
+    return UpdateModeStatePatchApplyResult(
+        applied_state_version=resp.applied_state_version,
+        config_version=resp.config_version,
+        applied_op_indexes=applied_indexes,
+        failed_op_indexes=[],
+        failed_reasons={},
     )
 
 

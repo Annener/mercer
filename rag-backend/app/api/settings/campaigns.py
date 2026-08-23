@@ -2,14 +2,45 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select, insert, delete
+from fastapi import APIRouter, Depends, HTTPException, Request
+from sqlalchemy import delete, insert, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.settings.schemas import CampaignTagCreateRequest
 from app.db.models import Campaign, Tag, campaign_tags
 from app.db.session import get_db
-from shared_contracts.models import CampaignCreate, CampaignRead, CampaignUpdate, TagRead
+from app.services.campaign_state_initial_service import (
+    CampaignStateInitialError,
+    campaign_state_initial_service,
+)
+from app.services.campaign_state_service import (
+    CampaignStateFieldError,
+    campaign_state_field_service,
+)
+from app.services.campaign_state_value_service import (
+    CampaignStateValueError,
+    campaign_state_value_service,
+)
+from app.services.effective_context import build_effective_context
+from shared_contracts.models import (
+    CampaignCreate,
+    CampaignRead,
+    CampaignStateFieldConfigCreate,
+    CampaignStateFieldConfigRead,
+    CampaignStateFieldConfigReorderRequest,
+    CampaignStateFieldConfigUpdate,
+    CampaignStateInitialApplyRequest,
+    EffectiveContextRead,
+    CampaignStateInitialPreviewRequest,
+    CampaignStateInitialProposalRead,
+    CampaignStatePatchRequest,
+    CampaignStatePatchResponse,
+    CampaignStateStaleStatus,
+    CampaignStateVersionRead,
+    CampaignStateVersionSummary,
+    CampaignUpdate,
+    TagRead,
+)
 
 router = APIRouter(prefix="/campaigns", tags=["campaigns"])
 
@@ -114,7 +145,7 @@ async def create_campaign_tag(
     payload: CampaignTagCreateRequest,  # D04 fix: was payload: dict — KeyError → 500
     db: AsyncSession = Depends(get_db),
 ) -> TagRead:
-    """\u0428\u043e\u0440\u0442\u043a\u0430\u0442: \u0441\u043e\u0437\u0434\u0430\u0442\u044c \u0442\u0435\u0433 \u043a\u0430\u043c\u043f\u0430\u043d\u0438\u0438. domain_id \u0431\u0435\u0440\u0451\u0442\u0441\u044f \u0438\u0437 \u043a\u0430\u043c\u043f\u0430\u043d\u0438\u0438."""
+    """Шорткат: создать тег кампании. domain_id берётся из кампании."""
     campaign = await db.get(Campaign, uuid.UUID(campaign_id))
     if not campaign:
         raise HTTPException(404, "Campaign not found")
@@ -138,7 +169,7 @@ async def get_campaign_global_tags(
     campaign_id: str,
     db: AsyncSession = Depends(get_db),
 ) -> list[TagRead]:
-    """\u0412\u0435\u0440\u043d\u0443\u0442\u044c \u0433\u043b\u043e\u0431\u0430\u043b\u044c\u043d\u044b\u0435 \u0442\u0435\u0433\u0438 \u0434\u043e\u043c\u0435\u043d\u0430, \u044f\u0432\u043d\u043e \u043f\u043e\u0434\u043a\u043b\u044e\u0447\u0451\u043d\u043d\u044b\u0435 \u043a \u044d\u0442\u043e\u0439 \u043a\u0430\u043c\u043f\u0430\u043d\u0438\u0438."""
+    """Вернуть глобальные теги домена, явно подключённые к этой кампании."""
     camp_uuid = uuid.UUID(campaign_id)
     stmt = (
         select(Tag)
@@ -158,7 +189,7 @@ async def link_global_tag(
     tag_id: str,
     db: AsyncSession = Depends(get_db),
 ) -> TagRead:
-    """\u041f\u043e\u0434\u043a\u043b\u044e\u0447\u0438\u0442\u044c \u0433\u043b\u043e\u0431\u0430\u043b\u044c\u043d\u044b\u0439 \u0442\u0435\u0433 \u0434\u043e\u043c\u0435\u043d\u0430 \u043a \u043a\u0430\u043c\u043f\u0430\u043d\u0438\u0438."""
+    """Подключить глобальный тег домена к кампании."""
     camp_uuid = uuid.UUID(campaign_id)
     tag_uuid = uuid.UUID(tag_id)
 
@@ -196,7 +227,7 @@ async def unlink_global_tag(
     tag_id: str,
     db: AsyncSession = Depends(get_db),
 ) -> None:
-    """\u041e\u0442\u043a\u043b\u044e\u0447\u0438\u0442\u044c \u0433\u043b\u043e\u0431\u0430\u043b\u044c\u043d\u044b\u0439 \u0442\u0435\u0433 \u043e\u0442 \u043a\u0430\u043c\u043f\u0430\u043d\u0438\u0438 (\u0442\u0435\u0433 \u043d\u0435 \u0443\u0434\u0430\u043b\u044f\u0435\u0442\u0441\u044f, \u0442\u043e\u043b\u044c\u043a\u043e \u0441\u0432\u044f\u0437\u044c)."""
+    """Отключить глобальный тег от кампании (тег не удаляется, только связь)."""
     camp_uuid = uuid.UUID(campaign_id)
     tag_uuid = uuid.UUID(tag_id)
     await db.execute(
@@ -208,10 +239,400 @@ async def unlink_global_tag(
     await db.commit()
 
 
+# ---------------------------------------------------------------------------
+# Campaign State field configuration (Stage 1)
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/{campaign_id}/state-fields",
+    response_model=list[CampaignStateFieldConfigRead],
+)
+async def list_campaign_state_fields(
+    campaign_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> list[CampaignStateFieldConfigRead]:
+    try:
+        return await campaign_state_field_service.list_fields(
+            db, uuid.UUID(campaign_id)
+        )
+    except CampaignStateFieldError as exc:
+        raise HTTPException(status_code=exc.http_status, detail=exc.code) from exc
+
+
+@router.post(
+    "/{campaign_id}/state-fields",
+    response_model=CampaignStateFieldConfigRead,
+    status_code=201,
+)
+async def create_campaign_state_field(
+    campaign_id: str,
+    payload: CampaignStateFieldConfigCreate,
+    db: AsyncSession = Depends(get_db),
+) -> CampaignStateFieldConfigRead:
+    try:
+        return await campaign_state_field_service.create_field(
+            db, uuid.UUID(campaign_id), payload
+        )
+    except CampaignStateFieldError as exc:
+        raise HTTPException(status_code=exc.http_status, detail=exc.code) from exc
+
+
+@router.put(
+    "/{campaign_id}/state-fields/{field_id}",
+    response_model=CampaignStateFieldConfigRead,
+)
+async def update_campaign_state_field(
+    campaign_id: str,
+    field_id: str,
+    payload: CampaignStateFieldConfigUpdate,
+    db: AsyncSession = Depends(get_db),
+) -> CampaignStateFieldConfigRead:
+    """Partial update — поля, отсутствующие в теле, не изменяются.
+
+    Семантика `exclude_unset` согласуется с `PUT /campaigns/{id}`.
+    Попытка передать `key` или `mode` в теле → 409 (immutable).
+    """
+    try:
+        return await campaign_state_field_service.update_field(
+            db, uuid.UUID(campaign_id), uuid.UUID(field_id), payload
+        )
+    except CampaignStateFieldError as exc:
+        raise HTTPException(status_code=exc.http_status, detail=exc.code) from exc
+
+
+@router.delete(
+    "/{campaign_id}/state-fields/{field_id}",
+    status_code=204,
+)
+async def delete_campaign_state_field(
+    campaign_id: str,
+    field_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """Удалить поле Campaign State. История state не сохраняется (Stage 2 не существует)."""
+    try:
+        await campaign_state_field_service.delete_field(
+            db, uuid.UUID(campaign_id), uuid.UUID(field_id)
+        )
+    except CampaignStateFieldError as exc:
+        raise HTTPException(status_code=exc.http_status, detail=exc.code) from exc
+
+
+@router.post(
+    "/{campaign_id}/state-fields/reorder",
+    response_model=list[CampaignStateFieldConfigRead],
+)
+async def reorder_campaign_state_fields(
+    campaign_id: str,
+    payload: CampaignStateFieldConfigReorderRequest,
+    db: AsyncSession = Depends(get_db),
+) -> list[CampaignStateFieldConfigRead]:
+    """Полная перестановка порядка полей. Все ID должны быть UUID-строками и
+    принадлежать кампании; длина списка должна равняться числу полей.
+    """
+    try:
+        return await campaign_state_field_service.reorder_fields(
+            db, uuid.UUID(campaign_id), payload.field_ids
+        )
+    except CampaignStateFieldError as exc:
+        raise HTTPException(status_code=exc.http_status, detail=exc.code) from exc
+
+
+# ---------------------------------------------------------------------------
+# Campaign State — Stage 2: Versioned State endpoints
+# ---------------------------------------------------------------------------
+
+from typing import Any
+
+
+@router.get(
+    "/{campaign_id}/state",
+    response_model=CampaignStateVersionRead | None,
+)
+async def get_active_campaign_state(
+    campaign_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> CampaignStateVersionRead | None:
+    """Возвращает активную (последнюю) версию state кампании или null, если версий ещё нет."""
+    try:
+        return await campaign_state_value_service.get_active_state(
+            db, uuid.UUID(campaign_id)
+        )
+    except CampaignStateValueError as exc:
+        raise HTTPException(status_code=exc.http_status, detail=exc.code) from exc
+
+
+@router.get(
+    "/{campaign_id}/state/versions",
+    response_model=list[CampaignStateVersionSummary],
+)
+async def list_campaign_state_versions(
+    campaign_id: str,
+    limit: int = 50,
+    offset: int = 0,
+    db: AsyncSession = Depends(get_db),
+) -> list[CampaignStateVersionSummary]:
+    """Краткий список версий state (DESC по state_version)."""
+    try:
+        return await campaign_state_value_service.list_versions(
+            db, uuid.UUID(campaign_id), limit=limit, offset=offset
+        )
+    except CampaignStateValueError as exc:
+        raise HTTPException(status_code=exc.http_status, detail=exc.code) from exc
+
+
+@router.get(
+    "/{campaign_id}/state/versions/{state_version}",
+    response_model=CampaignStateVersionRead | None,
+)
+async def get_campaign_state_version(
+    campaign_id: str,
+    state_version: int,
+    db: AsyncSession = Depends(get_db),
+) -> CampaignStateVersionRead | None:
+    """Полный снимок конкретной версии state. 404, если версия не найдена."""
+    try:
+        return await campaign_state_value_service.get_state_version(
+            db, uuid.UUID(campaign_id), state_version
+        )
+    except CampaignStateValueError as exc:
+        raise HTTPException(status_code=exc.http_status, detail=exc.code) from exc
+
+
+@router.post(
+    "/{campaign_id}/state/patch",
+    response_model=CampaignStatePatchResponse,
+)
+async def apply_campaign_state_patch(
+    campaign_id: str,
+    payload: CampaignStatePatchRequest,
+    db: AsyncSession = Depends(get_db),
+) -> CampaignStatePatchResponse:
+    """Применить patch к Campaign State.
+
+    Контракт:
+      - base_state_version должен совпадать с активной версией кампании (или null,
+        если активной версии ещё нет).
+      - config_version должен совпадать с текущим Campaign.config_version.
+      - При несовпадении любой версии — 409, без частичного применения.
+      - При валидационной ошибке любой операции — 422, без частичного применения.
+    """
+    try:
+        return await campaign_state_value_service.apply_patch(
+            db, uuid.UUID(campaign_id), payload
+        )
+    except CampaignStateValueError as exc:
+        # PatchValidationError несёт rejection; пробрасываем как 422 с деталями.
+        rejection: Any = getattr(exc, "rejection", None)
+        if rejection is not None:
+            raise HTTPException(
+                status_code=exc.http_status,
+                detail={
+                    "code": exc.code,
+                    "rejection": rejection.model_dump(),
+                },
+            ) from exc
+        raise HTTPException(status_code=exc.http_status, detail=exc.code) from exc
+
+
+# ---------------------------------------------------------------------------
+# Campaign State — Stage 3: Initial State endpoints
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/{campaign_id}/state/initial/preview",
+    response_model=CampaignStateInitialProposalRead,
+)
+async def preview_initial_state(
+    campaign_id: str,
+    payload: CampaignStateInitialPreviewRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> CampaignStateInitialProposalRead:
+    """Сформировать LLM-proposal Initial State из выбранных Markdown-документов.
+
+    404 — кампания не найдена;
+    422 — no_markdown_documents / document_not_markdown / document_not_indexed;
+    503 — generation_provider_unavailable / invalid_generation_output.
+    """
+    redis = request.app.state.redis
+    try:
+        return await campaign_state_initial_service.start_preview(
+            db=db,
+            redis=redis,
+            campaign_id=uuid.UUID(campaign_id),
+            document_ids=payload.document_ids,
+            current_user=None,
+        )
+    except CampaignStateInitialError as exc:
+        raise HTTPException(status_code=exc.http_status, detail=exc.code) from exc
+
+
+@router.get(
+    "/{campaign_id}/state/initial",
+    response_model=CampaignStateInitialProposalRead | None,
+)
+async def get_initial_state_proposal(
+    campaign_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> CampaignStateInitialProposalRead | None:
+    """Вернуть текущий Initial State proposal или null (нет/истёк)."""
+    redis = request.app.state.redis
+    try:
+        await campaign_state_initial_service.assert_campaign_exists(
+            db, uuid.UUID(campaign_id)
+        )
+    except CampaignStateInitialError as exc:
+        raise HTTPException(status_code=exc.http_status, detail=exc.code) from exc
+    return await campaign_state_initial_service.get_proposal(
+        redis, uuid.UUID(campaign_id)
+    )
+
+
+@router.post(
+    "/{campaign_id}/state/initial/apply",
+    response_model=CampaignStateVersionRead,
+)
+async def apply_initial_state(
+    campaign_id: str,
+    payload: CampaignStateInitialApplyRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> CampaignStateVersionRead:
+    """Применить Initial State proposal (review/approval).
+
+    404 — proposal_not_found;
+    409 — initial_already_applied / config_version_conflict / source_snapshot_stale;
+    410 — proposal_expired.
+    """
+    redis = request.app.state.redis
+    try:
+        return await campaign_state_initial_service.apply(
+            db=db,
+            redis=redis,
+            campaign_id=uuid.UUID(campaign_id),
+            request=payload,
+            current_user=None,
+        )
+    except CampaignStateInitialError as exc:
+        raise HTTPException(status_code=exc.http_status, detail=exc.code) from exc
+    except CampaignStateValueError as exc:
+        # SourceSnapshotStaleError / ConfigVersionConflictError / InitialAlreadyAppliedError
+        # — пробрасываем как 409 с расширенным detail для snapshot_stale.
+        if exc.code == "source_snapshot_stale":
+            stale_docs: list[str] = list(getattr(exc, "stale_documents", []) or [])
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": exc.code,
+                    "stale_documents": stale_docs,
+                },
+            ) from exc
+        raise HTTPException(status_code=exc.http_status, detail=exc.code) from exc
+
+
+@router.get(
+    "/{campaign_id}/effective-context",
+    response_model=EffectiveContextRead,
+)
+async def get_campaign_effective_context(
+    campaign_id: str,
+    chat_id: str | None = None,
+    db: AsyncSession = Depends(get_db),
+) -> EffectiveContextRead:
+    """Возвращает effective-context для дебага prompt assembly кампании.
+
+    Не выполняет retrieval и не вызывает LLM. Для `chat_id` подгружает
+    domain_id чата (для совпадения с runtime), иначе использует campaign.domain_id.
+
+    Endpoint всегда возвращает 200, даже если state отсутствует (см. §11).
+    """
+    from app.db.models import Campaign as CampaignModel, Chat as ChatModel
+
+    try:
+        campaign_uuid = uuid.UUID(campaign_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    campaign = await db.get(CampaignModel, campaign_uuid)
+    if campaign is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    domain_id: str | None = campaign.domain_id
+
+    if chat_id:
+        try:
+            chat_uuid = uuid.UUID(chat_id)
+        except ValueError:
+            chat_uuid = None
+        if chat_uuid is not None:
+            chat = await db.get(ChatModel, chat_uuid)
+            if chat is not None and chat.domain_id:
+                domain_id = chat.domain_id
+
+    return await build_effective_context(
+        campaign_id=str(campaign_uuid),
+        chat_id=chat_id,
+        domain_id=domain_id,
+        db=db,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Campaign State — Stage 7: potentially_stale signal
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/{campaign_id}/state/stale-status",
+    response_model=CampaignStateStaleStatus,
+)
+async def get_campaign_state_stale_status(
+    campaign_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> CampaignStateStaleStatus:
+    """Возвращает potentially_stale для активной версии Campaign State.
+
+    Вычисляется на лету из Redis vault-cache + Document.md5:
+      - .md source_refs активной версии сравниваются с фактическим md5
+        и index_status соответствующего документа в Redis.
+      - PDF не учитывается (защита).
+      - Если кампания не имеет active state version → potentially_stale=false.
+
+    Побочный эффект: на переходе false→true (или при появлении нового
+    stale-документа) пишется AuditLog (action=campaign_state_potentially_stale).
+
+    200 всегда (кроме 404 при отсутствии кампании). Endpoint не выполняет
+    индексацию, не меняет state и не вызывает LLM.
+    """
+    from app.services.campaign_state_stale_service import (
+        CampaignStateStaleError,
+        campaign_state_stale_service,
+    )
+
+    try:
+        campaign_uuid = uuid.UUID(campaign_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="campaign_not_found") from None
+
+    redis = request.app.state.redis
+    try:
+        return await campaign_state_stale_service.compute_stale_status(
+            db=db,
+            redis=redis,
+            campaign_id=campaign_uuid,
+        )
+    except CampaignStateStaleError as exc:
+        raise HTTPException(status_code=exc.http_status, detail=exc.code) from exc
+
+
 # --- Вспомогательные ---
 
 async def _campaign_with_tags(campaign: Campaign, db: AsyncSession) -> CampaignRead:
-    """\u0418\u0441\u043f\u043e\u043b\u044c\u0437\u0443\u0435\u0442\u0441\u044f \u0434\u043b\u044f \u043e\u0434\u0438\u043d\u043e\u0447\u043d\u044b\u0445 \u043e\u0431\u044a\u0435\u043a\u0442\u043e\u0432 (get/create/update). \u0414\u043b\u044f \u0441\u043f\u0438\u0441\u043a\u0430 — batch \u0432 list_campaigns."""
+    """Используется для одиночных объектов (get/create/update). Для списка — batch в list_campaigns."""
     stmt = select(Tag).where(Tag.campaign_id == campaign.id)
     result = await db.execute(stmt)
     tags = [TagRead.model_validate(t, from_attributes=True) for t in result.scalars().all()]

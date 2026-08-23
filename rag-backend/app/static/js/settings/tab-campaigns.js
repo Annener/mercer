@@ -14,6 +14,10 @@ const CampaignsTabMixin = {
             domains = Array.isArray(dr) ? dr : (dr.domains || []);
         } catch (_) {}
 
+        // Для каждой кампании параллельно проверяем наличие state_fields
+        // и active state version — это определяет UI Initial State.
+        const initialStateInfo = await this._loadInitialStateInfo(campaigns);
+
         const railHtml = window.DomainRail
             ? window.DomainRail.render(domains, domainId, this.escapeHtml.bind(this))
             : '';
@@ -29,6 +33,7 @@ const CampaignsTabMixin = {
                 <div>
                     <h3>${this.escapeHtml(c.name)}</h3>
                     <p style="color:var(--color-text-muted);font-size:var(--text-sm);">${this.escapeHtml(c.description || '')}</p>
+                    ${this._renderInitialStateBadge(c.id, initialStateInfo.get(String(c.id)))}
                 </div>
                 <div class="card-menu-container">
                     <button class="card-menu-toggle" data-id="${this.escapeHtml(String(c.id))}" aria-label="Меню">⋮</button>
@@ -42,6 +47,57 @@ const CampaignsTabMixin = {
         return `<div class="domain-rail-layout">
             ${railHtml}
             <div class="domain-rail-pane">${cardsHtml}</div>
+        </div>`;
+    },
+
+    /**
+     * Для каждой кампании параллельно проверяем:
+     *   - список state_fields (нужен для отображения в карточке);
+     *   - есть ли active state version (если да — initial уже применён).
+     *
+     * Возвращает Map<campaignId, { fields, hasFields, hasActiveState }>.
+     * Любая ошибка на кампании трактуется как «нет данных» (UI просто скроет блок).
+     */
+    async _loadInitialStateInfo(campaigns) {
+        const result = new Map();
+        if (!window.chatAPI) return result;
+        const checks = await Promise.allSettled(
+            (campaigns || []).map(async (c) => {
+                const cid = String(c.id);
+                const [fields, activeState] = await Promise.all([
+                    this.api.getStateFields(cid).catch(() => []),
+                    this.api.getActiveCampaignState(cid).catch(() => null),
+                ]);
+                const fieldsArr = Array.isArray(fields) ? fields : [];
+                const hasFields = fieldsArr.length > 0;
+                const hasActiveState = !!(activeState && activeState.summary);
+                result.set(cid, { fields: fieldsArr, hasFields, hasActiveState });
+            })
+        );
+        for (const r of checks) {
+            if (r.reason) console.warn('Initial State info check failed:', r.reason);
+        }
+        return result;
+    },
+
+    /**
+     * Возвращает HTML-фрагмент для слота «Поля Campaign State» в карточке кампании.
+     * Больше не используется — управление полями вынесено в модалку редактирования.
+     * Оставлено как no-op, чтобы случайные старые вызовы не падали.
+     */
+    _renderStateFieldsSlot() {
+        return '';
+    },
+
+    /**
+     * Компактный индикатор Initial State в карточке кампании.
+     *   - если applied → badge «Initial State применён»;
+     *   - иначе → ничего (управление — через модалку редактирования).
+     */
+    _renderInitialStateBadge(campaignId, info) {
+        if (!info || !info.hasActiveState) return '';
+        return `<div class="card-initial-state" data-id="${this.escapeHtml(String(campaignId))}">
+            <span class="badge badge-success">Initial State применён</span>
         </div>`;
     },
 
@@ -153,13 +209,55 @@ const CampaignsTabMixin = {
                         `<option value="${this.escapeHtml(String(t.id))}">${this.escapeHtml(t.name)}</option>`
                     ).join('')}
                 </select>` : '<span style="color:var(--color-text-faint);font-size:var(--text-sm);">В домене нет глобальных тегов</span>'}
-            </div>` : ''}
+            </div>
+            <div id="camp-state-fields-mount" style="padding:0 1.5rem;"></div>
+            <div id="camp-initial-state-mount" style="padding:0 1.5rem;"></div>` : ''}
             <div class="modal-actions" style="display:flex;justify-content:space-between;gap:8px;margin-top:1rem;padding:1rem 1.5rem;border-top:1px solid var(--color-border);">
                 <button class="btn btn-primary" id="camp-save-btn">${isEdit ? 'Сохранить' : 'Создать'}</button>
                 ${isEdit ? `<button class="btn" style="color:var(--color-error);" id="camp-delete-btn">Удалить кампанию</button>` : ''}
             </div>
         </div>`;
         document.body.appendChild(overlay);
+
+        // Секции «Поля Campaign State» и «Initial State» внутри модалки редактирования.
+        // Создаются через фабрики модулей state-fields.js / initial-state.js —
+        // те же модули переиспользуются без overlay-обёрток.
+        let stateFieldsSection = null;
+        let initialStateSection = null;
+        if (isEdit && window.StateFieldsSection && window.InitialStateSection) {
+            const fieldsMount = overlay.querySelector('#camp-state-fields-mount');
+            const initialMount = overlay.querySelector('#camp-initial-state-mount');
+            if (fieldsMount) {
+                stateFieldsSection = window.StateFieldsSection.build();
+                // Снимаем padding form-group — он уже есть у mount-point.
+                stateFieldsSection.element.style.padding = '0';
+                fieldsMount.appendChild(stateFieldsSection.element);
+                stateFieldsSection.load(campaignId, {
+                    onChange: () => {
+                        // При изменении полей обновляем Initial State секцию и карточку.
+                        if (initialStateSection) initialStateSection.refresh(campaignId);
+                    },
+                });
+            }
+            if (initialMount) {
+                initialStateSection = window.InitialStateSection.build();
+                initialStateSection.element.style.padding = '0';
+                initialMount.appendChild(initialStateSection.element);
+                const wizardDomainId = effectiveDomainId || campaign.domain_id || null;
+                initialStateSection.load(campaignId, {
+                    onChanged: () => this.loadTab('campaigns'),
+                    onApplyClick: (cid) => {
+                        if (window.InitialStateWizard) {
+                            window.InitialStateWizard.open(cid, {
+                                domainId: wizardDomainId,
+                                onApplied: () => initialStateSection.refresh(cid),
+                            });
+                        }
+                    },
+                });
+            }
+        }
+        window._campEditHelpers = { stateFieldsSection: () => stateFieldsSection, initialStateSection: () => initialStateSection };
 
         let localCampTags = [...campaignTags];
 
@@ -181,7 +279,12 @@ const CampaignsTabMixin = {
                 el.onclick = async () => {
                     const tid = el.dataset.removeCtag;
                     if (!confirm('Удалить тег?')) return;
-                    try { await this.api.deleteTag(tid); localCampTags = localCampTags.filter(t => String(t.id) !== tid); refreshTagsList(); }
+                    try {
+                        await this.api.deleteTag(tid);
+                        localCampTags = localCampTags.filter(t => String(t.id) !== tid);
+                        refreshTagsList();
+                        if (initialStateSection) initialStateSection.refresh(campaignId);
+                    }
                     catch (e) { alert(e.message); }
                 };
             });
@@ -222,6 +325,7 @@ const CampaignsTabMixin = {
                             }
                         }
                         refreshGlobalTagsList();
+                        if (initialStateSection) initialStateSection.refresh(campaignId);
                     } catch (e) { alert(e.message); }
                 };
             });
@@ -237,6 +341,7 @@ const CampaignsTabMixin = {
                 e.target.querySelector(`option[value="${tid}"]`)?.remove();
                 e.target.value = '';
                 refreshGlobalTagsList();
+                if (initialStateSection) initialStateSection.refresh(campaignId);
             } catch (err) { alert(err.message); }
         });
 
@@ -252,6 +357,7 @@ const CampaignsTabMixin = {
                     localCampTags.push(tag);
                     overlay.querySelector('#new-tag-name').value = '';
                     refreshTagsList();
+                    if (initialStateSection) initialStateSection.refresh(campaignId);
                 } catch (e) { alert(e.message); }
             });
 

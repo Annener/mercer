@@ -72,7 +72,12 @@ function renderSourcesBlock(sources, answerText) {
     for (const s of sources) {
         const key = s.path;
         if (!fileMap.has(key)) {
-            fileMap.set(key, { path: s.path, vault_id: s.vault_id, pages: [] });
+            fileMap.set(key, {
+                path: s.path,
+                vault_id: s.vault_id,
+                pages: [],
+                source_kind: s.source_kind || 'chunk',
+            });
         }
         if (s.page != null) {
             fileMap.get(key).pages.push(s.page);
@@ -85,9 +90,12 @@ function renderSourcesBlock(sources, answerText) {
     const rows = items.map((item, i) => {
         const fileName = item.path.split('/').pop();
         const pagesLabel = item.pages.length > 0 ? `стр. ${item.pages.sort((a, b) => a - b).join(', ')}` : '';
+        const kindBadge = item.source_kind === 'full_document'
+            ? `<span class="src-kind src-kind--full">📄 полный документ</span>`
+            : '';
         const numBadge = `<span class="src-num">${i + 1}</span>`;
         const pageSpan = pagesLabel ? `<span class="src-page">${escapeHtml(pagesLabel)}</span>` : '';
-        return `<div class="src-item" title="${escapeHtml(item.path)}">${numBadge}<span class="src-name">${escapeHtml(fileName)}</span>${pageSpan}</div>`;
+        return `<div class="src-item" title="${escapeHtml(item.path)}">${numBadge}<span class="src-name">${escapeHtml(fileName)}</span>${pageSpan}${kindBadge}</div>`;
     }).join('');
     return `<div class="sources-block"><div class="sources-label">Источники</div><div class="sources-list">${rows}</div></div>`;
 }
@@ -107,7 +115,13 @@ function renderGroupedSources(stepGroups, answerText) {
             if (!seen.has(key)) {
                 const num = allItems.length + 1;
                 seen.set(key, num);
-                allItems.push({ path: src.path, page: src.page, vault_id: src.vault_id, num });
+                allItems.push({
+                    path: src.path,
+                    page: src.page,
+                    vault_id: src.vault_id,
+                    source_kind: src.source_kind || 'chunk',
+                    num,
+                });
             }
         }
     }
@@ -118,9 +132,12 @@ function renderGroupedSources(stepGroups, answerText) {
     const rows = items.map(item => {
         const fileName = (item.path || '').split('/').pop() || item.path;
         const pagesLabel = item.page != null ? `стр. ${item.page}` : '';
+        const kindBadge = item.source_kind === 'full_document'
+            ? `<span class="src-kind src-kind--full">📄 полный документ</span>`
+            : '';
         const numBadge = `<span class="src-num">${item.num}</span>`;
         const pageSpan = pagesLabel ? `<span class="src-page">${escapeHtml(pagesLabel)}</span>` : '';
-        return `<div class="src-item" title="${escapeHtml(item.path || '')}">${numBadge}<span class="src-name">${escapeHtml(fileName)}</span>${pageSpan}</div>`;
+        return `<div class="src-item" title="${escapeHtml(item.path || '')}">${numBadge}<span class="src-name">${escapeHtml(fileName)}</span>${pageSpan}${kindBadge}</div>`;
     }).join('');
     return `<div class="sources-block"><div class="sources-label">Источники</div><div class="sources-list">${rows}</div></div>`;
 }
@@ -497,6 +514,49 @@ class ChatManager {
     }
 
     // -------------------------------------------------------
+    // Stage 8.5: tool_call / tool_result inline cards
+    // -------------------------------------------------------
+    //
+    // When the model calls `search_knowledge` the backend streams a
+    // `tool_call` event; when the host returns evidence it streams a
+    // `tool_result`. We render these as a small inline card so the
+    // user can see the loop in action without it being noisy.
+
+    appendToolCallCard(parsed) {
+        if (!this.messagesContainer) return;
+        const queries = (parsed.queries || []).slice(0, 3).map(escapeHtml).join(', ');
+        const reason = parsed.reason ? `<div class="tool-call-reason">${escapeHtml(parsed.reason)}</div>` : '';
+        const card = document.createElement('div');
+        card.className = 'tool-call-card';
+        card.dataset.round = String(parsed.round ?? 0);
+        card.innerHTML =
+            `<div class="tool-call-header">Поиск в базе знаний</div>` +
+            `<div class="tool-call-queries">${queries || '(пустой запрос)'}</div>` +
+            reason +
+            `<div class="tool-call-status">ищу…</div>`;
+        this.messagesContainer.appendChild(card);
+        if (!this._userScrolledUp) this.scrollToBottom();
+    }
+
+    updateToolResultCard(parsed) {
+        if (!this.messagesContainer) return;
+        const cards = this.messagesContainer.querySelectorAll(
+            `.tool-call-card[data-round="${parsed.round ?? 0}"]`
+        );
+        const card = cards[cards.length - 1];
+        if (!card) return;
+        const status = card.querySelector('.tool-call-status');
+        if (status) {
+            const hits = parsed.hits_count || 0;
+            const scope = parsed.scope || 'domain';
+            const note = parsed.note ? ` <span class="tool-call-note">— ${escapeHtml(parsed.note)}</span>` : '';
+            status.innerHTML =
+                `Найдено фрагментов: <b>${hits}</b> ` +
+                `<span class="tool-call-scope">(${scope})</span>${note}`;
+        }
+    }
+
+    // -------------------------------------------------------
     // Stop / Send button toggle
     // -------------------------------------------------------
 
@@ -620,7 +680,12 @@ class ChatManager {
             this.welcomeMessage.style.display = 'none';
             this.clearMessages();
             for (const message of data.messages) {
-                this.addMessage(message.role, message.content);
+                const el = this.addMessage(message.role, message.content);
+                // Если у сообщения есть sources из Message.sources — рендерим блок.
+                if (el && message.role === 'assistant' && Array.isArray(message.sources) && message.sources.length > 0) {
+                    const sourcesHtml = renderSourcesBlock(message.sources, message.content || '');
+                    if (sourcesHtml) el.insertAdjacentHTML('beforeend', sourcesHtml);
+                }
             }
             await this.setupContextBar(data.chat);
             // BUG-11 fix: restore active update-mode panel after messages are rendered
@@ -717,7 +782,7 @@ class ChatManager {
                         streamDone = true;
                         continue;
                     }
-                    try {
+                        try {
                         const parsed = JSON.parse(data);
                         if (parsed.type) {
                             const needsAssistant = ![
@@ -727,6 +792,8 @@ class ChatManager {
                                 'pipeline_cancelled',
                                 'step_status',
                                 'full_document_selection_required',
+                                'tool_call',
+                                'tool_result',
                             ].includes(parsed.type);
                             if (needsAssistant && !assistantMessage) {
                                 assistantMessage = this.addMessage('assistant', '');
@@ -782,6 +849,18 @@ class ChatManager {
                                 );
                                 this.messagesContainer.appendChild(panel);
                                 if (!this._userScrolledUp) this.scrollToBottom();
+                            }
+
+                            // Stage 8.5: tool_call/tool_result — поиск в базе знаний
+                            if (parsed.type === 'tool_call') {
+                                if (typeof this.appendToolCallCard === 'function') {
+                                    this.appendToolCallCard(parsed);
+                                }
+                            }
+                            if (parsed.type === 'tool_result') {
+                                if (typeof this.updateToolResultCard === 'function') {
+                                    this.updateToolResultCard(parsed);
+                                }
                             }
 
                             if (parsed.type === 'progress') this.updateProgressBar(assistantMessage, parsed.step, parsed.total, parsed.step_name);

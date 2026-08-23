@@ -477,7 +477,8 @@ rag-backend/
 │   ├── services/update_mode_executor.py    — Orchestrator: retrieval → LLM → resolve
 │   ├── services/update_mode_store.py       — Redis review session CRUD
 │   ├── services/indexer_client.py          — HTTP-клиент к rag-indexer internal API
-│   ├── db/models.py                        — ORM (Vault.git_author_name/email, AuditLog)
+│   ├── services/campaign_state_value_service.py — Versioned state + patch apply (Stage 5 dependency)
+│   ├── db/models.py                        — ORM (Vault.git_author_name/email, AuditLog, CampaignState*)
 │   └── main.py
 ├── migrations/versions/
 │   └── NNNN_campaign_update_mode.py        — Alembic-миграция (до 0005_campaign_update_git_identity)
@@ -485,7 +486,8 @@ rag-backend/
     ├── test_update_mode_models.py
     ├── test_update_mode_executor.py
     ├── test_update_mode_store.py
-    └── test_update_mode_api.py
+    ├── test_update_mode_api.py
+    └── test_update_mode_state_patch.py     — state_patch decisions, apply, audit
 
 rag-indexer/
 ├── api/update_mode.py                      — Internal endpoints /internal/update-mode/*
@@ -497,5 +499,144 @@ rag-indexer/
     └── test_update_mode_internal_api.py
 
 shared_contracts/
-└── models.py                               — ResolvedChange, EditIntent, Apply* контракты
+└── models.py                               — ResolvedChange, EditIntent, Apply*, Stage 5 state-patch DTO
 ```
+
+---
+
+## Stage 5: state_patch в proposal
+
+Помимо file-intent правок, Update Mode возвращает **state_patch** — точечные операции над Campaign State.
+
+### Семантика
+
+- Каждая сессия `POST /start` дополнительно возвращает:
+  - `state_field_snapshot` — упорядоченный снимок enabled-полей кампании (`field_id`, `key`, `label`, `mode`);
+  - `state_patch_operations` — массив операций, каждая с серверным `op_index`, `field_key`, `field_label`, `mode`, `operation`, `previous_text`, `proposed_text`, `status: pending`.
+- LLM получает в `<campaign_state>` user-message блок текущих значений полей (single — текст, list — `<item key="...">`) и возвращает JSON:
+  ```json
+  {
+    "intents": [...],
+    "no_change_reason": null,
+    "state_patch": [
+      { "type": "replace_single", "field_key": "current_focus",
+        "text": "...", "reason": "...", "source_refs": ["file:<doc_id>:sha:<md5>"] }
+    ],
+    "state_patch_questions": []
+  }
+  ```
+- Допустимые операции (см. спека §6.1):
+  - `single`: `replace_single`, `clear_single`;
+  - `list`: `add_list_item`, `update_list_item`, `resolve_list_item`, `remove_list_item`.
+
+### Pre-validation
+
+Перед сохранением в Redis backend отбрасывает операции, нарушающие snapshot-инварианты:
+- `field_key` не найден в snapshot;
+- `mode ↔ type` mismatch (например, `replace_single` для list-поля);
+- `update_list_item | resolve_list_item | remove_list_item` ссылаются на несуществующий `item_key` в текущем state;
+- `replace_single | update_list_item | add_list_item` имеют пустой текст.
+
+Отброшенные операции добавляются в `warnings` сессии (`state_patch_dropped:*`).
+
+### Review
+
+`PATCH /review` принимает `state_patch_decisions`:
+
+```json
+{
+  "accepted_change_ids": ["chg-1"],
+  "rejected_change_ids": [],
+  "state_patch_decisions": {
+    "accepted_op_indexes": [0, 2],
+    "rejected_op_indexes": [1],
+    "edited": [{"op_index": 0, "text": "правленый текст"}]
+  }
+}
+```
+
+- Inline-edit допустим только для операций с text-полем (`replace_single | update_list_item | add_list_item`);
+- edited применяется к `operation.text` атомарно в Lua-скрипте `_REVIEW_LUA`;
+- `rejected` и `accepted` не должны пересекаться;
+- `edited` не должен ссылаться на `rejected` op_index.
+
+### Apply
+
+`POST /apply`:
+1. Применяет file changes через `rag-indexer` (как раньше).
+2. Применяет принятые state-patch операции через `campaign_state_value_service.apply_patch`, формируя новую `CampaignStateVersion` (как при Stage 2 patch).
+3. edited_text подставляется в `op.text` перед apply.
+4. Failure (config_version conflict, source stale) → `state_patch_result.failed_op_indexes`, file-apply продолжается.
+5. Audit log `update_mode.apply` дополнен блоком `state_patch` (accepted/rejected/edited op_indexes, applied_state_version, config_version).
+6. Audit log `update_mode.reject_state_patch` (отдельная запись) пишется при наличии rejected state ops.
+
+Файл-изменения и state-patch принимаются независимо: файл-apply продолжается даже при провале state-apply (spec §7.1).
+
+---
+
+## Stage 6: prompt assembly с Campaign State
+
+После применения активной версии Campaign State блок попадает в `system_prompt`
+любого чат-turn кампании. Это делает модель осведомлённой о текущем контексте
+кампании без обязательного retrieval.
+
+### Где инжектируется
+
+Скомпилированный блок добавляется через `app/services/effective_context.compose_full_system_prompt`,
+которая склеивает `system_prompt + campaign_state_block` через `filter(None)`.
+
+Точки интеграции:
+
+| Путь | Назначение |
+|---|---|
+| `rag-backend/app/api/chat.py::plain_stream` | SSE-стрим plain RAG fallback |
+| `rag-backend/app/api/chat.py::_plain_llm_reply` | Не-стриминговый путь |
+| `rag-backend/app/api/pipeline_resume.py::_plain_rag_stream` | Подтверждение пайплайна отменено |
+| `rag-backend/app/services/pipeline_executor.py::PipelineExecutor._run_final_composition` | Конечная композиция пайплайна (после `_resolve_prompt`) |
+| `rag-backend/app/services/pipeline_executor.py::PipelineExecutor.resume_from_full_doc_selection` | Plain-fallback ветка full-doc resume |
+
+`_run_final_composition` использует `compose_state_block_only` (только блок state,
+без system_prompt) — это сохраняет существующие шаблоны с `{query}`/`{STEP_ID.*}`
+нетронутыми и добавляет state как дополнительный блок.
+
+### Token budget
+
+По умолчанию ~800 токенов на скомпилированный блок (см. `chat.campaign_state_token_budget`
+в `app/services/settings_service.py`). Поля исключаются целиком, не обрезаются
+посередине. Превышение лимита попадает в `truncated_fields` debug-view.
+
+Эвристика токенов: `math.ceil(len(text) / 4)` — согласована с остальным кодом
+(`update_mode_executor.py`, `pipeline_executor.py`, `full_document_service.py`).
+
+### Debug-view: `GET /api/settings/campaigns/{id}/effective-context`
+
+Возвращает `EffectiveContextRead` с блоками:
+
+- `system_prompt`;
+- `campaign_state` (если есть active state);
+- `rag_context` (если задан `include_rag=True`, для debug не заполняется);
+- `history` / `user_message` (опционально).
+
+Endpoint всегда возвращает 200 даже если state отсутствует. Не выполняет
+retrieval и не запускает LLM. Используется для инспекции prompt assembly.
+
+### Ключевые модули
+
+- `rag-backend/app/services/campaign_state_compiler.py` — детерминированный
+  компилятор (`compile_campaign_state`, чистая функция);
+- `rag-backend/app/services/effective_context.py` — общие helper-функции для
+  runtime и debug (`compose_full_system_prompt`, `build_effective_context`);
+- `rag-backend/app/services/campaign_state_value_service.py::list_enabled_fields_ordered` —
+  загрузка enabled-полей кампании в порядке `display_order ASC, key ASC`;
+- `shared_contracts/models.py::CampaignStateCompiledBlock`, `EffectiveContextRead`,
+  `EffectiveContextBlock`, `CampaignStateCompiledFieldRead` — DTO.
+
+### Чего этап 6 НЕ делает
+
+- Не вводит `search_knowledge` tool и bounded agent loop (§12 — отдельный этап 8);
+- Не меняет `_resolve_system_prompt` контракт (для обратной совместимости
+  `_resolve_system_prompt` остался в `chat.py` и использует helper из
+  `effective_context._resolve_system_prompt_text`);
+- Не хранит compiled state в БД — это чистая функция от active state;
+- Не обновляет UI рендер effective-context — endpoint готов, визуальная
+  панель остаётся отдельной задачей.

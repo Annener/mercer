@@ -3,10 +3,12 @@
 cache/
 data/
 logs/
-pdf-sidecar/__pycache__/
 pdf-sidecar/logs/
 state/
 vaults/
 pdf-sidecar/sidecar.pid
 .aider*
-pdf-sidecar/agent/__pycache__/
+node_modules/
+.venv/
+__pycache__/
+.opencode/

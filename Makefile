@@ -40,6 +40,11 @@ GREEN  := \033[0;32m
 YELLOW := \033[0;33m
 RESET  := \033[0m
 
+# --- Dev tooling ---
+STATIC_DIR     := $(ROOT_DIR)/rag-backend/app/static
+PY_VENV_DIR    := $(ROOT_DIR)/.venv
+PY_VENV_PYTHON := $(PY_VENV_DIR)/bin/python
+
 # =============================================================================
 # _find_python: найти максимальную установленную версию Python из диапазона 3.11–3.13
 #
@@ -89,7 +94,8 @@ _check_python:
 
 .PHONY: help init-env agent-setup agent-install agent-uninstall agent-start agent-stop \
         agent-status agent-logs up down seed setup _check-macos _check_python _venv-create \
-        _logs-dir _render-plist _agent-setup-dispatch _agent-setup-launchd
+        setup-dev js-install test test-rag-backend test-integration test-all js-test \
+        lint-py lint-js lint lint-fix _py-venv-create
 
 help:
 	@echo ""
@@ -108,6 +114,18 @@ help:
 	@echo "  $(YELLOW)make down$(RESET)             docker compose down"
 	@echo "  $(YELLOW)make seed$(RESET)             Создать дефолтные embedding и rerank модели"
 	@echo "                        (переопределить URL: make seed BACKEND_URL=http://...)"
+	@echo ""
+	@echo "  $(YELLOW)make setup-dev$(RESET)        Установить dev-окружение (Python venv + npm)"
+	@echo "  $(YELLOW)make js-install$(RESET)       Установить npm-зависимости"
+	@echo "  $(YELLOW)make test$(RESET)             Python unit-тесты (быстрые, без БД)"
+	@echo "  $(YELLOW)make test-rag-backend$(RESET) Только unit-тесты rag-backend"
+	@echo "  $(YELLOW)make test-integration$(RESET) Интеграционные (требуется Postgres + alembic upgrade)"
+	@echo "  $(YELLOW)make js-test$(RESET)          JS unit-тесты (vitest)"
+	@echo "  $(YELLOW)make test-all$(RESET)         Python unit + JS тесты"
+	@echo "  $(YELLOW)make lint-py$(RESET)          ruff (Python)"
+	@echo "  $(YELLOW)make lint-js$(RESET)          eslint (JS)"
+	@echo "  $(YELLOW)make lint$(RESET)             Все линтеры"
+	@echo "  $(YELLOW)make lint-fix$(RESET)         Авто-фикс линтеров"
 	@echo ""
 
 # =============================================================================
@@ -208,6 +226,80 @@ up:
 
 down:
 	docker compose down
+
+# =============================================================================
+# Dev tooling и тесты
+# =============================================================================
+
+# Полная установка dev-окружения: .venv в корне + npm-пакеты
+setup-dev: _py-venv-create js-install
+	@echo "$(GREEN)✓ dev-окружение готово.$(RESET)"
+
+# Установить/обновить npm-зависимости фронтенда
+js-install:
+	@echo "$(YELLOW)→ npm install в $(STATIC_DIR)...$(RESET)"
+	@cd "$(STATIC_DIR)" && npm install
+	@echo "$(GREEN)✓ npm зависимости установлены.$(RESET)"
+
+# Python unit-тесты (быстрые, без БД)
+test: _py-venv-create
+	@echo "$(YELLOW)→ pytest (unit)...$(RESET)"
+	@cd "$(ROOT_DIR)" && $(PY_VENV_PYTHON) -m pytest tests/unit
+
+# Только unit-тесты rag-backend
+test-rag-backend: _py-venv-create
+	@echo "$(YELLOW)→ pytest rag-backend unit...$(RESET)"
+	@cd "$(ROOT_DIR)" && $(PY_VENV_PYTHON) -m pytest tests/unit/rag_backend
+
+# Интеграционные тесты (требуется PostgreSQL + alembic upgrade head)
+test-integration: _py-venv-create
+	@echo "$(YELLOW)→ pytest (integration, требуется PostgreSQL)...$(RESET)"
+	@cd "$(ROOT_DIR)" && $(PY_VENV_PYTHON) -m pytest tests/integration
+
+# JS тесты (vitest, однократный прогон)
+js-test:
+	@echo "$(YELLOW)→ vitest...$(RESET)"
+	@cd "$(STATIC_DIR)" && npm test
+
+# Все тесты: Python + JS
+test-all: test js-test
+	@echo "$(GREEN)✓ все тесты прошли.$(RESET)"
+
+# Python линтинг (ruff)
+lint-py: _py-venv-create
+	@echo "$(YELLOW)→ ruff check...$(RESET)"
+	@cd "$(ROOT_DIR)" && $(PY_VENV_PYTHON) -m ruff check .
+
+# JS линтинг (eslint)
+lint-js:
+	@echo "$(YELLOW)→ eslint...$(RESET)"
+	@cd "$(STATIC_DIR)" && npm run lint
+
+# Все линтеры
+lint: lint-py lint-js
+	@echo "$(GREEN)✓ линтинг пройден.$(RESET)"
+
+# Авто-фикс линтеров
+lint-fix: _py-venv-create
+	@echo "$(YELLOW)→ ruff check --fix...$(RESET)"
+	@cd "$(ROOT_DIR)" && $(PY_VENV_PYTHON) -m ruff check --fix .
+	@echo "$(YELLOW)→ eslint --fix...$(RESET)"
+	@cd "$(STATIC_DIR)" && npm run lint:fix
+
+# Создать .venv в корне и установить dev-зависимости (ruff + requirements-dev.txt)
+_py-venv-create:
+	@if [ ! -d "$(PY_VENV_DIR)" ]; then \
+		echo "$(YELLOW)Создаю .venv в корне...$(RESET)"; \
+		$(MERCER_PYTHON) -m venv "$(PY_VENV_DIR)"; \
+	fi
+	@echo "$(YELLOW)Обновляю pip, ставлю ruff и requirements-dev.txt...$(RESET)"
+	@$(PY_VENV_PYTHON) -m pip install -q --upgrade pip
+	@$(PY_VENV_PYTHON) -m pip install -q ruff
+	@if [ -f "$(ROOT_DIR)/requirements-dev.txt" ]; then \
+		$(PY_VENV_PYTHON) -m pip install -q -r "$(ROOT_DIR)/requirements-dev.txt"; \
+	else \
+		echo "$(YELLOW)WARNING: requirements-dev.txt не найден, пропускаю.$(RESET)"; \
+	fi
 
 # =============================================================================
 # Внутренние цели

@@ -13,6 +13,10 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Chat
+from app.services.effective_context import (
+    compose_full_system_prompt,
+    compose_state_block_only,
+)
 from app.services.full_document_service import reconstruct_full_text
 from app.services.pipeline_dag import get_execution_levels
 from app.services.query_rewriter import query_rewriter
@@ -25,11 +29,18 @@ from app.services.retrieval import (
     retrieve_multi_vault,
 )
 from app.services.settings_service import settings_service
+from app.services.source_utils import (
+    dedup_sources,
+    full_doc_hits_to_sources,
+    hits_to_sources,
+)
 from shared_contracts.models import (
     DocumentCandidate,
     PipelineExecutionContext,
     PipelineStep,
     SearchHit,
+    Source,
+    SourceGroup,
 )
 
 logger = logging.getLogger(__name__)
@@ -49,6 +60,9 @@ _VALIDATION_TTL = timedelta(hours=1)
 # Ключ в ctx.step_results для накопления сырых SearchHit по шагам.
 # Начинается с "_" — _resolve_prompt игнорирует такие ключи.
 _HITS_KEY_PREFIX = "_hits_"
+# Ключ в ctx.step_results для хранения list[Source] (готовый формат для SSE/UI)
+# по шагам send_full_document. Используется _collect_step_sources().
+_FULLDOC_SOURCES_KEY_PREFIX = "_fulldoc_sources_"
 
 # Token-бюджеты для режима send_full_document (полный документ в шаге retrieval).
 # Значения взяты из update_mode_executor для консистентности между режимами.
@@ -61,6 +75,7 @@ TOTAL_TOKEN_BUDGET = 64_000
 # =============================================================================
 # Module-level shim
 # =============================================================================
+
 
 def _build_levels(steps: list[PipelineStep]) -> list[list[PipelineStep]]:
     """Shim: redirects to get_execution_levels() from pipeline_dag.
@@ -115,9 +130,63 @@ def _collect_all_hits(ctx: PipelineExecutionContext) -> list[SearchHit]:
     return all_hits
 
 
+def _collect_step_sources(ctx: PipelineExecutionContext) -> list[SourceGroup]:
+    """Собирает SourceGroup для каждого шага, который участвовал в retrieval.
+
+    Используются два типа ключей:
+    - _hits_{step_id} → SearchHit → Source (source_kind='chunk')
+    - _fulldoc_sources_{step_id} → list[Source] (source_kind='full_document')
+
+    Дедупликация внутри SourceGroup — по (path, page, vault_id, chunk_id, document_id).
+    """
+    steps = ctx.steps or []
+    out: list[SourceGroup] = []
+    for step in steps:
+        sources: list[Source] = []
+
+        # 1. chunk-style sources из обычного retrieval
+        hits_key = f"{_HITS_KEY_PREFIX}{step.step_id}"
+        raw_hits = ctx.step_results.get(hits_key)
+        if isinstance(raw_hits, list):
+            hits: list[SearchHit] = []
+            for item in raw_hits:
+                if isinstance(item, SearchHit):
+                    hits.append(item)
+                elif isinstance(item, dict):
+                    try:
+                        hits.append(SearchHit.model_validate(item))
+                    except Exception:
+                        continue
+            sources.extend(hits_to_sources(hits))
+
+        # 2. full_document-style sources
+        fulldoc_key = f"{_FULLDOC_SOURCES_KEY_PREFIX}{step.step_id}"
+        raw_fulldoc = ctx.step_results.get(fulldoc_key)
+        if isinstance(raw_fulldoc, list):
+            for item in raw_fulldoc:
+                if isinstance(item, Source):
+                    sources.append(item)
+                elif isinstance(item, dict):
+                    try:
+                        sources.append(Source.model_validate(item))
+                    except Exception:
+                        continue
+
+        if sources:
+            out.append(
+                SourceGroup(
+                    step_id=step.step_id,
+                    step_name=step.name,
+                    sources=dedup_sources(sources),
+                )
+            )
+    return out
+
+
 # =============================================================================
 # PipelineExecutor
 # =============================================================================
+
 
 class PipelineExecutor:
     """Executes pipeline DAG with validation-pause and full_document_selection support.
@@ -203,7 +272,10 @@ class PipelineExecutor:
 
         pause_state = chat.pipeline_pause_state
         if not pause_state or pause_state.get("step") != "full_document_selection":
-            yield {"type": "error", "message": "No active full_document_selection pause"}
+            yield {
+                "type": "error",
+                "message": "No active full_document_selection pause",
+            }
             return
 
         # Восстанавливаем данные из pause_state
@@ -252,7 +324,8 @@ class PipelineExecutor:
                     doc_vault_map[did] = vault_ids_from_ctx[0]
                     logger.info(
                         "resume_from_full_doc_selection: vault_id fallback for doc=%s → %s",
-                        did, vault_ids_from_ctx[0],
+                        did,
+                        vault_ids_from_ctx[0],
                     )
 
             async def _fetch_text(doc_id: str) -> tuple[str, str | None]:
@@ -272,7 +345,9 @@ class PipelineExecutor:
             )
             for result in results:
                 if isinstance(result, Exception):
-                    logger.warning("resume_from_full_doc_selection: fetch error: %s", result)
+                    logger.warning(
+                        "resume_from_full_doc_selection: fetch error: %s", result
+                    )
                     continue
                 doc_id, text = result
                 if text:
@@ -296,7 +371,9 @@ class PipelineExecutor:
             chat.pipeline_pause_state = None
             await db.commit()
         except Exception as exc:
-            logger.warning("resume_from_full_doc_selection: failed to update chat: %s", exc)
+            logger.warning(
+                "resume_from_full_doc_selection: failed to update chat: %s", exc
+            )
 
         # ── Проверяем: это plain-fallback пауза или пауза из полноценного пайплайна?
         pipeline_id = context_snapshot.get("pipeline_id")
@@ -307,16 +384,19 @@ class PipelineExecutor:
             # Запускаем LLM напрямую, без DAG и final_composition.
             logger.info(
                 "resume_from_full_doc_selection: plain-fallback branch (no pipeline_id). "
-                "chat_id=%s", chat_id,
+                "chat_id=%s",
+                chat_id,
             )
-            from app.api.chat import _resolve_system_prompt
-
             campaign_id: str | None = context_snapshot.get("campaign_id")
             domain_id: str | None = context_snapshot.get("domain_id")
-            original_query: str = context_snapshot.get("original_query") or context_snapshot.get("query", "")
+            original_query: str = context_snapshot.get(
+                "original_query"
+            ) or context_snapshot.get("query", "")
 
-            system_prompt = await _resolve_system_prompt(campaign_id, domain_id, db)
-            full_system = f"{system_prompt}\n\n{context_str}" if system_prompt else context_str
+            system_prompt = await compose_full_system_prompt(campaign_id, domain_id, db)
+            full_system = (
+                f"{system_prompt}\n\n{context_str}" if system_prompt else context_str
+            )
 
             messages: list[dict[str, str]] = []
             if full_system:
@@ -332,24 +412,63 @@ class PipelineExecutor:
             except Exception as exc:
                 logger.error(
                     "resume_from_full_doc_selection plain-fallback stream error: %s",
-                    exc, exc_info=True,
+                    exc,
+                    exc_info=True,
                 )
                 yield {"type": "error", "message": f"LLM stream error: {exc}"}
                 return
 
-            # Сохраняем ответ в Message
+            # Собираем источники для UI и персистенции.
+            # Если были выбраны документы целиком → source_kind='full_document'.
+            # Остальные chunk-хиты из saved_hits → source_kind='chunk'.
+            source_objs: list[Source] = []
+            if selected_document_ids:
+                full_doc_hits = [
+                    h for h in saved_hits if h.document_id in selected_document_ids
+                ]
+                source_objs.extend(full_doc_hits_to_sources(full_doc_hits))
+                # Оставшиеся чанки (не выбранные как полные документы)
+                remaining_hits = [
+                    h for h in saved_hits if h.document_id not in selected_document_ids
+                ]
+                source_objs.extend(hits_to_sources(remaining_hits))
+            else:
+                source_objs.extend(hits_to_sources(saved_hits))
+
+            deduped_sources = dedup_sources(source_objs)
+
+            # Эмитим sources event для UI.
+            if deduped_sources:
+                yield {
+                    "type": "sources",
+                    "grouped_by_step": False,
+                    "sources": [
+                        s.model_dump(mode="json", exclude_none=True)
+                        for s in deduped_sources
+                    ],
+                }
+
+            # Сохраняем ответ в Message вместе с sources.
             try:
                 from app.db.models import Message
+                from app.services.source_utils import sources_to_message_sources
+
                 assistant_msg = Message(
                     chat_id=chat_uuid,
                     role="assistant",
                     content=full_answer,
+                    sources=[
+                        s.model_dump(mode="json", exclude_none=True)
+                        for s in sources_to_message_sources(deduped_sources)
+                    ]
+                    or None,
                 )
                 db.add(assistant_msg)
                 await db.commit()
             except Exception as exc:
                 logger.warning(
-                    "resume_from_full_doc_selection: failed to save assistant message: %s", exc,
+                    "resume_from_full_doc_selection: failed to save assistant message: %s",
+                    exc,
                 )
 
             yield {"type": "pipeline_complete"}
@@ -357,6 +476,7 @@ class PipelineExecutor:
 
         # ── 7b. Полный пайплайн: восстанавливаем контекст и запускаем final_composition
         from shared_contracts.models import PipelineExecutionContext as PEC
+
         ctx_data = {
             "query": "",
             "message_id": str(uuid.uuid4()),
@@ -368,9 +488,13 @@ class PipelineExecutor:
         if ctx.final_composition is None:
             logger.error(
                 "resume_from_full_doc_selection: final_composition is None in context_snapshot. "
-                "chat_id=%s", chat_id,
+                "chat_id=%s",
+                chat_id,
             )
-            yield {"type": "error", "message": "Pipeline misconfiguration: final_composition missing in context snapshot"}
+            yield {
+                "type": "error",
+                "message": "Pipeline misconfiguration: final_composition missing in context snapshot",
+            }
             return
 
         # Записываем hybrid context под специальный ключ — он будет доступен
@@ -380,9 +504,7 @@ class PipelineExecutor:
         # Это гарантирует что _resolve_prompt в _run_final_composition использует
         # hybrid context вместо старых отформатированных чанков.
         if ctx.steps and context_str:
-            retrieval_step_ids = [
-                s.step_id for s in ctx.steps if s.type == "retrieval"
-            ]
+            retrieval_step_ids = [s.step_id for s in ctx.steps if s.type == "retrieval"]
             if retrieval_step_ids:
                 # Помещаем весь hybrid context в первый retrieval шаг,
                 # остальные обнуляем (уже вошли в hybrid)
@@ -486,7 +608,8 @@ class PipelineExecutor:
         if not all_hits:
             logger.info(
                 "_maybe_pause_for_full_doc: no hits accumulated, skipping full_doc pause. "
-                "chat=%s", ctx.chat_id,
+                "chat=%s",
+                ctx.chat_id,
             )
             return
 
@@ -512,12 +635,16 @@ class PipelineExecutor:
             chat.pipeline_pause_state = pause_state
             await self.db.commit()
         except Exception as exc:
-            logger.warning("_maybe_pause_for_full_doc: failed to save pause_state: %s", exc)
+            logger.warning(
+                "_maybe_pause_for_full_doc: failed to save pause_state: %s", exc
+            )
             return  # не прерываем пайплайн если сохранение упало
 
         logger.info(
             "_maybe_pause_for_full_doc: pausing for full_document_selection. "
-            "chat=%s candidates=%d", ctx.chat_id, len(candidates),
+            "chat=%s candidates=%d",
+            ctx.chat_id,
+            len(candidates),
         )
 
         yield {
@@ -543,6 +670,8 @@ class PipelineExecutor:
         # Полный контекст из источника: вместо top-k чанков загружаем полные тексты
         # документов под tag_ids. Rerank и накопление _hits_* пропускаются —
         # chunk-уровневая релевантность не применима к полным документам.
+        # Но мы накапливаем сами источники в _fulldoc_sources_* чтобы они
+        # отображались в UI под сообщением.
         if step.send_full_document:
             yield _status(f"Загружаю полные документы: {step.name}...")
             try:
@@ -550,21 +679,42 @@ class PipelineExecutor:
             except Exception as exc:
                 logger.error(
                     "Step full-document retrieval error: step=%s err=%s",
-                    step.step_id, exc, exc_info=True,
+                    step.step_id,
+                    exc,
+                    exc_info=True,
                 )
                 ctx.step_results[step.step_id] = ""
-                yield {"type": "step_error", "step_id": step.step_id, "message": str(exc)}
+                yield {
+                    "type": "step_error",
+                    "step_id": step.step_id,
+                    "message": str(exc),
+                }
                 return
 
             if not hits:
                 if step.step_id not in ctx.step_results:
                     ctx.step_results[step.step_id] = ""
-                yield {"type": "step_skipped_no_docs", "step_id": step.step_id, "step_name": step.name}
+                yield {
+                    "type": "step_skipped_no_docs",
+                    "step_id": step.step_id,
+                    "step_name": step.name,
+                }
                 return
+
+            # Накапливаем источники в формате Source с source_kind='full_document'.
+            # Одна запись на уникальный (path, page, vault_id, document_id).
+            ctx.step_results[f"{_FULLDOC_SOURCES_KEY_PREFIX}{step.step_id}"] = [
+                s.model_dump(mode="json", exclude_none=True)
+                for s in full_doc_hits_to_sources(hits)
+            ]
 
             formatted = format_context_with_role(hits, getattr(step, "role", None))
             ctx.step_results[step.step_id] = formatted
-            yield {"type": "step_complete", "step_id": step.step_id, "step_name": step.name}
+            yield {
+                "type": "step_complete",
+                "step_id": step.step_id,
+                "step_name": step.name,
+            }
             return
 
         # --- Retrieval: обычная ветка (top-k чанков) ---
@@ -582,7 +732,11 @@ class PipelineExecutor:
         if not hits:
             if step.step_id not in ctx.step_results:
                 ctx.step_results[step.step_id] = ""
-            yield {"type": "step_skipped_no_docs", "step_id": step.step_id, "step_name": step.name}
+            yield {
+                "type": "step_skipped_no_docs",
+                "step_id": step.step_id,
+                "step_name": step.name,
+            }
             return
 
         # --- Rerank (explicit, so we can emit a status before it) -------
@@ -593,7 +747,8 @@ class PipelineExecutor:
             except Exception as exc:
                 logger.warning(
                     "Rerank failed for step=%s, using original order: %s",
-                    step.step_id, exc,
+                    step.step_id,
+                    exc,
                 )
 
         # Накапливаем сырые хиты для возможной full_document_selection паузы.
@@ -677,20 +832,48 @@ class PipelineExecutor:
         provider: Any,
     ) -> AsyncGenerator[dict[str, Any], None]:
         prompt = _resolve_prompt(ctx.final_composition.system_prompt, ctx)
+        # Stage 6: добавляем скомпилированный Campaign State как отдельный блок
+        # после `_resolve_prompt` — не трогаем шаблоны с {query}/{STEP_ID.*}.
+        state_block_text = ""
+        if getattr(ctx, "campaign_id", None):
+            try:
+                state_block_text = await compose_state_block_only(
+                    ctx.campaign_id, self.db
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "_run_final_composition: campaign state compile failed: %s",
+                    exc,
+                )
+                state_block_text = ""
+        full_prompt = "\n\n".join(p for p in (prompt, state_block_text) if p)
         # Use the original unmodified user query as the user-role message so the
         # LLM receives the full intent, not the retrieval-optimised short phrase.
         user_content = ctx.original_query if ctx.original_query else ctx.query
         yield _status("Генерирую ответ...")
         try:
-            async for token in provider.generate_stream([
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": user_content},
-            ]):
+            async for token in provider.generate_stream(
+                [
+                    {"role": "system", "content": full_prompt},
+                    {"role": "user", "content": user_content},
+                ]
+            ):
                 yield {"type": "token", "content": token}
         except Exception as exc:
             logger.error("FinalComposition stream error: %s", exc, exc_info=True)
             yield {"type": "error", "message": f"LLM stream error: {exc}"}
             return
+
+        # Эмитим grouped sources event — фронт умеет в renderGroupedSources.
+        # Содержит все retrieval-шаги (chunk + full_document).
+        step_groups = _collect_step_sources(ctx)
+        if step_groups:
+            yield {
+                "type": "sources",
+                "grouped_by_step": True,
+                "step_groups": [g.model_dump(mode="json") for g in step_groups],
+            }
+
         yield {"type": "pipeline_complete"}
 
     async def _retrieve_for_step_dag(
@@ -712,18 +895,26 @@ class PipelineExecutor:
         vault_ids: list[str] = ctx.vault_ids or []
 
         if not vault_ids:
-            logger.warning("Step skipped: no vault_ids in context. step=%s", step.step_id)
+            logger.warning(
+                "Step skipped: no vault_ids in context. step=%s", step.step_id
+            )
             return []
 
         document_ids: list[str] | None = None
         if step.tag_ids:
             domain_id = ctx.domain_id
             if not domain_id:
-                logger.warning("Step skipped: tag_ids set but no domain_id. step=%s", step.step_id)
+                logger.warning(
+                    "Step skipped: tag_ids set but no domain_id. step=%s", step.step_id
+                )
                 return []
-            document_ids = await get_document_ids_by_tags(step.tag_ids, domain_id, self.db)
+            document_ids = await get_document_ids_by_tags(
+                step.tag_ids, domain_id, self.db
+            )
             if document_ids == []:
-                logger.info("Step skipped: no indexed docs for tag_ids. step=%s", step.step_id)
+                logger.info(
+                    "Step skipped: no indexed docs for tag_ids. step=%s", step.step_id
+                )
                 return []
 
         # _resolve_prompt подставляет {query} → original_query если она есть в шаблоне.
@@ -745,13 +936,19 @@ class PipelineExecutor:
 
         if len(vault_ids) == 1:
             return await retrieve(
-                search_query, vault_ids[0],
-                document_ids=document_ids, top_k=top_k, db=self.db,
+                search_query,
+                vault_ids[0],
+                document_ids=document_ids,
+                top_k=top_k,
+                db=self.db,
             )
         # skip_rerank=True: rerank happens explicitly in _run_dag_step after status emit
         return await retrieve_multi_vault(
-            search_query, vault_ids,
-            document_ids=document_ids, top_k=top_k, db=self.db,
+            search_query,
+            vault_ids,
+            document_ids=document_ids,
+            top_k=top_k,
+            db=self.db,
             skip_rerank=True,
         )
 
@@ -790,13 +987,15 @@ class PipelineExecutor:
         if not docs:
             logger.info(
                 "_retrieve_full_documents_for_step_dag: no documents for tag_ids=%s step=%s",
-                step.tag_ids, step.step_id,
+                step.tag_ids,
+                step.step_id,
             )
             return []
 
         logger.info(
             "_retrieve_full_documents_for_step_dag: start step=%s docs=%d",
-            step.step_id, len(docs),
+            step.step_id,
+            len(docs),
         )
 
         # Параллельный fetch через singleton httpx из full_document_service
@@ -819,7 +1018,8 @@ class PipelineExecutor:
             if isinstance(result, BaseException):
                 logger.warning(
                     "_retrieve_full_documents_for_step_dag: fetch raised for doc=%s: %s",
-                    doc["document_id"], result,
+                    doc["document_id"],
+                    result,
                 )
                 continue
             text: str | None = result
@@ -834,7 +1034,9 @@ class PipelineExecutor:
             if estimated_tokens > PER_DOC_TOKEN_LIMIT:
                 logger.info(
                     "_retrieve_full_documents_for_step_dag: doc=%s too large (%d > %d limit), skipping",
-                    doc["document_id"], estimated_tokens, PER_DOC_TOKEN_LIMIT,
+                    doc["document_id"],
+                    estimated_tokens,
+                    PER_DOC_TOKEN_LIMIT,
                 )
                 continue
             if total_tokens + estimated_tokens > TOTAL_TOKEN_BUDGET:
@@ -842,30 +1044,35 @@ class PipelineExecutor:
                     "_retrieve_full_documents_for_step_dag: total budget exceeded at doc=%s "
                     "(would be %d > %d), skipping",
                     doc["document_id"],
-                    total_tokens + estimated_tokens, TOTAL_TOKEN_BUDGET,
+                    total_tokens + estimated_tokens,
+                    TOTAL_TOKEN_BUDGET,
                 )
                 continue
 
-            hits.append(SearchHit(
-                # Synthetic chunk_id — единый формат с обычными SearchHit;
-                # используется для дедупликации в format_context (там ключ — document_id,
-                # так что коллизий не будет).
-                chunk_id=f"{doc['document_id']}__full",
-                document_id=doc["document_id"],
-                text=text,
-                metadata={
-                    "vault_id": doc["vault_id"],
-                    "source_path": doc.get("source_path", ""),
-                    "title": doc.get("title"),
-                    "estimated_tokens": estimated_tokens,
-                },
-                score=1.0,
-            ))
+            hits.append(
+                SearchHit(
+                    # Synthetic chunk_id — единый формат с обычными SearchHit;
+                    # используется для дедупликации в format_context (там ключ — document_id,
+                    # так что коллизий не будет).
+                    chunk_id=f"{doc['document_id']}__full",
+                    document_id=doc["document_id"],
+                    text=text,
+                    metadata={
+                        "vault_id": doc["vault_id"],
+                        "source_path": doc.get("source_path", ""),
+                        "title": doc.get("title"),
+                        "estimated_tokens": estimated_tokens,
+                    },
+                    score=1.0,
+                )
+            )
             total_tokens += estimated_tokens
 
         logger.info(
             "_retrieve_full_documents_for_step_dag: done step=%s hits=%d total_tokens=%d",
-            step.step_id, len(hits), total_tokens,
+            step.step_id,
+            len(hits),
+            total_tokens,
         )
         return hits
 

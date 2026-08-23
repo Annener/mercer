@@ -13,9 +13,11 @@ SSE-поток. Принимает список document_ids, выбранных
 SSE chunk types (повторяют типы pipeline_resume.py):
   {"type": "step_status", "text": str}
   {"type": "token", "content": str}
+  {"type": "sources", "sources": [...]}      ← перехватываем и сохраняем в Message.sources
   {"type": "pipeline_complete"}
   {"type": "error", "message": str}
 """
+
 from __future__ import annotations
 
 import json
@@ -32,7 +34,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import Message
 from app.db.session import SessionLocal, get_db
 from app.services.pipeline_executor import PipelineExecutor
-from app.services.settings_service import settings_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -44,6 +45,7 @@ class FullDocConfirmRequest(BaseModel):
     selected_document_ids: список document_id документов, выбранных пользователем.
     Пустой список ("пропустить") допустим: пайплайн запустится с одними чанками.
     """
+
     selected_document_ids: list[str] = []
 
 
@@ -57,7 +59,8 @@ async def full_document_confirm(
 
     1. Валидируем chat_id.
     2. Запускаем PipelineExecutor.resume_from_full_doc_selection() — SSE-поток.
-    3. Токены передаём клиенту, по завершению сохраняем сообщение в БД.
+    3. Перехватываем `sources` event от executor'а, чтобы сохранить список в Message.
+    4. Токены передаём клиенту, по завершению сохраняем сообщение в БД.
     """
     # Быстрая валидация chat_id до старта стрима — чтобы вернуть 422 сразу, а не в SSE.
     try:
@@ -68,6 +71,9 @@ async def full_document_confirm(
     async def _stream() -> AsyncIterator[str]:
         full_answer = ""
         message_saved = False
+        # Захватываем sources event от executor'а (plain-fallback ветка
+        # `resume_from_full_doc_selection` сейчас его эмитит).
+        captured_sources: list[dict[str, Any]] | None = None
 
         # Используем отдельную сессию для исполнения (SessionLocal),
         # т.к. db из Depends(get_db) может закрыться до окончания генератора.
@@ -85,30 +91,39 @@ async def full_document_confirm(
                     token_content = chunk.get("content", "")
                     full_answer += token_content
 
+                if chunk_type == "sources":
+                    # Сохраняем, чтобы записать в Message при pipeline_complete.
+                    captured_sources = chunk.get("sources") or chunk.get("step_groups")
+
                 if chunk_type == "pipeline_complete":
                     # Сохраняем ответ ассистента в БД перед отправкой pipeline_complete
                     if full_answer and not message_saved:
                         try:
                             chat_uuid = uuid.UUID(chat_id)
                             from app.db.models import Chat as ChatModel
+
                             chat = await exec_db.get(ChatModel, chat_uuid)
                             if chat is not None:
                                 assistant_msg = Message(
                                     chat_id=chat.id,
                                     role="assistant",
                                     content=full_answer,
+                                    sources=captured_sources,
                                 )
                                 exec_db.add(assistant_msg)
                                 await exec_db.commit()
                                 message_saved = True
                                 logger.info(
                                     "full_document_confirm: saved assistant message "
-                                    "chat_id=%s len=%d",
-                                    chat_id, len(full_answer),
+                                    "chat_id=%s len=%d sources=%d",
+                                    chat_id,
+                                    len(full_answer),
+                                    len(captured_sources) if captured_sources else 0,
                                 )
                         except Exception as save_exc:
                             logger.warning(
-                                "full_document_confirm: failed to save message: %s", save_exc
+                                "full_document_confirm: failed to save message: %s",
+                                save_exc,
                             )
 
                 yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"

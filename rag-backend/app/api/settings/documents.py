@@ -41,13 +41,22 @@ async def list_documents(
     domain_id: str | None = None,
     status: str | None = None,
     tag_id: str | None = None,
+    tag_ids: list[str] | None = None,
     db: AsyncSession = Depends(get_db),
 ) -> list[DocumentRead]:
     """
     Возвращает документы.
     - Если передан domain_id — возвращает документы всех Vault этого домена.
     - Если передан vault_id — фильтрует по конкретному Vault (обратная совместимость).
-    - Параметры status и tag_id работают в обоих режимах.
+    - Параметры status, tag_id и tag_ids работают в обоих режимах.
+
+    Фильтрация по тегам:
+    - tag_id: одиночный UUID тега (backward-compatible, используется tab-documents.js).
+    - tag_ids: список UUID тегов, повторяющийся query-параметр `tag_id`
+      (например, `?tag_id=u1&tag_id=u2`). OR-логика: документ попадает,
+      если имеет хотя бы один из указанных тегов.
+
+    Если переданы оба — применяется tag_ids (приоритет), tag_id игнорируется.
     """
     if domain_id:
         vaults_result = await db.execute(
@@ -64,11 +73,20 @@ async def list_documents(
 
     if status:
         stmt = stmt.where(Document.status == status)
-    if tag_id:
+
+    if tag_ids:
+        # Приоритет list-параметра: игнорируем одиночный tag_id.
+        parsed_tag_ids: list[uuid.UUID] = [
+            _parse_uuid(raw, f"tag_ids[{raw}]") for raw in tag_ids
+        ]
+        stmt = stmt.join(
+            DocumentLabel, DocumentLabel.document_id == Document.id
+        ).where(DocumentLabel.tag_id.in_(parsed_tag_ids))
+    elif tag_id:
         tag_uuid = _parse_uuid(tag_id, "tag_id")
-        stmt = stmt.join(DocumentLabel, DocumentLabel.document_id == Document.id).where(
-            DocumentLabel.tag_id == tag_uuid
-        )
+        stmt = stmt.join(
+            DocumentLabel, DocumentLabel.document_id == Document.id
+        ).where(DocumentLabel.tag_id == tag_uuid)
 
     stmt = stmt.order_by(Document.created_at.desc())
     result = await db.execute(stmt)

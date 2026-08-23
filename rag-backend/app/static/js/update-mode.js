@@ -53,6 +53,10 @@ const UPDATE_MODE_ERROR_MESSAGES = {
     indexer_unavailable:                 'Индексер недоступен.',
     indexer_invalid_response:            'Некорректный ответ индексера.',
     review_store_unavailable:            'Хранилище сессии недоступно.',
+    unknown_state_op_index:              'Операция изменения контекста не найдена в сессии.',
+    state_op_review_conflict:            'Операция изменения контекста уже обработана — обновите сессию.',
+    config_version_conflict:             'Конфигурация полей изменилась — обновите сессию.',
+    state_version_conflict:              'Контекст кампании изменился — обновите сессию.',
 };
 
 function _umErrorMsg(err) {
@@ -61,6 +65,23 @@ function _umErrorMsg(err) {
     }
     return err.message || 'Неизвестная ошибка';
 }
+
+// Stage 5: human-readable labels for each patch op type. Used in the card header.
+const STATE_P_OP_LABELS = {
+    replace_single:    'Заменить',
+    clear_single:      'Очистить',
+    add_list_item:     'Добавить пункт',
+    update_list_item:  'Обновить пункт',
+    resolve_list_item: 'Закрыть пункт',
+    remove_list_item:  'Удалить пункт',
+};
+
+// Ops that carry a text payload eligible for inline editing.
+const STATE_P_TEXT_BEARING_OPS = new Set([
+    'replace_single',
+    'add_list_item',
+    'update_list_item',
+]);
 
 // ---------------------------------------------------------------------------
 // Change status helpers
@@ -189,6 +210,12 @@ function _createChangeCard(change, onToggle) {
 }
 
 // ---------------------------------------------------------------------------
+// Stage 5: State-patch operation card helper is defined INSIDE _buildPanel
+// (closure access to _pendingStateReview / _pendingStateEdits / render /
+// _showEditBlock). See below.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
 // Apply result card
 // ---------------------------------------------------------------------------
 function _createApplyResultView(applyResp) {
@@ -229,8 +256,76 @@ function _createApplyResultView(applyResp) {
         `;
     }).join('');
 
-    wrap.innerHTML = headline + `<div class="um-apply-result__vaults">${rows}</div>`;
+    const vaultsBlock = `<div class="um-apply-result__vaults">${rows}</div>`;
+
+    // Stage 5: state_patch_result отдельным блоком. Может быть null (кампания без
+    // state fields, или state_ops не принимались / отклонялись).
+    const stateResult = applyResp.state_patch_result;
+    const stateBlock = stateResult ? _createStatePatchResultView(stateResult) : '';
+
+    wrap.innerHTML = headline + vaultsBlock + stateBlock;
     return wrap;
+}
+
+// Stage 5: блок результата применения state_patch в apply-result.
+function _createStatePatchResultView(stateResult) {
+    const wrap = document.createElement('div');
+    wrap.className = 'um-state-result';
+
+    const hasApplied = (stateResult.applied_state_version || 0) > 0;
+    const failed = Array.isArray(stateResult.failed_op_indexes)
+        ? stateResult.failed_op_indexes
+        : [];
+    const applied = Array.isArray(stateResult.applied_op_indexes)
+        ? stateResult.applied_op_indexes
+        : [];
+    const failedReasons = stateResult.failed_reasons || {};
+
+    let headlineCls = 'um-state-result__headline--ok';
+    let headlineText = '✓ Контекст кампании применён';
+    if (!hasApplied && failed.length > 0) {
+        headlineCls = 'um-state-result__headline--error';
+        headlineText = '⚠ Контекст кампании не применён';
+    } else if (failed.length > 0) {
+        headlineCls = 'um-state-result__headline--warn';
+        headlineText = '⚠ Контекст кампании применён частично';
+    }
+
+    const headline = document.createElement('div');
+    headline.className = `um-state-result__headline ${headlineCls}`;
+    headline.textContent = headlineText;
+    wrap.appendChild(headline);
+
+    const meta = document.createElement('div');
+    meta.className = 'um-state-result__meta';
+
+    const lines = [];
+    if (hasApplied) {
+        lines.push(`Версия state: <strong>${_escapeHtml(String(stateResult.applied_state_version))}</strong>`);
+        lines.push(`Конфигурация: v${_escapeHtml(String(stateResult.config_version))}`);
+        if (applied.length > 0) {
+            lines.push(`Применено операций: <strong>${applied.length}</strong>`);
+        }
+    }
+    if (failed.length > 0) {
+        lines.push(`Не применено операций: <strong>${failed.length}</strong>`);
+    }
+    meta.innerHTML = lines.join('<br>');
+    wrap.appendChild(meta);
+
+    if (failed.length > 0) {
+        const list = document.createElement('ul');
+        list.className = 'um-state-result__failure-list';
+        for (const idx of failed) {
+            const reason = failedReasons[String(idx)] || failedReasons[idx] || 'unknown_error';
+            const li = document.createElement('li');
+            li.textContent = `op_index=${idx}: ${reason}`;
+            list.appendChild(li);
+        }
+        wrap.appendChild(list);
+    }
+
+    return wrap.outerHTML;
 }
 
 // ---------------------------------------------------------------------------
@@ -266,6 +361,11 @@ function _buildPanel(chatId, initialSession) {
     let _showApplyHint = false;           // BUG-9 fix: part of render cycle instead of direct DOM
     let _openDiffs = new Set();           // change_ids of <details> that were open before render()
 
+    // Stage 5: state-patch decision state (per-op_index).
+    let _pendingStateReview = {};          // op_index → 'accept' | 'reject'
+    let _pendingStateEdits = {};           // op_index → edited text (auto-accept)
+    let _openStateEdits = new Set();       // op_index для открытых edit-block
+
     // BUG-NOTE-PRESERVE fix: хранит последнюю введённую заметку между попытками.
     // Используется при ошибке (retryBtn в _showError) и при пустом review-list
     // (retryBtn в _renderReview), чтобы текст не сбрасывался — пользователь
@@ -273,6 +373,12 @@ function _buildPanel(chatId, initialSession) {
     // Записывается в _doStart до любых state-переходов; сбрасывается только
     // когда пользователь явно нажимает «Назад» из формы или успешно стартовал.
     let _lastNote = '';
+
+    function _resetStateReview() {
+        _pendingStateReview = {};
+        _pendingStateEdits = {};
+        _openStateEdits = new Set();
+    }
 
     // -------- root element --------
     const panel = document.createElement('div');
@@ -285,6 +391,12 @@ function _buildPanel(chatId, initialSession) {
         _openDiffs = new Set(
             [...panel.querySelectorAll('.um-change-diff[open]')]
                 .map(el => el.closest('.um-change-card')?.dataset.changeId)
+                .filter(Boolean)
+        );
+        // Stage 5: сохраняем открытые state-edit блоки
+        _openStateEdits = new Set(
+            [...panel.querySelectorAll('.um-state-card[data-edit-open="1"]')]
+                .map(el => el.dataset.opIndex)
                 .filter(Boolean)
         );
         panel.innerHTML = '';
@@ -429,9 +541,13 @@ function _buildPanel(chatId, initialSession) {
             el.appendChild(warn);
         }
 
-        // BUG-3 / FIX(empty-deadlock): при пустом списке рендерим явные кнопки действий,
-        // иначе пользователь застрянет — кнопка «Отмена» в header неочевидна.
-        if (!session.changes || session.changes.length === 0) {
+        const hasFileChanges = !!(session.changes && session.changes.length > 0);
+        const hasStateOps = !!(session.state_patch_operations && session.state_patch_operations.length > 0);
+
+        // BUG-3 / FIX(empty-deadlock): при пустом review (ни файлов, ни state ops)
+        // рендерим явные кнопки действий, иначе пользователь застрянет — кнопка
+        // «Отмена» в header неочевидна.
+        if (!hasFileChanges && !hasStateOps) {
             const empty = document.createElement('div');
             empty.className = 'um-panel__empty';
             empty.textContent = 'Изменений не обнаружено.';
@@ -452,6 +568,7 @@ function _buildPanel(chatId, initialSession) {
                 chatAPI.updateModeCancel(chatId); // fire-and-forget
                 session = null;
                 _pendingReview = {};
+                _resetStateReview();
                 state = 'entering_note';
                 render();
             });
@@ -471,55 +588,63 @@ function _buildPanel(chatId, initialSession) {
             return el;
         }
 
-        // Changes list
-        const changesList = document.createElement('div');
-        changesList.className = 'um-changes-list';
+        // Stage 5: file changes + state-patch operations render независимо.
+        // File changes сохраняем исходное поведение.
+        if (hasFileChanges) {
+            const changesList = document.createElement('div');
+            changesList.className = 'um-changes-list';
 
-        // Build current display state from session + pending overrides
-        const displayChanges = session.changes.map(ch => {
-            const override = _pendingReview[ch.change_id];
-            if (!override) return ch;
-            return Object.assign({}, ch, {
-                status: override === 'accept' ? 'accepted' : 'rejected',
+            // Build current display state from session + pending overrides
+            const displayChanges = session.changes.map(ch => {
+                const override = _pendingReview[ch.change_id];
+                if (!override) return ch;
+                return Object.assign({}, ch, {
+                    status: override === 'accept' ? 'accepted' : 'rejected',
+                });
             });
-        });
 
-        for (const ch of displayChanges) {
-            changesList.appendChild(_createChangeCard(ch, _onToggleChange));
+            for (const ch of displayChanges) {
+                changesList.appendChild(_createChangeCard(ch, _onToggleChange));
+            }
+
+            // Восстанавливаем открытые диффы, которые были до render()
+            if (_openDiffs.size > 0) {
+                changesList.querySelectorAll('.um-change-card').forEach(card => {
+                    if (_openDiffs.has(card.dataset.changeId)) {
+                        const details = card.querySelector('.um-change-diff');
+                        if (details) details.open = true;
+                    }
+                });
+            }
+
+            el.appendChild(changesList);
+
+            // Accept/Reject All controls для file changes
+            const bulkControls = document.createElement('div');
+            bulkControls.className = 'um-bulk-controls';
+            bulkControls.innerHTML = `
+                <button class="um-bulk-btn" type="button" data-bulk="accept-all">Принять все</button>
+                <button class="um-bulk-btn" type="button" data-bulk="reject-all">Отклонить все</button>
+            `;
+            bulkControls.querySelector('[data-bulk="accept-all"]').addEventListener('click', () => {
+                session.changes.forEach(ch => {
+                    if (ch.status !== 'resolution_failed') _pendingReview[ch.change_id] = 'accept';
+                });
+                render();
+            });
+            bulkControls.querySelector('[data-bulk="reject-all"]').addEventListener('click', () => {
+                session.changes.forEach(ch => {
+                    if (ch.status !== 'resolution_failed') _pendingReview[ch.change_id] = 'reject';
+                });
+                render();
+            });
+            el.appendChild(bulkControls);
         }
 
-        // Восстанавливаем открытые диффы, которые были до render()
-        if (_openDiffs.size > 0) {
-            changesList.querySelectorAll('.um-change-card').forEach(card => {
-                if (_openDiffs.has(card.dataset.changeId)) {
-                    const details = card.querySelector('.um-change-diff');
-                    if (details) details.open = true;
-                }
-            });
+        // Stage 5: state-patch operations section
+        if (hasStateOps) {
+            el.appendChild(_renderStatePatchSection(session.state_patch_operations));
         }
-
-        el.appendChild(changesList);
-
-        // Accept/Reject All controls
-        const bulkControls = document.createElement('div');
-        bulkControls.className = 'um-bulk-controls';
-        bulkControls.innerHTML = `
-            <button class="um-bulk-btn" type="button" data-bulk="accept-all">Принять все</button>
-            <button class="um-bulk-btn" type="button" data-bulk="reject-all">Отклонить все</button>
-        `;
-        bulkControls.querySelector('[data-bulk="accept-all"]').addEventListener('click', () => {
-            session.changes.forEach(ch => {
-                if (ch.status !== 'resolution_failed') _pendingReview[ch.change_id] = 'accept';
-            });
-            render();
-        });
-        bulkControls.querySelector('[data-bulk="reject-all"]').addEventListener('click', () => {
-            session.changes.forEach(ch => {
-                if (ch.status !== 'resolution_failed') _pendingReview[ch.change_id] = 'reject';
-            });
-            render();
-        });
-        el.appendChild(bulkControls);
 
         // Footer: Save review + Apply
         const footer = document.createElement('div');
@@ -540,25 +665,320 @@ function _buildPanel(chatId, initialSession) {
         saveBtn.addEventListener('click', _doSaveReview);
 
         // BUG-14 fix: disable Apply button when no accepted changes exist or apply is in flight.
-        // Compute at render time so DOM reflects current state without waiting for a click.
-        const pendingAcceptedCount = Object.values(_pendingReview).filter(a => a === 'accept').length;
-        const serverAcceptedCount  = session.changes
+        // Stage 5: учитываем принятые state-patch ops наряду с file changes.
+        const pendingFileAcceptCount = Object.values(_pendingReview).filter(a => a === 'accept').length;
+        const serverFileAcceptCount = hasFileChanges
             ? session.changes.filter(ch => ch.status === 'accepted').length
             : 0;
-        const hasAccepted = pendingAcceptedCount > 0 || serverAcceptedCount > 0;
+        const pendingStateAcceptCount = Object.values(_pendingStateReview).filter(a => a === 'accept').length
+            + Object.keys(_pendingStateEdits).length;
+        const serverStateAcceptCount = hasStateOps
+            ? session.state_patch_operations.filter(o => o.status === 'accepted').length
+            : 0;
+        const hasAccepted = (
+            pendingFileAcceptCount > 0 || serverFileAcceptCount > 0
+            || pendingStateAcceptCount > 0 || serverStateAcceptCount > 0
+        );
 
         const applyBtn = document.createElement('button');
         applyBtn.className = 'um-review-btn um-review-btn--apply';
         applyBtn.type = 'button';
         applyBtn.textContent = 'Применить принятые';
         applyBtn.disabled = !hasAccepted || _applying; // BUG-14
-        applyBtn.addEventListener('click', _doApply);
+        applyBtn.addEventListener('click', () => {
+            Promise.resolve(_doApply()).catch((err) => {
+                console.error('update-mode apply unhandled:', err);
+                if (_applying) {
+                    _applying = false;
+                    state = 'error';
+                    if (panel.isConnected) {
+                        render();
+                    }
+                }
+            });
+        });
 
         footer.appendChild(saveBtn);
         footer.appendChild(applyBtn);
         el.appendChild(footer);
 
         return el;
+    }
+
+    // Stage 5: рендер секции операций Campaign State patch.
+    function _renderStatePatchSection(stateOps) {
+        const section = document.createElement('div');
+        section.className = 'um-state-section';
+
+        const title = document.createElement('div');
+        title.className = 'um-state-section__title';
+        title.innerHTML = `
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"/>
+                <path d="M12 8v4"/>
+                <path d="M12 16h.01"/>
+            </svg>
+            <span>Изменения контекста кампании</span>
+            <span class="um-state-section__hint">— ${stateOps.length}</span>
+        `;
+        section.appendChild(title);
+
+        // Bulk actions (только для state-ops)
+        const bulk = document.createElement('div');
+        bulk.className = 'um-state-section__bulk';
+        const acceptAllBtn = document.createElement('button');
+        acceptAllBtn.className = 'um-bulk-btn';
+        acceptAllBtn.type = 'button';
+        acceptAllBtn.textContent = 'Принять все контекстные';
+        acceptAllBtn.addEventListener('click', () => {
+            stateOps.forEach(op => { _pendingStateReview[op.op_index] = 'accept'; });
+            render();
+        });
+        const rejectAllBtn = document.createElement('button');
+        rejectAllBtn.className = 'um-bulk-btn';
+        rejectAllBtn.type = 'button';
+        rejectAllBtn.textContent = 'Отклонить все контекстные';
+        rejectAllBtn.addEventListener('click', () => {
+            stateOps.forEach(op => { _pendingStateReview[op.op_index] = 'reject'; });
+            render();
+        });
+        bulk.appendChild(acceptAllBtn);
+        bulk.appendChild(rejectAllBtn);
+        section.appendChild(bulk);
+
+        // Карточки операций
+        const list = document.createElement('div');
+        list.className = 'um-state-list';
+
+        for (const op of stateOps) {
+            list.appendChild(_createStatePatchCard(op, _onToggleStateOp));
+        }
+
+        // Восстанавливаем открытые edit-блоки
+        if (_openStateEdits.size > 0) {
+            list.querySelectorAll('.um-state-card').forEach(card => {
+                if (_openStateEdits.has(card.dataset.opIndex)) {
+                    _showEditBlock(card, true);
+                }
+            });
+        }
+
+        section.appendChild(list);
+        return section;
+    }
+
+    // Stage 5: helper для открытия/закрытия edit-блока на конкретной карточке.
+    function _showEditBlock(card, open) {
+        const editBlock = card.querySelector('.um-state-card__edit-block');
+        const toggleBtn = card.querySelector('.um-state-card__edit-toggle');
+        if (open) {
+            if (editBlock) editBlock.style.display = '';
+            if (toggleBtn) toggleBtn.textContent = 'Скрыть правку';
+            card.dataset.editOpen = '1';
+        } else {
+            if (editBlock) editBlock.style.display = 'none';
+            if (toggleBtn) toggleBtn.textContent = 'Изменить текст';
+            delete card.dataset.editOpen;
+        }
+    }
+
+    // Stage 5: карточка одной state-patch операции. Закрытие на _pendingStateReview,
+    // _pendingStateEdits, render(), _showEditBlock() из closure _buildPanel.
+    function _createStatePatchCard(op, onToggle) {
+        const opType = op.operation ? op.operation.type : '';
+        const opLabel = STATE_P_OP_LABELS[opType] || opType;
+
+        const card = document.createElement('div');
+        card.className = 'um-state-card';
+        card.dataset.opIndex = String(op.op_index);
+
+        // Resolve effective status с учётом pending review + edits.
+        let effectiveStatus = op.status;
+        if (_pendingStateReview[op.op_index] === 'accept') effectiveStatus = 'accepted';
+        else if (_pendingStateReview[op.op_index] === 'reject') effectiveStatus = 'rejected';
+        if (Object.prototype.hasOwnProperty.call(_pendingStateEdits, op.op_index)) effectiveStatus = 'accepted';
+        card.dataset.status = effectiveStatus;
+
+        // Header: type badge + field label + key + status badge
+        const header = document.createElement('div');
+        header.className = 'um-state-card__header';
+
+        const opBadge = document.createElement('span');
+        opBadge.className = `um-state-card__op-badge um-state-card__op-badge--${opType}`;
+        opBadge.textContent = opLabel;
+        header.appendChild(opBadge);
+
+        const fieldEl = document.createElement('span');
+        fieldEl.className = 'um-state-card__field';
+        fieldEl.textContent = op.field_label || op.field_key;
+        const keyEl = document.createElement('span');
+        keyEl.className = 'um-state-card__field-key';
+        keyEl.textContent = op.field_key;
+        fieldEl.appendChild(keyEl);
+        header.appendChild(fieldEl);
+
+        header.appendChild(_statusBadge(effectiveStatus));
+        card.appendChild(header);
+
+        // Diff: «было → станет»
+        const showFrom = (op.previous_text !== null && op.previous_text !== undefined);
+        const showTo = (op.proposed_text !== null && op.proposed_text !== undefined);
+
+        if (showFrom || showTo) {
+            const diff = document.createElement('div');
+            diff.className = 'um-state-card__diff';
+
+            if (showFrom) {
+                const fromLabel = document.createElement('div');
+                fromLabel.className = 'um-state-card__diff-label';
+                fromLabel.textContent = 'Было';
+                diff.appendChild(fromLabel);
+                const fromVal = document.createElement('div');
+                fromVal.className = 'um-state-card__diff-value um-state-card__diff-value--from';
+                if (op.previous_text === '') {
+                    fromVal.classList.add('um-state-card__diff-value--empty');
+                    fromVal.textContent = '(пусто)';
+                } else {
+                    fromVal.textContent = op.previous_text;
+                }
+                diff.appendChild(fromVal);
+            }
+
+            if (showTo) {
+                const toLabel = document.createElement('div');
+                toLabel.className = 'um-state-card__diff-label';
+                toLabel.textContent = 'Станет';
+                diff.appendChild(toLabel);
+                const toVal = document.createElement('div');
+                toVal.className = 'um-state-card__diff-value um-state-card__diff-value--to';
+                toVal.textContent = op.proposed_text;
+                diff.appendChild(toVal);
+            }
+
+            card.appendChild(diff);
+        }
+
+        // Reason (от LLM)
+        if (op.operation && op.operation.reason) {
+            const reason = document.createElement('div');
+            reason.className = 'um-state-card__reason';
+            reason.textContent = `Основание: ${op.operation.reason}`;
+            card.appendChild(reason);
+        }
+
+        // Item-key hint (для list-операций)
+        if (op.operation && op.operation.item_key) {
+            const itemKey = document.createElement('div');
+            itemKey.className = 'um-state-card__reason';
+            const ik = document.createElement('span');
+            ik.className = 'um-state-card__field-key';
+            ik.textContent = `item_key: ${op.operation.item_key}`;
+            itemKey.appendChild(document.createTextNode('Элемент списка: '));
+            itemKey.appendChild(ik);
+            card.appendChild(itemKey);
+        }
+
+        // Inline-edit block (только для text-bearing ops)
+        const isTextBearing = STATE_P_TEXT_BEARING_OPS.has(opType);
+        if (isTextBearing) {
+            const editBlock = document.createElement('div');
+            editBlock.className = 'um-state-card__edit-block';
+            editBlock.style.display = 'none';
+
+            const editLabel = document.createElement('div');
+            editLabel.className = 'um-state-card__edit-label';
+            editLabel.textContent = 'Изменить текст перед применением';
+            editBlock.appendChild(editLabel);
+
+            const textarea = document.createElement('textarea');
+            textarea.className = 'um-state-card__edit-textarea';
+            const hasPendingEdit = Object.prototype.hasOwnProperty.call(_pendingStateEdits, op.op_index);
+            textarea.value = hasPendingEdit
+                ? _pendingStateEdits[op.op_index]
+                : (op.proposed_text || '');
+            textarea.rows = 3;
+            editBlock.appendChild(textarea);
+
+            const editActions = document.createElement('div');
+            editActions.className = 'um-state-card__edit-actions';
+
+            const saveBtn = document.createElement('button');
+            saveBtn.className = 'um-state-card__edit-save';
+            saveBtn.type = 'button';
+            saveBtn.textContent = 'Сохранить правку';
+            saveBtn.addEventListener('click', () => {
+                const newText = textarea.value;
+                if (!newText || !newText.trim()) {
+                    textarea.focus();
+                    return;
+                }
+                _pendingStateEdits[op.op_index] = newText;
+                // Сохранение правки автоматически принимает операцию (auto-accept).
+                delete _pendingStateReview[op.op_index];
+                _pendingStateReview[op.op_index] = 'accept';
+                _showEditBlock(card, false);
+                render();
+            });
+            editActions.appendChild(saveBtn);
+
+            const cancelBtn = document.createElement('button');
+            cancelBtn.className = 'um-state-card__edit-cancel';
+            cancelBtn.type = 'button';
+            cancelBtn.textContent = 'Отменить';
+            cancelBtn.addEventListener('click', () => {
+                _showEditBlock(card, false);
+            });
+            editActions.appendChild(cancelBtn);
+
+            editBlock.appendChild(editActions);
+            card.appendChild(editBlock);
+        }
+
+        // Actions
+        const actions = document.createElement('div');
+        actions.className = 'um-state-card__actions';
+
+        const acceptBtn = document.createElement('button');
+        acceptBtn.className = 'um-change-btn um-change-btn--accept';
+        if (effectiveStatus === 'accepted') acceptBtn.classList.add('is-active');
+        acceptBtn.type = 'button';
+        acceptBtn.dataset.action = 'accept';
+        acceptBtn.title = 'Принять операцию';
+        acceptBtn.textContent = '✓ Принять';
+        acceptBtn.addEventListener('click', () => onToggle(op.op_index, 'accept'));
+        actions.appendChild(acceptBtn);
+
+        const rejectBtn = document.createElement('button');
+        rejectBtn.className = 'um-change-btn um-change-btn--reject';
+        if (effectiveStatus === 'rejected') rejectBtn.classList.add('is-active');
+        rejectBtn.type = 'button';
+        rejectBtn.dataset.action = 'reject';
+        rejectBtn.title = 'Отклонить операцию';
+        rejectBtn.textContent = '✕ Отклонить';
+        rejectBtn.addEventListener('click', () => onToggle(op.op_index, 'reject'));
+        actions.appendChild(rejectBtn);
+
+        if (isTextBearing) {
+            const toggleBtn = document.createElement('button');
+            toggleBtn.className = 'um-state-card__edit-toggle';
+            toggleBtn.type = 'button';
+            toggleBtn.textContent = 'Изменить текст';
+            toggleBtn.addEventListener('click', () => {
+                const isOpen = card.dataset.editOpen === '1';
+                _showEditBlock(card, !isOpen);
+                // При открытии edit-блока — авто-accept (как и сохранение)
+                if (!isOpen) {
+                    delete _pendingStateReview[op.op_index];
+                    _pendingStateReview[op.op_index] = 'accept';
+                    render();
+                }
+            });
+            actions.appendChild(toggleBtn);
+        }
+
+        card.appendChild(actions);
+        return card;
     }
 
     function _renderApplying() {
@@ -623,6 +1043,7 @@ function _buildPanel(chatId, initialSession) {
                 session = null;
             }
             _pendingReview = {};
+            _resetStateReview();
             state = 'entering_note';
             render();
         });
@@ -644,6 +1065,7 @@ function _buildPanel(chatId, initialSession) {
             const resp = await chatAPI.updateModeStart(chatId, note);
             session = resp;
             _pendingReview = {};
+            _resetStateReview();
             state = 'review';
             render();
         } catch (err) {
@@ -665,6 +1087,27 @@ function _buildPanel(chatId, initialSession) {
         render();
     }
 
+    // Stage 5: state-patch toggle handler. Сохраняет симметрию с _onToggleChange,
+    // плюс очищает pending edit при reject (правка не имеет смысла без принятия).
+    function _onToggleStateOp(opIndex, action) {
+        const idx = Number(opIndex);
+        const current = _pendingStateReview[idx];
+        if (
+            (action === 'accept' && current === 'accept') ||
+            (action === 'reject' && current === 'reject')
+        ) {
+            delete _pendingStateReview[idx];
+            delete _pendingStateEdits[idx];
+        } else {
+            _pendingStateReview[idx] = action;
+            if (action === 'reject') {
+                // reject отменяет правку
+                delete _pendingStateEdits[idx];
+            }
+        }
+        render();
+    }
+
     // BUG-12 fix: deduplicate accepted/rejected collection
     function _collectPendingLists() {
         const accepted = [];
@@ -676,13 +1119,48 @@ function _buildPanel(chatId, initialSession) {
         return { accepted, rejected };
     }
 
+    // Stage 5: собирает state-patch decisions для отправки на сервер.
+    // Возвращает null если нет ни одного решения — клиент сигнализирует серверу
+    // «не обновляй state-решения» (back-compat со старым сервером, если такой есть).
+    function _collectStatePatchDecisions() {
+        const acceptedIndexes = [];
+        const rejectedIndexes = [];
+        for (const [idx, action] of Object.entries(_pendingStateReview)) {
+            const i = Number(idx);
+            if (action === 'accept') acceptedIndexes.push(i);
+            else rejectedIndexes.push(i);
+        }
+        const edited = [];
+        for (const [idx, text] of Object.entries(_pendingStateEdits)) {
+            // edited имеет смысл только если op не rejected
+            const i = Number(idx);
+            if (_pendingStateReview[i] === 'reject') continue;
+            edited.push({ op_index: i, text });
+        }
+        if (acceptedIndexes.length === 0 && rejectedIndexes.length === 0 && edited.length === 0) {
+            return null;
+        }
+        const payload = {};
+        if (acceptedIndexes.length > 0) payload.accepted_op_indexes = acceptedIndexes;
+        if (rejectedIndexes.length > 0) payload.rejected_op_indexes = rejectedIndexes;
+        if (edited.length > 0) payload.edited = edited;
+        return payload;
+    }
+
     async function _doSaveReview() {
         const { accepted, rejected } = _collectPendingLists(); // BUG-12
-        if (accepted.length === 0 && rejected.length === 0) return;
+        const statePatchDecisions = _collectStatePatchDecisions();
+        if (
+            accepted.length === 0 && rejected.length === 0
+            && statePatchDecisions === null
+        ) return;
         try {
-            const updated = await chatAPI.updateModeReview(chatId, accepted, rejected);
+            const updated = await chatAPI.updateModeReview(
+                chatId, accepted, rejected, statePatchDecisions
+            );
             session = updated;
             _pendingReview = {};
+            _resetStateReview();
             render();
         } catch (err) {
             _showError(_umErrorMsg(err));
@@ -693,19 +1171,29 @@ function _buildPanel(chatId, initialSession) {
         if (_applying) return;
         _showApplyHint = false; // BUG-9 fix: reset hint on each new attempt
         const { accepted, rejected } = _collectPendingLists(); // BUG-12
-        if (accepted.length > 0 || rejected.length > 0) {
+        const statePatchDecisions = _collectStatePatchDecisions();
+        if (
+            accepted.length > 0 || rejected.length > 0
+            || statePatchDecisions !== null
+        ) {
             try {
-                const updated = await chatAPI.updateModeReview(chatId, accepted, rejected);
+                const updated = await chatAPI.updateModeReview(
+                    chatId, accepted, rejected, statePatchDecisions
+                );
                 session = updated;
                 _pendingReview = {};
+                _resetStateReview();
             } catch (err) {
                 _showError(_umErrorMsg(err));
                 return;
             }
         }
-        const hasAccepted = session && session.changes &&
+        // Stage 5: apply доступно если есть принятый file change ИЛИ state op.
+        const hasAcceptedFile = session && session.changes &&
             session.changes.some(ch => ch.status === 'accepted');
-        if (!hasAccepted) {
+        const hasAcceptedState = session && session.state_patch_operations &&
+            session.state_patch_operations.some(op => op.status === 'accepted');
+        if (!hasAcceptedFile && !hasAcceptedState) {
             // BUG-9 fix: set flag and re-render — hint stays alive through subsequent render() calls
             _showApplyHint = true;
             render();
@@ -723,22 +1211,27 @@ function _buildPanel(chatId, initialSession) {
             // Теперь финальный state ставится всегда; guard остался только для
             // невозможной ветки (панель уже удалена из DOM кем-то другим).
             state = 'result';
-            UpdateModeLifecycle.clearSession(chatId, 'apply_done');
-            if (!panel.isConnected) { return; }
-            render();
+            if (panel.isConnected) {
+                render();
+            }
+            // FIX(BUG-LIFECYCLE): UpdateModeLifecycle был undefined →
+            // ReferenceError ломал success-ветку и оставлял спиннер навсегда.
+            // Чистим сессию fire-and-forget через уже существующий chatAPI,
+            // не блокируя рендер финального состояния.
+            chatAPI.updateModeCancel(chatId).catch(() => { /* non-fatal */ });
         } catch (err) {
             _applying = false;
-            // FIX: сброс _applying перед ранним выходом при ошибке
-            if (!panel.isConnected) { return; }
-            // FIX(BUG-14-failure): при большинстве ошибок apply чистим сессию тоже —
-            // пользователь начнёт новый цикл, а старая сессия ему только мешает.
-            // Исключения: apply_in_progress / apply_already_started — там работает
-            // параллельная сессия и удалять чужую сессию нельзя.
+            // FIX(BUG-LIFECYCLE): сначала чистим сессию fire-and-forget,
+            // затем показываем ошибку — даже если cleanup бросит,
+            // спиннер уже ушёл и пользователь не залип на «Применение изменений…».
             const code = err && err.code;
             const shouldClear = !code || (code !== 'apply_in_progress' && code !== 'apply_already_started');
             if (shouldClear) {
-                UpdateModeLifecycle.clearSession(chatId, 'apply_error');
+                try {
+                    chatAPI.updateModeCancel(chatId).catch(() => { /* non-fatal */ });
+                } catch (_) { /* ignore */ }
             }
+            if (!panel.isConnected) { return; }
             _showError(_umErrorMsg(err));
         }
     }
