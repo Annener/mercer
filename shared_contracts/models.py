@@ -14,7 +14,7 @@ _log = _logging.getLogger(__name__)
 class ORMModel(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
-    @model_validator(mode='before')
+    @model_validator(mode="before")
     @classmethod
     def _coerce_uuid_fields(cls, data: Any) -> Any:
         """Авто-конвертация uuid.UUID ORM-атрибутов в str для str-полей.
@@ -23,12 +23,12 @@ class ORMModel(BaseModel):
         getattr на lazy SQLAlchemy relationship в async-контексте вызывает MissingGreenlet.
         List-поля заполняются явно снаружи (в роуте или хелпере) — не через from_attributes.
         """
-        if not hasattr(data, '__dict__') and not hasattr(data, '__mapper__'):
+        if not hasattr(data, "__dict__") and not hasattr(data, "__mapper__"):
             return data
         result: dict[str, Any] = {}
         for field_name, field_info in cls.model_fields.items():
             annotation = field_info.annotation
-            origin = getattr(annotation, '__origin__', None)
+            origin = getattr(annotation, "__origin__", None)
             if origin is list:
                 continue
             val = getattr(data, field_name, None)
@@ -300,6 +300,7 @@ class VaultUpdate(BaseModel):
 
 class TagRead(ORMModel):
     """Тег принадлежит домену (не Vault)."""
+
     id: str
     name: str
     domain_id: str
@@ -310,6 +311,7 @@ class TagRead(ORMModel):
 
 class TagCreate(BaseModel):
     """Создание тега: привязка к домену, не к Vault."""
+
     name: str
     domain_id: str
     campaign_id: str | None = None
@@ -323,6 +325,7 @@ class TagUpdate(BaseModel):
 
 class TagsGrouped(BaseModel):
     """Ответ GET /tags — теги сгруппированы для UI"""
+
     global_tags: list[TagRead] = []
     by_campaign: dict[str, list[TagRead]] = {}  # campaign_id → теги
 
@@ -355,11 +358,13 @@ class DocumentCandidate(BaseModel):
 
 class DocumentLabelWrite(BaseModel):
     """Полная замена тегов документа"""
+
     tag_ids: list[str]
 
 
 class CampaignRead(ORMModel):
     """Кампания принадлежит домену (не Vault)."""
+
     id: str
     domain_id: str
     name: str
@@ -372,6 +377,7 @@ class CampaignRead(ORMModel):
 
 class CampaignCreate(BaseModel):
     """Создание кампании: привязка к домену, не к Vault."""
+
     domain_id: str
     name: str
     description: str | None = None
@@ -396,6 +402,7 @@ class CampaignStateFieldConfigRead(ORMModel):
 
     Актуальные значения state хранятся в отдельной таблице (Stage 2).
     """
+
     id: str
     campaign_id: str
     key: str
@@ -414,6 +421,7 @@ class CampaignStateFieldConfigCreate(BaseModel):
     key — стабильный технический идентификатор, immutable после создания.
     mode — допускается только при создании (смена запрещена).
     """
+
     key: str = Field(min_length=1, max_length=64)
     label: str = Field(min_length=1, max_length=256)
     description: str = Field(default="", max_length=8 * 1024)
@@ -427,6 +435,7 @@ class CampaignStateFieldConfigUpdate(BaseModel):
 
     Если клиент пришлёт их явно — сервис вернёт 409.
     """
+
     label: str | None = Field(default=None, min_length=1, max_length=256)
     description: str | None = Field(default=None, max_length=8 * 1024)
     enabled: bool | None = None
@@ -446,6 +455,7 @@ class CampaignStateFieldConfigReorderRequest(BaseModel):
       - принадлежать указанной кампании;
       - покрывать ровно весь набор полей кампании (len == current count).
     """
+
     field_ids: list[str] = Field(min_length=1)
 
 
@@ -464,6 +474,7 @@ class CampaignStateSingleValueRead(ORMModel):
       - "chat:<message_id>"
       - "vault:<vault_id>"
     """
+
     field_key: str
     text: str
     source_refs: list[str] = Field(default_factory=list)
@@ -472,6 +483,7 @@ class CampaignStateSingleValueRead(ORMModel):
 
 class CampaignStateListItemRead(ORMModel):
     """Элемент list-поля в конкретной версии state."""
+
     field_key: str
     item_key: str
     text: str
@@ -486,6 +498,7 @@ class CampaignStateFieldValuesRead(ORMModel):
     Для single: single_value непуст, items пуст.
     Для list: single_value отсутствует, items содержит элементы.
     """
+
     field_key: str
     field_id: str
     mode: CampaignStateFieldMode
@@ -497,6 +510,7 @@ class CampaignStateFieldValuesRead(ORMModel):
 
 class CampaignStateVersionSummary(ORMModel):
     """Краткая мета-информация о версии state."""
+
     id: str
     campaign_id: str
     state_version: int
@@ -509,6 +523,7 @@ class CampaignStateVersionSummary(ORMModel):
 
 class CampaignStateVersionRead(ORMModel):
     """Полный снимок версии state: мета + значения всех полей кампании."""
+
     summary: CampaignStateVersionSummary
     fields: list[CampaignStateFieldValuesRead] = Field(default_factory=list)
 
@@ -527,6 +542,7 @@ CampaignStatePatchOperationType = Literal[
 
 class _CampaignStatePatchBase(BaseModel):
     """Общие поля для всех patch-операций."""
+
     reason: str = Field(min_length=1, max_length=1024)
     source_refs: list[str] = Field(default_factory=list)
 
@@ -584,6 +600,7 @@ class CampaignStatePatchRequest(BaseModel):
       При несовпадении возвращается 409 + server snapshot (no silent overwrite).
     - config_version: должна совпадать с текущей Campaign.config_version.
     """
+
     base_state_version: int | None = Field(default=None, ge=1)
     config_version: int = Field(ge=1)
     operations: list[CampaignStatePatchOperation] = Field(min_length=1)
@@ -598,6 +615,7 @@ class CampaignStatePatchRejection(BaseModel):
       - неизвестный item_key для update/resolve/remove;
       - пустой reason.
     """
+
     op_index: int
     op_type: CampaignStatePatchOperationType
     code: Literal[
@@ -617,9 +635,12 @@ class CampaignStatePatchResponse(BaseModel):
     операций провалилась. На этапе 2 используется fail-fast: первая же
     ошибка прерывает apply; failed_operations содержит ровно одну запись.
     """
+
     applied_state_version: int
     config_version: int
-    applied_operations: list[CampaignStatePatchOperationType] = Field(default_factory=list)
+    applied_operations: list[CampaignStatePatchOperationType] = Field(
+        default_factory=list
+    )
     failed_operations: list[CampaignStatePatchRejection] = Field(default_factory=list)
 
 
@@ -629,7 +650,9 @@ class CampaignStatePatchResponse(BaseModel):
 
 CampaignStateSourceType = Literal["file"]
 
-CampaignStateInitialFieldStatusValue = Literal["proposed", "empty", "needs_clarification"]
+CampaignStateInitialFieldStatusValue = Literal[
+    "proposed", "empty", "needs_clarification"
+]
 
 
 class DocumentSnapshot(BaseModel):
@@ -639,6 +662,7 @@ class DocumentSnapshot(BaseModel):
     Document.md5 на момент preview. Используется для проверки неизменности
     источника между preview и apply.
     """
+
     document_id: str
     vault_id: str
     source_path: str
@@ -649,12 +673,14 @@ class DocumentSnapshot(BaseModel):
 
 class CampaignStateInitialSingleValue(BaseModel):
     """Значение single-поля в proposal."""
+
     text: str = Field(min_length=1, max_length=8192)
     source_refs: list[str] = Field(default_factory=list)
 
 
 class CampaignStateInitialListItem(BaseModel):
     """Элемент list-поля в proposal. item_key НЕ задаётся LLM — генерируется сервером."""
+
     text: str = Field(min_length=1, max_length=8192)
     source_refs: list[str] = Field(default_factory=list)
 
@@ -671,13 +697,17 @@ class CampaignStateInitialFieldStatus(BaseModel):
     - "needs_clarification": источники противоречат друг другу или данных недостаточно;
       clarification_question обязателен и показывается пользователю.
     """
+
     status: CampaignStateInitialFieldStatusValue
     clarification_question: str | None = Field(default=None, max_length=1024)
 
     @model_validator(mode="after")
     def _check_clarification_question(self) -> CampaignStateInitialFieldStatus:
         if self.status == "needs_clarification":
-            if not self.clarification_question or not self.clarification_question.strip():
+            if (
+                not self.clarification_question
+                or not self.clarification_question.strip()
+            ):
                 raise ValueError(
                     "clarification_question is required when status == 'needs_clarification'"
                 )
@@ -690,6 +720,7 @@ class CampaignStateInitialProposalField(BaseModel):
     Для mode == "single" ожидается заполненный single_value при status='proposed'.
     Для mode == "list" ожидается заполненный list_value при status='proposed'.
     """
+
     field_key: str = Field(min_length=1, max_length=64)
     mode: CampaignStateFieldMode
     status: CampaignStateInitialFieldStatus
@@ -703,12 +734,14 @@ class CampaignStateInitialProposal(BaseModel):
     Поля списка `fields` должны содержать ровно одну запись на каждое
     enabled-поле кампании — это валидируется на уровне сервиса.
     """
+
     fields: list[CampaignStateInitialProposalField] = Field(default_factory=list)
     questions: list[str] = Field(default_factory=list)
 
 
 class CampaignStateInitialProposalRead(BaseModel):
     """Proposal + мета, возвращается клиенту и хранится в Redis."""
+
     proposal_id: str
     campaign_id: str
     config_version: int
@@ -721,6 +754,7 @@ class CampaignStateInitialProposalRead(BaseModel):
 
 class CampaignStateInitialPreviewRequest(BaseModel):
     """Запрос на формирование initial proposal из выбранных Markdown-документов."""
+
     document_ids: list[str] = Field(min_length=1, max_length=50)
 
 
@@ -739,6 +773,7 @@ class CampaignStateInitialApplyRequest(BaseModel):
       - Если field_key отсутствует в базовом proposal — поле игнорируется.
       - source_snapshot не затрагивается.
     """
+
     proposal_id: str = Field(min_length=1, max_length=64)
     config_version: int = Field(ge=1)
     proposal_overrides: CampaignStateInitialProposal | None = None
@@ -755,6 +790,7 @@ class CampaignStateCompiledFieldRead(BaseModel):
     included=False — поле исключено из prompt (truncated либо пустое);
     для empty-полей флаг остаётся False без truncated.
     """
+
     field_key: str
     field_id: str
     label: str
@@ -773,6 +809,7 @@ class CampaignStateCompiledBlock(BaseModel):
     Если active state отсутствует или все поля пустые/исключены — text == "",
     used_tokens == 0, остальные списки пусты.
     """
+
     state_version: int | None = None
     config_version: int | None = None
     budget_tokens: int
@@ -790,6 +827,7 @@ class EffectiveContextBlock(BaseModel):
     | "history" | "user_message"). user_message для debug-эндпойнта всегда "",
     history рендерится строкой только если расчёт токенов выполнен на полном тексте.
     """
+
     name: str
     text: str
     estimated_tokens: int
@@ -797,6 +835,7 @@ class EffectiveContextBlock(BaseModel):
 
 class EffectiveContextRead(BaseModel):
     """Полный effective-context для дебага prompt assembly."""
+
     campaign_id: str | None = None
     chat_id: str | None = None
     domain_id: str | None = None
@@ -823,6 +862,7 @@ class CampaignStateStaleStatus(BaseModel):
         state ещё не применён.
       - checked_at: момент проверки (UTC).
     """
+
     potentially_stale: bool
     stale_documents: list[str] = Field(default_factory=list)
     active_state_version: int | None = None
@@ -833,6 +873,7 @@ class CampaignStateStaleStatus(BaseModel):
 # Pipeline contracts — DAG-based execution model
 # ---------------------------------------------------------------------------
 
+
 class PipelineStep(BaseModel):
     """Шаг пайплайна в DAG-модели.
 
@@ -842,10 +883,11 @@ class PipelineStep(BaseModel):
     - Поля top_k, tag_ids, role, output_format, send_full_document — только для type=retrieval
     - Поля validation_prompt, options — только для type=validation
     """
-    step_id: str                                           # user-defined slug, e.g. "analyze"
+
+    step_id: str  # user-defined slug, e.g. "analyze"
     type: Literal["retrieval", "validation"]
-    name: str                                              # отображаемое название
-    system_prompt: str                                     # поддерживает {STEP_ID.result}, {STEP_ID.key}, {query}
+    name: str  # отображаемое название
+    system_prompt: str  # поддерживает {STEP_ID.result}, {STEP_ID.key}, {query}
     after_step_ids: list[str] = Field(default_factory=list)  # [] = стартовый шаг
 
     # --- только для type=retrieval ---
@@ -861,10 +903,10 @@ class PipelineStep(BaseModel):
     send_full_document: bool = False
 
     # --- только для type=validation ---
-    validation_prompt: str | None = None                   # поддерживает {STEP_ID.result}
-    options: list[str] | None = None                       # варианты выбора (опционально)
+    validation_prompt: str | None = None  # поддерживает {STEP_ID.result}
+    options: list[str] | None = None  # варианты выбора (опционально)
 
-    @model_validator(mode='after')
+    @model_validator(mode="after")
     def _validate_step(self) -> PipelineStep:
         # self-loop
         if self.step_id in self.after_step_ids:
@@ -904,6 +946,7 @@ class FinalComposition(BaseModel):
       {context}          — заменить на явные {STEP_ID.result}
       {collected_fields} — если нужны — передать через validation-шаг
     """
+
     system_prompt: str
 
 
@@ -930,7 +973,7 @@ class PipelineCreate(BaseModel):
     steps: list[PipelineStep]
     final_composition: FinalComposition
 
-    @model_validator(mode='after')
+    @model_validator(mode="after")
     def _validate_unique_step_ids(self) -> PipelineCreate:
         ids = [s.step_id for s in self.steps]
         if len(ids) != len(set(ids)):
@@ -946,18 +989,21 @@ class PipelineUpdate(BaseModel):
     final_composition: FinalComposition | None = None
     is_active: bool | None = None
 
-    @model_validator(mode='after')
+    @model_validator(mode="after")
     def _validate_unique_step_ids(self) -> PipelineUpdate:
         if self.steps is not None:
             ids = [s.step_id for s in self.steps]
             if len(ids) != len(set(ids)):
                 duplicates = [sid for sid in ids if ids.count(sid) > 1]
-                raise ValueError(f"Duplicate step_ids in pipeline: {list(set(duplicates))}")
+                raise ValueError(
+                    f"Duplicate step_ids in pipeline: {list(set(duplicates))}"
+                )
         return self
 
 
 class RetrievalContext(BaseModel):
     """Контекст выполнения пайплайна. vault_id оставлен для back-compat (TODO: удалить в iter4-cleanup)."""
+
     query: str
     vault_ids: list[str] = Field(default_factory=list)  # все enabled-Vault домена
     vault_id: str | None = None  # deprecated back-compat; используй vault_ids
@@ -983,6 +1029,7 @@ class ChatMessage(BaseModel):
     content: str
     created_at: datetime
     pipeline_id: str | None = None
+    sources: list[MessageSource] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -1078,6 +1125,7 @@ class AgentRoundResult(BaseModel):
     evidence_tokens: int = 0
     scope: Literal["campaign", "domain", "empty", "no_vault"] = "domain"
     skipped_reason: str | None = None
+    sources: list[MessageSource] = Field(default_factory=list)
 
 
 class SearchKnowledgeRequest(BaseModel):
@@ -1087,7 +1135,7 @@ class SearchKnowledgeRequest(BaseModel):
 
 class SearchKnowledgeResult(BaseModel):
     queries_used: list[str] = Field(default_factory=list)
-    hits: list["SearchHit"] = Field(default_factory=list)
+    hits: list[SearchHit] = Field(default_factory=list)
     scope: Literal["campaign", "domain", "empty", "no_vault"] = "domain"
     evidence_tokens: int = 0
     note: str | None = None
@@ -1103,10 +1151,14 @@ class AgentLoopResult(BaseModel):
 class ChatRecord(ORMModel):
     id: str
     title: str
-    vault_id: str | None = None   # TODO(iter4-cleanup): удалить после полного перехода фронта на domain_id
+    vault_id: str | None = (
+        None  # TODO(iter4-cleanup): удалить после полного перехода фронта на domain_id
+    )
     domain_id: str | None = None
     campaign_id: str | None = None
-    locked_pipeline_id: str | None = None  # fix: поле отсутствовало — фронт не получал значение после lock
+    locked_pipeline_id: str | None = (
+        None  # fix: поле отсутствовало — фронт не получал значение после lock
+    )
     full_document_mode_enabled: bool = False
     sent_full_document_ids: list[str] = Field(default_factory=list)
     created_at: datetime
@@ -1130,6 +1182,7 @@ class VaultConfigEntry(BaseModel):
     decisions (embedding model, chunking, git identity).
     Additions here must stay in sync with migration 0005_campaign_update_git_identity.
     """
+
     vault_id: str
     domain_id: str
     enabled: bool = True
@@ -1192,6 +1245,7 @@ class CreateChatRequest(BaseModel):
     campaign_id — опциональная привязка к кампании (iter2).
     TODO(iter4-cleanup): сделать domain_id обязательным, убрать vault_id.
     """
+
     domain_id: str | None = None
     vault_id: str | None = None  # deprecated back-compat
     campaign_id: str | None = None
@@ -1224,6 +1278,7 @@ class ClarificationAnswer(BaseModel):
 # Clarification FSM state contract
 # ---------------------------------------------------------------------------
 
+
 class ClarificationState(BaseModel):
     """Пыдантик-DTO состояния машины уточняющих вопросов.
 
@@ -1232,6 +1287,7 @@ class ClarificationState(BaseModel):
     Персистируется через ClarificationState ORM-строку в БД
     (app/db/models.py :: ClarificationState).
     """
+
     stage: Literal["idle", "collecting", "complete", "fallback"] = "idle"
     missing_fields: list[str] = Field(default_factory=list)
     collected: dict[str, str] = Field(default_factory=dict)
@@ -1251,6 +1307,7 @@ class PipelineExecutionContext(BaseModel):
       output_format=json  → step_results[step_id] = dict (при ошибке парсинга — строка)
       type=validation     → step_results[step_id] = ответ пользователя (строка)
     """
+
     chat_id: str
     message_id: str
     query: str
@@ -1292,7 +1349,7 @@ class PipelineExecutionContext(BaseModel):
 
 
 class PipelineStepResult(BaseModel):
-    step_id: str                                           # slug шага (новое поле)
+    step_id: str  # slug шага (новое поле)
     step_name: str
     retrieval_results: list[RetrievalResult] = Field(default_factory=list)
     llm_output: str | None = None
@@ -1311,8 +1368,10 @@ class PipelineResult(BaseModel):
 # LanceDB / db-api-server contracts
 # ---------------------------------------------------------------------------
 
+
 class UpsertChunk(BaseModel):
     """Один чанк для записи в LanceDB."""
+
     document_id: str
     chunk_index: int
     text: str
@@ -1340,6 +1399,45 @@ class SearchHit(BaseModel):
     score: float
 
 
+class Source(BaseModel):
+    """Source reference for chat UI: a chunk or full document that contributed to the answer.
+
+    `source_kind` distinguishes a single retrieved chunk from a full document that was
+    sent to the LLM via `send_full_document` mode.
+    """
+
+    path: str
+    page: int | None = None
+    vault_id: str | None = None
+    document_id: str | None = None
+    chunk_id: str | None = None
+    score: float | None = None
+    source_kind: Literal["chunk", "full_document"] = "chunk"
+
+
+class SourceGroup(BaseModel):
+    """Grouped sources for one pipeline step."""
+
+    step_id: str
+    step_name: str
+    sources: list[Source] = Field(default_factory=list)
+
+
+class MessageSource(BaseModel):
+    """Lightweight DTO persisted on `Message.sources` and returned in chat history.
+
+    Mirrors `Source` without optional heavy fields. Used so we can restore the sources
+    block on chat reload without storing full text of every chunk.
+    """
+
+    path: str
+    page: int | None = None
+    vault_id: str | None = None
+    document_id: str | None = None
+    chunk_id: str | None = None
+    source_kind: Literal["chunk", "full_document"] = "chunk"
+
+
 class SearchRequest(BaseModel):
     vault_id: str
     vector: list[float]
@@ -1355,6 +1453,7 @@ class SearchResponse(BaseModel):
 # ---------------------------------------------------------------------------
 # Indexer task API contracts (rag-indexer/app/main.py)
 # ---------------------------------------------------------------------------
+
 
 class StartIndexTaskRequest(BaseModel):
     vault_id: str
@@ -1381,12 +1480,16 @@ class TaskStateResponse(BaseModel):
 # WebSocket progress messages (rag-indexer → frontend)
 # ---------------------------------------------------------------------------
 
+
 class WSFileChunkProgressMessage(BaseModel):
     """Прогресс обработки файла: стадия + счётчики чанков."""
+
     type: Literal["file_chunk_progress"] = "file_chunk_progress"
     task_id: str
     file_path: str
-    stage: Literal["parsing", "chunking", "indexing", "done", "error", "empty", "cancelled"]
+    stage: Literal[
+        "parsing", "chunking", "indexing", "done", "error", "empty", "cancelled"
+    ]
     chunks_total: int = 0
     chunks_processed: int = 0
     error: str | None = None
@@ -1394,6 +1497,7 @@ class WSFileChunkProgressMessage(BaseModel):
 
 class WSFileStatusMessage(BaseModel):
     """Финальный статус файла после индексации."""
+
     type: Literal["file_status"] = "file_status"
     task_id: str
     file_path: str
@@ -1404,12 +1508,14 @@ class WSFileStatusMessage(BaseModel):
 
 class WSTaskCancelledMessage(BaseModel):
     """Задача индексации отменена."""
+
     type: Literal["task_cancelled"] = "task_cancelled"
     task_id: str
 
 
 class WSTaskCompleteMessage(BaseModel):
     """Задача индексации завершена успешно."""
+
     type: Literal["task_complete"] = "task_complete"
     task_id: str
     files_total: int = 0
@@ -1420,8 +1526,10 @@ class WSTaskCompleteMessage(BaseModel):
 # Planner contracts
 # ---------------------------------------------------------------------------
 
+
 class PipelineInvocation(BaseModel):
     """Пайплайн, запланированный Planner-ом к выполнению."""
+
     pipeline_id: str
     domain: str | None = None
     priority: int = 0
@@ -1429,6 +1537,7 @@ class PipelineInvocation(BaseModel):
 
 class PlannerDecision(BaseModel):
     """Решение Planner.decide(): стратегия ретривала + нужна ли кларификация."""
+
     retrieval_strategy: str  # "none" | "semantic" | ...
     clarification_needed: bool = False
     pipeline_invocations: list[PipelineInvocation] = Field(default_factory=list)
@@ -1438,6 +1547,7 @@ class PlannerDecision(BaseModel):
 # ---------------------------------------------------------------------------
 # Campaign Update Mode — Phase 2
 # ---------------------------------------------------------------------------
+
 
 class UpdateModeAction(str, Enum):
     UPDATE = "update"
@@ -1455,10 +1565,12 @@ class UpdateModeOperation(str, Enum):
 
 
 #: Operations that remove content — content field MUST be empty string for these.
-_DELETE_OPERATIONS: frozenset[UpdateModeOperation] = frozenset({
-    UpdateModeOperation.DELETE_SECTION,
-    UpdateModeOperation.DELETE_UNIQUE_TEXT,
-})
+_DELETE_OPERATIONS: frozenset[UpdateModeOperation] = frozenset(
+    {
+        UpdateModeOperation.DELETE_SECTION,
+        UpdateModeOperation.DELETE_UNIQUE_TEXT,
+    }
+)
 
 
 class UpdateModeChangeStatus(str, Enum):
@@ -1476,6 +1588,7 @@ class UpdateModeVaultApplyStatus(str, Enum):
 
 
 # --- LLM intent contracts ---
+
 
 class UpdateModeAnchor(BaseModel):
     kind: Literal["markdown_heading", "exact_text"]
@@ -1530,22 +1643,32 @@ class UpdateModeIntent(BaseModel):
                 UpdateModeOperation.DELETE_UNIQUE_TEXT,
             }
             if self.operation not in valid_ops:
-                raise ValueError(f"update action requires operation in {[o.value for o in valid_ops]}")
+                raise ValueError(
+                    f"update action requires operation in {[o.value for o in valid_ops]}"
+                )
             if self.operation == UpdateModeOperation.APPEND_AFTER_SECTION:
                 if self.anchor is None or self.anchor.kind != "markdown_heading":
-                    raise ValueError("append_after_section requires anchor.kind == markdown_heading")
+                    raise ValueError(
+                        "append_after_section requires anchor.kind == markdown_heading"
+                    )
             if self.operation == UpdateModeOperation.REPLACE_UNIQUE_TEXT:
                 if self.anchor is None or self.anchor.kind != "exact_text":
-                    raise ValueError("replace_unique_text requires anchor.kind == exact_text")
+                    raise ValueError(
+                        "replace_unique_text requires anchor.kind == exact_text"
+                    )
             if self.operation == UpdateModeOperation.APPEND_TO_FILE:
                 if self.anchor is not None:
                     raise ValueError("append_to_file must not have anchor")
             if self.operation == UpdateModeOperation.DELETE_SECTION:
                 if self.anchor is None or self.anchor.kind != "markdown_heading":
-                    raise ValueError("delete_section requires anchor.kind == markdown_heading")
+                    raise ValueError(
+                        "delete_section requires anchor.kind == markdown_heading"
+                    )
             if self.operation == UpdateModeOperation.DELETE_UNIQUE_TEXT:
                 if self.anchor is None or self.anchor.kind != "exact_text":
-                    raise ValueError("delete_unique_text requires anchor.kind == exact_text")
+                    raise ValueError(
+                        "delete_unique_text requires anchor.kind == exact_text"
+                    )
 
         # --- create action rules ---
         if self.action == UpdateModeAction.CREATE:
@@ -1559,7 +1682,9 @@ class UpdateModeIntent(BaseModel):
                 raise ValueError("create action requires suggested_filename")
 
         if self.document_id is not None and self.parent_document_id is not None:
-            raise ValueError("document_id and parent_document_id are mutually exclusive")
+            raise ValueError(
+                "document_id and parent_document_id are mutually exclusive"
+            )
 
         return self
 
@@ -1567,7 +1692,7 @@ class UpdateModeIntent(BaseModel):
 class UpdateModeIntentBatch(BaseModel):
     intents: list[UpdateModeIntent] = Field(min_length=1, max_length=10)
 
-    @model_validator(mode='after')
+    @model_validator(mode="after")
     def _validate_unique_change_ids(self) -> UpdateModeIntentBatch:
         ids = [i.change_id for i in self.intents]
         if len(ids) != len(set(ids)):
@@ -1577,11 +1702,13 @@ class UpdateModeIntentBatch(BaseModel):
 
 # --- Phase 3: executor-level DTOs ---
 
+
 class IndexedContextDocument(BaseModel):
     """In-memory DTO для документа, включённого в LLM-контекст.
 
     Используется только внутри UpdateModeExecutor — не персистируется.
     """
+
     document_id: str
     vault_id: str
     source_path: str
@@ -1605,25 +1732,23 @@ class UpdateModeGenerationResult(BaseModel):
     и state_patch_questions. state_patch может быть пустым даже при наличии intents
     (Campaign Update Mode §9 — patch может быть пустым).
     """
+
     intents: list[UpdateModeIntent] = Field(default_factory=list, max_length=10)
     no_change_reason: str | None = Field(default=None, max_length=1_000)
     state_patch: list[CampaignStatePatchOperation] = Field(default_factory=list)
     state_patch_questions: list[str] = Field(default_factory=list)
 
-    @model_validator(mode='after')
+    @model_validator(mode="after")
     def _validate_no_change_invariant(self) -> UpdateModeGenerationResult:
         if not self.intents and not self.no_change_reason:
-            raise ValueError(
-                "no_change_reason is required when intents list is empty"
-            )
+            raise ValueError("no_change_reason is required when intents list is empty")
         if self.intents and self.no_change_reason is not None:
-            raise ValueError(
-                "no_change_reason must be None when intents are present"
-            )
+            raise ValueError("no_change_reason must be None when intents are present")
         return self
 
 
 # --- Internal indexer API contracts ---
+
 
 class UpdateModeResolveRequest(BaseModel):
     chat_id: str
@@ -1636,7 +1761,7 @@ class UpdateModeResolveRequest(BaseModel):
         default_factory=list, min_length=0, max_length=15
     )
 
-    @model_validator(mode='after')
+    @model_validator(mode="after")
     def _validate_default_vault(self) -> UpdateModeResolveRequest:
         if self.default_vault_id not in self.vault_ids:
             raise ValueError("default_vault_id must be in vault_ids")
@@ -1686,6 +1811,7 @@ class UpdateModeApplyChange(BaseModel):
     talking to an old indexer; UpdateModeApplyRequest.model_validator converts
     them to file_batches automatically.
     """
+
     change_id: str
     vault_id: str
     file_path: str
@@ -1702,7 +1828,7 @@ class UpdateModeApplyChange(BaseModel):
     # Stable index for multi-op batch ordering. -1 = legacy sentinel.
     resolve_order: int = -1
 
-    @model_validator(mode='after')
+    @model_validator(mode="after")
     def _validate_sha_policy(self) -> UpdateModeApplyChange:
         if self.action == UpdateModeAction.UPDATE and self.expected_sha256 is None:
             raise ValueError("update action requires expected_sha256")
@@ -1715,6 +1841,7 @@ class UpdateModeApplyChange(BaseModel):
 # Multi-op apply contracts (fix/update-mode-multi-patch-per-file)
 # ---------------------------------------------------------------------------
 
+
 class UpdateModeFileOp(BaseModel):
     """A single ordered operation within an UpdateModeFileChangeBatch.
 
@@ -1722,25 +1849,27 @@ class UpdateModeFileOp(BaseModel):
     (vault_id, file_path). The applier reads the file once, applies all ops
     sequentially in-memory, then writes the final result atomically.
     """
+
     change_id: str
     operation: UpdateModeOperation
-    anchor_value: str | None = None   # anchor.value from intent; None for APPEND_TO_FILE
-    content: str                      # intent content ('' for delete ops)
+    anchor_value: str | None = None  # anchor.value from intent; None for APPEND_TO_FILE
+    content: str  # intent content ('' for delete ops)
     # SHA-256 of the original file content at resolve time.
     # Required for ops[0] of UPDATE batches (CAS check before first write).
     # None for all subsequent ops and for CREATE batches.
     expected_sha256: str | None = None
-    description: str = ""             # human-readable description for git commit message
+    description: str = ""  # human-readable description for git commit message
 
 
 class UpdateModeFileChangeBatch(BaseModel):
     """All operations targeting one (vault_id, file_path) pair, in apply order."""
+
     vault_id: str
     file_path: str
-    action: UpdateModeAction            # UPDATE or CREATE
+    action: UpdateModeAction  # UPDATE or CREATE
     ops: list[UpdateModeFileOp] = Field(min_length=1, max_length=20)
 
-    @model_validator(mode='after')
+    @model_validator(mode="after")
     def _validate_sha_policy(self) -> UpdateModeFileChangeBatch:
         """Enforce CAS / SHA-256 policy for ops list.
 
@@ -1780,7 +1909,7 @@ class UpdateModeApplyRequest(BaseModel):
     # Converted to file_batches by _normalize_and_validate below.
     accepted_changes: list[UpdateModeApplyChange] = Field(default_factory=list)
 
-    @model_validator(mode='after')
+    @model_validator(mode="after")
     def _normalize_and_validate(self) -> UpdateModeApplyRequest:
         # --- Uniqueness of change_id across all accepted_changes ---
         if self.accepted_changes:
@@ -1802,7 +1931,10 @@ class UpdateModeApplyRequest(BaseModel):
         # --- Backward-compat conversion ---
         if self.accepted_changes and not self.file_batches:
             from collections import defaultdict
-            groups: dict[tuple[str, str], list[UpdateModeApplyChange]] = defaultdict(list)
+
+            groups: dict[tuple[str, str], list[UpdateModeApplyChange]] = defaultdict(
+                list
+            )
             for ch in self.accepted_changes:
                 groups[(ch.vault_id, ch.file_path)].append(ch)
             batches: list[UpdateModeFileChangeBatch] = []
@@ -1834,7 +1966,9 @@ class UpdateModeApplyRequest(BaseModel):
                             "file_path=%r but none has operation field — "
                             "using only the last change (%s) as a single "
                             "APPEND_TO_FILE op. Other changes are dropped.",
-                            len(changes), file_path, changes[-1].change_id,
+                            len(changes),
+                            file_path,
+                            changes[-1].change_id,
                         )
                     last = changes[-1]
                     ops = [
@@ -1846,12 +1980,14 @@ class UpdateModeApplyRequest(BaseModel):
                             expected_sha256=changes[0].expected_sha256,
                         )
                     ]
-                batches.append(UpdateModeFileChangeBatch(
-                    vault_id=vault_id,
-                    file_path=file_path,
-                    action=changes[0].action,
-                    ops=ops,
-                ))
+                batches.append(
+                    UpdateModeFileChangeBatch(
+                        vault_id=vault_id,
+                        file_path=file_path,
+                        action=changes[0].action,
+                        ops=ops,
+                    )
+                )
             self.file_batches = batches
 
         # --- Require at least one batch ---
@@ -1861,7 +1997,9 @@ class UpdateModeApplyRequest(BaseModel):
         # --- Uniqueness of (vault_id, file_path) ---
         pairs = [(b.vault_id, b.file_path) for b in self.file_batches]
         if len(pairs) != len(set(pairs)):
-            raise ValueError("(vault_id, file_path) pairs must be unique in file_batches")
+            raise ValueError(
+                "(vault_id, file_path) pairs must be unique in file_batches"
+            )
 
         # --- Uniqueness of change_id across file_batches.ops ---
         op_ids = [op.change_id for b in self.file_batches for op in b.ops]
@@ -1898,12 +2036,14 @@ class UpdateModeApplyResponse(BaseModel):
 
 # --- Phase 4: Indexer apply idempotency state ---
 
+
 class IndexerApplyState(BaseModel):
     """Redis-persisted idempotency record for a single apply_id on the indexer.
 
     Key: update_mode:apply:{apply_id}
     TTL: SESSION_TTL_SECONDS (3 hours)
     """
+
     apply_id: str
     request_fingerprint: str  # SHA-256 of canonical JSON payload
     status: Literal["in_progress", "completed"]
@@ -1912,6 +2052,7 @@ class IndexerApplyState(BaseModel):
 
 
 # --- Public backend API contracts ---
+
 
 class StartUpdateModeRequest(BaseModel):
     note: str = Field(min_length=1, max_length=20_000)
@@ -1923,7 +2064,9 @@ class StartUpdateModeResponse(BaseModel):
     changes: list[ResolvedUpdateModeChange]
     warnings: list[str] = Field(default_factory=list)
     state_field_snapshot: list[CampaignStateFieldSnapshot] = Field(default_factory=list)
-    state_patch_operations: list[UpdateModeStatePatchEntry] = Field(default_factory=list)
+    state_patch_operations: list[UpdateModeStatePatchEntry] = Field(
+        default_factory=list
+    )
 
 
 class UpdateModeSessionResponse(BaseModel):
@@ -1935,7 +2078,9 @@ class UpdateModeSessionResponse(BaseModel):
     changes: list[ResolvedUpdateModeChange]
     warnings: list[str] = Field(default_factory=list)
     state_field_snapshot: list[CampaignStateFieldSnapshot] = Field(default_factory=list)
-    state_patch_operations: list[UpdateModeStatePatchEntry] = Field(default_factory=list)
+    state_patch_operations: list[UpdateModeStatePatchEntry] = Field(
+        default_factory=list
+    )
 
 
 class UpdateModeReviewRequest(BaseModel):
@@ -1945,13 +2090,15 @@ class UpdateModeReviewRequest(BaseModel):
     # Stage 5: optional state-patch decisions. None для back-compat со старыми клиентами.
     state_patch_decisions: UpdateModeStatePatchDecisions | None = None
 
-    @model_validator(mode='after')
+    @model_validator(mode="after")
     def _validate_no_overlap(self) -> UpdateModeReviewRequest:
         accepted = set(self.accepted_change_ids)
         rejected = set(self.rejected_change_ids)
         overlap = accepted & rejected
         if overlap:
-            raise ValueError(f"change_ids cannot be both accepted and rejected: {overlap}")
+            raise ValueError(
+                f"change_ids cannot be both accepted and rejected: {overlap}"
+            )
         if not accepted and not rejected and self.state_patch_decisions is None:
             raise ValueError(
                 "review request must contain at least one accepted or rejected change_id, "
@@ -2072,6 +2219,7 @@ class UpdateModeStatePatchApplyResult(BaseModel):
 
 # --- Redis session contract ---
 
+
 class UpdateModeSession(BaseModel):
     session_id: str
     chat_id: str
@@ -2095,5 +2243,7 @@ class UpdateModeSession(BaseModel):
     apply_state: Literal["review", "in_progress", "completed"] = "review"
     # Stage 5: state-patch snapshot and operations (Campaign Update Mode §9, §6.2).
     state_field_snapshot: list[CampaignStateFieldSnapshot] = Field(default_factory=list)
-    state_patch_operations: list[UpdateModeStatePatchEntry] = Field(default_factory=list)
+    state_patch_operations: list[UpdateModeStatePatchEntry] = Field(
+        default_factory=list
+    )
     apply_result: UpdateModeApplyResponse | None = None

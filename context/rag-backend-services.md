@@ -245,11 +245,40 @@ class PipelineExecutor:
 - `{STEP_ID.key}` → ключ из dict-результата
 - Ключи начинающиеся с `_` (внутренние, например `_hits_*`) игнорируются
 
-### Накопление хитов
+### Накопление хитов и sources
 
 Каждый retrieval-шаг сохраняет сырые `SearchHit` в `ctx.step_results` под ключом  
-`_hits_{step_id}` — для последующего использования в `_maybe_pause_for_full_doc()`.  
+`_hits_{step_id}` — для последующего использования в `_maybe_pause_for_full_doc()` и для
+формирования финального SSE `sources` event.  
 Публичный хелпер: `_collect_all_hits(ctx) -> list[SearchHit]` — дедуплицирует по `chunk_id`.
+
+Для шагов с `send_full_document=True`: дополнительно сохраняется
+`_fulldoc_sources_{step_id} = list[Source]` (через `full_doc_hits_to_sources` —
+одна запись на `document_id` с `source_kind="full_document"`).
+
+После `_run_final_composition` (перед `pipeline_complete`) эмитится SSE event:
+
+```json
+{
+  "type": "sources",
+  "grouped_by_step": true,
+  "step_groups": [
+    {"step_id": "...", "step_name": "...", "sources": [{path, page?, vault_id?, document_id?, chunk_id?, source_kind, ...}]},
+    ...
+  ]
+}
+```
+
+Сборка: `_collect_step_sources(ctx) -> list[SourceGroup]` — обходит все
+`ctx.steps`, для каждого шага собирает источники из `_hits_*` и `_fulldoc_sources_*`,
+дедуплицирует.
+
+### Sources в Message (персистенция)
+
+Resume-эндпоинты (`pipeline_resume.py::confirmed_stream`, `pipeline_resume.py::resume_stream`,
+`_plain_rag_stream`, `fulldoc_confirm.py`, `pipeline_executor.py::resume_from_full_doc_selection`)
+сохраняют `Message` с полем `sources` — JSONB список `MessageSource`.
+Это позволяет восстановить блок «Источники» при reload чата.
 
 ### Поисковый запрос для шага
 
@@ -606,6 +635,18 @@ class AgentLoop:
 - Final round: `tool_choice='none'` — модель ОБЯЗАНА выдать текстовый ответ.
 - Повторный нормализованный query → пустой tool_result с `note='duplicate_query'`.
 - Если модель вернула только `tool_calls` без текста — продолжаем. Если есть текст — стримим и выходим.
+
+### Sources flow (tool path)
+
+Каждый `tool_result` event содержит в payload поле `sources: list[Source]` —
+дедуплицированный список источников (`hits_to_sources` с `cap=MAX_SOURCES_PER_TOOL_RESULT=50`).
+Чат-слой (`chat.py::plain_stream`) аккумулирует их в `all_sources: list[Source]`,
+дедуплицирует и эмитит **один** финальный `sources` SSE event с
+`grouped_by_step: false` после завершения `final` event'а.
+Те же источники персистятся в `Message.sources` через `_save_partial_answer(sources=...)`.
+
+`final` event содержит `rounds: list[AgentRoundResult]` где у каждого round
+есть поле `sources: list[MessageSource]` (для audit).
 
 ### Подключение в `chat.py` (Stage 8.5)
 

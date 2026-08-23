@@ -242,6 +242,11 @@ Chat (1) ──► (N) PipelineDecision
 ### `messages`
 - `chat_id` FK (CASCADE), `role` (`user | assistant | system`), `content`
 - `pipeline_id` — к какому пайплайну относится ответ
+- `sources` (JSONB nullable, миграция `0010_message_sources`) — список `MessageSource`
+  (path, page, vault_id, document_id, chunk_id, source_kind), использованных для генерации
+  ответа. Заполняется во всех режимах: legacy single-shot, tool-based AgentLoop, pipeline
+  (grouped → flattened), full document mode + resume flows. Используется для восстановления
+  блока «Источники» при reload чата.
 - `created_at`
 
 ### `clarification_states`

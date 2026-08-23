@@ -70,6 +70,37 @@ SearchRequest:     vault_id, vector, top_k (1..200), score_threshold?, filter?
 SearchResponse:    results: list[SearchHit]
 ```
 
+## Source / SourceGroup / MessageSource (UI-источники чата)
+
+Контракты для отображения и персистенции источников под сообщением ассистента.
+Единая точка истины для всех сценариев (legacy single-shot, tool-based AgentLoop,
+pipeline DAG, full document mode, resume flows).
+
+```python
+Source:           path, page?, vault_id?, document_id?, chunk_id?, score?, source_kind="chunk"|"full_document"
+SourceGroup:      step_id, step_name, sources: list[Source]            # для grouped_by_step=true SSE event
+MessageSource:    path, page?, vault_id?, document_id?, chunk_id?, source_kind   # lightweight DTO для Message.sources
+```
+
+- `source_kind="chunk"` — обычный retrieval chunk (SearchHit → Source).
+- `source_kind="full_document"` — `send_full_document` шаг pipeline или
+  документ, выбранный пользователем в full_document_selection.
+  Всегда одна запись на `document_id` (без page).
+- `page` присутствует только когда в `metadata` индексатора был `page_number`
+  (сейчас — PDF). Для других типов файлов — `None`.
+
+Helper-функции (`rag-backend/app/services/source_utils.py`):
+- `hits_to_sources(hits, cap=None) → list[Source]` — дедуп по `(path, page, vault_id, chunk_id)`.
+- `full_doc_hits_to_sources(hits) → list[Source]` — дедуп по `(path, vault_id, document_id)`,
+  одна запись на документ.
+- `dedup_sources(list[Source]) → list[Source]` — для multi-round agent loop.
+- `sources_to_message_sources(list[Source]) → list[MessageSource]` — для персистенции.
+- `merge_sources(*lists) → list[Source]` — объединение с дедупом.
+
+Лимит `MAX_SOURCES_PER_TOOL_RESULT = 50` защищает SSE payload от раздувания при
+больших выдачах `search_knowledge` (truncation по `evidence_token_budget` обычно
+ограничивает строже).
+
 ---
 
 ## Read / Create / Update схемы (API-контракты)

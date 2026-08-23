@@ -22,14 +22,21 @@ The loop is provider-agnostic: it only relies on
 `generate_stream` path is used as a fallback when the provider does not
 support tool calls (default-degrade in `GenerationProvider`).
 """
+
 from __future__ import annotations
 
 import json
 import logging
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator
+from typing import Any
 
 from app.services.search_knowledge_service import search_knowledge_service
+from app.services.source_utils import (
+    MAX_SOURCES_PER_TOOL_RESULT,
+    hits_to_sources,
+    sources_to_message_sources,
+)
 from shared_contracts.models import (
     AgentLoopResult,
     AgentRoundResult,
@@ -42,6 +49,7 @@ from shared_contracts.models import (
     LLMToolMessage,
     RetrievalPolicy,
     SearchKnowledgeResult,
+    Source,
 )
 
 logger = logging.getLogger(__name__)
@@ -229,7 +237,9 @@ class AgentLoop:
             # block the user — emit the answer as a single-shot call.
             logger.warning(
                 "agent_loop: max_rounds=0, falling back to a single tool-free turn. "
-                "policy=%s campaign_id=%s", policy, campaign_id,
+                "policy=%s campaign_id=%s",
+                policy,
+                campaign_id,
             )
             max_rounds = 1
 
@@ -253,13 +263,19 @@ class AgentLoop:
         for round_idx in range(max_rounds):
             is_final_round = round_idx == max_rounds - 1
             tool_choice = (
-                LLMToolChoice(mode="none") if is_final_round else LLMToolChoice(mode="auto")
+                LLMToolChoice(mode="none")
+                if is_final_round
+                else LLMToolChoice(mode="auto")
             )
 
-            yield AgentEvent(type="round_start", round=round_idx, payload={
-                "max_rounds": max_rounds,
-                "policy": policy.value,
-            })
+            yield AgentEvent(
+                type="round_start",
+                round=round_idx,
+                payload={
+                    "max_rounds": max_rounds,
+                    "policy": policy.value,
+                },
+            )
 
             # Drive the model for one round.
             buffer_content: list[str] = []
@@ -267,22 +283,31 @@ class AgentLoop:
 
             try:
                 async for chunk in provider.generate_stream_with_tools(
-                    messages, tools=tools, tool_choice=tool_choice,
+                    messages,
+                    tools=tools,
+                    tool_choice=tool_choice,
                 ):
                     if chunk.content_delta:
                         buffer_content.append(chunk.content_delta)
-                        yield AgentEvent(type="token", round=round_idx, payload={
-                            "content": chunk.content_delta,
-                        })
+                        yield AgentEvent(
+                            type="token",
+                            round=round_idx,
+                            payload={
+                                "content": chunk.content_delta,
+                            },
+                        )
 
                     if chunk.tool_call_delta is not None:
                         d = chunk.tool_call_delta
-                        slot = tool_call_deltas.setdefault(d.index, {
-                            "id": d.id,
-                            "type": d.type or "function",
-                            "name": None,
-                            "arguments": [],
-                        })
+                        slot = tool_call_deltas.setdefault(
+                            d.index,
+                            {
+                                "id": d.id,
+                                "type": d.type or "function",
+                                "name": None,
+                                "arguments": [],
+                            },
+                        )
                         if d.id is not None:
                             slot["id"] = d.id
                         if d.type is not None:
@@ -291,13 +316,19 @@ class AgentLoop:
                             slot["name"] = d.function_name
                         if d.function_arguments_delta:
                             slot["arguments"].append(d.function_arguments_delta)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.exception(
-                    "agent_loop: provider error on round=%d, policy=%s", round_idx, policy,
+                    "agent_loop: provider error on round=%d, policy=%s",
+                    round_idx,
+                    policy,
                 )
-                yield AgentEvent(type="error", round=round_idx, payload={
-                    "message": str(exc),
-                })
+                yield AgentEvent(
+                    type="error",
+                    round=round_idx,
+                    payload={
+                        "message": str(exc),
+                    },
+                )
                 return
 
             # Materialise deltas into full LLMToolCall objects.
@@ -309,37 +340,47 @@ class AgentLoop:
                 if not slot["id"] or not slot["name"]:
                     logger.warning(
                         "agent_loop: dropping incomplete tool_call at index=%d (id=%r name=%r)",
-                        idx, slot["id"], slot["name"],
+                        idx,
+                        slot["id"],
+                        slot["name"],
                     )
                     continue
-                full_calls.append(LLMToolCall(
-                    id=slot["id"],
-                    type="function",
-                    index=idx,
-                    function=LLMToolCallFunction(
-                        name=slot["name"],
-                        arguments=arguments,
-                    ),
-                ))
+                full_calls.append(
+                    LLMToolCall(
+                        id=slot["id"],
+                        type="function",
+                        index=idx,
+                        function=LLMToolCallFunction(
+                            name=slot["name"],
+                            arguments=arguments,
+                        ),
+                    )
+                )
 
             round_content = "".join(buffer_content)
 
             if not full_calls:
                 # Model answered with text. This is the terminal state.
                 final_content_parts.append(round_content)
-                rounds_meta.append(AgentRoundResult(
+                rounds_meta.append(
+                    AgentRoundResult(
+                        round=round_idx,
+                        queries=[],
+                        tool_name=None,
+                        reason=None,
+                        hits_count=0,
+                        evidence_tokens=0,
+                        scope="domain",  # placeholder; retrieval didn't run
+                    )
+                )
+                yield AgentEvent(
+                    type="round_end",
                     round=round_idx,
-                    queries=[],
-                    tool_name=None,
-                    reason=None,
-                    hits_count=0,
-                    evidence_tokens=0,
-                    scope="domain",  # placeholder; retrieval didn't run
-                ))
-                yield AgentEvent(type="round_end", round=round_idx, payload={
-                    "content_chars": len(round_content),
-                    "finish_reason": "stop",
-                })
+                    payload={
+                        "content_chars": len(round_content),
+                        "finish_reason": "stop",
+                    },
+                )
                 break
 
             # Round produced tool_calls — append the assistant message with
@@ -356,11 +397,15 @@ class AgentLoop:
             for call in full_calls:
                 if call.function.name == SEARCH_KNOWLEDGE_TOOL.function.name:
                     queries, reason = _extract_search_queries(call)
-                    yield AgentEvent(type="tool_call", round=round_idx, payload={
-                        "tool": call.function.name,
-                        "queries": queries,
-                        "reason": reason,
-                    })
+                    yield AgentEvent(
+                        type="tool_call",
+                        round=round_idx,
+                        payload={
+                            "tool": call.function.name,
+                            "queries": queries,
+                            "reason": reason,
+                        },
+                    )
 
                     # Per spec §12.2: don't repeat a normalised query.
                     new_norm = {q.strip().lower() for q in queries}
@@ -399,6 +444,10 @@ class AgentLoop:
                             evidence_token_budget=evidence_token_budget,
                             db=db,
                         )
+                        round_sources: list[Source] = hits_to_sources(
+                            result.hits,
+                            cap=MAX_SOURCES_PER_TOOL_RESULT,
+                        )
                         tool_round_meta = AgentRoundResult(
                             round=round_idx,
                             queries=result.queries_used,
@@ -408,69 +457,103 @@ class AgentLoop:
                             evidence_tokens=result.evidence_tokens,
                             scope=result.scope,
                             skipped_reason=result.note if not result.hits else None,
+                            sources=sources_to_message_sources(round_sources),
                         )
 
                     tool_calls_made += 1
                     rounds_meta.append(tool_round_meta)
 
-                    yield AgentEvent(type="tool_result", round=round_idx, payload={
-                        "tool": call.function.name,
-                        "queries_used": result.queries_used,
-                        "hits_count": len(result.hits),
-                        "evidence_tokens": result.evidence_tokens,
-                        "scope": result.scope,
-                        "note": result.note,
-                    })
+                    # Прокидываем sources в tool_result event — чат-слой
+                    # аггрегирует их и эмитит финальный `sources` event.
+                    yield AgentEvent(
+                        type="tool_result",
+                        round=round_idx,
+                        payload={
+                            "tool": call.function.name,
+                            "queries_used": result.queries_used,
+                            "hits_count": len(result.hits),
+                            "evidence_tokens": result.evidence_tokens,
+                            "scope": result.scope,
+                            "note": result.note,
+                            "sources": [
+                                s.model_dump(mode="json")
+                                for s in hits_to_sources(
+                                    result.hits,
+                                    cap=MAX_SOURCES_PER_TOOL_RESULT,
+                                )
+                            ],
+                        },
+                    )
 
                     # Append role=tool message for this call.
                     tool_text = _format_tool_result_text(result)
-                    messages.append(LLMToolMessage(
-                        role="tool",
-                        tool_call_id=call.id,
-                        content=tool_text,
-                    ).model_dump(exclude_none=True))
+                    messages.append(
+                        LLMToolMessage(
+                            role="tool",
+                            tool_call_id=call.id,
+                            content=tool_text,
+                        ).model_dump(exclude_none=True)
+                    )
                 else:
                     # Unknown tool — surface a structured error and stop.
                     logger.warning(
                         "agent_loop: model requested unknown tool %r",
                         call.function.name,
                     )
-                    yield AgentEvent(type="error", round=round_idx, payload={
-                        "message": f"unknown tool: {call.function.name}",
-                    })
-                    rounds_meta.append(AgentRoundResult(
+                    yield AgentEvent(
+                        type="error",
                         round=round_idx,
-                        queries=[],
-                        tool_name=call.function.name,
-                        reason=None,
-                        hits_count=0,
-                        evidence_tokens=0,
-                        scope="domain",
-                        skipped_reason="unknown_tool",
-                    ))
+                        payload={
+                            "message": f"unknown tool: {call.function.name}",
+                        },
+                    )
+                    rounds_meta.append(
+                        AgentRoundResult(
+                            round=round_idx,
+                            queries=[],
+                            tool_name=call.function.name,
+                            reason=None,
+                            hits_count=0,
+                            evidence_tokens=0,
+                            scope="domain",
+                            skipped_reason="unknown_tool",
+                        )
+                    )
                     break
 
-            yield AgentEvent(type="round_end", round=round_idx, payload={
-                "finish_reason": "tool_calls",
-                "tool_calls_in_round": len(full_calls),
-            })
+            yield AgentEvent(
+                type="round_end",
+                round=round_idx,
+                payload={
+                    "finish_reason": "tool_calls",
+                    "tool_calls_in_round": len(full_calls),
+                },
+            )
             logger.info(
                 "AGENT_LOOP_ROUND round=%d tool_calls=%d",
-                round_idx, len(full_calls),
+                round_idx,
+                len(full_calls),
             )
 
         final_content = "".join(final_content_parts)
         logger.info(
             "AGENT_LOOP_DONE campaign_id=%s domain_id=%s policy=%s "
             "rounds=%d tool_calls=%d content_chars=%d",
-            campaign_id, domain_id, policy.value,
-            len(rounds_meta), tool_calls_made, len(final_content),
+            campaign_id,
+            domain_id,
+            policy.value,
+            len(rounds_meta),
+            tool_calls_made,
+            len(final_content),
         )
-        yield AgentEvent(type="final", payload={
-            "content_chars": len(final_content),
-            "rounds": [r.model_dump() for r in rounds_meta],
-            "tool_calls_made": tool_calls_made,
-        })
+        yield AgentEvent(
+            type="final",
+            payload={
+                "content_chars": len(final_content),
+                "rounds": [r.model_dump() for r in rounds_meta],
+                "tool_calls_made": tool_calls_made,
+            },
+        )
 
     async def run(
         self,
@@ -506,7 +589,7 @@ class AgentLoop:
 
 
 __all__ = [
-    "AgentLoop",
-    "AgentEvent",
     "SEARCH_KNOWLEDGE_TOOL",
+    "AgentEvent",
+    "AgentLoop",
 ]

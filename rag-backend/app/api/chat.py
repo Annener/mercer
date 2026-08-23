@@ -19,6 +19,9 @@ from app.db.models import Campaign, Chat, ClarificationStateRow, Message, Vault
 from app.db.session import get_db
 from app.services import clarification_fsm
 from app.services.domain_service import domain_service
+from app.services.effective_context import (
+    compose_full_system_prompt,
+)
 from app.services.pipeline_executor import PipelineExecutor
 from app.services.pipeline_router import PipelineRouter
 from app.services.planner import Planner
@@ -32,10 +35,10 @@ from app.services.retrieval import (
     retrieve_multi_vault,
 )
 from app.services.settings_service import settings_service
-from app.services.effective_context import (
-    compose_full_system_prompt,
-    compose_full_system_prompt_with_state,
-    build_effective_context,
+from app.services.source_utils import (
+    dedup_sources,
+    hits_to_sources,
+    sources_to_message_sources,
 )
 from app.services.vault_config_service import VaultConfigService
 from shared_contracts.models import (
@@ -47,6 +50,7 @@ from shared_contracts.models import (
     PipelineExecutionContext,
     SearchHit,
     SendMessageRequest,
+    Source,
 )
 
 logger = logging.getLogger(__name__)
@@ -77,6 +81,7 @@ class CreateChatRequest(BaseModel):
     vault_id оставлен nullable для back-compat (старые клиенты).
     campaign_id — опциональная привязка к кампании.
     """
+
     domain_id: str
     vault_id: str | None = None  # deprecated back-compat
     campaign_id: str | None = None
@@ -99,6 +104,7 @@ class UpdateChatRequest(BaseModel):
       { "campaign_id": null }                              — сброс кампании, флаг не трогается
       { "campaign_id": "<uuid>", "full_document_mode_enabled": false } — оба поля
     """
+
     campaign_id: str | None = None
     full_document_mode_enabled: bool | None = None
 
@@ -165,13 +171,18 @@ async def _maybe_set_title(chat: Chat, query: str, db: AsyncSession) -> None:
         try:
             prompt = _AUTO_TITLE_PROMPT.format(query=query[:500])
             raw = await provider.generate([{"role": "user", "content": prompt}])
-            title = re.sub(r'^["\u00ab\u00bb\'\s]+|["\u00ab\u00bb\'\s.]+$', "", raw.strip())
+            title = re.sub(
+                r'^["\u00ab\u00bb\'\s]+|["\u00ab\u00bb\'\s.]+$', "", raw.strip()
+            )
             if title:
                 chat.title = title[:255]
                 logger.debug("auto_title LLM: '%s' \u2192 '%s'", query[:60], chat.title)
                 return
         except Exception:
-            logger.warning("auto_title LLM generation failed, falling back to word-cut", exc_info=True)
+            logger.warning(
+                "auto_title LLM generation failed, falling back to word-cut",
+                exc_info=True,
+            )
 
     chat.title = _auto_title_fallback(query)
     logger.debug("auto_title fallback: '%s' \u2192 '%s'", query[:60], chat.title)
@@ -182,18 +193,31 @@ async def _save_partial_answer(
     chat: Chat,
     full_answer: str,
     title_query: str,
+    sources: list[dict[str, Any]] | None = None,
 ) -> None:
-    """Сохраняем частичный ответ модели в БД, защищая commit от CancelledError."""
+    """Сохраняем частичный ответ модели в БД, защищая commit от CancelledError.
+
+    `sources` — JSON-serialisable список MessageSource (dict-формат), который будет
+    записан в `messages.sources`. Используется для восстановления блока источников
+    при reload чата.
+    """
     if not full_answer:
         return
     try:
-        assistant_msg = Message(chat_id=chat.id, role="assistant", content=full_answer)
+        assistant_msg = Message(
+            chat_id=chat.id,
+            role="assistant",
+            content=full_answer,
+            sources=sources if sources else None,
+        )
         db.add(assistant_msg)
         await asyncio.shield(db.commit())
         await _maybe_set_title(chat, title_query, db)
         await asyncio.shield(db.commit())
     except Exception:
-        logger.exception("Failed to persist partial assistant answer chat_id=%s", chat.id)
+        logger.exception(
+            "Failed to persist partial assistant answer chat_id=%s", chat.id
+        )
 
 
 async def _check_vault_domain(
@@ -231,7 +255,9 @@ async def create_chat(
         try:
             campaign_uuid = uuid.UUID(req.campaign_id)
         except ValueError as exc:
-            raise HTTPException(422, f"Invalid campaign_id format: {req.campaign_id}") from exc
+            raise HTTPException(
+                422, f"Invalid campaign_id format: {req.campaign_id}"
+            ) from exc
 
     await _check_vault_domain(req.vault_id, req.domain_id, db)
 
@@ -246,8 +272,15 @@ async def create_chat(
     await db.flush()
     db.add(ClarificationStateRow(chat_id=chat.id, stage="idle"))
     await _audit(
-        db, "chat.create", "chat", str(chat.id),
-        {"vault_id": req.vault_id, "domain_id": req.domain_id, "campaign_id": req.campaign_id},
+        db,
+        "chat.create",
+        "chat",
+        str(chat.id),
+        {
+            "vault_id": req.vault_id,
+            "domain_id": req.domain_id,
+            "campaign_id": req.campaign_id,
+        },
     )
     await db.commit()
     logger.info("Created chat: chat_id=%s", chat.id)
@@ -267,7 +300,9 @@ async def update_chat(
             try:
                 chat.campaign_id = uuid.UUID(req.campaign_id)
             except ValueError as exc:
-                raise HTTPException(422, f"Invalid campaign_id: {req.campaign_id}") from exc
+                raise HTTPException(
+                    422, f"Invalid campaign_id: {req.campaign_id}"
+                ) from exc
         else:
             chat.campaign_id = None
 
@@ -275,7 +310,8 @@ async def update_chat(
         chat.full_document_mode_enabled = req.full_document_mode_enabled
         logger.info(
             "full_document_mode_enabled=%s for chat_id=%s",
-            req.full_document_mode_enabled, chat_id,
+            req.full_document_mode_enabled,
+            chat_id,
         )
 
     await db.commit()
@@ -323,7 +359,9 @@ async def get_chat_history(
     db: AsyncSession = Depends(get_db),
 ) -> ChatHistoryResponse:
     chat = await _get_chat_or_404(chat_id, db)
-    stmt = select(Message).where(Message.chat_id == chat.id).order_by(Message.created_at)
+    stmt = (
+        select(Message).where(Message.chat_id == chat.id).order_by(Message.created_at)
+    )
     result = await db.execute(stmt)
     messages = result.scalars().all()
     return ChatHistoryResponse(
@@ -390,13 +428,19 @@ async def send_message(
     domain_id = await _domain_id_for_chat(chat, db) or chat.domain_id
 
     await config_for_vault.ensure_loaded(db)
-    vault_ids: list[str] = [
-        v.vault_id for v in config_for_vault.vaults.values()
-        if v.domain_id == domain_id and v.enabled
-    ] if domain_id else []
+    vault_ids: list[str] = (
+        [
+            v.vault_id
+            for v in config_for_vault.vaults.values()
+            if v.domain_id == domain_id and v.enabled
+        ]
+        if domain_id
+        else []
+    )
 
     retrieval_strategy = (
-        "hybrid" if chat.vault_id and await settings_service.get("retrieval.enabled", db)
+        "hybrid"
+        if chat.vault_id and await settings_service.get("retrieval.enabled", db)
         else "none"
     )
 
@@ -412,7 +456,12 @@ async def send_message(
         retrieval_strategy=retrieval_strategy,
     )
 
-    history_stmt = select(Message).where(Message.chat_id == chat.id).order_by(Message.created_at).limit(20)
+    history_stmt = (
+        select(Message)
+        .where(Message.chat_id == chat.id)
+        .order_by(Message.created_at)
+        .limit(20)
+    )
     history_result = await db.execute(history_stmt)
     context.history = [
         ChatMessage(
@@ -428,7 +477,10 @@ async def send_message(
     provider = settings_service.get_active_provider()
     if provider:
         from app.db.models import Domain as DomainModel
-        domain_obj = await db.get(DomainModel, context.domain_id) if context.domain_id else None
+
+        domain_obj = (
+            await db.get(DomainModel, context.domain_id) if context.domain_id else None
+        )
         domain_description = (
             domain_obj.description if domain_obj and domain_obj.description else None
         )
@@ -441,13 +493,21 @@ async def send_message(
 
     if chat.locked_pipeline_id == PIPELINE_NONE_ID:
         pipeline = None
-        logger.info("Pipeline disabled (__none__ sentinel) — skipping router, plain RAG; chat_id=%s", chat.id)
+        logger.info(
+            "Pipeline disabled (__none__ sentinel) — skipping router, plain RAG; chat_id=%s",
+            chat.id,
+        )
     else:
         pipeline_router = PipelineRouter(db)
-        pipeline = await pipeline_router.select(context, locked_pipeline_id=chat.locked_pipeline_id)
+        pipeline = await pipeline_router.select(
+            context, locked_pipeline_id=chat.locked_pipeline_id
+        )
 
     if pipeline is None:
-        logger.info("No pipeline found for domain_id=%s — falling back to plain LLM chat", domain_id)
+        logger.info(
+            "No pipeline found for domain_id=%s — falling back to plain LLM chat",
+            domain_id,
+        )
         answer = await _plain_llm_reply(req.content, context, domain_id, db)
         assistant_msg = Message(chat_id=chat.id, role="assistant", content=answer)
         db.add(assistant_msg)
@@ -468,7 +528,9 @@ async def send_message(
             full_answer += chunk.get("content", "")
 
     assistant_msg = Message(
-        chat_id=chat.id, role="assistant", content=full_answer,
+        chat_id=chat.id,
+        role="assistant",
+        content=full_answer,
         pipeline_id=pipeline.pipeline_id,
     )
     db.add(assistant_msg)
@@ -494,8 +556,12 @@ async def send_message_stream(
     # ───────────────────────────────────────────────────────────────────────────────
     clarif_state = await clarification_fsm.get_state(db, chat.id)
     if clarif_state.stage == "collecting":
-        max_turns: int = int(await settings_service.get("chat.max_clarification_turns", db))
-        prompt_pack = PromptPack(await domain_service.get_prompts(chat.domain_id or "default", db))
+        max_turns: int = int(
+            await settings_service.get("chat.max_clarification_turns", db)
+        )
+        prompt_pack = PromptPack(
+            await domain_service.get_prompts(chat.domain_id or "default", db)
+        )
         new_state = clarification_fsm.process_clarification_answer(
             clarif_state, req.content, max_turns, prompt_pack
         )
@@ -510,7 +576,9 @@ async def send_message_stream(
             await db.commit()
 
             async def clarif_stream() -> AsyncIterator[str]:
-                chunk = json.dumps({"type": "token", "content": question}, ensure_ascii=False)
+                chunk = json.dumps(
+                    {"type": "token", "content": question}, ensure_ascii=False
+                )
                 yield f"data: {chunk}\n\n"
                 yield "data: [DONE]\n\n"
 
@@ -523,13 +591,19 @@ async def send_message_stream(
     domain_id = await _domain_id_for_chat(chat, db) or chat.domain_id
 
     await config_for_vault.ensure_loaded(db)
-    vault_ids: list[str] = [
-        v.vault_id for v in config_for_vault.vaults.values()
-        if v.domain_id == domain_id and v.enabled
-    ] if domain_id else []
+    vault_ids: list[str] = (
+        [
+            v.vault_id
+            for v in config_for_vault.vaults.values()
+            if v.domain_id == domain_id and v.enabled
+        ]
+        if domain_id
+        else []
+    )
 
     retrieval_strategy = (
-        "hybrid" if chat.vault_id and await settings_service.get("retrieval.enabled", db)
+        "hybrid"
+        if chat.vault_id and await settings_service.get("retrieval.enabled", db)
         else "none"
     )
 
@@ -545,7 +619,12 @@ async def send_message_stream(
         retrieval_strategy=retrieval_strategy,
     )
 
-    history_stmt = select(Message).where(Message.chat_id == chat.id).order_by(Message.created_at).limit(20)
+    history_stmt = (
+        select(Message)
+        .where(Message.chat_id == chat.id)
+        .order_by(Message.created_at)
+        .limit(20)
+    )
     history_result = await db.execute(history_stmt)
     context.history = [
         ChatMessage(
@@ -568,12 +647,20 @@ async def send_message_stream(
             query=context.query,
             vault_id=chat.vault_id,
             domain_id=domain_id,
-            history=[{"role": m.role, "content": m.content} for m in (context.history or [])],
+            history=[
+                {"role": m.role, "content": m.content} for m in (context.history or [])
+            ],
         )
         if decision.clarification_needed and missing_fields:
-            max_turns: int = int(await settings_service.get("chat.max_clarification_turns", db))
-            prompt_pack = PromptPack(await domain_service.get_prompts(domain_id or "default", db))
-            new_state = await clarification_fsm.start_collecting(db, chat.id, missing_fields, prompt_pack)
+            max_turns: int = int(
+                await settings_service.get("chat.max_clarification_turns", db)
+            )
+            prompt_pack = PromptPack(
+                await domain_service.get_prompts(domain_id or "default", db)
+            )
+            new_state = await clarification_fsm.start_collecting(
+                db, chat.id, missing_fields, prompt_pack
+            )
             await db.commit()
             question = new_state.next_question or ""
             assistant_msg = Message(chat_id=chat.id, role="assistant", content=question)
@@ -581,15 +668,21 @@ async def send_message_stream(
             await db.commit()
             logger.info(
                 "Clarification started: chat_id=%s missing=%s max_turns=%s",
-                chat.id, missing_fields, max_turns,
+                chat.id,
+                missing_fields,
+                max_turns,
             )
 
             async def clarif_start_stream() -> AsyncIterator[str]:
-                chunk = json.dumps({"type": "clarification", "content": question}, ensure_ascii=False)
+                chunk = json.dumps(
+                    {"type": "clarification", "content": question}, ensure_ascii=False
+                )
                 yield f"data: {chunk}\n\n"
                 yield "data: [DONE]\n\n"
 
-            return StreamingResponse(clarif_start_stream(), media_type="text/event-stream")
+            return StreamingResponse(
+                clarif_start_stream(), media_type="text/event-stream"
+            )
 
     _locked_pipeline_id = chat.locked_pipeline_id
     _chat = chat
@@ -611,24 +704,36 @@ async def send_message_stream(
         if bool(context.history):
             yield _step("Переформулирую вопрос для поиска в базе знаний...")
             from app.db.models import Domain as DomainModel
-            domain_obj = await db.get(DomainModel, context.domain_id) if context.domain_id else None
+
+            domain_obj = (
+                await db.get(DomainModel, context.domain_id)
+                if context.domain_id
+                else None
+            )
             context.query = await query_rewriter.rewrite(
                 original_query=context.query,
                 history=context.history,
                 provider=_provider,
                 domain_description=(
-                    domain_obj.description if domain_obj and domain_obj.description else None
+                    domain_obj.description
+                    if domain_obj and domain_obj.description
+                    else None
                 ),
             )
 
         # ── 2. Pipeline routing ───────────────────────────────────────────────
         if _locked_pipeline_id == PIPELINE_NONE_ID:
             pipeline = None
-            logger.info("Pipeline disabled (__none__ sentinel) — skipping router; chat_id=%s", _chat.id)
+            logger.info(
+                "Pipeline disabled (__none__ sentinel) — skipping router; chat_id=%s",
+                _chat.id,
+            )
         else:
             yield _step("Анализирую контекст запроса...")
             _pipeline_router = PipelineRouter(db)
-            pipeline = await _pipeline_router.select(context, locked_pipeline_id=_locked_pipeline_id)
+            pipeline = await _pipeline_router.select(
+                context, locked_pipeline_id=_locked_pipeline_id
+            )
 
         # ── 2a. Pipeline found ────────────────────────────────────────────────
         if pipeline is not None:
@@ -652,7 +757,9 @@ async def send_message_stream(
 
             logger.info(
                 "Pipeline confirm required: chat_id=%s pipeline_id=%s token=%s…",
-                _chat.id, pipeline.pipeline_id, confirm_token[:8],
+                _chat.id,
+                pipeline.pipeline_id,
+                confirm_token[:8],
             )
             chunk = json.dumps(
                 {
@@ -668,14 +775,20 @@ async def send_message_stream(
             return
 
         # ── 3. Plain RAG fallback ─────────────────────────────────────────────
-        logger.info("No pipeline found for domain_id=%s — falling back to plain LLM stream", domain_id)
+        logger.info(
+            "No pipeline found for domain_id=%s — falling back to plain LLM stream",
+            domain_id,
+        )
 
-        system_prompt = await _compose_full_system_prompt(context.campaign_id, domain_id, db)
+        system_prompt = await _compose_full_system_prompt(
+            context.campaign_id, domain_id, db
+        )
 
         # Stage 8.5: load retrieval tool settings and decide whether the
         # model gets the `search_knowledge` tool (conditional RAG) or
         # falls back to the unconditional single-shot retrieval path.
         from app.services.retrieval_tool_settings import load_retrieval_tool_settings
+
         tool_settings = await load_retrieval_tool_settings(db)
         use_tool = tool_settings.tool_enabled and bool(_provider)
 
@@ -686,10 +799,11 @@ async def send_message_stream(
 
             loop = AgentLoop()
             history_payload = [
-                {"role": m.role, "content": m.content}
-                for m in (context.history or [])
+                {"role": m.role, "content": m.content} for m in (context.history or [])
             ]
-            all_hits: list[SearchHit] = []
+            # Накопитель источников для финального SSE `sources` event и
+            # для персистенции в Message.sources.
+            all_sources: list[Source] = []
             full_answer = ""
             cancelled = False
             # Stage 8.6: append the tool-use rules (§12.1) to the system
@@ -718,14 +832,26 @@ async def send_message_stream(
                         queries = event.payload.get("queries") or []
                         reason = event.payload.get("reason") or ""
                         yield _step(
-                            "Ищу в базе знаний: " + ", ".join(queries[:3]) +
-                            ("…" if len(queries) > 3 else "")
+                            "Ищу в базе знаний: "
+                            + ", ".join(queries[:3])
+                            + ("…" if len(queries) > 3 else "")
                         )
                         yield f"data: {json.dumps({'type': 'tool_call', 'round': event.round, 'tool': event.payload.get('tool'), 'queries': queries, 'reason': reason}, ensure_ascii=False)}\n\n"
                     elif event.type == "tool_result":
                         hits_count = event.payload.get("hits_count", 0)
                         scope = event.payload.get("scope", "domain")
                         note = event.payload.get("note")
+                        # Аккумулируем источники из каждого tool_result —
+                        # multi-round agent loop аггрегирует все запросы.
+                        round_sources_raw = event.payload.get("sources") or []
+                        for src in round_sources_raw:
+                            try:
+                                all_sources.append(Source.model_validate(src))
+                            except Exception:
+                                logger.warning(
+                                    "agent_loop: invalid source payload, skipping: %r",
+                                    src,
+                                )
                         if hits_count > 0:
                             yield _step(f"Найдено фрагментов: {hits_count} ({scope})")
                         else:
@@ -750,29 +876,61 @@ async def send_message_stream(
                         # use search_knowledge and with what scope".
                         try:
                             await _audit(
-                                db, "chat.agent_loop", "chat", str(_chat.id),
+                                db,
+                                "chat.agent_loop",
+                                "chat",
+                                str(_chat.id),
                                 {
                                     "campaign_id": context.campaign_id,
                                     "domain_id": domain_id,
                                     "policy": tool_settings.policy.value,
                                     "rounds": event.payload.get("rounds", []),
-                                    "tool_calls_made": event.payload.get("tool_calls_made", 0),
+                                    "tool_calls_made": event.payload.get(
+                                        "tool_calls_made", 0
+                                    ),
                                 },
                             )
-                        except Exception:  # noqa: BLE001
+                        except Exception:
                             logger.exception(
-                                "audit chat.agent_loop failed for chat_id=%s", _chat.id,
+                                "audit chat.agent_loop failed for chat_id=%s",
+                                _chat.id,
                             )
             except asyncio.CancelledError:
                 cancelled = True
             finally:
                 await _reset_clarif_fsm()
+                # Дедуплицируем перед сохранением.
+                deduped = dedup_sources(all_sources)
+                persisted_sources: list[dict[str, Any]] = [
+                    s.model_dump(mode="json", exclude_none=True)
+                    for s in sources_to_message_sources(deduped)
+                ]
                 await _save_partial_answer(
-                    db, _chat, full_answer,
+                    db,
+                    _chat,
+                    full_answer,
                     title_query=context.original_query or req.content,
+                    sources=persisted_sources,
                 )
                 if cancelled:
                     return
+
+            # Эмитим финальный `sources` event для UI — даже если LLM не
+            # сгенерировал токенов, источники должны быть видны.
+            deduped_sources = dedup_sources(all_sources)
+            if deduped_sources:
+                sources_chunk = json.dumps(
+                    {
+                        "type": "sources",
+                        "grouped_by_step": False,
+                        "sources": [
+                            s.model_dump(mode="json", exclude_none=True)
+                            for s in deduped_sources
+                        ],
+                    },
+                    ensure_ascii=False,
+                )
+                yield f"data: {sources_chunk}\n\n"
 
             yield "data: [DONE]\n\n"
             return
@@ -793,10 +951,19 @@ async def send_message_stream(
                 yield _step("Выбираю лучшие результаты поиска...")
                 hits = await rerank_hits(context.query, hits, db)
 
+        # Предвычисляем sources event payload заранее — понадобится и для
+        # SSE-чанка, и для персистенции в Message.sources.
+        legacy_sources: list[dict[str, Any]] = _hits_to_sources(hits)
+        legacy_message_sources: list[dict[str, Any]] = [
+            s.model_dump(mode="json", exclude_none=True)
+            for s in sources_to_message_sources(hits_to_sources(hits))
+        ]
+
         # ── 3a. Full Document Mode: если флаг включён — паузим и предлагаем документы
         # ───────────────────────────────────────────────────────────────────────────────
         if hits and _chat.full_document_mode_enabled:
             from app.services.full_document_service import collect_document_candidates
+
             sent_ids: list[str] = list(_chat.sent_full_document_ids or [])
             candidates = await collect_document_candidates(hits, sent_ids, db)
             if candidates:
@@ -812,7 +979,8 @@ async def send_message_stream(
                 logger.info(
                     "plain_stream full_document_mode: pausing for selection. "
                     "chat_id=%s candidates=%d",
-                    _chat.id, len(candidates),
+                    _chat.id,
+                    len(candidates),
                 )
                 chunk = json.dumps(
                     {
@@ -827,12 +995,14 @@ async def send_message_stream(
 
         # ── 3b. Generation ──────────────────────────────────────────────────────
         rag_context = format_context(hits)
-        full_system = f"{system_prompt}\n\n{rag_context}" if system_prompt else rag_context
+        full_system = (
+            f"{system_prompt}\n\n{rag_context}" if system_prompt else rag_context
+        )
 
         messages: list[dict[str, str]] = []
         if full_system:
             messages.append({"role": "system", "content": full_system})
-        for m in (context.history or []):
+        for m in context.history or []:
             messages.append({"role": m.role, "content": m.content})
         messages.append({"role": "user", "content": req.content})
 
@@ -843,15 +1013,20 @@ async def send_message_stream(
         try:
             async for token in _provider.generate_stream(messages):
                 full_answer += token
-                chunk = json.dumps({"type": "token", "content": token}, ensure_ascii=False)
+                chunk = json.dumps(
+                    {"type": "token", "content": token}, ensure_ascii=False
+                )
                 yield f"data: {chunk}\n\n"
         except asyncio.CancelledError:
             cancelled = True
         finally:
             await _reset_clarif_fsm()
             await _save_partial_answer(
-                db, _chat, full_answer,
+                db,
+                _chat,
+                full_answer,
                 title_query=context.original_query or req.content,
+                sources=legacy_message_sources,
             )
             if cancelled:
                 return
@@ -861,7 +1036,7 @@ async def send_message_stream(
                 {
                     "type": "sources",
                     "grouped_by_step": False,
-                    "sources": _hits_to_sources(hits),
+                    "sources": legacy_sources,
                 },
                 ensure_ascii=False,
             )
@@ -880,6 +1055,7 @@ async def submit_clarification(
 ) -> ClarificationResponse:
     """Accept clarification answers and trigger pipeline execution."""
     from app.services.clarification_service import ClarificationService
+
     svc = ClarificationService(db)
     return await svc.handle_answer(chat_id, req)
 
@@ -887,6 +1063,7 @@ async def submit_clarification(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _build_confirm_payload(
     confirm_token: str,
@@ -938,6 +1115,7 @@ async def _resolve_system_prompt(
     `app.services.effective_context` (включает Campaign State block).
     """
     from app.services.effective_context import _resolve_system_prompt_text as _impl
+
     return await _impl(campaign_id, domain_id, db)
 
 
@@ -960,7 +1138,9 @@ async def _fallback_retrieve(
 ) -> list[SearchHit]:
     """RAG retrieval для no-pipeline fallback пути."""
     if not vault_ids or not domain_id:
-        logger.info("Fallback RAG skipped: vault_ids=%s domain_id=%s", vault_ids, domain_id)
+        logger.info(
+            "Fallback RAG skipped: vault_ids=%s domain_id=%s", vault_ids, domain_id
+        )
         return []
 
     retrieval_enabled: bool = await settings_service.get("retrieval.enabled", db)
@@ -974,19 +1154,29 @@ async def _fallback_retrieve(
     if campaign_id:
         allowed_tag_ids = await get_allowed_tag_ids(domain_id, campaign_id, db)
         if allowed_tag_ids:
-            document_ids = await get_document_ids_by_tags(list(allowed_tag_ids), domain_id, db)
+            document_ids = await get_document_ids_by_tags(
+                list(allowed_tag_ids), domain_id, db
+            )
             logger.info(
                 "Fallback RAG campaign scope: campaign_id=%s allowed_tags=%d document_ids=%d",
-                campaign_id, len(allowed_tag_ids), len(document_ids),
+                campaign_id,
+                len(allowed_tag_ids),
+                len(document_ids),
             )
             if document_ids == []:
-                logger.info("Fallback RAG: no indexed documents for campaign tags, returning empty")
+                logger.info(
+                    "Fallback RAG: no indexed documents for campaign tags, returning empty"
+                )
                 return []
         else:
-            logger.info("Fallback RAG: campaign has no tags, searching full domain domain_id=%s", domain_id)
+            logger.info(
+                "Fallback RAG: campaign has no tags, searching full domain domain_id=%s",
+                domain_id,
+            )
 
     return await retrieve_multi_vault(
-        query, vault_ids,
+        query,
+        vault_ids,
         document_ids=document_ids,
         top_k=top_k,
         strategy="hybrid",
@@ -997,19 +1187,13 @@ async def _fallback_retrieve(
 
 
 def _hits_to_sources(hits: list[SearchHit]) -> list[dict[str, Any]]:
-    sources: list[dict[str, Any]] = []
-    seen: set[tuple[str, int | None, str]] = set()
-    for hit in hits:
-        metadata = hit.metadata or {}
-        path = metadata.get("source_path") or hit.document_id
-        page = metadata.get("page_number")
-        vault_id = metadata.get("vault_id") or ""
-        key = (path, page, vault_id)
-        if key in seen:
-            continue
-        seen.add(key)
-        sources.append({"path": path, "page": page, "vault_id": vault_id})
-    return sources
+    """Legacy-формат sources event для SSE: list[{path, page, vault_id, ...}].
+
+    Обратносовместима со старым фронтом: ключи path/page/vault_id сохранены.
+    Дополнительно пробрасывает document_id, chunk_id, score, source_kind — фронт
+    может их игнорировать, если они не нужны.
+    """
+    return [s.model_dump(mode="json", exclude_none=True) for s in hits_to_sources(hits)]
 
 
 async def _plain_llm_reply(
@@ -1022,7 +1206,9 @@ async def _plain_llm_reply(
     if provider is None:
         raise HTTPException(503, "No LLM provider configured")
 
-    system_prompt = await _compose_full_system_prompt(context.campaign_id, domain_id, db)
+    system_prompt = await _compose_full_system_prompt(
+        context.campaign_id, domain_id, db
+    )
     vault_ids: list[str] = getattr(context, "vault_ids", []) or []
     hits: list[SearchHit] = await _fallback_retrieve(
         query=context.query,
@@ -1038,7 +1224,7 @@ async def _plain_llm_reply(
     messages: list[dict[str, str]] = []
     if full_system:
         messages.append({"role": "system", "content": full_system})
-    for m in (context.history or []):
+    for m in context.history or []:
         messages.append({"role": m.role, "content": m.content})
     messages.append({"role": "user", "content": query})
 
@@ -1054,7 +1240,12 @@ async def _audit(
 ) -> None:
     # NOTE: AuditLog column was renamed details -> payload in migration 0010_audit_log_actor_payload
     from app.db.models import AuditLog
-    db.add(AuditLog(action=action, entity_type=entity_type, entity_id=entity_id, payload=payload))
+
+    db.add(
+        AuditLog(
+            action=action, entity_type=entity_type, entity_id=entity_id, payload=payload
+        )
+    )
 
 
 async def _pipeline_versions(request: Request) -> dict[str, str]:

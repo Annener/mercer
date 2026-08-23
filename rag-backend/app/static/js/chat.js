@@ -72,7 +72,12 @@ function renderSourcesBlock(sources, answerText) {
     for (const s of sources) {
         const key = s.path;
         if (!fileMap.has(key)) {
-            fileMap.set(key, { path: s.path, vault_id: s.vault_id, pages: [] });
+            fileMap.set(key, {
+                path: s.path,
+                vault_id: s.vault_id,
+                pages: [],
+                source_kind: s.source_kind || 'chunk',
+            });
         }
         if (s.page != null) {
             fileMap.get(key).pages.push(s.page);
@@ -85,9 +90,12 @@ function renderSourcesBlock(sources, answerText) {
     const rows = items.map((item, i) => {
         const fileName = item.path.split('/').pop();
         const pagesLabel = item.pages.length > 0 ? `стр. ${item.pages.sort((a, b) => a - b).join(', ')}` : '';
+        const kindBadge = item.source_kind === 'full_document'
+            ? `<span class="src-kind src-kind--full">📄 полный документ</span>`
+            : '';
         const numBadge = `<span class="src-num">${i + 1}</span>`;
         const pageSpan = pagesLabel ? `<span class="src-page">${escapeHtml(pagesLabel)}</span>` : '';
-        return `<div class="src-item" title="${escapeHtml(item.path)}">${numBadge}<span class="src-name">${escapeHtml(fileName)}</span>${pageSpan}</div>`;
+        return `<div class="src-item" title="${escapeHtml(item.path)}">${numBadge}<span class="src-name">${escapeHtml(fileName)}</span>${pageSpan}${kindBadge}</div>`;
     }).join('');
     return `<div class="sources-block"><div class="sources-label">Источники</div><div class="sources-list">${rows}</div></div>`;
 }
@@ -107,7 +115,13 @@ function renderGroupedSources(stepGroups, answerText) {
             if (!seen.has(key)) {
                 const num = allItems.length + 1;
                 seen.set(key, num);
-                allItems.push({ path: src.path, page: src.page, vault_id: src.vault_id, num });
+                allItems.push({
+                    path: src.path,
+                    page: src.page,
+                    vault_id: src.vault_id,
+                    source_kind: src.source_kind || 'chunk',
+                    num,
+                });
             }
         }
     }
@@ -118,9 +132,12 @@ function renderGroupedSources(stepGroups, answerText) {
     const rows = items.map(item => {
         const fileName = (item.path || '').split('/').pop() || item.path;
         const pagesLabel = item.page != null ? `стр. ${item.page}` : '';
+        const kindBadge = item.source_kind === 'full_document'
+            ? `<span class="src-kind src-kind--full">📄 полный документ</span>`
+            : '';
         const numBadge = `<span class="src-num">${item.num}</span>`;
         const pageSpan = pagesLabel ? `<span class="src-page">${escapeHtml(pagesLabel)}</span>` : '';
-        return `<div class="src-item" title="${escapeHtml(item.path || '')}">${numBadge}<span class="src-name">${escapeHtml(fileName)}</span>${pageSpan}</div>`;
+        return `<div class="src-item" title="${escapeHtml(item.path || '')}">${numBadge}<span class="src-name">${escapeHtml(fileName)}</span>${pageSpan}${kindBadge}</div>`;
     }).join('');
     return `<div class="sources-block"><div class="sources-label">Источники</div><div class="sources-list">${rows}</div></div>`;
 }
@@ -663,7 +680,12 @@ class ChatManager {
             this.welcomeMessage.style.display = 'none';
             this.clearMessages();
             for (const message of data.messages) {
-                this.addMessage(message.role, message.content);
+                const el = this.addMessage(message.role, message.content);
+                // Если у сообщения есть sources из Message.sources — рендерим блок.
+                if (el && message.role === 'assistant' && Array.isArray(message.sources) && message.sources.length > 0) {
+                    const sourcesHtml = renderSourcesBlock(message.sources, message.content || '');
+                    if (sourcesHtml) el.insertAdjacentHTML('beforeend', sourcesHtml);
+                }
             }
             await this.setupContextBar(data.chat);
             // BUG-11 fix: restore active update-mode panel after messages are rendered
