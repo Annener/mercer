@@ -5,7 +5,19 @@ import logging
 from collections.abc import AsyncIterator
 import httpx
 from app.config import GenerationModelConfig
-from app.providers.generation.base import GenerationProvider, GenerationProviderUnavailableError
+from app.providers.generation.base import (
+    GenerationProvider,
+    GenerationProviderUnavailableError,
+    LLMFullResponse,
+    LLMStreamChunk,
+    ToolCallDelta,
+)
+from shared_contracts.models import (
+    LLMToolCall,
+    LLMToolChoice,
+    LLMToolDefinition,
+    LLMToolCallFunction,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -156,6 +168,108 @@ class OpenAICompatibleProvider(GenerationProvider):
             return fallback
         raise GenerationProviderUnavailableError("JSON generation provider is unavailable.") from last_error
 
+    async def generate_stream_with_tools(
+        self,
+        messages: list[dict[str, str]],
+        tools: list[LLMToolDefinition],
+        tool_choice: LLMToolChoice | None = None,
+    ) -> AsyncIterator[LLMStreamChunk]:
+        """Stream a chat completion with optional tool-calling support.
+
+        Yields `LLMStreamChunk` instances. The host accumulates tool_call deltas
+        by their `index` to build complete `LLMToolCall` objects once the
+        stream finishes. Models that ignore `tools` produce only content chunks.
+        """
+        last_error: Exception | None = None
+        for attempt in range(self.max_retries):
+            try:
+                async with httpx.AsyncClient(timeout=self.timeout) as client:
+                    async with client.stream(
+                        "POST",
+                        f"{self.config.base_url.rstrip('/')}/chat/completions",
+                        headers=self._headers(),
+                        json=_build_chat_payload(
+                            self.config.model_id,
+                            messages,
+                            stream=True,
+                            tools=tools or None,
+                            tool_choice=tool_choice,
+                        ),
+                    ) as response:
+                        response.raise_for_status()
+                        async for line in response.aiter_lines():
+                            chunk = _parse_stream_line_with_tools(line)
+                            if chunk.content_delta or chunk.tool_call_delta or chunk.finish_reason:
+                                yield chunk
+                        return
+            except StreamProviderError as exc:
+                last_error = exc
+                logger.warning("Stream provider error on attempt %s: %s", attempt + 1, exc)
+            except (httpx.ConnectError, httpx.ConnectTimeout, httpx.NetworkError) as exc:
+                last_error = exc
+                logger.warning("Generation provider unavailable on attempt %s: %s", attempt + 1, exc)
+            except (httpx.TimeoutException, httpx.HTTPStatusError, httpx.RequestError) as exc:
+                last_error = exc
+                if isinstance(exc, httpx.HTTPStatusError):
+                    logger.warning(
+                        "Generation request failed on attempt %s: HTTP %s %s — body: %s",
+                        attempt + 1, exc.response.status_code, exc.request.url, exc.response.text[:500],
+                    )
+                else:
+                    logger.warning(
+                        "Generation request failed on attempt %s: %s %r",
+                        attempt + 1, type(exc).__name__, str(exc) or "(no message)",
+                    )
+            if attempt < self.max_retries - 1:
+                await asyncio.sleep(2**attempt)
+
+        raise GenerationProviderUnavailableError("Generation provider is unavailable.") from last_error
+
+    async def generate_with_tools(
+        self,
+        messages: list[dict[str, str]],
+        tools: list[LLMToolDefinition],
+        tool_choice: LLMToolChoice | None = None,
+    ) -> LLMFullResponse:
+        """Non-streaming chat completion with tool-calling support."""
+        last_error: Exception | None = None
+        for attempt in range(self.max_retries):
+            try:
+                async with httpx.AsyncClient(
+                    timeout=self.timeout, headers=self._headers()
+                ) as client:
+                    response = await client.post(
+                        f"{self.config.base_url.rstrip('/')}/chat/completions",
+                        json=_build_chat_payload(
+                            self.config.model_id,
+                            messages,
+                            stream=False,
+                            tools=tools or None,
+                            tool_choice=tool_choice,
+                        ),
+                    )
+                    response.raise_for_status()
+                    return _parse_completion_response_full(response.json())
+            except (httpx.ConnectError, httpx.ConnectTimeout, httpx.NetworkError) as exc:
+                last_error = exc
+                logger.warning("Generation provider unavailable on attempt %s: %s", attempt + 1, exc)
+            except (httpx.TimeoutException, httpx.HTTPStatusError, httpx.RequestError, ValueError) as exc:
+                last_error = exc
+                if isinstance(exc, httpx.HTTPStatusError):
+                    logger.warning(
+                        "Generation request failed on attempt %s: HTTP %s %s — body: %s",
+                        attempt + 1, exc.response.status_code, exc.request.url, exc.response.text[:500],
+                    )
+                else:
+                    logger.warning(
+                        "Generation request failed on attempt %s: %s %r",
+                        attempt + 1, type(exc).__name__, str(exc) or "(no message)",
+                    )
+            if attempt < self.max_retries - 1:
+                await asyncio.sleep(2**attempt)
+
+        raise GenerationProviderUnavailableError("Generation provider is unavailable.") from last_error
+
     def _headers(self) -> dict[str, str]:
         headers = {
             "Content-Type": "application/json",
@@ -179,6 +293,8 @@ def _build_chat_payload(
     *,
     stream: bool,
     temperature: float | None = None,
+    tools: list[LLMToolDefinition] | None = None,
+    tool_choice: LLMToolChoice | None = None,
 ) -> dict:
     payload: dict = {
         "model": model_id,
@@ -187,28 +303,47 @@ def _build_chat_payload(
     }
     if temperature is not None:
         payload["temperature"] = temperature
+    if tools:
+        payload["tools"] = [t.model_dump() for t in tools]
+    if tool_choice is not None:
+        payload["tool_choice"] = tool_choice.to_openai()
     return payload
 
 
 def _parse_stream_line(line: str) -> str:
+    """Legacy text-only parser used by `generate_stream`.
+
+    Kept for backward compatibility. New tool-aware code must use
+    `_parse_stream_line_with_tools`, which returns `LLMStreamChunk`.
+    """
+    chunk = _parse_stream_line_with_tools(line)
+    return chunk.content_delta
+
+
+def _parse_stream_line_with_tools(line: str) -> LLMStreamChunk:
+    """Parse a single SSE `data: ...` line from the OpenAI chat completions API.
+
+    Returns an `LLMStreamChunk` with either `content_delta` (text) or
+    `tool_call_delta` (one piece of a tool call) populated. The caller is
+    responsible for accumulating tool_call deltas by `index` into full
+    `LLMToolCall` objects.
+    """
     if not line.startswith("data: "):
-        return ""
+        return LLMStreamChunk()
     payload = line.removeprefix("data: ").strip()
     if not payload or payload == "[DONE]":
-        return ""
+        return LLMStreamChunk()
     try:
         data = json.loads(payload)
     except json.JSONDecodeError:
-        return ""
+        return LLMStreamChunk()
 
     choices = data.get("choices")
     if not isinstance(choices, list) or not choices:
-        return ""
+        return LLMStreamChunk()
 
     choice = choices[0]
 
-    # OpenRouter при ошибке провайдера возвращает чанк с finish_reason="error"
-    # вместо HTTP-ошибки. Нужно явно пробросить исключение, чтобы ретрай отработал.
     finish_reason = choice.get("finish_reason")
     if finish_reason == "error":
         error_info = data.get("error") or choice.get("error") or {}
@@ -221,19 +356,76 @@ def _parse_stream_line(line: str) -> str:
 
     delta = choice.get("delta")
     if not isinstance(delta, dict):
-        return ""
+        return LLMStreamChunk(finish_reason=finish_reason)
+
+    tool_call_deltas_raw = delta.get("tool_calls")
+    if isinstance(tool_call_deltas_raw, list) and tool_call_deltas_raw:
+        first = tool_call_deltas_raw[0]
+        if isinstance(first, dict):
+            function = first.get("function") or {}
+            tool_delta = ToolCallDelta(
+                index=int(first.get("index", 0)),
+                id=first.get("id") if isinstance(first.get("id"), str) else None,
+                type=first.get("type") if isinstance(first.get("type"), str) else None,
+                function_name=function.get("name") if isinstance(function.get("name"), str) else None,
+                function_arguments_delta=(
+                    function.get("arguments", "")
+                    if isinstance(function.get("arguments"), str)
+                    else ""
+                ),
+            )
+            return LLMStreamChunk(tool_call_delta=tool_delta, finish_reason=finish_reason)
+
     content = delta.get("content")
-    return content if isinstance(content, str) else ""
+    if isinstance(content, str):
+        return LLMStreamChunk(content_delta=content, finish_reason=finish_reason)
+    return LLMStreamChunk(finish_reason=finish_reason)
 
 
 def _parse_completion_response(payload: dict) -> str:
+    """Legacy text-only parser used by `generate` and `generate_json`."""
+    result = _parse_completion_response_full(payload)
+    return result.content
+
+
+def _parse_completion_response_full(payload: dict) -> LLMFullResponse:
+    """Parse the OpenAI chat completions response into content + tool_calls.
+
+    Empty/missing `content` becomes `""` (the model may emit only tool_calls).
+    Missing `tool_calls` becomes `[]`.
+    """
     choices = payload.get("choices")
     if not isinstance(choices, list) or not choices:
         raise ValueError("Generation response has no choices.")
-    message = choices[0].get("message")
+    choice = choices[0]
+    message = choice.get("message")
     if not isinstance(message, dict):
         raise ValueError("Generation response choice has no message.")
-    content = message.get("content")
-    if not isinstance(content, str):
-        raise ValueError("Generation response message has no content.")
-    return content.strip()
+    content_raw = message.get("content")
+    content = content_raw.strip() if isinstance(content_raw, str) else ""
+
+    tool_calls: list[LLMToolCall] = []
+    raw_calls = message.get("tool_calls")
+    if isinstance(raw_calls, list):
+        for idx, raw in enumerate(raw_calls):
+            if not isinstance(raw, dict):
+                continue
+            function = raw.get("function") or {}
+            arguments = function.get("arguments", "")
+            tool_calls.append(
+                LLMToolCall(
+                    id=str(raw.get("id") or ""),
+                    type="function",
+                    index=idx,
+                    function=LLMToolCallFunction(
+                        name=str(function.get("name") or ""),
+                        arguments=arguments if isinstance(arguments, str) else "",
+                    ),
+                )
+            )
+
+    return LLMFullResponse(
+        content=content,
+        tool_calls=tool_calls,
+        finish_reason=choice.get("finish_reason"),
+    )

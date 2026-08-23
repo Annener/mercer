@@ -788,6 +788,28 @@ class EffectiveContextRead(BaseModel):
     state_version: int | None = None
 
 
+class CampaignStateStaleStatus(BaseModel):
+    """Текущий stale-статус Campaign State (Stage 7).
+
+    Вычисляется на лету из Redis vault-cache + Document.md5.
+    Не персистится в БД (кроме AuditLog на переходе false→true).
+
+    Поля:
+      - potentially_stale: true если хотя бы один .md source_ref активной
+        версии state указывает на файл с изменённым md5 или ожидающим
+        reindex (index_status ∈ {pending, stale, deleted}) или
+        Document.status != indexed.
+      - stale_documents: document_id в порядке обнаружения.
+      - active_state_version: state_version, для которой считали; null если
+        state ещё не применён.
+      - checked_at: момент проверки (UTC).
+    """
+    potentially_stale: bool
+    stale_documents: list[str] = Field(default_factory=list)
+    active_state_version: int | None = None
+    checked_at: datetime
+
+
 # ---------------------------------------------------------------------------
 # Pipeline contracts — DAG-based execution model
 # ---------------------------------------------------------------------------
@@ -942,6 +964,121 @@ class ChatMessage(BaseModel):
     content: str
     created_at: datetime
     pipeline_id: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# LLM tool-call contracts (Stage 8: conditional/cyclic RAG)
+# ---------------------------------------------------------------------------
+
+
+class LLMToolCallFunction(BaseModel):
+    """Function payload of a single OpenAI-style tool call."""
+
+    name: str
+    arguments: str  # raw JSON string from the model; parsed by the host
+
+
+class LLMToolCall(BaseModel):
+    """One tool call from the LLM response.
+
+    `id` correlates the tool call with the `role=tool` message that returns its result.
+    `index` is used during streaming: deltas with the same index refer to the same
+    tool call (OpenAI streams them in pieces — name, then arguments by character).
+    """
+
+    id: str
+    type: Literal["function"] = "function"
+    function: LLMToolCallFunction
+    index: int = 0
+
+
+class LLMToolDefinitionFunction(BaseModel):
+    name: str
+    description: str
+    parameters: dict[str, Any]
+
+
+class LLMToolDefinition(BaseModel):
+    """OpenAI-style tool definition (function-calling schema)."""
+
+    type: Literal["function"] = "function"
+    function: LLMToolDefinitionFunction
+
+
+class LLMToolChoice(BaseModel):
+    """OpenAI tool_choice payload: 'auto' | 'none' | required | specific function."""
+
+    mode: Literal["auto", "none", "required"] = "auto"
+    function_name: str | None = None
+
+    def to_openai(self) -> str | dict[str, Any]:
+        if self.mode in ("auto", "none", "required"):
+            return self.mode
+        if self.function_name:
+            return {"type": "function", "function": {"name": self.function_name}}
+        return "auto"
+
+
+class LLMAssistantMessage(BaseModel):
+    """Internal message that the agent loop builds after each LLM response.
+
+    `tool_calls` is non-empty when the LLM requested tool invocations.
+    `content` may be empty in that case (model emitted only tool_calls).
+    """
+
+    role: Literal["assistant"] = "assistant"
+    content: str = ""
+    tool_calls: list[LLMToolCall] = Field(default_factory=list)
+
+
+class LLMToolMessage(BaseModel):
+    """Tool-role message that the host appends after executing a tool call.
+
+    Multiple tool calls from one assistant message each get their own
+    `role=tool` message with the matching `tool_call_id`.
+    """
+
+    role: Literal["tool"] = "tool"
+    tool_call_id: str
+    content: str
+
+
+class RetrievalPolicy(str, Enum):
+    ASSISTIVE = "assistive"
+    GROUNDED = "grounded"
+
+
+class AgentRoundResult(BaseModel):
+    """Snapshot of one round in the agent loop, for streaming and audit."""
+
+    round: int
+    queries: list[str] = Field(default_factory=list)
+    tool_name: str | None = None
+    reason: str | None = None
+    hits_count: int = 0
+    evidence_tokens: int = 0
+    scope: Literal["campaign", "domain", "empty", "no_vault"] = "domain"
+    skipped_reason: str | None = None
+
+
+class SearchKnowledgeRequest(BaseModel):
+    queries: list[str] = Field(min_length=1)
+    reason: str = ""
+
+
+class SearchKnowledgeResult(BaseModel):
+    queries_used: list[str] = Field(default_factory=list)
+    hits: list["SearchHit"] = Field(default_factory=list)
+    scope: Literal["campaign", "domain", "empty", "no_vault"] = "domain"
+    evidence_tokens: int = 0
+    note: str | None = None
+
+
+class AgentLoopResult(BaseModel):
+    content: str
+    rounds: list[AgentRoundResult] = Field(default_factory=list)
+    tool_calls_made: int = 0
+    policy: RetrievalPolicy = RetrievalPolicy.ASSISTIVE
 
 
 class ChatRecord(ORMModel):
