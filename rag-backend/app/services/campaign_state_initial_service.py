@@ -5,18 +5,23 @@
   2. Параллельный fetch полных текстов через reconstruct_full_text.
   3. Построение source_snapshot (document_id + md5 + meta).
   4. System prompt из конфигурации полей кампании (key/label/description/mode/order).
+     При propose_fields=True — дополнительная секция про suggested_fields.
   5. User message с <document id=... sha=...>...</document> секциями.
-  6. _call_provider_with_repair (1 attempt + 1 repair) → CampaignStateInitialProposal.
-  7. Нормализация source_refs (только doc_id из snapshot).
+  6. _call_provider_with_repair (1 attempt + 1 repair) → dict.
+  7. Нормализация: _normalize_proposal_v2 (фильтрация unknown/disabled,
+     source_refs, suggested_fields dedup и cap).
   8. Сохранение в Redis (TTL 3h).
-  9. Возврат CampaignStateInitialProposalRead.
+  9. Возврат CampaignStateInitialProposalReadV2.
 
 Пайплайн apply:
   1. Загрузить proposal из Redis.
-  2. Проверить expires_at, config_version.
-  3. Делегировать в CampaignStateValueService.apply_initial (там же snapshot freshness).
-  4. Удалить Redis-ключ.
-  5. Вернуть CampaignStateVersionRead.
+  2. Проверить expires_at, config_version (последний — если есть suggested_fields).
+  3. Создать принятые suggested_fields через CampaignStateFieldService.
+  4. Унифицировать proposal (existing + suggested → V1 формат для apply_initial).
+  5. Мерджим client-side overrides.
+  6. Делегировать в CampaignStateValueService.apply_initial.
+  7. Удалить Redis-ключ.
+  8. Audit log.
 """
 from __future__ import annotations
 
@@ -28,15 +33,20 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import func, insert, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Campaign, CampaignStateFieldConfig, Document
 from app.services.campaign_state_initial_store import (
     campaign_state_initial_store,
 )
+from app.services.campaign_state_service import (
+    CampaignStateFieldError,
+    campaign_state_field_service,
+)
 from app.services.campaign_state_value_service import (
     CampaignStateValueError,
+    ConfigVersionConflictError,
     campaign_state_value_service,
 )
 from app.services.full_document_service import (
@@ -45,9 +55,14 @@ from app.services.full_document_service import (
 )
 from app.services.settings_service import settings_service
 from shared_contracts.models import (
-    CampaignStateInitialApplyRequest,
+    CampaignStateFieldConfigCreate,
+    CampaignStateInitialApplyRequestV2,
+    CampaignStateInitialListValue,
     CampaignStateInitialProposal,
-    CampaignStateInitialProposalRead,
+    CampaignStateInitialProposalReadV2,
+    CampaignStateInitialProposalV2,
+    CampaignStateInitialSingleValue,
+    CampaignStateSuggestedFieldConfig,
     DocumentSnapshot,
 )
 
@@ -110,6 +125,34 @@ class ProposalNotFoundError(CampaignStateInitialError):
 
 class ProposalExpiredError(CampaignStateInitialError):
     code, http_status = "proposal_expired", 410
+
+
+class NoFieldsConfiguredNoProposeError(CampaignStateInitialError):
+    """0 enabled-полей И клиент не запросил propose_fields.
+
+    Показываем пользователю подсказку: либо включить propose_fields=true,
+    либо сначала создать поля вручную.
+    """
+
+    code, http_status = "no_fields_configured_no_propose", 422
+
+
+class SuggestedFieldInvalidKeyError(CampaignStateInitialError):
+    """LLM вернул suggested_field с невалидным key (regex или коллизия)."""
+
+    code, http_status = "suggested_field_invalid_key", 422
+
+
+class SuggestedFieldKeyConflictError(CampaignStateInitialError):
+    """Apply: клиент прислал accepted_key, совпадающий с уже существующим полем."""
+
+    code, http_status = "suggested_field_key_conflict", 409
+
+
+class SuggestedFieldCreationError(CampaignStateInitialError):
+    """Базовый класс для ошибок создания suggested_field во время apply."""
+
+    code, http_status = "suggested_field_creation_failed", 409
 
 
 # ---------------------------------------------------------------------------
@@ -203,8 +246,18 @@ def _apply_total_budget(
     return out
 
 
-def _build_system_prompt(fields: list[CampaignStateFieldConfig]) -> str:
-    """Системный промпт для LLM, описывающий конфигурацию полей кампании."""
+def _build_system_prompt(
+    fields: list[CampaignStateFieldConfig],
+    *,
+    propose_fields: bool = False,
+    max_suggested_fields: int = 15,
+) -> str:
+    """Системный промпт для LLM, описывающий конфигурацию полей кампании.
+
+    При propose_fields=True в конец добавляется блок инструкций для
+    suggested_fields[]: LLM может предложить новые поля, отсутствующие
+    в FIELD CONFIGURATION (но не дублирующие существующие).
+    """
     lines: list[str] = [
         "You are a campaign-state initializer.",
         "",
@@ -246,6 +299,36 @@ def _build_system_prompt(fields: list[CampaignStateFieldConfig]) -> str:
             "- If the documents contradict each other, mark the field as 'needs_clarification'",
             "  and provide a precise clarification_question.",
             "- Use the language of the documents for all user-facing strings.",
+        ]
+    )
+
+    if propose_fields:
+        lines.extend(
+            [
+                "",
+                "SUGGESTED FIELDS:",
+                "If the existing FIELD CONFIGURATION does not cover important aspects of the",
+                "campaign, you MAY propose additional fields in `suggested_fields[]`.",
+                "Each suggested field is a NEW field key (not present in FIELD CONFIGURATION).",
+                "",
+                "For each suggested_field:",
+                "- key: stable snake_case identifier, ^[a-z][a-z0-9_]{0,63}$, MUST NOT",
+                "  duplicate any key from FIELD CONFIGURATION above.",
+                "- label: 1..256 chars, human-readable.",
+                "- description: ≤8KB short hint for future LLM (can be empty).",
+                "- mode: \"single\" or \"list\".",
+                "- initial_status: same status semantics as for `fields` above.",
+                "- single_value / list_value: same rules as for `fields` (mode must match).",
+                "- clarification_question: required if initial_status='needs_clarification'.",
+                "",
+                f"Soft cap: max_suggested_fields={max_suggested_fields}. Prefer 3..10 high-quality",
+                "fields rather than many shallow ones. Each field must be clearly supported by",
+                "the supplied documents.",
+            ]
+        )
+
+    lines.extend(
+        [
             "",
             "OUTPUT SCHEMA (return JSON only, no prose, no markdown fences):",
             "{",
@@ -258,9 +341,32 @@ def _build_system_prompt(fields: list[CampaignStateFieldConfig]) -> str:
             '        "clarification_question": "... (required only if needs_clarification)"',
             "      },",
             '      "single_value": { "text": "...", "source_refs": ["file:..:sha:.."] },  // mode=single + status=proposed',
-            '      "list_value":   { "items": [ { "text": "...", "source_refs": ["..."] } ] }  // mode=list + status=proposed',
+            '      "list_value":   { "items": [ { "text": "...", "source_refs": ["..."} ] ] }  // mode=list + status=proposed',
             "    }",
             "  ],",
+        ]
+    )
+    if propose_fields:
+        lines.extend(
+            [
+                '  "suggested_fields": [',
+                "    {",
+                '      "key": "...",',
+                '      "label": "...",',
+                '      "description": "...",',
+                '      "mode": "single" | "list",',
+                '      "initial_status": {',
+                '        "status": "proposed" | "empty" | "needs_clarification",',
+                '        "clarification_question": "... (required only if needs_clarification)"',
+                "      },",
+                '      "single_value": { "text": "...", "source_refs": [...] },  // mode=single + initial_status=proposed',
+                '      "list_value":   { "items": [...] }                            // mode=list + initial_status=proposed',
+                "    }",
+                "  ],",
+            ]
+        )
+    lines.extend(
+        [
             '  "questions": ["...optional general questions..."]',
             "}",
         ]
@@ -322,16 +428,18 @@ def _normalize_source_refs(
     return normalized
 
 
-def _normalize_proposal(
-    raw: dict[str, Any],
+def _normalize_existing_fields(
+    raw_fields: list[Any],
     fields_by_key: dict[str, CampaignStateFieldConfig],
     snapshot_doc_ids: set[str],
     warnings: list[str],
-) -> CampaignStateInitialProposal:
-    """Привести сырой dict от LLM к Pydantic + отфильтровать неизвестные/disabled поля."""
-    raw_fields = raw.get("fields") or []
-    kept: list[dict[str, Any]] = []
+) -> list[dict[str, Any]]:
+    """Внутренний helper для _normalize_proposal_v2: фильтрация existing полей.
 
+    Возвращает список dict'ов, готовых к Pydantic-валидации как
+    CampaignStateInitialProposalField.
+    """
+    kept: list[dict[str, Any]] = []
     for rf in raw_fields:
         if not isinstance(rf, dict):
             warnings.append("invalid_field_entry:non_dict")
@@ -410,6 +518,24 @@ def _normalize_proposal(
                 entry["list_value"] = {"items": normalized_items}
 
         kept.append(entry)
+    return kept
+
+
+def _normalize_proposal(
+    raw: dict[str, Any],
+    fields_by_key: dict[str, CampaignStateFieldConfig],
+    snapshot_doc_ids: set[str],
+    warnings: list[str],
+) -> CampaignStateInitialProposal:
+    """Привести сырой dict от LLM к Pydantic + отфильтровать неизвестные/disabled поля.
+
+    V1-нормализация: только `fields` и `questions`, без suggested_fields.
+    Сохранена для обратной совместимости unit-тестов и однострочного применения.
+    """
+    raw_fields = raw.get("fields") or []
+    kept = _normalize_existing_fields(
+        raw_fields, fields_by_key, snapshot_doc_ids, warnings
+    )
 
     questions = raw.get("questions") or []
     if not isinstance(questions, list):
@@ -418,6 +544,178 @@ def _normalize_proposal(
 
     return CampaignStateInitialProposal.model_validate(
         {"fields": kept, "questions": questions_clean}
+    )
+
+
+def _normalize_suggested_field(
+    raw_sf: dict[str, Any],
+    snapshot_doc_ids: set[str],
+    warnings: list[str],
+    *,
+    seen_keys: set[str],
+    existing_keys: set[str],
+) -> CampaignStateSuggestedFieldConfig | None:
+    """Нормализовать одно LLM-предложение нового поля.
+
+    Возвращает None если поле отброшено (с добавленным warning).
+    """
+    if not isinstance(raw_sf, dict):
+        warnings.append("suggested_field_invalid:non_dict")
+        return None
+    key = raw_sf.get("key")
+    if not isinstance(key, str):
+        warnings.append(f"suggested_field_invalid:missing_key:{raw_sf!r}")
+        return None
+    if key in existing_keys:
+        warnings.append(f"suggested_field_duplicate_existing_key:{key}")
+        return None
+    if key in seen_keys:
+        warnings.append(f"suggested_field_duplicate_key:{key}")
+        return None
+
+    label = raw_sf.get("label")
+    if not isinstance(label, str) or not label.strip():
+        warnings.append(f"suggested_field_invalid:label:{key}")
+        return None
+
+    mode = raw_sf.get("mode")
+    if mode not in ("single", "list"):
+        warnings.append(f"suggested_field_invalid:mode:{key}")
+        return None
+
+    initial_status_obj = raw_sf.get("initial_status") or {}
+    initial_status = (
+        initial_status_obj.get("status")
+        if isinstance(initial_status_obj, dict)
+        else None
+    )
+    if initial_status not in ("proposed", "empty", "needs_clarification"):
+        warnings.append(f"suggested_field_invalid:initial_status:{key}")
+        return None
+
+    description = raw_sf.get("description") or ""
+    if not isinstance(description, str):
+        description = ""
+
+    cq = initial_status_obj.get("clarification_question")
+    clarification_question: str | None = None
+    if initial_status == "needs_clarification":
+        if not isinstance(cq, str) or not cq.strip():
+            warnings.append(
+                f"suggested_field_missing_clarification_question:{key}"
+            )
+            return None
+        clarification_question = cq
+
+    single_value: CampaignStateInitialSingleValue | None = None
+    list_value: CampaignStateInitialListValue | None = None
+
+    if initial_status == "proposed":
+        if mode == "single":
+            raw_sv = raw_sf.get("single_value") or {}
+            if not isinstance(raw_sv, dict) or not isinstance(raw_sv.get("text"), str):
+                warnings.append(f"suggested_field_missing_single_value:{key}")
+                return None
+            refs = _normalize_source_refs(
+                raw_sv.get("source_refs") or [],
+                snapshot_doc_ids,
+                warnings,
+                f"suggested:{key}",
+            )
+            single_value = CampaignStateInitialSingleValue(
+                text=raw_sv["text"], source_refs=refs
+            )
+        else:
+            raw_lv = raw_sf.get("list_value") or {}
+            items = raw_lv.get("items") or []
+            if not isinstance(items, list):
+                warnings.append(f"suggested_field_invalid_list_items:{key}")
+                return None
+            norm_items = []
+            for it in items:
+                if not isinstance(it, dict) or not isinstance(it.get("text"), str):
+                    warnings.append(f"suggested_field_invalid_list_item:{key}")
+                    continue
+                refs = _normalize_source_refs(
+                    it.get("source_refs") or [],
+                    snapshot_doc_ids,
+                    warnings,
+                    f"suggested:{key}",
+                )
+                norm_items.append(
+                    {"text": it["text"], "source_refs": refs}
+                )
+            list_value = CampaignStateInitialListValue(items=norm_items)
+
+    try:
+        return CampaignStateSuggestedFieldConfig(
+            key=key,
+            label=label,
+            description=description,
+            mode=mode,
+            initial_status=initial_status,
+            clarification_question=clarification_question,
+            single_value=single_value,
+            list_value=list_value,
+        )
+    except ValidationError as exc:
+        warnings.append(f"suggested_field_pydantic_invalid:{key}:{exc}")
+        return None
+
+
+def _normalize_proposal_v2(
+    raw: dict[str, Any],
+    fields_by_key: dict[str, CampaignStateFieldConfig],
+    snapshot_doc_ids: set[str],
+    warnings: list[str],
+    *,
+    propose_fields: bool,
+    max_suggested_fields: int,
+) -> CampaignStateInitialProposalV2:
+    """Нормализация для Stage 3.v2: фильтрация fields И suggested_fields.
+
+    При propose_fields=False — ведёт себя как _normalize_proposal плюс отбрасывает
+    любые suggested_fields с warning 'suggested_fields_ignored:propose_fields_false'.
+    """
+    raw_fields = raw.get("fields") or []
+    existing_kept = _normalize_existing_fields(
+        raw_fields, fields_by_key, snapshot_doc_ids, warnings
+    )
+
+    raw_suggested = raw.get("suggested_fields") or []
+    suggested_kept: list[CampaignStateSuggestedFieldConfig] = []
+
+    if raw_suggested and not propose_fields:
+        warnings.append("suggested_fields_ignored:propose_fields_false")
+    elif propose_fields and raw_suggested:
+        existing_keys = set(fields_by_key.keys())
+        seen_keys: set[str] = set()
+        for raw_sf in raw_suggested:
+            if len(suggested_kept) >= max_suggested_fields:
+                warnings.append(
+                    f"suggested_fields_limit_reached:{max_suggested_fields}"
+                )
+                break
+            sf = _normalize_suggested_field(
+                raw_sf,
+                snapshot_doc_ids,
+                warnings,
+                seen_keys=seen_keys,
+                existing_keys=existing_keys,
+            )
+            if sf is not None:
+                suggested_kept.append(sf)
+                seen_keys.add(sf.key)
+
+    questions = raw.get("questions") or []
+    if not isinstance(questions, list):
+        questions = []
+    questions_clean = [q for q in questions if isinstance(q, str)]
+
+    return CampaignStateInitialProposalV2(
+        fields=existing_kept,
+        suggested_fields=suggested_kept,
+        questions=questions_clean,
     )
 
 
@@ -510,18 +808,28 @@ class CampaignStateInitialService:
         campaign_id: uuid.UUID,
         document_ids: list[str],
         current_user: str | None = None,
-    ) -> CampaignStateInitialProposalRead:
-        """Сформировать LLM-proposal Initial State из выбранных Markdown."""
+        *,
+        propose_fields: bool = False,
+        max_suggested_fields: int = 15,
+    ) -> CampaignStateInitialProposalReadV2:
+        """Сформировать LLM-proposal Initial State из выбранных Markdown.
+
+        При propose_fields=True дополнительно разрешает работу при 0 enabled-полей
+        кампании и просит LLM предложить suggested_fields[].
+
+        Backward-compat: propose_fields=False (по умолчанию) — поведение v1.
+        Любые suggested_fields[] от LLM при propose_fields=False будут отброшены
+        с warning 'suggested_fields_ignored:propose_fields_false'.
+        """
         await self.assert_campaign_exists(db, campaign_id)
         fields = await self._load_fields(db, campaign_id)
-        if not fields:
-            raise NoMarkdownDocumentsError(
-                "campaign has no configured state fields"
-            )
         enabled_fields = [f for f in fields if f.enabled]
-        if not enabled_fields:
-            raise NoMarkdownDocumentsError(
-                "campaign has no enabled state fields"
+
+        # Если нет ни одного enabled-поля И клиент не просил propose_fields —
+        # возвращаем 422 с подсказкой.
+        if not enabled_fields and not propose_fields:
+            raise NoFieldsConfiguredNoProposeError(
+                "campaign has no enabled state fields and propose_fields=false"
             )
 
         # Разрешить UUID-ы документов.
@@ -608,23 +916,29 @@ class CampaignStateInitialService:
         if provider is None:
             raise GenerationProviderUnavailableError("no active provider configured")
 
-        system_prompt = _build_system_prompt(enabled_fields)
+        system_prompt = _build_system_prompt(
+            enabled_fields,
+            propose_fields=propose_fields,
+            max_suggested_fields=max_suggested_fields,
+        )
         user_message = _build_user_message(snapshots, docs_text)
 
         # Первый проход: получаем сырой dict, нормализуем (фильтрация по enabled,
-        # source_refs), затем валидируем Pydantic.
+        # source_refs, suggested_fields dedup+cap), затем валидируем Pydantic.
         snapshot_doc_ids = {s.document_id for s in snapshots}
 
         raw = await _call_provider_with_repair_raw(provider, system_prompt, user_message)
-        proposal = _normalize_proposal(
+        proposal = _normalize_proposal_v2(
             raw,
             {f.key: f for f in enabled_fields},
             snapshot_doc_ids,
             warnings,
+            propose_fields=propose_fields,
+            max_suggested_fields=max_suggested_fields,
         )
 
         now = datetime.now(timezone.utc)
-        payload = CampaignStateInitialProposalRead(
+        payload = CampaignStateInitialProposalReadV2(
             proposal_id=str(uuid.uuid4()),
             campaign_id=str(campaign_id),
             config_version=(await db.get(Campaign, campaign_id)).config_version,
@@ -636,8 +950,10 @@ class CampaignStateInitialService:
         )
         await campaign_state_initial_store.create(redis, payload)
         logger.info(
-            "campaign_state_initial.start_preview: campaign=%s sources=%d fields=%d warnings=%d",
-            campaign_id, len(snapshots), len(proposal.fields), len(warnings),
+            "campaign_state_initial.start_preview: campaign=%s sources=%d "
+            "propose_fields=%s fields=%d suggested=%d warnings=%d",
+            campaign_id, len(snapshots), propose_fields,
+            len(proposal.fields), len(proposal.suggested_fields), len(warnings),
         )
         return payload
 
@@ -645,7 +961,7 @@ class CampaignStateInitialService:
         self,
         redis: Any,
         campaign_id: uuid.UUID,
-    ) -> CampaignStateInitialProposalRead | None:
+    ) -> CampaignStateInitialProposalReadV2 | None:
         """Вернуть текущий proposal или None (если нет/истёк)."""
         return await campaign_state_initial_store.get(redis, str(campaign_id))
 
@@ -654,10 +970,16 @@ class CampaignStateInitialService:
         db: AsyncSession,
         redis: Any,
         campaign_id: uuid.UUID,
-        request: CampaignStateInitialApplyRequest,
+        request: CampaignStateInitialApplyRequestV2,
         current_user: str | None = None,
     ) -> Any:
-        """Применить proposal как первую state version кампании."""
+        """Применить proposal как первую state version кампании.
+
+        V2: дополнительно создаёт принятые suggested_fields (если есть) перед
+        вызовом apply_initial. Каждое создание поля — отдельная транзакция
+        (commit внутри create_field). После всех созданий читаем свежую
+        config_version у Campaign и передаём её в apply_initial.
+        """
         await self.assert_campaign_exists(db, campaign_id)
 
         payload = await campaign_state_initial_store.get(redis, str(campaign_id))
@@ -677,27 +999,155 @@ class CampaignStateInitialService:
                 f"proposal expired at {payload.expires_at.isoformat()}"
             )
 
-        # Мерджим client-side overrides поверх proposal из Redis (по field_key).
-        # source_snapshot не затрагивается — снапшот md5 проверяется дальше.
+        suggested_total = len(payload.proposal.suggested_fields)
+        accepted_keys: set[str] = set(request.accepted_suggested_field_keys)
+        rejected_keys: set[str] = set(request.rejected_suggested_field_keys)
+        accepted_sf: list[CampaignStateSuggestedFieldConfig] = []
+        ambiguous_keys: list[str] = []
+
+        if payload.proposal.suggested_fields:
+            # Если есть suggested_fields, проверяем config_version сразу —
+            # иначе создание полей без согласованного version бессмысленно.
+            if payload.config_version != request.config_version:
+                raise ConfigVersionConflictError(
+                    f"config_version mismatch: client={request.config_version}, "
+                    f"stored={payload.config_version}"
+                ) from None
+
+            for sf in payload.proposal.suggested_fields:
+                if sf.key in accepted_keys and sf.key in rejected_keys:
+                    ambiguous_keys.append(sf.key)
+                    continue
+                if sf.key in rejected_keys:
+                    continue
+                if sf.key in accepted_keys:
+                    accepted_sf.append(sf)
+
+            if ambiguous_keys:
+                logger.warning(
+                    "apply_initial: %d suggested keys are both accepted and rejected, "
+                    "treated as rejected: %s",
+                    len(ambiguous_keys), sorted(ambiguous_keys),
+                )
+
+        # ---- 1. Создаём принятые suggested_fields перед apply_initial ----
+        new_fields_by_key: dict[str, CampaignStateFieldConfig] = {}
+        if accepted_sf:
+            existing_keys = await _load_existing_field_keys(db, campaign_id)
+            for sf in accepted_sf:
+                if sf.key in existing_keys:
+                    raise SuggestedFieldKeyConflictError(
+                        f"field with key {sf.key!r} already exists for this campaign"
+                    )
+                try:
+                    created_read = await campaign_state_field_service.create_field(
+                        db=db,
+                        campaign_id=campaign_id,
+                        payload=CampaignStateFieldConfigCreate(
+                            key=sf.key,
+                            label=sf.label,
+                            description=sf.description,
+                            mode=sf.mode,
+                            enabled=True,
+                            display_order=_next_display_order(
+                                [f.display_order for f in new_fields_by_key.values()],
+                                start=await _current_max_display_order(
+                                    db, campaign_id
+                                ),
+                            ),
+                        ),
+                    )
+                except CampaignStateFieldError as exc:
+                    # Если кто-то создал поле параллельно между нашими
+                    # проверками или ключ не прошёл regex (regex есть на
+                    # _normalize_suggested_field, но на стороне сервиса он
+                    # тоже есть — двойная защита).
+                    raise SuggestedFieldCreationError(
+                        f"failed to create suggested field {sf.key!r}: {exc}"
+                    ) from exc
+
+                created_row = await db.get(CampaignStateFieldConfig, created_read.id)
+                if created_row is None:
+                    raise SuggestedFieldCreationError(
+                        f"failed to load created field {sf.key!r}"
+                    )
+                new_fields_by_key[sf.key] = created_row
+
+            # Читаем свежую config_version (после всех инкрементов).
+            campaign = await db.get(Campaign, campaign_id)
+            if campaign is None:
+                raise CampaignNotFoundError(str(campaign_id))
+            current_config_version = campaign.config_version
+        else:
+            current_config_version = request.config_version
+
+        # ---- 2. Унифицируем V2 proposal → V1 (для apply_initial) ----
+        unified_proposal = _unify_proposal_for_apply(
+            payload.proposal,
+            new_fields_by_key,
+            accepted_sf,
+        )
+
+        # ---- 3. Мерджим client-side overrides ----
         effective_proposal = _merge_proposal_overrides(
-            base=payload.proposal,
+            base=unified_proposal,
             overrides=request.proposal_overrides,
         )
 
-        # Делегируем в value-сервис. Он сам бросит ConfigVersionConflictError,
-        # InitialAlreadyAppliedError или SourceSnapshotStaleError.
+        # ---- 4. Делегируем в value-сервис ----
         try:
             version_read = await campaign_state_value_service.apply_initial(
                 db=db,
                 campaign_id=campaign_id,
                 proposal=effective_proposal,
                 source_snapshot=payload.source_snapshot,
-                config_version=request.config_version,
+                config_version=current_config_version,
                 created_by=current_user,
             )
         except CampaignStateValueError:
             # Не удаляем Redis-ключ: пользователь может исправить и повторить.
+            # При этом уже созданные поля остаются в БД — это намеренно
+            # (предложенные ИИ поля видимы пользователю через /state-fields).
             raise
+
+        # ---- 5. Audit log (если были suggested) ----
+        if suggested_total:
+            try:
+                from app.db.models import AuditLog
+
+                total_after = await _load_enabled_fields_count(db, campaign_id)
+                existing_after = max(0, total_after - len(new_fields_by_key))
+                await db.execute(
+                    insert(AuditLog).values(
+                        id=str(uuid.uuid4()),
+                        action="campaign_state_initial_propose_fields_applied",
+                        entity_type="campaign",
+                        entity_id=str(campaign_id),
+                        actor=current_user,
+                        payload={
+                            "existing_fields_count": existing_after,
+                            "suggested_fields_total": suggested_total,
+                            "suggested_fields_accepted": len(new_fields_by_key),
+                            "suggested_fields_rejected": (
+                                suggested_total - len(new_fields_by_key)
+                            ),
+                            "total_fields_after_apply": total_after,
+                        },
+                    )
+                )
+                await db.commit()
+            except Exception:
+                logger.warning(
+                    "audit_log for propose_fields apply failed (continuing)",
+                    exc_info=True,
+                )
+                try:
+                    await db.rollback()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "rollback after audit_log failure also failed: %s",
+                        exc,
+                    )
 
         # Успех — удаляем proposal.
         await campaign_state_initial_store.delete(redis, str(campaign_id))
@@ -711,6 +1161,115 @@ campaign_state_initial_service = CampaignStateInitialService()
 # ---------------------------------------------------------------------------
 # Internal helper: merge client-side overrides into stored proposal
 # ---------------------------------------------------------------------------
+
+
+async def _load_existing_field_keys(
+    db: AsyncSession,
+    campaign_id: uuid.UUID,
+) -> set[str]:
+    """Возвращает set[str] уже существующих key для кампании (для collision check)."""
+    stmt = select(CampaignStateFieldConfig.key).where(
+        CampaignStateFieldConfig.campaign_id == campaign_id
+    )
+    rows = (await db.execute(stmt)).scalars().all()
+    return {str(k) for k in rows}
+
+
+async def _current_max_display_order(
+    db: AsyncSession,
+    campaign_id: uuid.UUID,
+) -> int:
+    """Текущий max display_order для кампании (-1 если полей нет)."""
+    stmt = select(func.max(CampaignStateFieldConfig.display_order)).where(
+        CampaignStateFieldConfig.campaign_id == campaign_id
+    )
+    result = (await db.execute(stmt)).scalar_one()
+    return int(result) if result is not None else -1
+
+
+def _next_display_order(
+    already_used: list[int],
+    *,
+    start: int,
+) -> int:
+    """Возвращает display_order = max(start + 1, max(already_used) + 1, 0)."""
+    candidate = (start if start >= 0 else -1) + 1
+    if already_used:
+        candidate = max(candidate, max(already_used) + 1)
+    return max(0, candidate)
+
+
+async def _load_enabled_fields_count(
+    db: AsyncSession,
+    campaign_id: uuid.UUID,
+) -> int:
+    """Количество enabled-полей кампании (для audit log)."""
+    stmt = (
+        select(func.count(CampaignStateFieldConfig.id))
+        .where(CampaignStateFieldConfig.campaign_id == campaign_id)
+        .where(CampaignStateFieldConfig.enabled.is_(True))
+    )
+    result = (await db.execute(stmt)).scalar_one()
+    return int(result or 0)
+
+
+def _unify_proposal_for_apply(
+    proposal_v2: CampaignStateInitialProposalV2,
+    new_fields_by_key: dict[str, CampaignStateFieldConfig],
+    accepted_sf: list[CampaignStateSuggestedFieldConfig],
+) -> CampaignStateInitialProposal:
+    """Преобразовать V2 proposal в V1 формат для apply_initial.
+
+    Берём существующие `fields` (existing) + для каждого принятого suggested_field
+    конструируем эквивалентный CampaignStateInitialProposalField с field_key из
+    new_fields_by_key. Отклонённые suggested поля уже отфильтрованы в apply
+    (не попадают в accepted_sf).
+
+    Возвращает CampaignStateInitialProposal (V1).
+    """
+    unified: list[dict[str, Any]] = []
+
+    # 1. Existing fields as-is.
+    for pf in proposal_v2.fields:
+        unified.append(pf.model_dump(mode="json"))
+
+    # 2. Accepted suggested_fields → синтетические CampaignStateInitialProposalField.
+    sf_by_key = {sf.key: sf for sf in accepted_sf}
+    for key, field in new_fields_by_key.items():
+        sf = sf_by_key.get(key)
+        if sf is None:
+            continue
+        # Берём отредактированные label/description/key/mode из new_fields_by_key
+        # не нужно — они одинаковы у CampaignStateFieldConfig и CampaignStateSuggestedFieldConfig.
+        status_block: dict[str, Any] = {"status": sf.initial_status}
+        if sf.clarification_question is not None:
+            status_block["clarification_question"] = sf.clarification_question
+        entry: dict[str, Any] = {
+            "field_key": key,
+            "mode": sf.mode,
+            "status": status_block,
+        }
+        if sf.initial_status == "proposed":
+            if sf.mode == "single" and sf.single_value is not None:
+                entry["single_value"] = {
+                    "text": sf.single_value.text,
+                    "source_refs": list(sf.single_value.source_refs),
+                }
+            elif sf.mode == "list" and sf.list_value is not None:
+                entry["list_value"] = {
+                    "items": [
+                        {"text": it.text, "source_refs": list(it.source_refs)}
+                        for it in sf.list_value.items
+                    ]
+                }
+        unified.append(entry)
+
+    # 3. ignored: rejected_sf_keys — отбрасываем полностью.
+
+    questions = list(proposal_v2.questions) if proposal_v2.questions else []
+    return CampaignStateInitialProposal.model_validate(
+        {"fields": unified, "questions": questions}
+    )
 
 
 def _merge_proposal_overrides(
@@ -819,8 +1378,8 @@ async def _call_provider_with_repair_raw(
     repair_suffix = (
         f"Your previous response did not match the required JSON schema.\n"
         f"Error: {first_err_str}\n\n"
-        f"Return only a valid JSON object with keys: fields, questions. "
-        f"No prose, no markdown fences."
+        f"Return only a valid JSON object with keys: fields, (optionally) "
+        f"suggested_fields, questions. No prose, no markdown fences."
     )
     repair_messages = [
         {"role": "system", "content": system_prompt},

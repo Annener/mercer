@@ -275,6 +275,105 @@
 .iswizard__field-status--empty { background: #f0f3f7; color: #6b7d8f; }
 .iswizard__field-status--clarification { background: #fef5e7; color: #d68910; }
 
+/* ---- Stage 3.v2: suggested_fields section ---- */
+
+.iswizard__suggested-section {
+    margin-bottom: 16px;
+    padding: 12px 14px;
+    background: #f6f8fc;
+    border: 1px solid #d4deea;
+    border-radius: 8px;
+}
+
+.iswizard__suggested-title {
+    margin: 0 0 10px;
+    font-size: 13.5px;
+    font-weight: 600;
+    color: #1c2b3a;
+}
+
+.iswizard__suggested-field {
+    border: 1px solid #b9d2e8;
+    background: #fff;
+}
+
+.iswizard__suggested-field.iswizard__field--rejected {
+    opacity: 0.55;
+    border-color: #d4dde7;
+    background: #fafbfc;
+}
+
+.iswizard__suggested-accept {
+    width: 16px;
+    height: 16px;
+    flex-shrink: 0;
+    cursor: pointer;
+}
+
+.iswizard__suggested-key {
+    flex: 1;
+    min-width: 120px;
+    padding: 3px 6px;
+    border: 1px solid #d4dde7;
+    border-radius: 4px;
+    font-family: ui-monospace, 'SF Mono', monospace;
+    font-size: 12px;
+    background: #fff;
+}
+
+.iswizard__suggested-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-bottom: 8px;
+    padding: 8px 10px;
+    background: #fafbfc;
+    border: 1px dashed #d4dde7;
+    border-radius: 5px;
+}
+
+.iswizard__suggested-label {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    font-size: 11.5px;
+    color: #4a5a6a;
+}
+
+.iswizard__suggested-label-input {
+    padding: 5px 8px;
+    border: 1px solid #d4dde7;
+    border-radius: 4px;
+    font: inherit;
+    color: #1c2b3a;
+    font-size: 13px;
+}
+
+.iswizard__suggested-desc {
+    padding: 5px 8px;
+    border: 1px solid #d4dde7;
+    border-radius: 4px;
+    font: inherit;
+    font-size: 12.5px;
+    resize: vertical;
+    min-height: 36px;
+}
+
+.iswizard__suggested-mode-toggle {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    font-size: 11.5px;
+    color: #4a5a6a;
+}
+
+.iswizard__suggested-mode-toggle label {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    cursor: pointer;
+}
+
 .iswizard__field-value {
     font-size: 13px;
     color: #2c3e50;

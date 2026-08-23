@@ -99,6 +99,13 @@ Retry с экспоненциальным backoff: `2^attempt` секунд, `mo
 
 Если reranker не активен (`enabled=False`) — хиты возвращаются без изменений.
 
+### Diagnostic logs (Sprint 2)
+
+В `retrieve()` (для каждого vault'а) пишется:
+
+- `RETRIEVE_STAGES vault='...' strategy=hybrid vector_hits=N text_hits=M vector_top_cosine=0.xxxx` — ДО RRF-merge. Помогает диагностировать кросс-языковые случаи: при EN→RU `text_hits=0` потому что BM25 не находит пересечения; `vector_top_cosine` показывает реальную близость в bge-m3 (иначе RRF-скоры выглядят как `0.016` и непонятно, плохо это или нормально).
+- `RERANK_HITS done: reranked N hits via model='...' rerank_top_score=0.xxxx` — score реранкера; низкий → вероятно нет релевантного материала.
+
 ### format_context()
 
 Формирует пронумерованный контекст `[1] текст\n\n[2] текст...` для LLM.  
@@ -376,19 +383,40 @@ def generate_next_question(missing_fields, collected, prompt_pack) -> str
 
 ---
 
-## query_rewriter.py — Переформулировка запросов
+## query_rewriter.py — Переформулировка запросов + кросс-языковой перевод (Sprint 2)
 
 ```python
 query_rewriter = QueryRewriter()   # синглтон
 
+# Stage 8.4 — переформулировка с учётом истории
 await query_rewriter.rewrite(original_query, history, provider, domain_description) -> str
+
+# Pipeline retrieval
 await query_rewriter.rewrite_for_retrieval(original_query, step_prompt, provider) -> str
+
+# Sprint 2 — кросс-языковой query expansion для prefill RAG
+await query_rewriter.build_search_queries(
+    original_query, provider, *, max_queries=4
+) -> list[str]
+# Возвращает [orig] для русского запроса
+# Возвращает [orig, ru_translation] для английского (после LLM-перевода)
+# При ошибке провайдера / пустом ответе / без provider — только [orig]
 ```
 
-| Метод | Когда используется | Промпт |
+| Метод | Когда используется | Промпт / поведение |
 |---|---|---|
 | `rewrite()` | chat-путь, при наличии истории | `REWRITE_PROMPT` — делает запрос самодостаточным (заменяет местоимения) |
 | `rewrite_for_retrieval()` | pipeline step retrieval | `RETRIEVAL_REWRITE_PROMPT` — оптимизирует под векторный поиск |
+| `build_search_queries()` | **Sprint 2**: prefill RAG в `plain_stream` | Эвристика `is_cyrillic_query` (доля кириллицы ≥ 0.4); LLM-перевод `RU_TRANSLATE_PROMPT` для не-русских запросов. Dedup через `_normalise()` (lowercase + collapse whitespace). |
+
+### Языковая детекция
+
+```python
+is_cyrillic_query(text: str, threshold: float = 0.4) -> bool
+```
+
+Считает долю кириллических букв в `text`. Если ≥ `threshold` — считается русским.
+Позволяет смешанные запросы типа «Бехолдер Beholder» (7 кириллических / 8 латинских → ratio 0.467 → cyrillic).
 
 Fallback: при любом исключении возвращает `original_query` (не ломает пайплайн).
 
@@ -467,18 +495,28 @@ block = compile_campaign_state(
 Эвристика токенов: `math.ceil(len(text) / 4)` — согласована с
 `update_mode_executor.py`, `pipeline_executor.py`, `full_document_service.py`.
 
-### effective_context.py — Runtime helper (Stage 6)
+### effective_context.py — Runtime helper (Stage 6 + Sprint 1/2)
 
 Общие функции для runtime и debug:
 
 ```python
-async def compose_full_system_prompt(campaign_id, domain_id, db) -> str
-async def compose_full_system_prompt_with_state(campaign_id, domain_id, db) -> tuple[str, CampaignStateCompiledBlock | None]
+async def compose_full_system_prompt(
+    campaign_id, domain_id, db,
+    scene_state: dict | None = None,    # Sprint 1: inline scene-state
+) -> str
+async def compose_full_system_prompt_with_state(
+    campaign_id, domain_id, db,
+    scene_state: dict | None = None,    # Sprint 1
+) -> tuple[str, CampaignStateCompiledBlock | None]
 async def compose_state_block_only(campaign_id, db) -> str
 async def build_effective_context(campaign_id, chat_id, domain_id, db, *, include_rag=False, rag_hits=None) -> EffectiveContextRead
 def append_tool_use_rules(prompt: str) -> str
-def tool_system_prompt(...) -> str  # Stage 8.6: альтернативный system prompt с правилами tool-use
+def compose_scene_block(scene_state: dict | None) -> str        # Sprint 1
 ```
+
+**Sprint 1**: `compose_scene_block` рендерит JSON-патчинг в блок `## Текущая сцена` для system_prompt.
+Лимит 4KB; превышение обрезается с WARNING-меткой. Используется в `compose_full_system_prompt`
+и `compose_full_system_prompt_with_state` через параметр `scene_state`.
 
 `compose_full_system_prompt` используется в:
 
@@ -486,6 +524,9 @@ def tool_system_prompt(...) -> str  # Stage 8.6: альтернативный sy
 - `app/api/chat.py::_plain_llm_reply`;
 - `app/api/pipeline_resume.py::_plain_rag_stream`;
 - `app/services/pipeline_executor.py::PipelineExecutor.resume_from_full_doc_selection` (plain-fallback ветка).
+
+**Sprint 2**: в `plain_stream` перед AgentLoop выполняется `_prefill_rag()` (см. `api/chat.py`).
+Результат `[1]...[2]...` подмешивается в `system_prompt` через `format_context(hits)`.
 
 `compose_state_block_only` используется в `PipelineExecutor._run_final_composition`
 для добавления state-блока после `_resolve_prompt(...)` без вмешательства в шаблоны
@@ -495,8 +536,9 @@ def tool_system_prompt(...) -> str  # Stage 8.6: альтернативный sy
 `GET /api/settings/campaigns/{id}/effective-context`.
 
 `append_tool_use_rules` (Stage 8.6) добавляет к legacy-prompt правила вызова `search_knowledge`
-(«используй evidence для фактов/лора, не выдумывай»). `tool_system_prompt` — замена system prompt для
-ветки с `AgentLoop` (tool_calls + role=tool messages).
+(«используй evidence для фактов/лора, не выдумывай»). В Sprint 1 расширен секциями про
+`update_scene_state` и `propose_context_update` (Sprint 3). Используется только в agent-loop
+пути `plain_stream` (legacy single-shot retrieval не нуждается в этих правилах).
 
 ### campaign_state_initial_service.py — Initial State (Stage 3)
 
@@ -545,9 +587,10 @@ async def record_transition(campaign_id, prev_stale, curr_stale, db, *, actor)
 
 ```python
 class UpdateModeExecutor:
-    async def start(chat_id, note, db) -> StartUpdateModeResponse
-    async def get_session(chat_id, db) -> UpdateModeSessionResponse | None
-    async def review(chat_id, decisions: UpdateModeReviewRequest, db) -> UpdateModeSessionResponse
+    async def start(chat_id, redis, note, db) -> UpdateModeSession           # legacy: пользователь явно
+    async def start_from_proposal(chat_id, redis, proposal, db) -> UpdateModeSession   # Sprint 3: model-driven
+    async def get_session(chat_id, db) -> UpdateModeSession | None
+    async def review(chat_id, decisions, db) -> UpdateModeSession
     async def apply(chat_id, apply_id, db) -> ApplyUpdateModeResponse
     async def cancel(chat_id, db) -> None
 ```
@@ -563,17 +606,26 @@ class UpdateModeExecutor:
 6. Resolve в indexer (`IndexerClient.resolve_update_mode`) — SHA-256, unified_diff, proposed_content
 7. Сохраняет Redis-сессию через `update_mode_store`
 
-### `apply()`
+### Алгоритм `start_from_proposal()` (Sprint 3)
 
-1. `apply_id` → idempotency check
-2. Для каждого `(vault_id, file_path)` — формируется `UpdateModeFileChangeBatch`
-3. CAS-проверка через `IndexerClient.apply_update_mode` (SHA-256 первого op)
-4. На успехе: применяется state_patch через `campaign_state_value_service.apply_patch`
-5. AuditLog `campaign_update_apply` с commit SHA и `state_patch_result`
+Идентичен `start()` по шагам 1-7, но шаги 2-3 заменены на:
+- принимает уже структурированный `ContextUpdateProposal` (от `propose_context_update` tool);
+- `_validate_field_changes()` — валидирует schema-операции (regex key, mode immutability, conflict со snapshot);
+- `_filter_state_patch_by_pending_field_changes()` — кросс-валидация: state_patch может ссылаться на field_key, создаваемый в этом же proposal;
+- `build_field_change_entries()` — формирует `UpdateModeStateFieldChangeEntry` для каждой schema-операции.
+
+### `apply()` (Sprint 3: трёхстадийный apply)
+
+1. **Stage A — schema** (Sprint 3, новый): для принятых `field_change_decisions` вызывает `_apply_schema_changes()` —
+   атомарное `create_field` / `update_field` через `campaign_state_field_service`. При failure →
+   rollback созданных полей + abort всего apply (HTTP 422, audit `update_mode.apply_aborted_schema`).
+2. **Stage B — state**: `apply_patch` через `campaign_state_value_service` (как раньше).
+3. **Stage C — files**: CAS-проверка через `IndexerClient.apply_update_mode` (SHA-256 первого op).
+4. AuditLog `update_mode.apply` с commit SHA, `state_patch_result` и `field_changes_result`.
 
 Все ошибки — структурированные `error_code` (`file_modified`, `vault_lock_timeout`,
 `apply_already_started`, `apply_id_payload_mismatch`, `apply_in_progress`,
-`state_patch_conflict` и др.).
+`state_patch_conflict`, `schema_apply_failed` (Sprint 3) и др.).
 
 ---
 
@@ -589,7 +641,9 @@ class UpdateModeStore:
     async def review_session(...,
                               accepted_change_ids, rejected_change_ids,
                               accepted_state_op_indexes, rejected_state_op_indexes,
-                              edited_state_ops)
+                              edited_state_ops,
+                              # Sprint 3:
+                              accepted_field_op_indexes, rejected_field_op_indexes)
     async def begin_apply(apply_id)
     async def complete_apply(apply_id, apply_response, state_patch_result)
     async def cancel_session(...)
@@ -599,19 +653,33 @@ class UpdateModeStore:
 
 | Lua | Назначение |
 |---|---|
-| `_REVIEW_LUA` | Атомарное обновление статуса change-ов + state_patch decisions (accepted/rejected indexes + edited text) |
+| `_REVIEW_LUA` | Атомарное обновление статуса change-ов + state_patch decisions (accepted/rejected indexes + edited text) + **Sprint 3**: field_change decisions (ARGV[7]/ARGV[8] для `accepted_field_op_indexes` / `rejected_field_op_indexes`) |
 | `_APPLY_BEGIN_LUA` | Захват apply lock по apply_id; проверка payload fingerprint |
 | `_APPLY_COMPLETE_LUA` | Перевод `in_progress → completed` с записью response |
 
-`_normalize_session_lists()` поддерживает `state_patch_operations` и `state_field_snapshot`
-в session payload.
+`_LUA_FIX_ARRAYS()` — helper, перекодирующий пустые Lua-таблицы в `cjson.empty_array_mt`
+для top-level list-полей сессии: `warnings`, `vault_ids`, `candidate_document_ids`,
+`changes`, `state_patch_operations`, `state_field_snapshot`, **`state_field_change_operations`** (Sprint 3).
+
+`_normalize_session_lists()` поддерживает те же list-поля в session payload, в т.ч.
+`state_field_change_operations` (Sprint 3).
+
+`_parse_review_result()` маппит error-строки Lua в типизированные исключения:
+- `ERR:session_expired` → `SessionExpiredError`
+- `ERR:unknown_state_op:N` → `UnknownStateOpIndexError`
+- `ERR:state_op_review_conflict:N` → `StateOpReviewConflictError`
+- **`ERR:unknown_field_change_op:N`** → `UnknownFieldChangeOpIndexError` (Sprint 3)
+- **`ERR:field_change_review_conflict:N`** → `FieldChangeReviewConflictError` (Sprint 3)
 
 ---
 
-## agent_loop.py — Bounded LLM ↔ tool cycle (Stage 8.4)
+## agent_loop.py — Bounded LLM ↔ tool cycle (Stage 8.4 + Sprint 1/3)
 
 ```python
-SEARCH_KNOWLEDGE_TOOL: LLMToolDefinition   # tool-схема с name="search_knowledge"
+SEARCH_KNOWLEDGE_TOOL: LLMToolDefinition       # tool-схема name="search_knowledge" (Stage 8.4)
+UPDATE_SCENE_STATE_TOOL: LLMToolDefinition    # Sprint 1: name="update_scene_state"
+PROPOSE_CONTEXT_UPDATE_TOOL: LLMToolDefinition  # Sprint 3: name="propose_context_update"
+PROPOSAL_MIN_CONFIDENCE = 0.5                   # Sprint 3: min confidence для accept proposal
 
 @dataclass(slots=True)
 class AgentEvent:
@@ -621,20 +689,36 @@ class AgentEvent:
 
 class AgentLoop:
     async def run_stream(*,
-                          provider, messages,
-                          tool_settings: RetrievalToolSettings,
-                          search_service,
-                          campaign_id, domain_id, db,
+                          provider, system_prompt, history, user_message,
+                          domain_id, campaign_id, chat_id=None,
+                          vault_ids, max_rounds, evidence_token_budget,
+                          policy, db,
+                          context_update_mode_enabled=False,    # Sprint 3
+                          redis=None,                             # Sprint 3
                           audit: AuditContext) -> AsyncIterator[AgentEvent]
 ```
 
-### Контракт цикла (spec §12.2)
+### Tools (Sprint 1 + Sprint 3)
 
-- Round 0: `tool_choice='auto'` — модель может вызвать или не вызвать tool.
-- Round N (1 ≤ N < max_rounds): то же, может вызвать снова.
+`AgentLoop.run_stream` регистрирует до 3 tool definitions в `tools`:
+
+- `SEARCH_KNOWLEDGE_TOOL` — всегда (Stage 8.4).
+- `UPDATE_SCENE_STATE_TOOL` — всегда (Sprint 1).
+- `PROPOSE_CONTEXT_UPDATE_TOOL` — только при `context_update_mode_enabled=True` AND `campaign_id is not None` AND `redis is not None` (Sprint 3).
+
+### Контракт цикла (spec §12.2 + Sprint 1)
+
+- Round 0 (`grounded`): `tool_choice='required'` (Sprint 1) — модель ОБЯЗАНА вызвать хотя бы один tool.
+- Round 0 (`assistive`) или round N (1 ≤ N < max_rounds, кроме последнего grounded): `tool_choice='auto'`.
 - Final round: `tool_choice='none'` — модель ОБЯЗАНА выдать текстовый ответ.
 - Повторный нормализованный query → пустой tool_result с `note='duplicate_query'`.
 - Если модель вернула только `tool_calls` без текста — продолжаем. Если есть текст — стримим и выходим.
+
+### Tool execution (host-controlled)
+
+- `search_knowledge` → `SearchKnowledgeService.run()` (см. ниже).
+- `update_scene_state` → `_execute_update_scene_state(chat_id, patch, db)` — host мерджит patch в `Chat.metadata['scene_state']` и коммитит. **Без review, без audit.** `_SCENE_STATE_PATCH_MAX_KEYS = 16` (защита от спама).
+- `propose_context_update` → `_execute_propose_context_update(chat_id, campaign_id, db, redis, proposal_dict)` — host валидирует (regex key, mode immutability, confidence ≥ 0.5) и создаёт Update Mode session через `UpdateModeExecutor.start_from_proposal()`. **С обязательным user review.**
 
 ### Sources flow (tool path)
 
@@ -648,14 +732,22 @@ class AgentLoop:
 `final` event содержит `rounds: list[AgentRoundResult]` где у каждого round
 есть поле `sources: list[MessageSource]` (для audit).
 
-### Подключение в `chat.py` (Stage 8.5)
+### Подключение в `chat.py` (Stage 8.5 + Sprint 2)
 
-`plain_stream` имеет две ветки:
+`plain_stream` имеет три ветки (Sprint 2):
 
-- **legacy**: `tool_enabled=False` → `provider.generate_stream()` без tool schema
-  (правила вызова приклеиваются через `effective_context.append_tool_use_rules`)
-- **tool path**: `tool_enabled=True` → `AgentLoop.run_stream()` с
-  `SEARCH_KNOWLEDGE_TOOL`, `RetrievalPolicy` и round-лимитом из `RetrievalToolSettings`.
+1. **Prefill RAG** (Sprint 2): при `policy==grounded` и `campaign_id` — вызов `_prefill_rag()` ДО AgentLoop.
+   `queries` берутся из `QueryRewriter.build_search_queries` (с RU-переводом при EN).
+   Результат `[1]...[2]...` подмешивается в `system_prompt`. SSE event `prefill_rag` с `queries_used` + `has_evidence`.
+2. **legacy**: `tool_enabled=False` → `provider.generate_stream()` без tool schema
+   (правила вызова приклеиваются через `effective_context.append_tool_use_rules`)
+3. **tool path**: `tool_enabled=True` → `AgentLoop.run_stream()` с
+   `SEARCH_KNOWLEDGE_TOOL` (+ `UPDATE_SCENE_STATE_TOOL` + `PROPOSE_CONTEXT_UPDATE_TOOL` если `context_update_mode_enabled=True`),
+   `RetrievalPolicy` и round-лимитом из `RetrievalToolSettings`.
+
+SSE events новые (Sprint 1-3):
+- `prefill_rag` — после prefill retrieval (queries_used, has_evidence)
+- `context_update_proposal` — после успешного create Update Mode session (session_id, counts)
 
 Audit-row `chat.agent_loop` пишется на каждом чат-турне tool-пути (Stage 8.7):
 `payload` содержит `rounds`, `tool_calls_made`, `policy`.
@@ -714,7 +806,7 @@ async def load_retrieval_tool_settings(db) -> RetrievalToolSettings
 
 Безопасные дефолты, если PlatformSetting-строка удалена: `tool_enabled=True`,
 `policy='grounded'`, `max_rounds_grounded=2`, `max_rounds_assistive=1`,
-`evidence_token_budget=4000`.
+`evidence_token_budget=6000` (bumped в 0012 для grounded agent-assistant).
 
 ---
 

@@ -250,7 +250,7 @@ Campaign State — компактное версионируемое состо�
 - Каждая операция содержит `reason` и `source_refs`.
 - Fail-fast валидация (Stage 2); будущие версии могут поддержать partial apply.
 
-### Initial State (Stage 3)
+### Initial State (Stage 3 + Stage 3.v2 «ИИ формирует контекст»)
 
 - Источник — только Markdown (PDF исключён).
 - Пользователь выбирает `.md`-документы кампании через существующий Full Documents UI.
@@ -259,6 +259,38 @@ Campaign State — компактное версионируемое состо�
 - Proposal сохраняется в Redis (`campaign_state_initial:{campaign_id}`, TTL 3h) с `DocumentSnapshot`-ами
   (md5) для проверки неизменности источника.
 - Apply создаёт первую `state_version='initial'`.
+
+#### Stage 3.v2: формирование контекста «на ИИ-приводе»
+
+Когда у кампании **0 enabled-полей**, классический Wizard бесполезен. Stage 3.v2
+добавляет режим `propose_fields=true`:
+
+1. **Wizard**: когда `fieldsCount === 0`, кнопка в `initial-state.js` показывает
+   «Сформировать контекст с помощью ИИ». Wizard открывается с
+   `proposeFields=true` → preview-прокси передаёт `propose_fields=true`.
+2. **Preview**: LLM получает расширенный system-prompt с дополнительной секцией
+   SUGGESTED FIELDS. Возвращает `suggested_fields[]` — массив `CampaignStateSuggestedFieldConfig`
+   с метаданными (key/label/description/mode) и значениями (single_value/list_value).
+3. **Normalize** (`_normalize_proposal_v2`):
+   - фильтрует невалидные suggested (regex, mode/value mismatch, needs_clarification без question);
+   - дедуплицирует по key (внутри batch и против existing);
+   - soft-cap `max_suggested_fields` (default 15).
+4. **Review**: Wizard рисует отдельную секцию «Предложенные новые поля (X/Y)» с
+   inline-edit для key/label/description/mode, чекбоксом «принять», кнопкой
+   «Изменить» для значений. Existing-поля остаются в существующей секции.
+5. **Apply**: при наличии `suggested_fields[]` клиент передаёт
+   `accepted_suggested_field_keys` и `rejected_suggested_field_keys`.
+   Бэкенд создаёт принятые поля через `CampaignStateFieldService.create_field`
+   (отдельные транзакции, bump `config_version`), затем читает свежую version
+   и вызывает `apply_initial`. Унификация (`_unify_proposal_for_apply`)
+   склеивает existing + accepted suggested в формат V1 для `apply_initial`.
+
+Атомарность: создание полей и `apply_initial` не в одной транзакции (выбор
+backed вами: «только бэкенд-логика»). При сбое apply_initial уже созданные
+поля остаются в БД (видимы пользователю через `/state-fields`) — пользователь
+может исправить state и повторить apply с тем же proposal. Audit log
+`campaign_state_initial_propose_fields_applied` пишется только при успешном
+apply и содержит счётчики.
 
 ### Update Mode — интеграция (Stage 5)
 

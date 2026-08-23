@@ -36,17 +36,16 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from shared_contracts.models import (
-    CampaignStateInitialApplyRequest,
-    CampaignStateInitialProposal,
-    CampaignStateInitialProposalField,
-    CampaignStateInitialProposalRead,
+    CampaignStateInitialApplyRequestV2,
     CampaignStateInitialFieldStatus,
+    CampaignStateInitialProposalField,
+    CampaignStateInitialProposalReadV2,
+    CampaignStateInitialProposalV2,
     CampaignStateSingleValueRead,
     CampaignStateVersionRead,
     CampaignStateVersionSummary,
     DocumentSnapshot,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fake service
@@ -55,11 +54,11 @@ from shared_contracts.models import (
 
 class _FakeInitialService:
     def __init__(self) -> None:
-        self.preview_calls: list[tuple[str, list[str]]] = []
+        self.preview_calls: list[tuple[str, list[str], bool, int]] = []
         self.apply_calls: list[tuple[str, str, int]] = []
         self.get_calls: list[str] = []
         self.campaigns: set[str] = set()
-        self.proposals: dict[str, CampaignStateInitialProposalRead] = {}
+        self.proposals: dict[str, CampaignStateInitialProposalReadV2] = {}
 
     async def assert_campaign_exists(self, db: Any, cid: uuid.UUID) -> None:
         if str(cid) not in self.campaigns:
@@ -72,8 +71,13 @@ class _FakeInitialService:
         campaign_id: uuid.UUID,
         document_ids: list[str],
         current_user: str | None = None,
-    ) -> CampaignStateInitialProposalRead:
-        self.preview_calls.append((str(campaign_id), list(document_ids)))
+        *,
+        propose_fields: bool = False,
+        max_suggested_fields: int = 15,
+    ) -> CampaignStateInitialProposalReadV2:
+        self.preview_calls.append(
+            (str(campaign_id), list(document_ids), propose_fields, max_suggested_fields)
+        )
         cid = str(campaign_id)
         if cid not in self.campaigns:
             raise CampaignNotFoundError(cid)
@@ -91,12 +95,14 @@ class _FakeInitialService:
             status=CampaignStateInitialFieldStatus(status="proposed"),
             single_value=None,
         )
-        payload = CampaignStateInitialProposalRead(
+        payload = CampaignStateInitialProposalReadV2(
             proposal_id=f"prop-{uuid.uuid4()}",
             campaign_id=cid,
             config_version=1,
             source_snapshot=[snap],
-            proposal=CampaignStateInitialProposal(fields=[pf], questions=[]),
+            proposal=CampaignStateInitialProposalV2(
+                fields=[pf], suggested_fields=[], questions=[]
+            ),
             warnings=["w1"],
             created_at=_dt.datetime.now(_dt.timezone.utc),
             expires_at=_dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(hours=3),
@@ -108,7 +114,7 @@ class _FakeInitialService:
         self,
         redis: Any,
         campaign_id: uuid.UUID,
-    ) -> CampaignStateInitialProposalRead | None:
+    ) -> CampaignStateInitialProposalReadV2 | None:
         self.get_calls.append(str(campaign_id))
         return self.proposals.get(str(campaign_id))
 
@@ -117,7 +123,7 @@ class _FakeInitialService:
         db: Any,
         redis: Any,
         campaign_id: uuid.UUID,
-        request: CampaignStateInitialApplyRequest,
+        request: CampaignStateInitialApplyRequestV2,
         current_user: str | None = None,
     ) -> CampaignStateVersionRead:
         self.apply_calls.append(

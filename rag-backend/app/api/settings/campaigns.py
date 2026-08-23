@@ -29,16 +29,16 @@ from shared_contracts.models import (
     CampaignStateFieldConfigRead,
     CampaignStateFieldConfigReorderRequest,
     CampaignStateFieldConfigUpdate,
-    CampaignStateInitialApplyRequest,
-    EffectiveContextRead,
-    CampaignStateInitialPreviewRequest,
-    CampaignStateInitialProposalRead,
+    CampaignStateInitialApplyRequestV2,
+    CampaignStateInitialPreviewRequestV2,
+    CampaignStateInitialProposalReadV2,
     CampaignStatePatchRequest,
     CampaignStatePatchResponse,
     CampaignStateStaleStatus,
     CampaignStateVersionRead,
     CampaignStateVersionSummary,
     CampaignUpdate,
+    EffectiveContextRead,
     TagRead,
 )
 
@@ -442,18 +442,23 @@ async def apply_campaign_state_patch(
 
 @router.post(
     "/{campaign_id}/state/initial/preview",
-    response_model=CampaignStateInitialProposalRead,
+    response_model=CampaignStateInitialProposalReadV2,
 )
 async def preview_initial_state(
     campaign_id: str,
-    payload: CampaignStateInitialPreviewRequest,
+    payload: CampaignStateInitialPreviewRequestV2,
     request: Request,
     db: AsyncSession = Depends(get_db),
-) -> CampaignStateInitialProposalRead:
+) -> CampaignStateInitialProposalReadV2:
     """Сформировать LLM-proposal Initial State из выбранных Markdown-документов.
 
+    При propose_fields=true (Stage 3.v2) LLM может дополнительно вернуть
+    suggested_fields[] с предложениями новых полей — даже если у кампании 0
+    enabled-полей.
+
     404 — кампания не найдена;
-    422 — no_markdown_documents / document_not_markdown / document_not_indexed;
+    422 — no_fields_configured_no_propose / no_markdown_documents /
+          document_not_markdown / document_not_indexed;
     503 — generation_provider_unavailable / invalid_generation_output.
     """
     redis = request.app.state.redis
@@ -464,6 +469,8 @@ async def preview_initial_state(
             campaign_id=uuid.UUID(campaign_id),
             document_ids=payload.document_ids,
             current_user=None,
+            propose_fields=payload.propose_fields,
+            max_suggested_fields=payload.max_suggested_fields,
         )
     except CampaignStateInitialError as exc:
         raise HTTPException(status_code=exc.http_status, detail=exc.code) from exc
@@ -471,14 +478,18 @@ async def preview_initial_state(
 
 @router.get(
     "/{campaign_id}/state/initial",
-    response_model=CampaignStateInitialProposalRead | None,
+    response_model=CampaignStateInitialProposalReadV2 | None,
 )
 async def get_initial_state_proposal(
     campaign_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db),
-) -> CampaignStateInitialProposalRead | None:
-    """Вернуть текущий Initial State proposal или null (нет/истёк)."""
+) -> CampaignStateInitialProposalReadV2 | None:
+    """Вернуть текущий Initial State proposal или null (нет/истёк).
+
+    Возвращает V2-формат: `proposal.suggested_fields` всегда присутствует
+    (возможно, пустой массив).
+    """
     redis = request.app.state.redis
     try:
         await campaign_state_initial_service.assert_campaign_exists(
@@ -497,15 +508,25 @@ async def get_initial_state_proposal(
 )
 async def apply_initial_state(
     campaign_id: str,
-    payload: CampaignStateInitialApplyRequest,
+    payload: CampaignStateInitialApplyRequestV2,
     request: Request,
     db: AsyncSession = Depends(get_db),
 ) -> CampaignStateVersionRead:
     """Применить Initial State proposal (review/approval).
 
+    При наличии suggested_fields в proposal:
+      - клиент передаёт accepted_suggested_field_keys / rejected_suggested_field_keys;
+      - сервер создаёт принятые поля через CampaignStateFieldService перед
+        apply_initial;
+      - config_version проверяется на момент preview (не меняется созданием полей
+        внутри apply в одном коммите).
+
     404 — proposal_not_found;
-    409 — initial_already_applied / config_version_conflict / source_snapshot_stale;
-    410 — proposal_expired.
+    409 — initial_already_applied / config_version_conflict /
+          source_snapshot_stale / suggested_field_key_conflict /
+          suggested_field_creation_failed;
+    410 — proposal_expired;
+    422 — suggested_field_invalid_key.
     """
     redis = request.app.state.redis
     try:
@@ -519,8 +540,6 @@ async def apply_initial_state(
     except CampaignStateInitialError as exc:
         raise HTTPException(status_code=exc.http_status, detail=exc.code) from exc
     except CampaignStateValueError as exc:
-        # SourceSnapshotStaleError / ConfigVersionConflictError / InitialAlreadyAppliedError
-        # — пробрасываем как 409 с расширенным detail для snapshot_stale.
         if exc.code == "source_snapshot_stale":
             stale_docs: list[str] = list(getattr(exc, "stale_documents", []) or [])
             raise HTTPException(
@@ -530,6 +549,9 @@ async def apply_initial_state(
                     "stale_documents": stale_docs,
                 },
             ) from exc
+        raise HTTPException(status_code=exc.http_status, detail=exc.code) from exc
+    except CampaignStateFieldError as exc:
+        # Предложенные ИИ поля не прошли валидацию на стороне field service.
         raise HTTPException(status_code=exc.http_status, detail=exc.code) from exc
 
 
@@ -549,7 +571,8 @@ async def get_campaign_effective_context(
 
     Endpoint всегда возвращает 200, даже если state отсутствует (см. §11).
     """
-    from app.db.models import Campaign as CampaignModel, Chat as ChatModel
+    from app.db.models import Campaign as CampaignModel
+    from app.db.models import Chat as ChatModel
 
     try:
         campaign_uuid = uuid.UUID(campaign_id)

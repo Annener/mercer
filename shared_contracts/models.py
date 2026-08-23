@@ -796,6 +796,143 @@ class CampaignStateInitialApplyRequest(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Campaign State — Stage 3.v2: Initial State with propose_fields
+# ---------------------------------------------------------------------------
+#
+# Расширение Initial State: когда у кампании 0 enabled-полей, клиент может
+# отправить `propose_fields=true` и попросить LLM САМОМУ предложить набор полей
+# (key/label/description/mode) вместе со значениями. Пользователь ревьюит/правит
+# в Wizard, отклоняет ненужные и применяет всё одной транзакцией.
+#
+# Backward-compat: V1 контракты сохранены как есть. suggested_fields всегда
+# опциональный список; при propose_fields=False любые suggested_fields от LLM
+# отбрасываются на бэкенде с warning.
+
+
+class CampaignStateSuggestedFieldConfig(BaseModel):
+    """Предложение нового поля Campaign State от LLM (Stage 3.v2).
+
+    Семантика:
+      - key — стабильный snake_case идентификатор; проходит regex Field Key regex.
+      - label — человеко-читаемый заголовок (1..256 символов).
+      - description — подсказка для будущих LLM-вызовов (≤8KB, опционально).
+      - mode — single или list; immutable после создания.
+      - initial_status — предлагаемый статус значения: proposed/empty/needs_clarification.
+      - single_value / list_value — заполняются при status=proposed.
+        mode должен соответствовать: mode=single ↔ single_value, mode=list ↔ list_value.
+    """
+
+    key: str = Field(
+        min_length=1,
+        max_length=64,
+        pattern=r"^[a-z][a-z0-9_]{0,63}$",
+        description="Stable snake_case key (regex ^[a-z][a-z0-9_]{0,63}$).",
+    )
+    label: str = Field(min_length=1, max_length=256)
+    description: str = Field(default="", max_length=8 * 1024)
+    mode: CampaignStateFieldMode
+    initial_status: CampaignStateInitialFieldStatusValue
+    clarification_question: str | None = Field(default=None, max_length=1024)
+    single_value: CampaignStateInitialSingleValue | None = None
+    list_value: CampaignStateInitialListValue | None = None
+
+    @model_validator(mode="after")
+    def _check_mode_value_consistency(self) -> CampaignStateSuggestedFieldConfig:
+        # 1) needs_clarification ↔ clarification_question обязательно
+        if self.initial_status == "needs_clarification":
+            if (
+                not self.clarification_question
+                or not self.clarification_question.strip()
+            ):
+                raise ValueError(
+                    "clarification_question is required when initial_status == 'needs_clarification'"
+                )
+        # 2) mode ↔ value shape
+        if self.initial_status == "proposed":
+            if self.mode == "single" and self.single_value is None:
+                raise ValueError(
+                    "single_value is required for mode=single when initial_status='proposed'"
+                )
+            if self.mode == "list" and self.list_value is None:
+                raise ValueError(
+                    "list_value is required for mode=list when initial_status='proposed'"
+                )
+            if self.mode == "single" and self.list_value is not None:
+                raise ValueError(
+                    "list_value must be None when mode=single"
+                )
+            if self.mode == "list" and self.single_value is not None:
+                raise ValueError(
+                    "single_value must be None when mode=list"
+                )
+        return self
+
+
+class CampaignStateInitialProposalV2(BaseModel):
+    """Proposal с возможными suggested_fields (Stage 3.v2).
+
+    Для существующих полей кампании (Stage 1) LLM заполняет `fields`.
+    Для новых полей, которые LLM предлагает создать — `suggested_fields`.
+    Список `suggested_fields` не зависит от текущих enabled-полей.
+    """
+
+    fields: list[CampaignStateInitialProposalField] = Field(default_factory=list)
+    suggested_fields: list[CampaignStateSuggestedFieldConfig] = Field(
+        default_factory=list
+    )
+    questions: list[str] = Field(default_factory=list)
+
+
+class CampaignStateInitialProposalReadV2(CampaignStateInitialProposalRead):
+    """Read-форма с поддержкой V2 (suggested_fields). Полная обратная совместимость:
+
+    Клиент, ожидающий `proposal.suggested_fields`, получит пустой массив, если
+    сервер не отправляет V2 — pydantic-сериализация v1 → v2 не отличается на
+    стороне клиента (новые поля опциональны с default).
+    """
+
+    proposal: CampaignStateInitialProposalV2
+
+
+class CampaignStateInitialPreviewRequestV2(BaseModel):
+    """Запрос preview с поддержкой propose_fields (Stage 3.v2).
+
+    propose_fields=False (по умолчанию) → поведение V1 (только значения для
+    существующих полей). Если 0 enabled-полей и propose_fields=False, сервис
+    вернёт 422 no_fields_configured_no_propose.
+
+    propose_fields=True → LLM также может предложить `suggested_fields` в ответе.
+    Требует ≥1 enabled-поля ИЛИ работает при 0 enabled-полей (Wizard UI).
+    """
+
+    document_ids: list[str] = Field(min_length=1, max_length=50)
+    propose_fields: bool = False
+    max_suggested_fields: int = Field(default=15, ge=0, le=50)
+
+
+class CampaignStateInitialApplyRequestV2(CampaignStateInitialApplyRequest):
+    """Apply с поддержкой принятия/отклонения suggested_fields.
+
+    accepted_suggested_field_keys — какие предложенные поля создать перед apply.
+    rejected_suggested_field_keys — какие отклонить (не создавать).
+    Каждый ключ должен быть уникальным; дубликаты между accepted/rejected
+    игнорируются на бэкенде с warning.
+
+    proposal_overrides (V1) — по-прежнему может присутствовать и применяется
+    к значениям (как existing, так и suggested) перед apply.
+    """
+
+    accepted_suggested_field_keys: list[str] = Field(
+        default_factory=list,
+        max_length=50,
+    )
+    rejected_suggested_field_keys: list[str] = Field(
+        default_factory=list,
+        max_length=50,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Campaign State — Stage 6: Prompt Assembly contracts
 # ---------------------------------------------------------------------------
 
@@ -2287,7 +2424,7 @@ class UpdateModeSession(BaseModel):
     # Sprint 3: schema-level changes (create_field / update_field). Same
     # review + apply flow as state-patch but operates on the field config
     # (CampaignStateFieldConfig), not on field values.
-    state_field_change_operations: list["UpdateModeStateFieldChangeEntry"] = Field(
+    state_field_change_operations: list[UpdateModeStateFieldChangeEntry] = Field(
         default_factory=list
     )
 
@@ -2347,8 +2484,8 @@ class ContextUpdateProposal(BaseModel):
     """
 
     field_changes: list[ContextFieldChange] = Field(default_factory=list)
-    state_patch: list["CampaignStatePatchOperation"] = Field(default_factory=list)
-    file_changes: list["UpdateModeIntent"] = Field(default_factory=list)
+    state_patch: list[CampaignStatePatchOperation] = Field(default_factory=list)
+    file_changes: list[UpdateModeIntent] = Field(default_factory=list)
 
     confidence: float = Field(ge=0.0, le=1.0, default=0.5)
     reason: str = Field(default="", max_length=1024)

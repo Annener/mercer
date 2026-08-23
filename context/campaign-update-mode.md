@@ -640,3 +640,122 @@ retrieval и не запускает LLM. Используется для инс
 - Не хранит compiled state в БД — это чистая функция от active state;
 - Не обновляет UI рендер effective-context — endpoint готов, визуальная
   панель остаётся отдельной задачей.
+
+---
+
+## Sprint 3: schema-change в proposal (Stage 8.4.3)
+
+Помимо правок файлов и значений state (Stage 5), модель может предлагать **схемные** изменения Campaign State — создание новых полей и редактирование label/description/enabled/display_order существующих. Это позволяет агенту-помощнику самостоятельно расширять структуру кампании по ходу разговора (например, добавить поле «main_villains» при появлении нового NPC), не требуя от пользователя ручного создания через UI настроек.
+
+### Мотивация
+
+- Раньше создание нового поля Campaign State требовало от пользователя ручного действия: открыть Settings → Campaign State → добавить поле. Это разрывает диалог: пользователь описывает контекст, но вынужден переключаться в технический UI.
+- Sprint 3 позволяет модели самой предложить `create_field` / `update_field` через `propose_context_update` tool. Пользователь видит карточку и принимает/отклоняет.
+
+### Три секции proposal
+
+`ContextUpdateProposal` состоит из трёх независимых секций:
+
+| Секция | Тип | Назначение |
+|---|---|---|
+| `field_changes` | `list[ContextFieldChange]` | Schema-операции (create_field / update_field) |
+| `state_patch` | `list[CampaignStatePatchOperation]` | Value-операции (replace_single, add_list_item, …) |
+| `file_changes` | `list[UpdateModeIntent]` | Правки `.md` файлов в vault |
+
+Все три секции — часть ОДНОГО proposal. Apply идёт в строгом порядке: **schema → state → files**, и любая ошибка в schema отменяет всё.
+
+### Tool: `propose_context_update`
+
+- Регистрируется только если `Chat.context_update_mode == True` AND `campaign_id is not None` AND `redis is not None`.
+- Минимальный `confidence` для принятия: `0.5` (`PROPOSAL_MIN_CONFIDENCE` в `agent_loop.py`).
+- При вызове host:
+  1. Валидирует через `_extract_proposal` (типы полей, диапазоны).
+  2. Создаёт `ContextUpdateProposal` (Pydantic-валидация DTO).
+  3. Вызывает `UpdateModeExecutor.start_from_proposal(chat_id, redis, proposal)`.
+  4. SSE event `context_update_proposal` со `session_id` и counts.
+  5. Пользователь видит карточку с 3 секциями и review-ит через UI.
+
+### Валидация `_validate_field_changes` (хост-side)
+
+Перед сохранением в Redis host валидирует каждую schema-операцию:
+
+| Операция | Условие | Действие при нарушении |
+|---|---|---|
+| `create_field` | `key` matches `^[a-z][a-z0-9_]*$` (≤64 chars) | drop + warning `invalid_key` |
+| `create_field` | `key` не существует в snapshot | drop + warning `key_exists` |
+| `create_field` | `key` не дублируется внутри proposal | drop + warning `duplicate_create` |
+| `update_field` | `key` существует в snapshot | drop + warning `key_not_found` |
+| `update_field` | `mode` совпадает со snapshot (mode immutable) | drop + warning `mode_immutable` |
+
+### Кросс-валидация: state_patch ↔ field_changes
+
+State_patch в proposal может ссылаться на `field_key`, который **создаётся** в этом же proposal через `field_changes[].create_field`. Это позволяет модели в одном proposal и добавить поле, и записать в него значение. Хост валидирует через `_filter_state_patch_by_pending_field_changes`: `state_patch.field_key` ∈ {existing fields} ∪ {pending create_field keys}.
+
+### Apply (Stage A — schema)
+
+`_apply_schema_changes(db, campaign_id_str, accepted_field_entries)`:
+
+1. `creates = [e for e in accepted if e.operation == CREATE_FIELD]`
+2. `updates = [e for e in accepted if e.operation == UPDATE_FIELD]`
+3. `ordered = creates + updates` (create_field до update_field — последние могут ссылаться на новые)
+4. Для каждого:
+   - **create_field**: `campaign_state_field_service.create_field(db, campaign_uuid, payload)` → `created.id` сохраняется в `created_field_ids` для rollback.
+   - **update_field**: ищем по key, `campaign_state_field_service.update_field(db, campaign_uuid, row.id, partial_payload)`.
+5. При failure любой операции:
+   - `had_failure = True`
+   - `failed_indexes.append(entry.op_index)`
+   - **Rollback**: для каждого `created_field_id` вызываем `delete_field` (best-effort).
+   - **Abort apply**: HTTP 422, `code="schema_apply_failed"`, `failed_op_indexes`, `failed_reasons`. State и files НЕ применяются.
+6. AuditLog:
+   - `update_mode.apply_schema` — успех (или частичный успех с rollback) с `applied_op_indexes`, `failed_op_indexes`, `new_config_version`, `rolled_back`.
+   - `update_mode.apply_aborted_schema` — при abort с `failed_field_op_indexes`, `failed_reasons`.
+
+### Apply (Stage B — state, без изменений)
+
+Как в Stage 5: `campaign_state_value_service.apply_patch` с `config_version` уже обновлённым из Stage A. Failure (config_version conflict, source stale) → `state_patch_result.failed_op_indexes`, **но file apply продолжается** (file_changes не зависят от state).
+
+### Apply (Stage C — files, без изменений)
+
+CAS-проверка через `IndexerClient.apply_update_mode` (SHA-256 первого op), git snapshot, atomic writes, commit, targeted reindex. Failure → `apply_already_started` / `file_modified` / `vault_lock_timeout`.
+
+### SSE event: `context_update_proposal`
+
+Когда host успешно создаёт Update Mode session через `propose_context_update` tool, чат-слой эмитит:
+
+```json
+{
+  "type": "context_update_proposal",
+  "session_id": "<uuid>",
+  "field_changes_count": 1,
+  "state_patch_count": 2,
+  "file_changes_count": 0,
+  "note": "proposal created with 1 field_change(s), 2 state_patch op(s), 0 file_change(s); awaiting user review"
+}
+```
+
+UI на клиенте открывает review-карточку с тремя секциями.
+
+### Что НЕ входит в Sprint 3
+
+- ❌ `delete_field` в proposal — намеренно отсутствует. Удаление полей — рискованная операция (каскадная очистка значений), оставлена ручному UI.
+- ❌ Inline-edit schema-операций (`edited_label`, `edited_description`) — поля есть в DTO, но `PATCH /review` их не принимает. Можно добавить позже.
+- ❌ Защита разделов архитектуры (контракты, схемы БД требуют явного подтверждения) — отдельная задача.
+- ❌ `auto_apply` при высоком confidence — пользователь всегда должен видеть diff.
+
+### Ограничения
+
+- Лимит proposal: до 10 schema-операций (TODO: явно enforce в `_validate_field_changes`).
+- Лимит файлов: до 10 `file_changes` (MVP cap, см. `update_mode_executor.start_from_proposal`).
+- Inline-edit для schema не поддерживается — label/description правятся только через полный accept/reject.
+
+### Ключевые файлы реализации (Sprint 3)
+
+- `rag-backend/app/services/update_mode_executor.py::UpdateModeExecutor.start_from_proposal` — entry point из tool
+- `rag-backend/app/services/update_mode_executor.py::_validate_field_changes` — schema-операции
+- `rag-backend/app/services/update_mode_executor.py::_filter_state_patch_by_pending_field_changes` — кросс-валидация
+- `rag-backend/app/services/update_mode_executor.py::build_field_change_entries` — entries для Redis
+- `rag-backend/app/api/update_mode.py::_apply_schema_changes` — Stage A apply
+- `rag-backend/app/services/agent_loop.py::PROPOSE_CONTEXT_UPDATE_TOOL` + `_execute_propose_context_update` — tool
+- `rag-backend/app/services/update_mode_store.py` — расширена `_REVIEW_LUA` ARGV[7]/ARGV[8]
+- `rag-backend/app/services/effective_context.py::_TOOL_USE_RULES` — добавлены секции про tool
+- `shared_contracts/models.py` — `ContextFieldChange`, `ContextUpdateProposal`, `UpdateModeStateFieldChangeEntry`/`Decisions`/`ApplyResult`

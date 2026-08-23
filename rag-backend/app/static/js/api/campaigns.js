@@ -159,27 +159,43 @@ export const campaignsMixin = {
         if (!response.ok) throw new Error(`Failed to delete tag: ${response.statusText}`);
     },
 
-    // -----------------------------------------------------------------------
+// -----------------------------------------------------------------------
     // Initial State (Stage 3) endpoints
-    // -----------------------------------------------------------------------
+    // ---------------------------------------------------------------------------
 
     /**
      * Сформировать LLM-proposal Initial State из выбранных Markdown-документов.
      *
      * POST /api/settings/campaigns/{cid}/state/initial/preview
-     * Body: { document_ids: string[] }
+     * Body: { document_ids: string[], propose_fields?: boolean,
+     *         max_suggested_fields?: number }
      *
-     * На успех возвращает CampaignStateInitialProposalRead (с proposal_id,
-     * source_snapshot, proposal.fields, warnings).
+     * Параметр opts (опционально):
+     *   - propose_fields (boolean, default false) — Stage 3.v2: разрешает LLM
+     *     предложить новые поля через suggested_fields[]. При 0 enabled-полей
+     *     кампании и propose_fields=false сервис вернёт 422.
+     *   - max_suggested_fields (number, default 15) — soft cap.
+     *
+     * На успех возвращает CampaignStateInitialProposalReadV2: всегда содержит
+     * `proposal.suggested_fields` (возможно, пустой массив).
      * На ошибку бросает InitialStateApiError со специфическим status.
      */
-    async previewInitialState(campaignId, documentIds) {
+    async previewInitialState(campaignId, documentIds, opts = null) {
+        const body = { document_ids: documentIds };
+        if (opts && typeof opts === 'object') {
+            if (typeof opts.propose_fields === 'boolean') {
+                body.propose_fields = opts.propose_fields;
+            }
+            if (Number.isFinite(opts.max_suggested_fields)) {
+                body.max_suggested_fields = opts.max_suggested_fields;
+            }
+        }
         const response = await fetch(
             `${this.baseUrl}/api/settings/campaigns/${campaignId}/state/initial/preview`,
             {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ document_ids: documentIds }),
+                body: JSON.stringify(body),
             }
         );
         return this._parseInitialStateResponse(response);
@@ -210,20 +226,38 @@ export const campaignsMixin = {
      * Применить Initial State proposal (review/approval).
      *
      * POST /api/settings/campaigns/{cid}/state/initial/apply
-     * Body: { proposal_id: string, config_version: number, proposal_overrides?: CampaignStateInitialProposal }
+     * Body: { proposal_id, config_version, proposal_overrides?,
+     *         accepted_suggested_field_keys?, rejected_suggested_field_keys? }
      * На успех возвращает CampaignStateVersionRead с state_version=1, source_kind='initial'.
      *
      * `proposalOverrides` — необязательный proposal с правками пользователя
      * (отредактированный single_value / list_value.items). На бэкенде мерджится
      * поверх proposal из Redis по field_key.
+     *
+     * `acceptedSuggestedFieldKeys` / `rejectedSuggestedFieldKeys` — массивы
+     * строк (Stage 3.v2). Сервер создаст поля с принятыми ключами перед
+     * apply_initial. Отклонённые ключи просто игнорируются.
      */
-    async applyInitialState(campaignId, proposalId, configVersion, proposalOverrides = null) {
+    async applyInitialState(
+        campaignId,
+        proposalId,
+        configVersion,
+        proposalOverrides = null,
+        acceptedSuggestedFieldKeys = null,
+        rejectedSuggestedFieldKeys = null,
+    ) {
         const body = {
             proposal_id: proposalId,
             config_version: configVersion,
         };
         if (proposalOverrides && typeof proposalOverrides === 'object') {
             body.proposal_overrides = proposalOverrides;
+        }
+        if (Array.isArray(acceptedSuggestedFieldKeys)) {
+            body.accepted_suggested_field_keys = acceptedSuggestedFieldKeys;
+        }
+        if (Array.isArray(rejectedSuggestedFieldKeys)) {
+            body.rejected_suggested_field_keys = rejectedSuggestedFieldKeys;
         }
         const response = await fetch(
             `${this.baseUrl}/api/settings/campaigns/${campaignId}/state/initial/apply`,

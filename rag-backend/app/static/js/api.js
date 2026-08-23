@@ -258,11 +258,11 @@ class ChatAPI {
 
     // BUG-11 fix: GET active update-mode session for session recovery on loadChat.
     // Returns session object if active session exists (HTTP 200).
-    // Returns null if no active session (HTTP 404) — not an error.
+    // Returns null if no active session (HTTP 404 или HTTP 410) — not an error.
     // Throws on any other HTTP error (5xx, 401, etc.).
     async updateModeGetSession(chatId) {
         const response = await fetch(`${this.baseUrl}/api/chats/${chatId}/update-mode/session`);
-        if (response.status === 404) return null;
+        if (response.status === 404 || response.status === 410) return null;
         if (!response.ok) {
             let errMsg = response.statusText;
             try {

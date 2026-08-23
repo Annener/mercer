@@ -246,10 +246,12 @@ const CampaignsTabMixin = {
                 const wizardDomainId = effectiveDomainId || campaign.domain_id || null;
                 initialStateSection.load(campaignId, {
                     onChanged: () => this.loadTab('campaigns'),
-                    onApplyClick: (cid) => {
+                    onApplyClick: (cid, opts) => {
                         if (window.InitialStateWizard) {
+                            const proposeFields = !!(opts && opts.proposeFields);
                             window.InitialStateWizard.open(cid, {
                                 domainId: wizardDomainId,
+                                proposeFields,
                                 onApplied: () => initialStateSection.refresh(cid),
                             });
                         }

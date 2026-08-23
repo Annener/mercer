@@ -2,10 +2,12 @@
 // Сегмент «Initial State» внутри модалки редактирования кампании.
 // Состояние:
 //   - если Initial State применён → badge «Initial State применён».
-//   - если нет полей → скрыт.
+//   - если нет полей и нет тегов → скрыт (нужны теги для Wizard).
 //   - если 0 тегов кампании → информационное сообщение (Wizard заблокирован).
-//   - если есть поля, но не применён → кнопка «Сформировать начальный контекст»,
-//     по клику открывается InitialStateWizard (Stage 4).
+//   - если есть поля, но не применён → кнопка «Сформировать начальный контекст».
+//   - если 0 enabled-полей, но теги есть (Stage 3.v2) → кнопка
+//     «Сформировать контекст с помощью ИИ». По клику Wizard автоматически
+//     прокидывает propose_fields=true на preview.
 
 (function () {
     'use strict';
@@ -72,8 +74,8 @@
                 return;
             }
 
-            if (state.fieldsCount === 0) {
-                // Скрываем секцию — нет смысла без полей.
+            if (state.fieldsCount === 0 && state.tagCount === 0) {
+                // Скрываем секцию — Wizard заблокирован по обоим условиям.
                 root.style.display = 'none';
                 return;
             }
@@ -91,16 +93,27 @@
                 return;
             }
 
+            // Stage 3.v2: при 0 enabled-полей показываем кнопку с подсказкой
+            // "ИИ предложит поля и заполнит их значениями".
+            const isProposeMode = state.fieldsCount === 0;
+            const buttonText = isProposeMode
+                ? 'Сформировать контекст с помощью ИИ'
+                : 'Сформировать начальный контекст';
+            const buttonHint = isProposeMode
+                ? `ИИ проанализирует выбранные файлы, сам предложит поля и заполнит их значениями. Документы фильтруются по ${state.tagCount} тегу(ам) кампании.`
+                : `Откроется мастер выбора Markdown-документов и подтверждения значений полей. Документы фильтруются по ${state.tagCount} тегу(ам) кампании.`;
+
             // Кнопка Initial State.
             const button = document.createElement('button');
             button.type = 'button';
             button.className = 'btn btn-primary';
-            button.textContent = 'Сформировать начальный контекст';
+            button.textContent = buttonText;
             button.addEventListener('click', () => {
                 if (typeof state.onApplyClick === 'function') {
-                    state.onApplyClick(state.campaignId);
+                    state.onApplyClick(state.campaignId, { proposeFields: isProposeMode });
                 } else if (window.InitialStateWizard) {
                     window.InitialStateWizard.open(state.campaignId, {
+                        proposeFields: isProposeMode,
                         onApplied: () => state.refresh(state.campaignId),
                     });
                 }
@@ -110,7 +123,7 @@
             const hint = document.createElement('div');
             hint.className = 'field-desc';
             hint.style.marginTop = '6px';
-            hint.textContent = `Откроется мастер выбора Markdown-документов и подтверждения значений полей. Документы фильтруются по ${state.tagCount} тегу(ам) кампании.`;
+            hint.textContent = buttonHint;
             body.appendChild(hint);
         }
 

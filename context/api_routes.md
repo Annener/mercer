@@ -45,7 +45,7 @@
 ```
 POST   /chat/create                                — создать чат
 GET    /chat/list                                  — список чатов
-PATCH  /chat/{chat_id}                             — обновить чат (title, locked_pipeline_id)
+PATCH  /chat/{chat_id}                             — обновить чат (campaign_id, full_document_mode_enabled, context_update_mode)
 DELETE /chat/{chat_id}                             — удалить чат
 
 GET    /chat/{chat_id}/history                     — история сообщений
@@ -59,6 +59,30 @@ POST   /chat/{chat_id}/pipeline_confirm            — подтвердить з
 POST   /chat/{chat_id}/pipeline_resume             — продолжить DAG после validation/resume
 POST   /chat/{chat_id}/full_document_confirm       — подтвердить выбор документов Full Document Mode
 ```
+
+**`PATCH /chat/{chat_id}`** принимает любое из полей в теле:
+- `campaign_id: str | null` — установить/сбросить привязку к кампании (NULL отвязывает).
+- `full_document_mode_enabled: bool` — флаг Full Document Mode.
+- `context_update_mode: bool` — **Sprint 1**: master switch для `propose_context_update` tool. Когда true, agent loop может генерировать proposal-ы на обновление Campaign State / vault files.
+
+### SSE events для `POST /chat/{chat_id}/send_stream`
+
+Эндпоинт стримит JSON-чанки с `type` полем. Клиент должен обрабатывать:
+
+| `type` | Когда | Sprint | Поля payload |
+|---|---|---|---|
+| `step_status` | прогресс по шагам | — | `text` |
+| `token` | streaming токенов ассистента | — | `content` |
+| `prefill_rag` | **Sprint 2**: после prefill retrieval (ДО AgentLoop) | 2 | `queries_used: list[str]`, `has_evidence: bool` |
+| `round_start` | начало раунда в AgentLoop | — | `round`, `max_rounds`, `policy` |
+| `tool_call` | модель вызвала tool | — | `round`, `tool`, `queries`/`patch`/`confidence`+`counts` |
+| `tool_result` | host выполнил tool | — | `round`, `tool`, `status`, `hits_count` (для search_knowledge), `applied_keys`/`removed_keys` (для update_scene_state) |
+| `context_update_proposal` | **Sprint 3**: модель предложила update, session создан | 3 | `session_id`, `field_changes_count`, `state_patch_count`, `file_changes_count` |
+| `sources` | финальный список источников (после `final`) | — | `sources: list[Source]`, `grouped_by_step: bool` |
+| `error` | ошибка в agent loop | — | `message` |
+| `full_document_selection_required` | требуется выбор документов | — | `candidates` |
+| `pipeline_confirm_required` | требуется подтверждение пайплайна | — | `pipeline_name`, `confirm_token`, `reasoning` |
+| `clarification` | требуется ответ на уточняющий вопрос | — | `content`, `clarification_id`, `stage` |
 
 > `POST /chat/create` (а не `POST /api/chat/`); пути используют `/send_stream` для SSE-стрима. Раньше в документе фигурировали `/api/chat/`, `/messages`, `/clarification`, `/clarification/reset` — все эти эндпоинты удалены.
 
@@ -90,16 +114,27 @@ PATCH  /api/chats/{chat_id}/update-mode/review
             "accepted_op_indexes": [int],
             "rejected_op_indexes": [int],
             "edited":               [{"op_index": int, "text": string}]
+          },
+          "field_change_decisions": {                     // Sprint 3: опционально
+            "accepted_op_indexes": [int],
+            "rejected_op_indexes": [int]
           }
         }
-    — 422 при `unknown_state_op_index`; 409 при `state_op_review_conflict`
+    — 422 при `unknown_state_op_index` / `unknown_field_change_op_index`
+    — 409 при `state_op_review_conflict` / `field_change_review_conflict`
 
 POST   /api/chats/{chat_id}/update-mode/apply
-    — Применить accepted changes: checksum verify → snapshot → write → commit → reindex
-    — Также применяет принятый state_patch через `campaign_state_value_service.apply_patch`
+    — Применить accepted changes: трёхстадийный apply (Sprint 3):
+        1. Stage A — schema: `create_field` / `update_field` (атомарно, с rollback)
+        2. Stage B — state: `campaign_state_value_service.apply_patch`
+        3. Stage C — files: checksum verify → snapshot → write → commit → reindex
     — Body: {"apply_id": UUID (idempotency key)}
-    — Response: ApplyUpdateModeResponse (per-vault results, commit SHA, reindex_task_id, state_patch_result)
+    — Response: ApplyUpdateModeResponse
+        - per-vault results
+        - state_patch_result
+        - field_changes_result (Sprint 3)
     — 409 при `file_modified`, `vault_lock_timeout`, `apply_already_started`
+    — 422 при `schema_apply_failed` (Stage A fail → abort всего apply)
     — state patch failure (config_version mismatch, source stale) → state_patch_result.failed_op_indexes, file apply продолжается
 
 DELETE /api/chats/{chat_id}/update-mode/session
@@ -133,6 +168,9 @@ DELETE /api/chats/{chat_id}/update-mode/session
 | `state_op_review_conflict` | 409 | state-patch op_index пересекается accepted и rejected |
 | `unknown_state_op_index` | 422 | state-patch op_index отсутствует в сессии |
 | `state_patch_conflict` | 409 | config_version mismatch / source snapshot stale |
+| `schema_apply_failed` | 422 | **Sprint 3**: Stage A schema fail, apply aborted, см. `failed_op_indexes` + `failed_reasons` в response |
+| `unknown_field_change_op_index` | 422 | **Sprint 3**: field_change op_index отсутствует в сессии |
+| `field_change_review_conflict` | 409 | **Sprint 3**: field_change op_index пересекается accepted и rejected |
 
 ### Internal Indexer API (внутри Docker-сети, не публичный)
 
@@ -296,7 +334,7 @@ POST   /api/settings/campaigns/{campaign_id}/state/patch
 
 `POST .../state/patch` принимает `CampaignStatePatchRequest` (`base_state_version`, `config_version`, `operations: [...]`). При несовпадении версий — 409 без silent overwrite.
 
-#### Campaign State — Initial State (Stage 3)
+#### Campaign State — Initial State (Stage 3 + Stage 3.v2 «ИИ формирует контекст»)
 
 ```
 POST   /api/settings/campaigns/{campaign_id}/state/initial/preview
@@ -304,19 +342,55 @@ GET    /api/settings/campaigns/{campaign_id}/state/initial
 POST   /api/settings/campaigns/{campaign_id}/state/initial/apply
 ```
 
-- `POST .../state/initial/preview` принимает `{document_ids: string[]}` (1..50, только Markdown-индекс-документы кампании). Возвращает `CampaignStateInitialProposalRead` с `proposal_id`, `source_snapshot`, `proposal.fields`, `warnings`. Proposal сохраняется в Redis с TTL 3 часа.
-- `GET .../state/initial` возвращает текущий proposal или `null`.
-- `POST .../state/initial/apply` принимает `{proposal_id, config_version, proposal_overrides?}`.
-  Создаёт первую `CampaignStateVersion` (`source_kind="initial"`, `state_version=1`, `base_state_version=null`). Возвращает `CampaignStateVersionRead`.
-  - `proposal_overrides: CampaignStateInitialProposal` — необязательное поле.
-    Позволяет клиенту (Initial State Wizard) отредактировать текст `single_value`
-    и/или `list_value.items` перед apply. Бэкенд мерджит overrides поверх
-    proposal из Redis по `field_key`; неизвестные `field_key` тихо игнорируются.
-    `source_snapshot` остаётся от proposal из Redis (для проверки md5).
+- `POST .../state/initial/preview` принимает `CampaignStateInitialPreviewRequestV2`:
+  - `document_ids: string[]` — 1..50 UUID, только Markdown indexed-документы кампании.
+  - `propose_fields: bool = False` — Stage 3.v2: при `true` LLM может вернуть
+    `suggested_fields[]` с предложениями новых полей. При 0 enabled-полей и
+    `propose_fields=false` сервер вернёт **422 no_fields_configured_no_propose**
+    (подсказка: «откройте Wizard ещё раз в режиме ИИ»).
+  - `max_suggested_fields: int = 15` (0..50) — soft cap для suggested.
+  Возвращает `CampaignStateInitialProposalReadV2` (`proposal.suggested_fields`
+  всегда присутствует, возможно пустой массив). Proposal сохраняется в Redis
+  с TTL 3 часа.
 
-Коды ошибок preview: `404 campaign_not_found`, `422 no_markdown_documents / document_not_markdown / document_not_indexed`, `503 generation_provider_unavailable / invalid_generation_output`.
+- `GET .../state/initial` возвращает текущий proposal в V2-формате (или `null`).
 
-Коды ошибок apply: `404 proposal_not_found / campaign_not_found`, `409 initial_already_applied / config_version_conflict / source_snapshot_stale` (с `stale_documents: string[]`), `410 proposal_expired`.
+- `POST .../state/initial/apply` принимает `CampaignStateInitialApplyRequestV2`:
+  - `proposal_id`, `config_version` — обязательные (как раньше).
+  - `proposal_overrides: CampaignStateInitialProposal | None` — необязательные
+    правки значений existing-полей (мерджатся по `field_key`).
+  - `accepted_suggested_field_keys: string[] = []` — keys из `proposal.suggested_fields`,
+    которые нужно создать как поля кампании перед apply. При наличии
+    `suggested_fields[]` и `accepted_suggested_field_keys` бэкенд создаёт поля
+    через `CampaignStateFieldService.create_field` (каждое — отдельная транзакция,
+    инкремент `config_version`); затем читает свежую `config_version` у Campaign
+    и вызывает `apply_initial` с ней. Это гарантирует, что snapshot freshness
+    и config_version check пройдут несмотря на bump.
+  - `rejected_suggested_field_keys: string[] = []` — игнорируются на apply.
+    Если ключ есть в обоих списках — он treated as rejected (с warning).
+  Создаёт первую `CampaignStateVersion` (`source_kind="initial"`,
+  `state_version=1`). Возвращает `CampaignStateVersionRead`.
+
+Коды ошибок preview:
+- `404 campaign_not_found`
+- `422 no_fields_configured_no_propose` (только при `propose_fields=false` и 0 enabled-полей)
+- `422 no_markdown_documents / document_not_markdown / document_not_indexed`
+- `503 generation_provider_unavailable / invalid_generation_output`
+
+Коды ошибок apply:
+- `404 proposal_not_found / campaign_not_found`
+- `409 initial_already_applied`
+- `409 config_version_conflict` (включая случай, когда клиент изменил
+  `config_version` после preview при наличии suggested_fields)
+- `409 source_snapshot_stale` (с `stale_documents: string[]`)
+- `409 suggested_field_key_conflict` (race: parallel создание того же ключа)
+- `409 suggested_field_creation_failed` (regex/mode/description не прошли)
+- `410 proposal_expired`
+
+Audit log: при наличии suggested_fields пишется событие
+`campaign_state_initial_propose_fields_applied` с payload
+`{existing_fields_count, suggested_fields_total, suggested_fields_accepted,
+suggested_fields_rejected, total_fields_after_apply}`.
 
 #### Campaign State — Effective Context (Stage 6)
 

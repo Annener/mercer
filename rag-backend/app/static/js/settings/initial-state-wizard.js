@@ -1,4 +1,4 @@
-// Initial State Wizard — UI-overlay для Initial State (Stage 4).
+// Initial State Wizard — UI-overlay для Initial State (Stage 4 + 3.v2).
 //
 // Состояния: idle → loading_documents → select_documents → preview_starting
 //   → review → applying → result → (error)
@@ -10,8 +10,16 @@
 //
 // Опции opts (все опциональны):
 //   domainId        — string, используется для загрузки документов;
+//   proposeFields   — boolean (default false) — Stage 3.v2: при 0 enabled-полей
+//                     кампании ИЛИ для режима "Сформировать контекст с помощью ИИ".
+//                     На preview Wizard прокинет propose_fields=true.
+//   maxSuggestedFields — number (default 15) — soft cap для suggested_fields[].
 //   onApplied()     — вызывается ПОСЛЕ успешного apply и ДО close();
 //   onClosed()      — вызывается после close() (вне зависимости от apply).
+//
+// Если у кампании 0 enabled-полей и proposeFields=false, Wizard все равно
+// позволит выбрать документы и запустить preview — backend вернёт 422
+// no_fields_configured_no_propose, и Wizard покажет понятную ошибку.
 
 (function () {
     'use strict';
@@ -44,6 +52,12 @@
             'Кампания не найдена.',
         no_campaign_tags:
             'У кампании нет тегов. Добавьте собственные или подключите глобальные, иначе Initial State невозможно сформировать.',
+        no_fields_configured_no_propose:
+            'У кампании нет ни одного поля. Откройте Wizard ещё раз или используйте режим «Сформировать контекст с помощью ИИ», который сам предложит поля.',
+        suggested_field_key_conflict:
+            'Конфликт ключа поля: одно из предложенных ИИ полей уже существует в кампании.',
+        suggested_field_creation_failed:
+            'Не удалось создать предложенное ИИ поле.',
     };
 
     function _errMessage(err) {
@@ -134,6 +148,11 @@
         const panel = overlay.querySelector('.iswizard__panel');
         document.body.appendChild(overlay);
 
+        const proposeFields = !!o.proposeFields;
+        const maxSuggestedFields = Number.isFinite(o.maxSuggestedFields)
+            ? o.maxSuggestedFields
+            : 15;
+
         const ctx = {
             campaignId,
             opts: o,
@@ -151,6 +170,12 @@
             error: null,
             highlightDocIds: new Set(),
             campaignTagIds: [],
+            // Stage 3.v2:
+            proposeFields,
+            maxSuggestedFields,
+            // Suggested-field UI state (мутируется inline-edit'ом).
+            suggestedFields: [], // [{key, label, description, mode, initial_status,
+                                 //  single_value, list_value, accepted, originalKey}]
         };
 
         const controller = _buildController(ctx);
@@ -256,10 +281,24 @@
         async function doPreview() {
             setState('preview_starting');
             try {
+                const opts = {
+                    propose_fields: !!ctx.proposeFields,
+                    max_suggested_fields: ctx.maxSuggestedFields,
+                };
                 const proposal = await ctx.api.previewInitialState(
                     ctx.campaignId,
                     Array.from(ctx.selectedIds),
+                    opts,
                 );
+                // Если Wizard открыт в режиме propose_fields=false, но пришёл
+                // V2-proposal с suggested_fields (например backend стал по
+                // дефолту прокидывать) — отбрасываем suggested.
+                if (!ctx.proposeFields && proposal && proposal.proposal) {
+                    proposal.proposal.suggested_fields = [];
+                }
+                // Инициализируем suggestedFields state из proposal (UI работает
+                // с локальной мутабельной копией).
+                ctx.suggestedFields = _initSuggestedFromProposal(proposal);
                 setState('review', { proposal, appliedVersion: null });
             } catch (err) {
                 const info = _errMessage(err);
@@ -287,16 +326,60 @@
             };
         }
 
+        // Преобразовать suggested_fields[] из proposal в массив UI-стейта.
+        // accepted по умолчанию = true. Каждый элемент имеет originalKey для
+        // отслеживания, менялся ли key на стороне клиента.
+        function _initSuggestedFromProposal(proposal) {
+            const sfs = (proposal && proposal.proposal && proposal.proposal.suggested_fields) || [];
+            return sfs.map((sf) => {
+                const status = (sf.initial_status && sf.initial_status.status) || 'empty';
+                return {
+                    key: sf.key,
+                    originalKey: sf.key,  // для отслеживания изменений key
+                    label: sf.label || sf.key,
+                    description: sf.description || '',
+                    mode: sf.mode,
+                    initial_status: {
+                        status,
+                        clarification_question: sf.clarification_question
+                            || (sf.initial_status && sf.initial_status.clarification_question)
+                            || null,
+                    },
+                    single_value: sf.single_value
+                        ? { text: sf.single_value.text || '', source_refs: [...(sf.single_value.source_refs || [])] }
+                        : null,
+                    list_value: sf.list_value
+                        ? { items: (sf.list_value.items || []).map((it) => ({ ...it })) }
+                        : null,
+                    accepted: true,
+                };
+            });
+        }
+
+        // Собрать accepted/rejected ключи suggested_fields по текущему UI-стейту.
+        function _buildSuggestedFieldKeys(suggestedFields) {
+            const accepted = [];
+            const rejected = [];
+            for (const sf of suggestedFields) {
+                if (sf.accepted) accepted.push(sf.key);
+                else rejected.push(sf.key);
+            }
+            return { accepted, rejected };
+        }
+
         async function doApply() {
             if (!ctx.proposal) return;
             setState('applying');
             const overrides = _buildProposalOverrides(ctx.proposal);
+            const { accepted, rejected } = _buildSuggestedFieldKeys(ctx.suggestedFields);
             try {
                 const version = await ctx.api.applyInitialState(
                     ctx.campaignId,
                     ctx.proposal.proposal_id,
                     ctx.proposal.config_version,
                     overrides,
+                    accepted,
+                    rejected,
                 );
                 setState('result', { appliedVersion: version });
                 if (typeof ctx.opts.onApplied === 'function') {
@@ -313,6 +396,10 @@
                 } else if (info.code === 'source_snapshot_stale'
                     || info.code === 'proposal_expired') {
                     setState('select_documents', { proposal: null });
+                } else if (info.code === 'suggested_field_key_conflict'
+                    || info.code === 'suggested_field_creation_failed') {
+                    // Остаёмся на review — пользователь должен отредактировать.
+                    setState('review');
                 } else {
                     setState('review');
                 }
@@ -668,6 +755,262 @@
             return `<span class="iswizard__source-link" title="${_escapeHtml(ref)}">${_escapeHtml(label)}</span>`;
         }
 
+        // Рендер карточки одного suggested_field в review-секции.
+        // idx — индекс в ctx.suggestedFields, по нему ищем элемент.
+        function _suggestedFieldHtml(sf, idx) {
+            const status = (sf.initial_status && sf.initial_status.status) || 'empty';
+            const statusCls = `iswizard__field-status--${status}`;
+            const statusLabel = status === 'proposed' ? 'предложено'
+                : status === 'empty' ? 'нет данных'
+                : 'требуется уточнение';
+            const isSingle = sf.mode === 'single';
+
+            let valueHtml = '';
+            if (status === 'proposed') {
+                if (isSingle && sf.single_value) {
+                    const text = sf.single_value.text || '';
+                    valueHtml = `<div class="iswizard__field-value" data-suggested-single-value="${idx}">${_escapeHtml(text)}</div>`;
+                } else if (!isSingle && sf.list_value) {
+                    const items = sf.list_value.items || [];
+                    if (!items.length) {
+                        valueHtml = '<div class="iswizard__field-empty-text">Список пуст.</div>';
+                    } else {
+                        const itemsHtml = items.map((it, i) => `
+                            <div class="iswizard__list-item" data-suggested-list-idx="${i}">
+                                <div class="iswizard__list-item-text">${_escapeHtml(it.text || '')}</div>
+                                <div class="iswizard__list-item-actions">
+                                    <button class="iswizard__btn" type="button" data-action="edit-suggested-list-item" data-suggested-list-idx="${i}" title="Редактировать">✎</button>
+                                    <button class="iswizard__btn" type="button" data-action="remove-suggested-list-item" data-suggested-list-idx="${i}" title="Удалить">🗑</button>
+                                </div>
+                            </div>
+                        `).join('');
+                        valueHtml = `<div class="iswizard__list-items">${itemsHtml}</div>`;
+                    }
+                }
+            } else if (status === 'needs_clarification') {
+                const q = sf.initial_status && sf.initial_status.clarification_question
+                    ? sf.initial_status.clarification_question : '';
+                valueHtml = `<div class="iswizard__field-question">${_escapeHtml(q)}</div>`;
+            } else {
+                valueHtml = '<div class="iswizard__field-empty-text">Нет данных.</div>';
+            }
+
+            const editBtn = (status === 'proposed' && isSingle)
+                ? `<button class="iswizard__btn" type="button" data-action="edit-suggested-single" data-suggested-idx="${idx}">Изменить</button>`
+                : '';
+            const addListBtn = (status === 'proposed' && !isSingle)
+                ? `<button class="iswizard__btn" type="button" data-action="add-suggested-list-item" data-suggested-idx="${idx}">+ Добавить элемент</button>`
+                : '';
+
+            return `
+                <div class="iswizard__field iswizard__suggested-field${sf.accepted ? '' : ' iswizard__field--rejected'}" data-suggested-idx="${idx}">
+                    <div class="iswizard__field-header">
+                        <input type="checkbox" class="iswizard__suggested-accept" data-suggested-accept-idx="${idx}" ${sf.accepted ? 'checked' : ''} title="Принять поле" />
+                        <input class="iswizard__suggested-key" data-suggested-key-idx="${idx}" value="${_escapeHtml(sf.key)}" pattern="^[a-z][a-z0-9_]{0,63}$" title="stable snake_case key" />
+                        <span class="iswizard__field-mode">${_escapeHtml(sf.mode)}</span>
+                        <span class="iswizard__field-status ${statusCls}">${_escapeHtml(statusLabel)}</span>
+                    </div>
+                    <div class="iswizard__suggested-meta">
+                        <label class="iswizard__suggested-label">
+                            Название:
+                            <input class="iswizard__suggested-label-input" data-suggested-label-idx="${idx}" value="${_escapeHtml(sf.label || '')}" maxlength="256" />
+                        </label>
+                        <label class="iswizard__suggested-label">
+                            Описание:
+                            <textarea class="iswizard__suggested-desc" data-suggested-desc-idx="${idx}" rows="2" placeholder="Подсказка для будущих LLM (опц.)">${_escapeHtml(sf.description || '')}</textarea>
+                        </label>
+                        <div class="iswizard__suggested-mode-toggle">
+                            Тип поля:
+                            <label><input type="radio" name="suggested-mode-${idx}" value="single" data-suggested-mode-idx="${idx}" ${isSingle ? 'checked' : ''} /> single</label>
+                            <label><input type="radio" name="suggested-mode-${idx}" value="list" data-suggested-mode-idx="${idx}" ${!isSingle ? 'checked' : ''} /> list</label>
+                        </div>
+                    </div>
+                    <div class="iswizard__suggested-value">${valueHtml}</div>
+                    <div class="iswizard__field-actions">
+                        ${editBtn}
+                        ${addListBtn}
+                    </div>
+                </div>
+            `;
+        }
+
+        // Привязка handlers для suggested_fields карточек.
+        function _attachSuggestedHandlers(bodyEl) {
+            const getSf = (idx) => ctx.suggestedFields[idx];
+
+            // Accept toggle.
+            bodyEl.querySelectorAll('[data-suggested-accept-idx]').forEach((cb) => {
+                cb.addEventListener('change', (ev) => {
+                    const idx = Number(ev.target.dataset.suggestedAcceptIdx);
+                    const sf = getSf(idx);
+                    if (!sf) return;
+                    sf.accepted = ev.target.checked;
+                    render();
+                });
+            });
+
+            // Key.
+            bodyEl.querySelectorAll('[data-suggested-key-idx]').forEach((inp) => {
+                inp.addEventListener('input', (ev) => {
+                    const idx = Number(ev.target.dataset.suggestedKeyIdx);
+                    const sf = getSf(idx);
+                    if (!sf) return;
+                    sf.key = ev.target.value || sf.key;
+                });
+            });
+
+            // Label.
+            bodyEl.querySelectorAll('[data-suggested-label-idx]').forEach((inp) => {
+                inp.addEventListener('input', (ev) => {
+                    const idx = Number(ev.target.dataset.suggestedLabelIdx);
+                    const sf = getSf(idx);
+                    if (!sf) return;
+                    sf.label = ev.target.value || sf.label;
+                });
+            });
+
+            // Description.
+            bodyEl.querySelectorAll('[data-suggested-desc-idx]').forEach((inp) => {
+                inp.addEventListener('input', (ev) => {
+                    const idx = Number(ev.target.dataset.suggestedDescIdx);
+                    const sf = getSf(idx);
+                    if (!sf) return;
+                    sf.description = ev.target.value || '';
+                });
+            });
+
+            // Mode radio.
+            bodyEl.querySelectorAll('[data-suggested-mode-idx]').forEach((radio) => {
+                radio.addEventListener('change', (ev) => {
+                    const idx = Number(ev.target.dataset.suggestedModeIdx);
+                    const sf = getSf(idx);
+                    if (!sf) return;
+                    const newMode = ev.target.value;
+                    if (sf.mode === newMode) return;
+                    sf.mode = newMode;
+                    if (newMode === 'single' && !sf.single_value) {
+                        sf.single_value = { text: '', source_refs: [] };
+                        sf.list_value = null;
+                    } else if (newMode === 'list' && !sf.list_value) {
+                        sf.list_value = { items: [] };
+                        sf.single_value = null;
+                    }
+                    render();
+                });
+            });
+
+            // Edit single value.
+            bodyEl.querySelectorAll('[data-action="edit-suggested-single"]').forEach((btn) => {
+                btn.addEventListener('click', () => {
+                    const idx = Number(btn.dataset.suggestedIdx);
+                    const sf = getSf(idx);
+                    if (!sf || !sf.single_value) return;
+                    const wrap = btn.closest('.iswizard__suggested-field');
+                    if (!wrap) return;
+                    _enterSuggestedSingleEditMode(wrap, sf);
+                });
+            });
+
+            // Add list item.
+            bodyEl.querySelectorAll('[data-action="add-suggested-list-item"]').forEach((btn) => {
+                btn.addEventListener('click', () => {
+                    const idx = Number(btn.dataset.suggestedIdx);
+                    const sf = getSf(idx);
+                    if (!sf) return;
+                    if (!sf.list_value) {
+                        sf.list_value = { items: [] };
+                    }
+                    sf.list_value.items.push({ text: '', source_refs: [] });
+                    render();
+                });
+            });
+
+            // Edit list item.
+            bodyEl.querySelectorAll('[data-action="edit-suggested-list-item"]').forEach((btn) => {
+                btn.addEventListener('click', () => {
+                    const idx = Number(btn.dataset.suggestedListIdx);
+                    const itemEl = btn.closest('.iswizard__list-item');
+                    const wrap = btn.closest('.iswizard__suggested-field');
+                    const wrapIdx = wrap ? Number(wrap.dataset.suggestedIdx) : NaN;
+                    const sf = Number.isFinite(wrapIdx) ? getSf(wrapIdx) : null;
+                    if (!sf || !sf.list_value || !sf.list_value.items[idx]) return;
+                    _enterSuggestedListItemEditMode(itemEl, sf, idx);
+                });
+            });
+
+            // Remove list item.
+            bodyEl.querySelectorAll('[data-action="remove-suggested-list-item"]').forEach((btn) => {
+                btn.addEventListener('click', () => {
+                    const idx = Number(btn.dataset.suggestedListIdx);
+                    const wrap = btn.closest('.iswizard__suggested-field');
+                    const wrapIdx = wrap ? Number(wrap.dataset.suggestedIdx) : NaN;
+                    const sf = Number.isFinite(wrapIdx) ? getSf(wrapIdx) : null;
+                    if (!sf || !sf.list_value) return;
+                    sf.list_value.items.splice(idx, 1);
+                    render();
+                });
+            });
+        }
+
+        // Inline-edit single_value в suggested_field.
+        function _enterSuggestedSingleEditMode(wrap, sf) {
+            const valueEl = wrap.querySelector(`[data-suggested-single-value]`);
+            if (!valueEl) return;
+            const current = (sf.single_value && sf.single_value.text) || '';
+            const ta = document.createElement('textarea');
+            ta.className = 'iswizard__field-edit-textarea';
+            ta.value = current;
+            valueEl.replaceWith(ta);
+            const actions = wrap.querySelector('.iswizard__field-actions');
+            if (actions) {
+                actions.innerHTML = `
+                    <button class="iswizard__btn" type="button" data-action="cancel-suggested-edit">Отменить</button>
+                    <button class="iswizard__btn iswizard__btn--primary" type="button" data-action="save-suggested-edit">Сохранить</button>
+                `;
+                actions.querySelector('[data-action="cancel-suggested-edit"]').addEventListener('click', () => render());
+                actions.querySelector('[data-action="save-suggested-edit"]').addEventListener('click', () => {
+                    const newText = (ta.value || '').trim();
+                    if (!newText) {
+                        render();
+                        return;
+                    }
+                    sf.single_value = { ...(sf.single_value || {}), text: newText };
+                    render();
+                });
+            }
+        }
+
+        // Inline-edit list item в suggested_field.
+        function _enterSuggestedListItemEditMode(itemEl, sf, idx) {
+            if (!itemEl) return;
+            const items = sf.list_value.items;
+            const item = items[idx];
+            if (!item) return;
+            const current = item.text || '';
+            const ta = document.createElement('textarea');
+            ta.className = 'iswizard__field-edit-textarea';
+            ta.value = current;
+            const actions = itemEl.querySelector('.iswizard__list-item-actions');
+            const textEl = itemEl.querySelector('.iswizard__list-item-text');
+            if (textEl) textEl.replaceWith(ta);
+            if (actions) {
+                actions.innerHTML = `
+                    <button class="iswizard__btn" type="button" data-action="cancel-suggested-list-edit">Отменить</button>
+                    <button class="iswizard__btn iswizard__btn--primary" type="button" data-action="save-suggested-list-edit">Сохранить</button>
+                `;
+                actions.querySelector('[data-action="cancel-suggested-list-edit"]').addEventListener('click', () => render());
+                actions.querySelector('[data-action="save-suggested-list-edit"]').addEventListener('click', () => {
+                    const newText = (ta.value || '').trim();
+                    if (!newText) {
+                        render();
+                        return;
+                    }
+                    items[idx] = { ...item, text: newText };
+                    render();
+                });
+            }
+        }
+
         function _snapshotById() {
             const m = {};
             (ctx.proposal && ctx.proposal.source_snapshot || []).forEach((s) => {
@@ -678,16 +1021,32 @@
 
         function _renderReview() {
             const errorHtml = ctx.error ? _errorBannerHtml(ctx.error) : '';
-            const proposal = ctx.proposal || { proposal: { fields: [], questions: [], warnings: [] } };
-            const p = proposal.proposal || { fields: [], questions: [] };
+            const proposal = ctx.proposal || { proposal: { fields: [], suggested_fields: [], questions: [], warnings: [] } };
+            const p = proposal.proposal || { fields: [], suggested_fields: [], questions: [] };
             const fields = Array.isArray(p.fields) ? p.fields : [];
             const questions = Array.isArray(p.questions) ? p.questions : [];
             const warnings = Array.isArray(proposal.warnings) ? proposal.warnings : [];
             const snapshotById = _snapshotById();
 
+            // Suggested fields: ctx.suggestedFields — локальный UI-стейт, обновляемый inline-edit'ом.
+            const suggestedFields = Array.isArray(ctx.suggestedFields) ? ctx.suggestedFields : [];
+            const acceptedSuggested = suggestedFields.filter((s) => s.accepted).length;
+
+            const introHint = suggestedFields.length
+                ? `<p class="iswizard__hint">Проверьте и отредактируйте предложения ИИ: ключ/название/описание/тип каждого нового поля и значения для всех полей. Непринятые поля (✗) не будут созданы.</p>`
+                : `<p class="iswizard__hint">Проверьте предложенные значения. Можно отредактировать текст single-полей, добавлять/удалять/редактировать элементы list-полей. Источники зафиксированы snapshot'ом.</p>`;
+
             body.innerHTML = `
                 ${errorHtml}
-                <p class="iswizard__hint">Проверьте предложенные значения. Можно отредактировать текст single-полей, добавлять/удалять/редактировать элементы list-полей. Источники зафиксированы snapshot'ом.</p>
+                ${introHint}
+                ${suggestedFields.length ? `
+                    <section class="iswizard__suggested-section">
+                        <h4 class="iswizard__suggested-title">
+                            Предложенные новые поля (${acceptedSuggested}/${suggestedFields.length})
+                        </h4>
+                        <div data-suggested>${suggestedFields.map((sf, i) => _suggestedFieldHtml(sf, i)).join('')}</div>
+                    </section>
+                ` : ''}
                 <div data-fields>${fields.map((f) => _fieldHtml(f, snapshotById)).join('') || '<div class="iswizard__field-empty-text">Модель не вернула полей.</div>'}</div>
                 ${questions.length ? `
                     <div class="iswizard__questions">
@@ -704,7 +1063,10 @@
             `;
             _attachErrorDismiss(body);
 
-            // Хук «Изменить» для single-полей.
+            // Хуки suggested_fields
+            _attachSuggestedHandlers(body);
+
+            // Хук «Изменить» для single-полей (existing fields).
             body.querySelectorAll('[data-action="edit-field"]').forEach((btn) => {
                 btn.addEventListener('click', () => {
                     const key = btn.dataset.fieldKey;
@@ -716,7 +1078,7 @@
                 });
             });
 
-            // Хуки для list items: edit / remove.
+            // Хуки для list items existing fields: edit / remove.
             body.querySelectorAll('[data-action="edit-list-item"]').forEach((btn) => {
                 btn.addEventListener('click', () => {
                     const fieldKey = btn.closest('.iswizard__field')?.dataset.fieldKey;
@@ -740,7 +1102,7 @@
                 });
             });
 
-            // Хук «+ Добавить элемент».
+            // Хук «+ Добавить элемент» для existing fields.
             body.querySelectorAll('[data-action="add-list-item"]').forEach((btn) => {
                 btn.addEventListener('click', () => {
                     const fieldKey = btn.closest('.iswizard__field')?.dataset.fieldKey;
@@ -755,12 +1117,17 @@
                 });
             });
 
-            _renderActions([
-                _btn('← Назад', 'back', 'secondary'),
-                _btn('Отмена', 'close', 'secondary'),
-                _btn('Применить', 'apply', 'primary'),
-            ]);
-        }
+            // Кнопка «Применить» активна, если есть proposal (положительный UX —
+// пользователь может применить пустой state, или state с пустыми полями).
+const canApply = !!(ctx.proposal);
+_renderActions([
+    _btn('← Назад', 'back', 'secondary'),
+    _btn('Отмена', 'close', 'secondary'),
+    canApply
+        ? _btn('Применить', 'apply', 'primary')
+        : _btnDisabled('Применить', 'apply', 'primary'),
+]);
+}
 
         function _enterSingleEditMode(wrap, field) {
             const valueEl = wrap.querySelector('[data-single-value]');

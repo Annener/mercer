@@ -549,6 +549,55 @@ CampaignStateInitialApplyRequest:
   # proposal из Redis по field_key. source_snapshot не затрагивается.
 ```
 
+## Campaign State — Stage 3.v2: Initial State with `propose_fields`
+
+Расширение для кампаний с 0 enabled-полей: Wizard показывает кнопку
+«Сформировать контекст с помощью ИИ», preview прокидывает `propose_fields=true`,
+LLM возвращает `suggested_fields[]` — метаданные новых полей + значения. Apply
+создаёт принятые поля и применяет state одной операцией.
+
+```python
+CampaignStateSuggestedFieldConfig:     # V2
+  key (^[a-z][a-z0-9_]{0,63}$, 1..64),
+  label (1..256),
+  description (≤8KB),
+  mode: "single" | "list",
+  initial_status: CampaignStateInitialFieldStatusValue,
+  clarification_question? (≤1024),
+  single_value?, list_value?
+  # mode ↔ single_value/list_value согласованность (model_validator).
+  # status=proposed ↔ заполненный value.
+  # status=needs_clarification ↔ clarification_question обязателен.
+
+CampaignStateInitialProposalV2:        # расширенный proposal
+  fields: list[CampaignStateInitialProposalField] = [],
+  suggested_fields: list[CampaignStateSuggestedFieldConfig] = [],
+  questions: list[str] = []
+
+CampaignStateInitialProposalReadV2(CampaignStateInitialProposalRead):
+  # Наследует всё от V1 Read, но `proposal` имеет тип ProposalV2.
+  proposal: CampaignStateInitialProposalV2
+
+CampaignStateInitialPreviewRequestV2:
+  document_ids (1..50),
+  propose_fields: bool = False,
+  max_suggested_fields: int = 15  (0..50)
+  # propose_fields=True позволяет preview при 0 enabled-полях.
+  # propose_fields=False при 0 enabled-полей → 422 no_fields_configured_no_propose.
+
+CampaignStateInitialApplyRequestV2(CampaignStateInitialApplyRequest):
+  # Все V1-поля + дополнительные:
+  accepted_suggested_field_keys: list[str] = [] (≤50),
+  rejected_suggested_field_keys: list[str] = [] (≤50)
+  # Ключи из proposal.suggested_fields; ключ в обоих списках → трактуется
+  # как rejected с warning.
+```
+
+Backward-compat: `CampaignStateInitialProposalReadV2` принимает JSON V1 Read
+(`suggested_fields` отсутствует → default `[]`). `PreviewRequestV2` принимает
+V1 payload (`propose_fields` отсутствует → default `False`). `ApplyRequestV2`
+наследует V1 — без accepted/rejected ключей работает как раньше.
+
 ---
 
 ## Campaign State — Stage 5: state_patch in proposal

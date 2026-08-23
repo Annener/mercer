@@ -161,7 +161,7 @@ describe('InitialStateWizard', () => {
         nextBtn.click();
         await flushMicrotasks();
 
-        expect(previewMock).toHaveBeenCalledWith('camp-1', ['doc-x']);
+        expect(previewMock).toHaveBeenCalledWith('camp-1', ['doc-x'], expect.any(Object));
     });
 
     it('T-6 успешный preview → шаг review, рендер карточек по mode×status', async () => {
