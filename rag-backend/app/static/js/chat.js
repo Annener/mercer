@@ -497,6 +497,49 @@ class ChatManager {
     }
 
     // -------------------------------------------------------
+    // Stage 8.5: tool_call / tool_result inline cards
+    // -------------------------------------------------------
+    //
+    // When the model calls `search_knowledge` the backend streams a
+    // `tool_call` event; when the host returns evidence it streams a
+    // `tool_result`. We render these as a small inline card so the
+    // user can see the loop in action without it being noisy.
+
+    appendToolCallCard(parsed) {
+        if (!this.messagesContainer) return;
+        const queries = (parsed.queries || []).slice(0, 3).map(escapeHtml).join(', ');
+        const reason = parsed.reason ? `<div class="tool-call-reason">${escapeHtml(parsed.reason)}</div>` : '';
+        const card = document.createElement('div');
+        card.className = 'tool-call-card';
+        card.dataset.round = String(parsed.round ?? 0);
+        card.innerHTML =
+            `<div class="tool-call-header">Поиск в базе знаний</div>` +
+            `<div class="tool-call-queries">${queries || '(пустой запрос)'}</div>` +
+            reason +
+            `<div class="tool-call-status">ищу…</div>`;
+        this.messagesContainer.appendChild(card);
+        if (!this._userScrolledUp) this.scrollToBottom();
+    }
+
+    updateToolResultCard(parsed) {
+        if (!this.messagesContainer) return;
+        const cards = this.messagesContainer.querySelectorAll(
+            `.tool-call-card[data-round="${parsed.round ?? 0}"]`
+        );
+        const card = cards[cards.length - 1];
+        if (!card) return;
+        const status = card.querySelector('.tool-call-status');
+        if (status) {
+            const hits = parsed.hits_count || 0;
+            const scope = parsed.scope || 'domain';
+            const note = parsed.note ? ` <span class="tool-call-note">— ${escapeHtml(parsed.note)}</span>` : '';
+            status.innerHTML =
+                `Найдено фрагментов: <b>${hits}</b> ` +
+                `<span class="tool-call-scope">(${scope})</span>${note}`;
+        }
+    }
+
+    // -------------------------------------------------------
     // Stop / Send button toggle
     // -------------------------------------------------------
 
@@ -717,7 +760,7 @@ class ChatManager {
                         streamDone = true;
                         continue;
                     }
-                    try {
+                        try {
                         const parsed = JSON.parse(data);
                         if (parsed.type) {
                             const needsAssistant = ![
@@ -727,6 +770,8 @@ class ChatManager {
                                 'pipeline_cancelled',
                                 'step_status',
                                 'full_document_selection_required',
+                                'tool_call',
+                                'tool_result',
                             ].includes(parsed.type);
                             if (needsAssistant && !assistantMessage) {
                                 assistantMessage = this.addMessage('assistant', '');
@@ -782,6 +827,18 @@ class ChatManager {
                                 );
                                 this.messagesContainer.appendChild(panel);
                                 if (!this._userScrolledUp) this.scrollToBottom();
+                            }
+
+                            // Stage 8.5: tool_call/tool_result — поиск в базе знаний
+                            if (parsed.type === 'tool_call') {
+                                if (typeof this.appendToolCallCard === 'function') {
+                                    this.appendToolCallCard(parsed);
+                                }
+                            }
+                            if (parsed.type === 'tool_result') {
+                                if (typeof this.updateToolResultCard === 'function') {
+                                    this.updateToolResultCard(parsed);
+                                }
                             }
 
                             if (parsed.type === 'progress') this.updateProgressBar(assistantMessage, parsed.step, parsed.total, parsed.step_name);

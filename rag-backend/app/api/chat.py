@@ -672,6 +672,89 @@ async def send_message_stream(
 
         system_prompt = await _compose_full_system_prompt(context.campaign_id, domain_id, db)
 
+        # Stage 8.5: load retrieval tool settings and decide whether the
+        # model gets the `search_knowledge` tool (conditional RAG) or
+        # falls back to the unconditional single-shot retrieval path.
+        from app.services.retrieval_tool_settings import load_retrieval_tool_settings
+        tool_settings = await load_retrieval_tool_settings(db)
+        use_tool = tool_settings.tool_enabled and bool(_provider)
+
+        if use_tool:
+            # ── 3-tool. Conditional/cyclic RAG via AgentLoop ────────────────
+            from app.services.agent_loop import AgentLoop
+
+            loop = AgentLoop()
+            history_payload = [
+                {"role": m.role, "content": m.content}
+                for m in (context.history or [])
+            ]
+            all_hits: list[SearchHit] = []
+            full_answer = ""
+            cancelled = False
+            try:
+                async for event in loop.run_stream(
+                    provider=_provider,
+                    system_prompt=system_prompt,
+                    history=history_payload,
+                    user_message=context.original_query or req.content,
+                    domain_id=domain_id,
+                    campaign_id=context.campaign_id,
+                    vault_ids=vault_ids,
+                    max_rounds=tool_settings.max_rounds,
+                    evidence_token_budget=tool_settings.evidence_token_budget,
+                    policy=tool_settings.policy,
+                    db=db,
+                ):
+                    if event.type == "round_start":
+                        yield _step(
+                            f"Раунд {event.round + 1}/{event.payload.get('max_rounds', '?')} "
+                            f"({event.payload.get('policy', 'assistive')})"
+                        )
+                    elif event.type == "tool_call":
+                        queries = event.payload.get("queries") or []
+                        reason = event.payload.get("reason") or ""
+                        yield _step(
+                            "Ищу в базе знаний: " + ", ".join(queries[:3]) +
+                            ("…" if len(queries) > 3 else "")
+                        )
+                        yield f"data: {json.dumps({'type': 'tool_call', 'round': event.round, 'tool': event.payload.get('tool'), 'queries': queries, 'reason': reason}, ensure_ascii=False)}\n\n"
+                    elif event.type == "tool_result":
+                        hits_count = event.payload.get("hits_count", 0)
+                        scope = event.payload.get("scope", "domain")
+                        note = event.payload.get("note")
+                        if hits_count > 0:
+                            yield _step(f"Найдено фрагментов: {hits_count} ({scope})")
+                        else:
+                            yield _step("В базе знаний ничего не найдено")
+                        yield f"data: {json.dumps({'type': 'tool_result', 'round': event.round, 'queries_used': event.payload.get('queries_used', []), 'hits_count': hits_count, 'evidence_tokens': event.payload.get('evidence_tokens', 0), 'scope': scope, 'note': note}, ensure_ascii=False)}\n\n"
+                    elif event.type == "token":
+                        full_answer += event.payload.get("content", "")
+                        yield f"data: {json.dumps({'type': 'token', 'content': event.payload.get('content', '')}, ensure_ascii=False)}\n\n"
+                    elif event.type == "error":
+                        yield f"data: {json.dumps({'type': 'error', 'message': event.payload.get('message', 'agent loop error')}, ensure_ascii=False)}\n\n"
+                    elif event.type == "final":
+                        logger.info(
+                            "agent_loop final: chat_id=%s rounds=%d tool_calls=%d content_chars=%d",
+                            _chat.id,
+                            len(event.payload.get("rounds", [])),
+                            event.payload.get("tool_calls_made", 0),
+                            event.payload.get("content_chars", 0),
+                        )
+            except asyncio.CancelledError:
+                cancelled = True
+            finally:
+                await _reset_clarif_fsm()
+                await _save_partial_answer(
+                    db, _chat, full_answer,
+                    title_query=context.original_query or req.content,
+                )
+                if cancelled:
+                    return
+
+            yield "data: [DONE]\n\n"
+            return
+
+        # ── 3-legacy. Unconditional single-shot retrieval (no tool) ──────────
         hits: list[SearchHit] = []
         if vault_ids:
             yield _step("Ищу в базе знаний...")
