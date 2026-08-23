@@ -78,6 +78,11 @@ class _FakeValueService:
         self._fields_by_campaign[cid].append(_FakeField(fid, key, mode))
         return fid
 
+    def remove_field(self, cid: str, key: str) -> None:
+        self._fields_by_campaign[cid] = [
+            f for f in self._fields_by_campaign[cid] if f.key != key
+        ]
+
     def _seed_version(self, cid: str, state_version: int, *, base: int | None = None) -> _FakeVersion:
         cfg = self._campaigns[cid]["config_version"]
         v = _FakeVersion(state_version, cfg, base)
@@ -554,3 +559,54 @@ def test_audit_payload_written_on_success(client, service):
     assert a["from_state_version"] is None
     assert a["to_state_version"] == 1
     assert a["operations"] == [{"type": "replace_single", "field_key": "focus"}]
+
+
+def test_apply_patch_after_field_cascade_returns_422_unknown_field(client, service):
+    """После каскадного удаления поля patch-операции по его key отвергаются как unknown.
+
+    Симулирует состояние «поле было в v1, затем удалено field-service» —
+    клиент по-прежнему шлёт patch по старому ключу; сервер должен вернуть
+    422 с rejection.code='field_not_found', без частичного apply.
+    """
+    cid = str(uuid.uuid4())
+    service.register_campaign(cid)
+    service.add_field(cid, "focus", "single")
+
+    r1 = client.post(
+        f"/api/settings/campaigns/{cid}/state/patch",
+        json={
+            "base_state_version": None,
+            "config_version": 1,
+            "operations": [
+                {"type": "replace_single", "field_key": "focus", "text": "v1",
+                 "reason": "init", "source_refs": []},
+            ],
+        },
+    )
+    assert r1.status_code == 200
+    assert r1.json()["applied_state_version"] == 1
+    audit_after_v1 = len(service.audit_entries())
+
+    # Имитация каскадного удаления поля: field-service убрал поле из конфигурации.
+    service.remove_field(cid, "focus")
+
+    r2 = client.post(
+        f"/api/settings/campaigns/{cid}/state/patch",
+        json={
+            "base_state_version": 1,
+            "config_version": 1,
+            "operations": [
+                {"type": "replace_single", "field_key": "focus", "text": "v2",
+                 "reason": "stale key", "source_refs": []},
+            ],
+        },
+    )
+    assert r2.status_code == 422
+    detail = r2.json()["detail"]
+    assert detail["code"] == "patch_validation_failed"
+    assert detail["rejection"]["code"] == "field_not_found"
+    assert detail["rejection"]["op_index"] == 0
+    assert detail["rejection"]["op_type"] == "replace_single"
+    # Никакой новой версии не появилось, audit не пополнился относительно v1.
+    assert len(service._versions_by_campaign[cid]) == 1
+    assert len(service.audit_entries()) == audit_after_v1

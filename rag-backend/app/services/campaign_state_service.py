@@ -13,15 +13,18 @@ import uuid
 from collections.abc import Sequence
 
 from fastapi import HTTPException
-from sqlalchemy import func, select, update
+from sqlalchemy import delete as sa_delete
+from sqlalchemy import func, insert, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import (
+    AuditLog,
     Campaign,
     CampaignStateFieldConfig,
     CampaignStateListItem,
     CampaignStateValue,
+    CampaignStateVersion,
 )
 from shared_contracts.models import (
     CampaignStateFieldConfigCreate,
@@ -311,42 +314,139 @@ class CampaignStateFieldService:
         db: AsyncSession,
         campaign_id: uuid.UUID,
         field_id: uuid.UUID,
+        created_by: str | None = None,
     ) -> None:
-        """Удаление поля. Stage 2 запрещает удаление, если на поле ссылаются значения.
+        """Удаление поля с каскадной очисткой значения в активной версии state.
 
-        Проверяется наличие строк в campaign_state_values и
-        campaign_state_list_items по данному field_id — даже в неактивных
-        версиях. Если найдено хотя бы одно использование — FieldInUseError (409).
+        Транзакция:
+          1. SELECT … FOR UPDATE на Campaign (config-уровневая синхронизация).
+          2. Найти latest state_version (если есть).
+          3. Если latest есть — посчитать и удалить CampaignStateValue /
+             CampaignStateListItem для (latest.id, field_id).
+          4. Создать новую CampaignStateVersion:
+               state_version = latest.state_version + 1,
+               config_version = campaign.config_version (снимок ДО bump),
+               base_state_version = latest.state_version,
+               source_kind = 'patch'.
+          5. Записать AuditLog action='campaign_state_field_cascade_purged'
+             (если latest был).
+          6. Удалить CampaignStateFieldConfig.
+          7. _bump_config_version.
+          8. commit.
+
+        Прошлые state_versions и их значения НЕ трогаются — аудит-трейл
+        диффов остаётся фактически неизменным.
         """
         row = await self._get_field_or_404(db, campaign_id, field_id)
         campaign = await _lock_campaign_for_config_change(db, campaign_id)
 
-        # Refuse deletion if state values reference this field (any version).
-        used_values = await db.execute(
-            select(func.count(CampaignStateValue.field_id)).where(
-                CampaignStateValue.field_id == field_id
+        # latest active state version, если есть.
+        latest = (
+            await db.execute(
+                select(CampaignStateVersion)
+                .where(CampaignStateVersion.campaign_id == campaign_id)
+                .order_by(CampaignStateVersion.state_version.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+
+        if latest is None:
+            # Активного state ещё нет — просто удаляем поле и бампим config_version.
+            await db.delete(row)
+            await _bump_config_version(db, campaign)
+            await db.commit()
+            logger.info(
+                "campaign_state_field.delete: campaign=%s field=%s key=%s "
+                "config_version=%d (no active state)",
+                campaign_id, field_id, row.key, campaign.config_version,
+            )
+            return
+
+        # Считаем и удаляем значения/элементы активной версии по этому полю.
+        purged_values = int(
+            (
+                await db.execute(
+                    select(func.count()).select_from(CampaignStateValue).where(
+                        CampaignStateValue.version_id == latest.id,
+                        CampaignStateValue.field_id == field_id,
+                    )
+                )
+            ).scalar_one()
+            or 0
+        )
+        purged_list_items = int(
+            (
+                await db.execute(
+                    select(func.count()).select_from(CampaignStateListItem).where(
+                        CampaignStateListItem.version_id == latest.id,
+                        CampaignStateListItem.field_id == field_id,
+                    )
+                )
+            ).scalar_one()
+            or 0
+        )
+
+        await db.execute(
+            sa_delete(CampaignStateValue).where(
+                CampaignStateValue.version_id == latest.id,
+                CampaignStateValue.field_id == field_id,
             )
         )
-        values_count: int = int(used_values.scalar_one() or 0)
-        used_items = await db.execute(
-            select(func.count(CampaignStateListItem.field_id)).where(
-                CampaignStateListItem.field_id == field_id
+        await db.execute(
+            sa_delete(CampaignStateListItem).where(
+                CampaignStateListItem.version_id == latest.id,
+                CampaignStateListItem.field_id == field_id,
             )
         )
-        items_count: int = int(used_items.scalar_one() or 0)
-        if values_count or items_count:
-            raise FieldInUseError(
-                f"field {row.key!r} is referenced by state "
-                f"(values={values_count}, list_items={items_count})"
+
+        # Снимок config_version — ДО bump, чтобы state_version фиксировала
+        # «состояние до удаления поля», а компилятор брал снимок конфига,
+        # привязанный к версии (как и у apply_patch).
+        new_state_version = latest.state_version + 1
+        new_version = CampaignStateVersion(
+            campaign_id=campaign_id,
+            state_version=new_state_version,
+            config_version=campaign.config_version,
+            source_kind="patch",
+            base_state_version=latest.state_version,
+            created_by=created_by,
+        )
+        db.add(new_version)
+        await db.flush()
+        new_version_id = new_version.id
+
+        # Audit-trail: фиксируем каскадную очистку.
+        await db.execute(
+            insert(AuditLog).values(
+                id=uuid.uuid4(),
+                action="campaign_state_field_cascade_purged",
+                entity_type="campaign",
+                entity_id=str(campaign_id),
+                actor=created_by,
+                payload={
+                    "from_state_version": latest.state_version,
+                    "to_state_version": new_state_version,
+                    "config_version": campaign.config_version,
+                    "field_id": str(field_id),
+                    "field_key": row.key,
+                    "purged_values": purged_values,
+                    "purged_list_items": purged_list_items,
+                },
+                created_at=func.now(),
             )
+        )
 
         await db.delete(row)
         await _bump_config_version(db, campaign)
         await db.commit()
+
         logger.info(
-            "campaign_state_field.delete: campaign=%s field=%s key=%s config_version=%d",
+            "campaign_state_field.delete: campaign=%s field=%s key=%s "
+            "config_version=%d cascade=v%d purged_values=%d purged_list_items=%d",
             campaign_id, field_id, row.key, campaign.config_version,
+            new_state_version, purged_values, purged_list_items,
         )
+        _ = new_version_id  # currently unused; kept for symmetry with apply_patch
 
     # -- reorder -----------------------------------------------------------
 

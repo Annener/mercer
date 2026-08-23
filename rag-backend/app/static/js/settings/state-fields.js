@@ -197,7 +197,7 @@
         async function onDelete(fid) {
             const f = state.fields.find((x) => String(x.id) === String(fid));
             if (!f) return;
-            if (!confirm(`Удалить поле «${f.label}» (${f.key})?`)) return;
+            if (!confirm(`Удалить поле «${f.label}» (${f.key})? Будут удалены соответствующие значения в активном состоянии кампании. Действие необратимо.`)) return;
             try {
                 await state.api.deleteStateField(state.campaignId, fid);
                 state.fields = state.fields.filter((x) => String(x.id) !== String(fid));

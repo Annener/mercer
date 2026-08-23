@@ -74,6 +74,23 @@ Campaign State не имеет глобального фиксированног
 - `prompt_instruction`;
 - сложные типы, entity graph, timeline, relation fields или специализированные редакторы.
 
+#### 4.1.1. Удаление поля и каскад
+
+Удаление поля каскадно очищает соответствующее значение в **активной** версии state и создаёт новую `state_version`:
+
+- `state_version = latest.state_version + 1`;
+- `config_version` = снимок **до** инкремента (state-версия фиксирует «до удаления поля»);
+- `base_state_version = latest.state_version` (или `NULL`, если active state отсутствовал);
+- `source_kind = 'patch'`.
+
+Прошлые `state_versions` и их `CampaignStateValue` / `CampaignStateListItem` не затрагиваются — аудит-трейл диффов сохраняется.
+
+Если active state отсутствует, новая `state_version` не создаётся и `AuditLog`-запись не пишется; `config_version` всё равно инкрементируется.
+
+Audit-row для каскадной очистки: `action='campaign_state_field_cascade_purged'`, payload содержит `from_state_version`, `to_state_version`, `config_version`, `field_id`, `field_key`, `purged_values`, `purged_list_items`.
+
+UI подтверждает удаление явно, текст диалога отражает необратимость и влияние на активное состояние.
+
 ### 4.2. Режимы
 
 - `single`: одно актуальное текстовое значение. Примеры: «Текущая локация», «Текущий фокус», «Следующая сцена».
@@ -149,6 +166,7 @@ remove_list_item
 - Каждая операция содержит `reason` и `source_refs`.
 - При несовпадении `base_state_version` применяется rebase/review, но не silent overwrite.
 - Сервер валидирует существование/доступность поля, соответствие операции `mode`, принадлежность item кампании и версии state.
+- После каскадного удаления поля любые patch-операции по его `key` отвергаются как `unknown_field` (поле отсутствует в `config_version` соответствующей state-версии).
 
 ## 7. Review и apply
 
@@ -397,3 +415,4 @@ LLM
 - Внешний Markdown update только делает state potentially stale; PDF не влияет на state flow.
 - Обычный чат работает без unconditional retrieval.
 - В grounded knowledge-сценарии модель может выполнить до двух итераций поиска и не выдумывает отсутствующий кампанийский лор.
+- Удаление поля каскадно очищает значение в активной версии state, инкрементирует `state_version` (`source_kind='patch'`, `base_state_version` = предыдущей), оставляет прошлые `state_versions` нетронутыми и пишет audit-запись `campaign_state_field_cascade_purged`. Patch-операции по удалённому `key` после этого отвергаются как `unknown_field`.
