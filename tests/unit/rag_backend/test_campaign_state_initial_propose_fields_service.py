@@ -67,6 +67,36 @@ def test_build_system_prompt_propose_fields_no_existing_fields_ok():
     assert "SUGGESTED FIELDS" in prompt
 
 
+def test_build_system_prompt_has_russian_language_section():
+    """Промпт должен явно инструктировать модель отвечать по-русски на user-facing строках."""
+    from app.services.campaign_state_initial_service import _build_system_prompt
+
+    prompt = _build_system_prompt([], propose_fields=True, max_suggested_fields=10)
+    assert "LANGUAGE" in prompt
+    assert "Russian" in prompt
+    assert "single_value.text" in prompt
+    assert "list_value.items[].text" in prompt
+    assert "clarification_question" in prompt
+    assert "questions" in prompt
+
+
+def test_build_system_prompt_propose_fields_has_russian_label_and_description_rules():
+    """В SUGGESTED FIELDS блок должны быть инструкции на русском label/description."""
+    from app.services.campaign_state_initial_service import _build_system_prompt
+
+    prompt = _build_system_prompt([], propose_fields=True, max_suggested_fields=10)
+    # label: human-readable, Russian
+    assert "label: 1..256 chars" in prompt
+    assert "Russian language" in prompt
+    # description: Russian, пример русских шаблонов
+    assert "Все text values" in prompt or "Все text-значения" in prompt or "single_value.text" in prompt
+
+
+# ---------------------------------------------------------------------------
+# _normalize_proposal_v2 — фильтрация suggested_fields
+# ---------------------------------------------------------------------------
+
+
 # ---------------------------------------------------------------------------
 # _normalize_proposal_v2 — фильтрация suggested_fields
 # ---------------------------------------------------------------------------

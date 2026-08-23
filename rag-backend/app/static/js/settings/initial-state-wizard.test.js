@@ -735,4 +735,97 @@ describe('InitialStateWizard', () => {
         expect(args[3].fields[0].field_key).toBe('focus');
         expect(args[3].fields[0].single_value.text).toBe('как есть');
     });
+
+    it('T-20 close на overlay без подтверждения НЕ закрывает Wizard (когда есть proposal)', async () => {
+        // Когда Wizard уже на шаге review и пользователь кликает вне панели —
+        // по умолчанию показывается window.confirm. Без подтверждения Wizard
+        // должен оставаться открытым.
+        const proposal = {
+            proposal_id: 'p1',
+            campaign_id: 'camp-1',
+            config_version: 1,
+            source_snapshot: [],
+            proposal: {
+                fields: [
+                    { field_key: 'focus', label: 'Фокус', mode: 'single',
+                      status: { status: 'proposed' },
+                      single_value: { text: 'x', source_refs: [] } },
+                ],
+                questions: [],
+            },
+            warnings: [],
+        };
+        window.chatAPI = makeApi({
+            getInitialStateProposal: vi.fn(async () => proposal),
+        });
+        window.confirm = vi.fn(() => false);  // пользователь отказался закрывать
+        window.InitialStateWizard.open('camp-1');
+        await flushMicrotasks();
+
+        // Кликаем по overlay (вне панели).
+        const overlay = document.querySelector('.iswizard');
+        const panel = document.querySelector('.iswizard__panel');
+        // Эмулируем клик по overlay: target === overlay.
+        overlay.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        await flushMicrotasks();
+
+        // Был вызван confirm.
+        expect(window.confirm).toHaveBeenCalled();
+        // Wizard остался открытым.
+        expect(document.querySelector('.iswizard')).toBeTruthy();
+        expect(document.querySelector('.iswizard__panel')).toBeTruthy();
+        // Проверим, что мы на шаге 2 (review), а не на шаге 1 (тогда бы overlay-click
+        // закрыл бы без вопроса — но у нас есть proposal, поэтому идём через confirm).
+        // Здесь просто проверка, что overlay остался — этого достаточно.
+        void panel;  // silence unused warning
+    });
+
+    it('T-21 close на overlay подтверждает и закрывает Wizard', async () => {
+        const proposal = {
+            proposal_id: 'p1',
+            campaign_id: 'camp-1',
+            config_version: 1,
+            source_snapshot: [],
+            proposal: {
+                fields: [{ field_key: 'focus', label: 'Фокус', mode: 'single',
+                           status: { status: 'proposed' },
+                           single_value: { text: 'x', source_refs: [] } }],
+                questions: [],
+            },
+            warnings: [],
+        };
+        window.chatAPI = makeApi({
+            getInitialStateProposal: vi.fn(async () => proposal),
+        });
+        window.confirm = vi.fn(() => true);  // пользователь подтвердил
+        window.InitialStateWizard.open('camp-1');
+        await flushMicrotasks();
+
+        const overlay = document.querySelector('.iswizard');
+        overlay.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        await flushMicrotasks();
+
+        expect(window.confirm).toHaveBeenCalled();
+        expect(document.querySelector('.iswizard')).toBeNull();
+    });
+
+    it('T-22 close на overlay без proposal НЕ показывает confirm', async () => {
+        // На шаге 1 (только выбор документов) confirm не нужен — закрываем сразу.
+        const docs = [makeDoc({ id: 'doc-a' })];
+        window.chatAPI = makeApi({
+            getSettingsDocuments: vi.fn(async () => docs),
+        });
+        window.confirm = vi.fn(() => true);
+        window.InitialStateWizard.open('camp-1');
+        await flushMicrotasks();
+
+        const overlay = document.querySelector('.iswizard');
+        overlay.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        await flushMicrotasks();
+
+        // confirm НЕ должен быть вызван (нечего терять).
+        expect(window.confirm).not.toHaveBeenCalled();
+        // Wizard закрылся.
+        expect(document.querySelector('.iswizard')).toBeNull();
+    });
 });

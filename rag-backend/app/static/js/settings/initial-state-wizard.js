@@ -135,6 +135,21 @@
         }
     }
 
+    // Подтверждение закрытия Wizard при наличии несохранённого прогресса
+    // (после шага 1). При step===1 (только выбор документов) вопрос не нужен —
+    // терять нечего, закрываем сразу. При state='applying'/'result' (идёт
+    // apply или уже всё готово) — закрываем без вопроса.
+    function _confirmClose(ctx) {
+        const busyStates = ['applying', 'result'];
+        if (busyStates.includes(ctx.state)) return true;
+        if (ctx.proposal) {
+            return window.confirm(
+                'Закрыть мастер? Несохранённые изменения (отредактированные значения, принятые/отклонённые поля) будут потеряны.'
+            );
+        }
+        return true;
+    }
+
     function open(campaignId, opts) {
         if (!campaignId) throw new Error('campaignId is required');
         const o = opts || {};
@@ -181,11 +196,17 @@
         const controller = _buildController(ctx);
         _active = { overlay, panel, opts: o, controller };
 
-        // Закрытие по клику на крестик или клик вне панели.
+        // Закрытие по клику на крестик или клик вне панели. Если Wizard
+        // уже на review (есть proposal) — спрашиваем подтверждение, чтобы не
+        // потерять несохранённые правки от случайного клика мимо окна.
         overlay.addEventListener('click', (ev) => {
-            if (ev.target === overlay) close();
+            if (ev.target === overlay) {
+                if (_confirmClose(ctx)) close();
+            }
         });
-        panel.querySelector('[data-action="close"]').addEventListener('click', close);
+        panel.querySelector('[data-action="close"]').addEventListener('click', () => {
+            if (_confirmClose(ctx)) close();
+        });
 
         controller.start();
         return overlay;
@@ -1232,7 +1253,10 @@ _renderActions([
 
         function _onAction(action) {
             clearError();
-            if (action === 'close') return close();
+            if (action === 'close') {
+                if (_confirmClose(ctx)) close();
+                return;
+            }
             if (action === 'back') return doBackToSelect();
             if (action === 'preview') return doPreview();
             if (action === 'apply') return doApply();

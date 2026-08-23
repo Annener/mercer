@@ -167,3 +167,44 @@ async def test_get_handles_bytes_value() -> None:
     out = await campaign_state_initial_store.get(redis, "c-5")
     assert out is not None
     assert out.campaign_id == "c-5"
+
+
+@pytest.mark.asyncio
+async def test_get_decodes_v1_payload_as_v2_with_empty_suggested() -> None:
+    """Backward-compat: proposals, сохранённые до Stage 3.v2 (без suggested_fields),
+    продолжают работать — V2 Read десериализует их с suggested_fields=[].
+
+    Сценарий: после обновления кода в Redis могут остаться старые V1 proposals
+    (TTL 3 часа). apply() должен корректно прочитать их и обработать
+    `payload.proposal.suggested_fields` (получит []).
+    """
+    import json
+
+    from app.services.campaign_state_initial_store import campaign_state_initial_store
+
+    now = _dt.datetime(2026, 1, 1, 12, 0, 0, tzinfo=_dt.timezone.utc)
+    # Эмулируем JSON, сериализованный CampaignStateInitialProposalRead (V1, без suggested_fields).
+    v1_json = json.dumps({
+        "proposal_id": "old-v1-proposal",
+        "campaign_id": "c-v1",
+        "config_version": 2,
+        "source_snapshot": [],
+        "proposal": {
+            "fields": [],
+            "questions": [],
+            # ВАЖНО: нет suggested_fields (V1).
+        },
+        "warnings": [],
+        "created_at": now.isoformat(),
+        "expires_at": (now + _dt.timedelta(hours=3)).isoformat(),
+    })
+
+    redis = _FakeRedis()
+    redis._data["campaign_initial:c-v1"] = (v1_json.encode("utf-8"), 3 * 3600)
+
+    out = await campaign_state_initial_store.get(redis, "c-v1")
+    assert out is not None
+    assert out.proposal_id == "old-v1-proposal"
+    # Backward-compat: V1 JSON нормализуется в V2 с пустым suggested_fields.
+    assert out.proposal.suggested_fields == []
+    assert hasattr(out.proposal, "suggested_fields")
