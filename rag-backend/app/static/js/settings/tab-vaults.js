@@ -84,10 +84,16 @@ const VaultsTabMixin = {
                     <h3>${vault ? 'Редактировать vault' : 'Новый vault'}</h3>
 
                     <div class="form-group">
-                        <label>ID vault</label>
+                        <label for="vault-id-input">ID vault</label>
                         <input type="text" id="vault-id-input"
                                value="${this.escapeHtml(vault?.vault_id || '')}"
-                               ${vault ? 'disabled' : ''}>
+                               pattern="[a-z0-9-]{3,64}"
+                               maxlength="64"
+                               ${vault ? 'disabled' : ''}
+                               title="Только строчные латинские буквы, цифры и дефис, от 3 до 64 символов">
+                        <small class="form-hint" style="color: var(--text-muted, #888); font-size: 0.82em;">
+                            Только строчные латинские буквы, цифры и дефис, от 3 до 64 символов (например: my-vault-1).
+                        </small>
                     </div>
 
                     <div class="form-group">
@@ -167,10 +173,25 @@ const VaultsTabMixin = {
                 };
 
                 if (vaultId) {
-                    await this.api.updateVault(vaultId, data);
+                    try {
+                        await this.api.updateVault(vaultId, data);
+                    } catch (err) {
+                        alert('Ошибка сохранения: ' + err.message);
+                        return;
+                    }
                 } else {
-                    data.vault_id = modal.querySelector('#vault-id-input').value;
-                    await this.api.createVault(data);
+                    const idValue = modal.querySelector('#vault-id-input').value.trim();
+                    if (!/^[a-z0-9-]{3,64}$/.test(idValue)) {
+                        alert('ID vault должен содержать от 3 до 64 символов, только строчные латинские буквы, цифры и дефис');
+                        return;
+                    }
+                    data.vault_id = idValue;
+                    try {
+                        await this.api.createVault(data);
+                    } catch (err) {
+                        alert('Ошибка сохранения: ' + err.message);
+                        return;
+                    }
                 }
 
                 modal.remove();
