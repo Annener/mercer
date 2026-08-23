@@ -79,7 +79,7 @@ function renderSourcesBlock(sources, answerText) {
                 source_kind: s.source_kind || 'chunk',
             });
         }
-        if (s.page != null) {
+        if (s.page !== null && s.page !== undefined) {
             fileMap.get(key).pages.push(s.page);
         }
     }
@@ -131,7 +131,7 @@ function renderGroupedSources(stepGroups, answerText) {
     if (items.length === 0) return '';
     const rows = items.map(item => {
         const fileName = (item.path || '').split('/').pop() || item.path;
-        const pagesLabel = item.page != null ? `стр. ${item.page}` : '';
+        const pagesLabel = (item.page !== null && item.page !== undefined) ? `стр. ${item.page}` : '';
         const kindBadge = item.source_kind === 'full_document'
             ? `<span class="src-kind src-kind--full">📄 полный документ</span>`
             : '';
@@ -352,7 +352,7 @@ function createFullDocPanel(chatId, candidates, onStream) {
         const item = document.createElement('label');
         item.className = 'fulldoc-doc-item';
 
-        const tokensText = c.estimated_tokens != null
+        const tokensText = (c.estimated_tokens !== null && c.estimated_tokens !== undefined)
             ? `~${c.estimated_tokens.toLocaleString()} токенов`
             : '';
         const alreadySentBadge = c.already_sent

@@ -14,12 +14,12 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from app.api.update_mode import router
+from app.db.session import get_db
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.update_mode import router
-from app.db.session import get_db
 from shared_contracts.models import (
     ApplyUpdateModeResponse,
     ResolvedUpdateModeChange,
@@ -30,7 +30,6 @@ from shared_contracts.models import (
     UpdateModeVaultApplyResult,
     UpdateModeVaultApplyStatus,
 )
-
 
 # ---------------------------------------------------------------------------
 # App fixture
@@ -150,14 +149,13 @@ async def test_start_returns_200_and_session():
         patch(
             "app.api.update_mode.update_mode_store.create",
             new=AsyncMock(return_value=session),
-        ),
+        ),TestClient(app) as client
     ):
-        with TestClient(app) as client:
-            resp = client.post(
-                f"/api/chats/{CHAT_ID}/update-mode/start",
-                params={"campaign_id": CAMPAIGN_ID},
-                json={"note": "Session 1 recap: players arrived late."},
-            )
+        resp = client.post(
+            f"/api/chats/{CHAT_ID}/update-mode/start",
+            params={"campaign_id": CAMPAIGN_ID},
+            json={"note": "Session 1 recap: players arrived late."},
+        )
 
     assert resp.status_code == 200, resp.text
     data = resp.json()
@@ -188,14 +186,13 @@ async def test_start_returns_409_when_session_already_active():
         patch(
             "app.api.update_mode.update_mode_store.create",
             new=AsyncMock(side_effect=SessionAlreadyActiveError(CHAT_ID)),
-        ),
+        ),TestClient(app) as client
     ):
-        with TestClient(app) as client:
-            resp = client.post(
-                f"/api/chats/{CHAT_ID}/update-mode/start",
-                params={"campaign_id": CAMPAIGN_ID},
-                json={"note": "note"},
-            )
+        resp = client.post(
+            f"/api/chats/{CHAT_ID}/update-mode/start",
+            params={"campaign_id": CAMPAIGN_ID},
+            json={"note": "note"},
+        )
 
     assert resp.status_code == 409
 
@@ -219,14 +216,13 @@ async def test_start_returns_502_on_indexer_unavailable():
         patch(
             "app.api.update_mode.update_mode_store.get",
             new=AsyncMock(return_value=None),
-        ),
+        ),TestClient(app) as client
     ):
-        with TestClient(app) as client:
-            resp = client.post(
-                f"/api/chats/{CHAT_ID}/update-mode/start",
-                params={"campaign_id": CAMPAIGN_ID},
-                json={"note": "note"},
-            )
+        resp = client.post(
+            f"/api/chats/{CHAT_ID}/update-mode/start",
+            params={"campaign_id": CAMPAIGN_ID},
+            json={"note": "note"},
+        )
 
     assert resp.status_code == 503
 
@@ -267,13 +263,12 @@ async def test_apply_returns_200_with_accepted_changes():
         patch(
             "app.api.update_mode.indexer_client.apply",
             new=AsyncMock(return_value=apply_resp),
-        ),
+        ),TestClient(app) as client
     ):
-        with TestClient(app) as client:
-            resp = client.post(
-                f"/api/chats/{CHAT_ID}/update-mode/apply",
-                json={"apply_id": None},
-            )
+        resp = client.post(
+            f"/api/chats/{CHAT_ID}/update-mode/apply",
+            json={"apply_id": None},
+        )
 
     assert resp.status_code == 200
     data = resp.json()

@@ -31,7 +31,6 @@ from shared_contracts.models import (
     CampaignStateCompiledBlock,
     CampaignStateCompiledFieldRead,
     CampaignStateFieldConfigRead,
-    CampaignStateFieldMode,
     CampaignStateFieldValuesRead,
     CampaignStateListItemRead,
     CampaignStateSingleValueRead,

@@ -10,15 +10,16 @@ Rules enforced here:
 """
 from __future__ import annotations
 
+import contextlib
+import difflib
 import hashlib
 import logging
 import os
 import subprocess
 import tempfile
-import difflib
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
 
 log = logging.getLogger(__name__)
 
@@ -108,7 +109,7 @@ def resolve_file_path(vault_root: Path, rel_path: str) -> Path:
     filename = Path(rel_path).name
     for ch in _FORBIDDEN_FILENAME_CHARS:
         if ch in filename:
-            raise PathValidationError("invalid_path", f"filename contains forbidden character")
+            raise PathValidationError("invalid_path", "filename contains forbidden character")
     if Path(rel_path).suffix.lower() != ".md":
         raise PathValidationError("invalid_path", f"only .md files are supported, got: {rel_path!r}")
 
@@ -182,10 +183,8 @@ def atomic_write(path: Path, content: str) -> None:
                 fh.write(content)
             os.replace(tmp_path, path)
         except Exception:
-            try:
+            with contextlib.suppress(OSError):
                 os.unlink(tmp_path)
-            except OSError:
-                pass
             raise
     except OSError as exc:
         raise AtomicWriteError("write_error", str(exc))
@@ -209,6 +208,7 @@ def _run_git(args: list[str], cwd: Path) -> subprocess.CompletedProcess:
         capture_output=True,
         text=True,
         shell=False,
+        check=False,
     )
 
 
@@ -220,6 +220,7 @@ def git_check_available() -> bool:
             capture_output=True,
             text=True,
             shell=False,
+            check=False,
         )
         return result.returncode == 0
     except FileNotFoundError:
@@ -283,6 +284,7 @@ def git_initial_commit(
             text=True,
             shell=False,
             env=env,
+            check=False,
         )
         if r.returncode != 0:
             raise GitError("git_add_failed", f"git add failed for {rel!r}: {r.stderr.strip()}")
@@ -297,6 +299,7 @@ def git_initial_commit(
             text=True,
             shell=False,
             env=env,
+            check=False,
         )
 
     r = subprocess.run(
@@ -306,6 +309,7 @@ def git_initial_commit(
         text=True,
         shell=False,
         env=env,
+        check=False,
     )
     if r.returncode != 0:
         raise GitError(
@@ -377,6 +381,7 @@ def git_snapshot(
             text=True,
             shell=False,
             env=env,
+            check=False,
         )
         if result.returncode != 0:
             raise GitError("git_add_failed", f"git add failed for {rel!r}")
@@ -388,6 +393,7 @@ def git_snapshot(
         text=True,
         shell=False,
         env=env,
+        check=False,
     )
     if result.returncode != 0:
         log.error("git snapshot commit failed", extra={"vault_root": str(vault_root)})
@@ -420,6 +426,7 @@ def git_apply_commit(
             text=True,
             shell=False,
             env=env,
+            check=False,
         )
         if result.returncode != 0:
             raise GitError("git_add_failed", f"git add failed for {rel!r}")
@@ -431,6 +438,7 @@ def git_apply_commit(
         text=True,
         shell=False,
         env=env,
+        check=False,
     )
     if result.returncode != 0:
         log.error("git apply commit failed", extra={"vault_root": str(vault_root)})

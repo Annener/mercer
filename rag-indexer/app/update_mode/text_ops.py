@@ -24,8 +24,8 @@ from __future__ import annotations
 import logging
 import re
 
-from shared_contracts.models import UpdateModeOperation
 from app.update_mode.text_ops_utils import build_anchor_pattern as _build_anchor_pattern
+from shared_contracts.models import UpdateModeOperation
 
 log = logging.getLogger(__name__)
 
@@ -225,9 +225,11 @@ def _delete_section(original: str, heading: str) -> str | None:
     matching: list[int] = []
     for i, line in enumerate(lines):
         stripped = line.strip()
-        if stripped.startswith("#"):
-            if _normalise_heading_text(stripped).lower() == heading_text.lower():
-                matching.append(i)
+        if (
+            stripped.startswith("#")
+            and _normalise_heading_text(stripped).lower() == heading_text.lower()
+        ):
+            matching.append(i)
 
     if len(matching) == 0:
         found_headings = [

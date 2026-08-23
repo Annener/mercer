@@ -11,10 +11,8 @@ from __future__ import annotations
 import json
 import sys
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import FastAPI
@@ -53,7 +51,7 @@ class _FakeExecuteResult:
     def __init__(self, rows: list) -> None:
         self._rows = rows
 
-    def scalars(self) -> "_FakeExecuteResult":
+    def scalars(self) -> _FakeExecuteResult:
         return self
 
     def all(self) -> list:
@@ -160,7 +158,7 @@ def client():
 
 
 def test_endpoint_returns_404_for_missing_campaign(client):
-    test_client, db, redis = client
+    test_client, db, _redis = client
     db._campaign_exists = False
     cid = str(uuid.uuid4())
 
@@ -176,7 +174,7 @@ def test_endpoint_returns_404_for_missing_campaign(client):
 
 
 def test_endpoint_returns_no_state(client):
-    test_client, db, redis = client
+    test_client, db, _redis = client
     cid = str(uuid.uuid4())
     db._version = None
 
@@ -244,14 +242,14 @@ def test_endpoint_returns_stale_after_md5_change(client):
 
 def test_endpoint_invalid_uuid_returns_404(client):
     """Невалидный UUID → 404 (campaign_not_found)."""
-    test_client, db, redis = client
+    test_client, _db, _redis = client
     resp = test_client.get("/api/settings/campaigns/not-a-uuid/state/stale-status")
     assert resp.status_code in (404, 422)
 
 
 def test_endpoint_response_shape(client):
     """Проверка всех полей ответа."""
-    test_client, db, redis = client
+    test_client, db, _redis = client
     cid = str(uuid.uuid4())
     db._version = _FakeVersion(3, cid)
 
@@ -269,5 +267,5 @@ def test_endpoint_response_shape(client):
     assert isinstance(body["potentially_stale"], bool)
     assert isinstance(body["stale_documents"], list)
     # Проверка формата checked_at (ISO 8601).
-    parsed = datetime.fromisoformat(body["checked_at"].replace("Z", "+00:00"))
+    parsed = datetime.fromisoformat(body["checked_at"])
     assert parsed.tzinfo is not None

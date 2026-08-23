@@ -32,12 +32,12 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.services.search_knowledge_service import search_knowledge_service
-from app.services.update_mode_store import update_mode_store
 from app.services.source_utils import (
     MAX_SOURCES_PER_TOOL_RESULT,
     hits_to_sources,
     sources_to_message_sources,
 )
+from app.services.update_mode_store import update_mode_store
 from shared_contracts.models import (
     AgentLoopResult,
     AgentRoundResult,
@@ -631,17 +631,15 @@ async def _execute_propose_context_update(
         }
 
     # Create session via executor.start_from_proposal.
-    from app.services.update_mode_executor import (
-        UpdateModeExecutor,
-        UpdateModeSessionAlreadyActiveError,
-    )
-
     # We need an indexer_client for the executor. If we don't have one
     # wired in, we still proceed — file_changes won't resolve but the
     # session will be created with state+schema ops.
     from app.services.indexer_client import (
-        IndexerClient,
         indexer_client,
+    )
+    from app.services.update_mode_executor import (
+        UpdateModeExecutor,
+        UpdateModeSessionAlreadyActiveError,
     )
 
     executor = UpdateModeExecutor(

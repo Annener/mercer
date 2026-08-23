@@ -464,5 +464,5 @@ async def _write_stale_audit_log(
         )
         try:
             await db.rollback()
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001  # best-effort rollback
+            logger.debug("rollback failed: %s", exc)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any
 
@@ -10,9 +11,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import Domain, Vault
 from app.db.session import get_db
 from app.services.domain_service import domain_service
-from .schemas import ClarificationFieldRequest, DomainCreateRequest, DomainUpdateRequest, PromptUpdateRequest
+
+from .schemas import (
+    ClarificationFieldRequest,
+    DomainCreateRequest,
+    DomainUpdateRequest,
+    PromptUpdateRequest,
+)
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 DOMAIN_ID_RE = re.compile(r"^[a-z0-9_]{3,32}$")
 
 
@@ -30,8 +38,8 @@ async def list_domains(db: AsyncSession = Depends(get_db)) -> list[dict[str, Any
                 d["enabled"] = True
                 try:
                     await domain_service.update_domain(d["domain_id"], {"enabled": True}, db)
-                except Exception:
-                    pass
+                except Exception as exc:  # noqa: BLE001  # best-effort auto-enable
+                    logger.debug("auto-enable domain failed: %s", exc)
     return domains
 
 

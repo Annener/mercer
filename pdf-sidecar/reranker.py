@@ -49,7 +49,7 @@ def _detect_device() -> str:
             mem_gb = torch.cuda.get_device_properties(0).total_memory // 1024 ** 3
             logger.info("Device selected: CUDA — %s (%d GB VRAM)", name, mem_gb)
             return "cuda"
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001  # device detection is best-effort
         logger.warning("Device detection failed: %s", e)
 
     logger.warning("⚠️  Reranker running on CPU — no GPU device available or detected")
@@ -86,7 +86,7 @@ def load_reranker(model_id: str | None = None) -> None:
         import torch  # noqa: F401 — уже импортирован выше, но на случай cpu-only окружения
         actual_device = next(_model.model.parameters()).device
         logger.info("Reranker model loaded: %s | parameters confirmed on device: %s", target_id, actual_device)
-    except Exception:
+    except Exception:  # noqa: BLE001  # device introspection is best-effort
         logger.info("Reranker model loaded: %s", target_id)
 
 

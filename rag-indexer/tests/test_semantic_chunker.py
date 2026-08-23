@@ -6,14 +6,15 @@
 
 from __future__ import annotations
 
-import asyncio
-from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
-from parser.semantic_chunker import SemanticChunker, _apply_min_guard, _cosine_distance, _split_sentences
-
+from parser.semantic_chunker import (
+    SemanticChunker,
+    _apply_min_guard,
+    _cosine_distance,
+    _split_sentences,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers

@@ -16,13 +16,11 @@ test_chat_vault_domain.py — Шаг 7
 """
 from __future__ import annotations
 
-import uuid
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from fastapi import HTTPException
-
 from app.api.chat import _check_vault_domain
+from fastapi import HTTPException
 
 
 def _make_vault(domain_id: str | None, vault_id: str = "vault-1") -> MagicMock:

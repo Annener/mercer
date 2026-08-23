@@ -4,11 +4,13 @@ No I/O required: pure Pydantic validation tests.
 """
 from __future__ import annotations
 
+import uuid
+from datetime import datetime, timedelta, timezone
+
 import pytest
 from pydantic import ValidationError
 
 from shared_contracts.models import (
-    ApplyUpdateModeResponse,
     ResolvedUpdateModeChange,
     StartUpdateModeRequest,
     UpdateModeAction,
@@ -22,12 +24,7 @@ from shared_contracts.models import (
     UpdateModeResolveRequest,
     UpdateModeReviewRequest,
     UpdateModeSession,
-    UpdateModeVaultApplyResult,
-    UpdateModeVaultApplyStatus,
 )
-from datetime import datetime, timedelta, timezone
-import uuid
-
 
 # ---------------------------------------------------------------------------
 # Helpers

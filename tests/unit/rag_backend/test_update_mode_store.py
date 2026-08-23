@@ -5,13 +5,11 @@ Lua evalsha results are also mocked to test the Python-side parsing.
 """
 from __future__ import annotations
 
-import json
 import uuid
 from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
-
 from app.services.update_mode_store import (
     ApplyConflictError,
     CannotAcceptFailedChangeError,
@@ -22,14 +20,13 @@ from app.services.update_mode_store import (
     UpdateModeStore,
     update_mode_store,
 )
+
 from shared_contracts.models import (
     ResolvedUpdateModeChange,
     UpdateModeAction,
     UpdateModeChangeStatus,
-    UpdateModeOperation,
     UpdateModeSession,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures

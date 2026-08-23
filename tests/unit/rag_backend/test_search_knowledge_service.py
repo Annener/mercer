@@ -12,10 +12,9 @@ Covers the host-side guarantees of the `search_knowledge` tool:
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
-
 from app.services import search_knowledge_service as sks
 from app.services.search_knowledge_service import (
     SearchKnowledgeService,
@@ -23,8 +22,8 @@ from app.services.search_knowledge_service import (
     _normalise_query,
     _truncate_to_budget,
 )
-from shared_contracts.models import SearchHit, SearchKnowledgeResult
 
+from shared_contracts.models import SearchHit, SearchKnowledgeResult
 
 # ---------------------------------------------------------------------------
 # Helpers

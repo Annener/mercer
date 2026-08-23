@@ -12,7 +12,7 @@ def _load_yaml(path: Path) -> dict[str, Any]:
     with path.open("r", encoding="utf-8") as config_file:
         data = yaml.safe_load(config_file) or {}
     if not isinstance(data, dict):
-        raise ValueError(f"Config file {path} must contain a YAML mapping.")
+        raise TypeError(f"Config file {path} must contain a YAML mapping.")
     return data
 
 

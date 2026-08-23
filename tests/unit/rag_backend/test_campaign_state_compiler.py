@@ -11,16 +11,16 @@
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 
 import pytest
-
 from app.services.campaign_state_compiler import (
     DEFAULT_TOKEN_BUDGET,
     compile_campaign_state,
     default_token_counter,
     get_campaign_state_token_budget,
 )
+
 from shared_contracts.models import (
     CampaignStateFieldConfigRead,
     CampaignStateFieldValuesRead,
@@ -29,7 +29,6 @@ from shared_contracts.models import (
     CampaignStateVersionRead,
     CampaignStateVersionSummary,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -54,8 +53,8 @@ def _cfg(
         mode=mode,  # type: ignore[arg-type]
         enabled=enabled,
         display_order=display_order,
-        created_at=datetime(2026, 1, 1),
-        updated_at=datetime(2026, 1, 1),
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+        updated_at=datetime(2026, 1, 1, tzinfo=UTC),
     )
 
 
@@ -72,7 +71,7 @@ def _version(
             config_version=config_version,
             source_kind="initial",
             base_state_version=None,
-            created_at=datetime(2026, 1, 1),
+            created_at=datetime(2026, 1, 1, tzinfo=UTC),
             created_by=None,
         ),
         fields=fields,
@@ -91,7 +90,7 @@ def _fv_single(
             field_key=field_key,
             text=text,
             source_refs=[],
-            updated_at=datetime(2026, 1, 1),
+            updated_at=datetime(2026, 1, 1, tzinfo=UTC),
         )
     return CampaignStateFieldValuesRead(
         field_key=field_key,
@@ -124,7 +123,7 @@ def _fv_list(
                 text=text,
                 resolved=resolved,
                 source_refs=[],
-                updated_at=datetime(2026, 1, 1),
+                updated_at=datetime(2026, 1, 1, tzinfo=UTC),
             )
             for i, (text, resolved) in enumerate(items)
         ],

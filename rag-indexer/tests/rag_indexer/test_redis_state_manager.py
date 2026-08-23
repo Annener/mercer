@@ -11,7 +11,6 @@ import json
 
 import fakeredis.aioredis as fakeredis
 import pytest
-
 from parser.state.redis_state_manager import RedisStateManager
 
 

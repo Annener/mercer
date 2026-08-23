@@ -128,7 +128,7 @@ class DBManager {
     _renderHit(hit) {
         const sourcePath = hit.metadata?.source_path || hit.metadata?.file_path || hit.document_id || '';
         const sourceName = sourcePath.split('/').pop() || sourcePath;
-        const scoreStr   = hit.score != null ? hit.score.toFixed(3) : '—';
+        const scoreStr   = (hit.score !== null && hit.score !== undefined) ? hit.score.toFixed(3) : '—';
         const preview    = (hit.text || '').slice(0, 320);
         const hasFull    = (hit.text || '').length > 320;
 
@@ -213,7 +213,7 @@ class DBManager {
         const fixedProps = [
             ['chunk_id',    hit.chunk_id],
             ['document_id', hit.document_id],
-            ['score',       hit.score != null ? hit.score.toFixed(6) : '—'],
+            ['score',       (hit.score !== null && hit.score !== undefined) ? hit.score.toFixed(6) : '—'],
         ];
         for (const [k, v] of fixedProps) {
             table.appendChild(this._propsRow(k, v));
@@ -256,7 +256,7 @@ class DBManager {
     // _esc оставляем для обратной совместимости (используется в _setResults)
     _esc(text) {
         const d = document.createElement('div');
-        d.textContent = text == null ? '' : String(text);
+        d.textContent = (text === null || text === undefined) ? '' : String(text);
         return d.innerHTML;
     }
 }

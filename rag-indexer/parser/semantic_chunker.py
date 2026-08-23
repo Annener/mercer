@@ -32,7 +32,6 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from embedding.base_provider import EmbeddingProvider
 
-from parser.chunking.embedding_enricher import extract_markdown_headers
 
 logger = logging.getLogger(__name__)
 
@@ -168,7 +167,7 @@ class SemanticChunker:
     # Окно поиска конца предложения (±символов от SOFT_THRESHOLD)
     SENTENCE_SEARCH_WINDOW: int = 300
 
-    def __init__(self, embedding_provider: "EmbeddingProvider", threshold: float = 0.3) -> None:
+    def __init__(self, embedding_provider: EmbeddingProvider, threshold: float = 0.3) -> None:
         self._provider = embedding_provider
         self._threshold = threshold
 

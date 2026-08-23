@@ -47,12 +47,12 @@ from app.services.indexer_client import (
     indexer_client,
 )
 from app.services.update_mode_executor import (
-    UpdateModeExecutor,
     UpdateModeCampaignDomainMismatchError,
     UpdateModeCampaignNotFoundError,
     UpdateModeCampaignRequiredError,
     UpdateModeCampaignTagsRequiredError,
     UpdateModeChatNotFoundError,
+    UpdateModeExecutor,
     UpdateModeGenerationProviderUnavailableError,
     UpdateModeIndexerInvalidResponseError,
     UpdateModeIndexerUnavailableError,
@@ -89,7 +89,6 @@ from shared_contracts.models import (
     UpdateModeFileChangeBatch,
     UpdateModeFileOp,
     UpdateModeOperation,
-    UpdateModeResolveRequest,
     UpdateModeReviewRequest,
     UpdateModeSession,
     UpdateModeSessionResponse,
@@ -134,8 +133,9 @@ async def _write_audit_log(
 ) -> None:
     """Fire-and-forget audit log write. Errors are logged but never re-raised."""
     try:
-        from app.db.models import AuditLog  # local import to avoid circular
         from sqlalchemy import insert
+
+        from app.db.models import AuditLog  # local import to avoid circular
 
         await db.execute(
             insert(AuditLog).values(
@@ -196,7 +196,7 @@ def _build_file_batches(
     for (vault_id, file_path), changes in groups.items():
         # Sort by resolve_order so multi-op patches are applied in correct sequence.
         # resolve_order=-1 is the legacy sentinel; treat as 0 for sorting purposes.
-        changes.sort(key=lambda c: c.resolve_order if c.resolve_order >= 0 else 0)
+        changes.sort(key=lambda c: max(c.resolve_order, 0))
 
         # Detect whether any change in this group carries operation metadata.
         has_operation = any(ch.operation is not None for ch in changes)
@@ -722,7 +722,6 @@ async def _apply_state_patch(
     # Build CampaignStatePatchRequest, applying edited_text where present.
     operations = []
     applied_indexes: list[int] = []
-    skipped_due_to_no_text: list[int] = []
     for e in accepted_entries:
         op = e.operation
         if e.edited_text is not None and op.type in (
@@ -790,7 +789,6 @@ async def _apply_schema_changes(
     Audit log: writes one `update_mode.apply_schema` entry summarising
     applied + failed ops and the new config_version.
     """
-    from sqlalchemy import insert
     import uuid as _uuid
 
     from app.db.models import (
@@ -863,7 +861,7 @@ async def _apply_schema_changes(
                 )
                 row = (await db.execute(stmt)).scalar_one_or_none()
                 if row is None:
-                    raise CampaignStateFieldError(
+                    raise CampaignStateFieldError(  # noqa: TRY301
                         "field_not_found",
                         f"field {entry.key!r} not found",
                     )

@@ -1,5 +1,6 @@
-import pytest
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 from app.db_client import IndexerDBClient
 
 pytestmark = pytest.mark.asyncio

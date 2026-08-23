@@ -10,7 +10,7 @@
 //   restoreUpdateModePanel(chatId, session) → HTMLElement   (restore from existing session)
 // ============================================================
 
-/* global chatAPI, escapeHtml, renderMarkdown */
+/* global escapeHtml, renderMarkdown */
 
 // ---------------------------------------------------------------------------
 // BUG-5 fix: defensive wrappers for escapeHtml / renderMarkdown
@@ -1248,6 +1248,7 @@ function _buildPanel(chatId, initialSession) {
     return panel;
 }
 
-// Export to global scope (loaded as non-module defer script)
 window.createUpdateModePanel = createUpdateModePanel;
 window.restoreUpdateModePanel = restoreUpdateModePanel;
+export { createUpdateModePanel, restoreUpdateModePanel };
+

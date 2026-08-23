@@ -43,32 +43,29 @@ Integration smoke-tests — Iteration 5
 """
 from __future__ import annotations
 
-import uuid
 import os
-import pytest
+import uuid
+
 import pytest_asyncio
 
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
-from sqlalchemy import select
-
 # ── модели БД ──
-from app.db.models import Domain, Vault, Tag, Campaign, Document, DocumentLabel, Pipeline
+from app.db.models import Campaign, Document, DocumentLabel, Domain, Tag, Vault
 
 # ── retrieval helpers ──
 from app.services.retrieval import get_allowed_tag_ids, get_document_ids_by_tags
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 # ── shared_contracts ──
 from shared_contracts.models import (
-    TagCreate,
-    TagRead,
     CampaignCreate,
     CampaignRead,
-    PipelineCreate,
-    PipelineRead,
-    PipelineContext,
-    PipelineStep,
-    FinalComposition,
     CreateChatRequest,
+    FinalComposition,
+    PipelineContext,
+    PipelineCreate,
+    PipelineStep,
+    TagCreate,
+    TagRead,
 )
 
 # ---------------------------------------------------------------------------

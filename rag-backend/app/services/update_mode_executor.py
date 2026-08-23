@@ -32,25 +32,37 @@ from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Campaign, CampaignStateFieldConfig, Chat, Document, DocumentLabel, Tag, Vault
+from app.db.models import (
+    Campaign,
+    CampaignStateFieldConfig,
+    Chat,
+    Document,
+    DocumentLabel,
+    Tag,
+    Vault,
+)
 from app.services.full_document_service import reconstruct_full_text
 from app.services.indexer_client import IndexerClient, IndexerUnavailableError
 from app.services.retrieval import retrieve_multi_vault
 from app.services.settings_service import settings_service
-from app.services.update_mode_store import SESSION_TTL_SECONDS, SessionAlreadyActiveError, UpdateModeStore
+from app.services.update_mode_store import (
+    SESSION_TTL_SECONDS,
+    SessionAlreadyActiveError,
+    UpdateModeStore,
+)
 from shared_contracts.models import (
+    _DELETE_OPERATIONS,
     CampaignStateFieldSnapshot,
     CampaignStatePatchOperation,
     CampaignStateVersionRead,
     IndexedContextDocument,
+    ResolvedUpdateModeChange,
     UpdateModeGenerationResult,
     UpdateModeIntent,
-    UpdateModeOperation,
     UpdateModeResolveRequest,
-    UpdateModeSession,
     UpdateModeResolveResponse,
+    UpdateModeSession,
     UpdateModeStatePatchEntry,
-    _DELETE_OPERATIONS,
 )
 
 logger = logging.getLogger(__name__)
@@ -240,7 +252,7 @@ async def _build_context_documents(
             chat_id, doc_id, vault_id,
         )
 
-    fetch_results: list[str | None | BaseException] = await asyncio.gather(
+    fetch_results: list[str | BaseException | None] = await asyncio.gather(
         *[
             reconstruct_full_text(
                 document_id=doc_id,
@@ -618,12 +630,14 @@ def _validate_state_patch_against_snapshot(
                 )
                 continue
 
-        if op.type in ("replace_single", "update_list_item", "add_list_item"):
-            if not op.text or not op.text.strip():
-                warnings.append(
-                    f"state_patch_dropped:empty_text:{op.field_key}:{op.type}"
-                )
-                continue
+        if (
+            op.type in ("replace_single", "update_list_item", "add_list_item")
+            and (not op.text or not op.text.strip())
+        ):
+            warnings.append(
+                f"state_patch_dropped:empty_text:{op.field_key}:{op.type}"
+            )
+            continue
 
         cleaned.append(op)
 
@@ -976,9 +990,9 @@ async def _generate_intents_and_state_patch(
         )
         return result2
     except (ValidationError, ValueError) as second_err:
-        logger.error(
-            "_generate_intents_and_state_patch chat=%s: repair attempt also invalid: %s",
-            chat_id, second_err,
+        logger.exception(
+            "_generate_intents_and_state_patch chat=%s: repair attempt also invalid",
+            chat_id,
         )
         raise UpdateModeInvalidGenerationOutputError(
             f"LLM returned invalid output after repair attempt: {second_err}"
@@ -1407,9 +1421,9 @@ class UpdateModeExecutor:
         except SessionAlreadyActiveError:
             raise UpdateModeSessionAlreadyActiveError(session.chat_id)
         except Exception as exc:
-            logger.error(
-                "update_mode _store_session: Redis write failed for chat=%s: %s",
-                session.chat_id, exc,
+            logger.exception(
+                "update_mode _store_session: Redis write failed for chat=%s",
+                session.chat_id,
             )
             raise UpdateModeReviewStoreUnavailableError(str(exc)) from exc
 
@@ -1587,7 +1601,7 @@ class UpdateModeExecutor:
                         vault_ids_set,
                         doc_vault_map,
                     )
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001  # validation errors are recorded as warnings
                     warnings.append(
                         f"file_change_validation_failed:{exc}"
                     )

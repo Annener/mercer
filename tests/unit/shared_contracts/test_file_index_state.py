@@ -1,6 +1,5 @@
-from datetime import datetime
-
-import pytest
+import contextlib
+from datetime import UTC, datetime
 
 from shared_contracts.models import FileIndexState
 
@@ -17,23 +16,21 @@ def test_file_index_state_instantiation_without_chunk_ids():
         stage="pending",
         checksum_md5="abc123",
         status="pending",
-        last_modified=datetime(2024, 1, 1),
+        last_modified=datetime(2024, 1, 1, tzinfo=UTC),
     )
     assert not hasattr(state, 'chunk_ids')
 
 
 def test_file_index_state_rejects_chunk_ids():
     """Передача chunk_ids должна вызвать ошибку валидации или быть проигнорирована."""
-    try:
+    with contextlib.suppress(Exception):  # ValidationError — also a valid behaviour
         state = FileIndexState(
             checksum_md5="abc123",
             status="pending",
-            last_modified=datetime(2024, 1, 1),
+            last_modified=datetime(2024, 1, 1, tzinfo=UTC),
             chunk_ids=["x"],
         )
         assert not hasattr(state, 'chunk_ids')
-    except Exception:
-        pass  # ValidationError — тоже корректное поведение
 
 
 def test_file_index_state_fields():

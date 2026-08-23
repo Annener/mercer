@@ -75,31 +75,31 @@ async def load_retrieval_tool_settings(db: AsyncSession) -> RetrievalToolSetting
     """
     try:
         tool_enabled = bool(await settings_service.get(KEY_TOOL_ENABLED, db))
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.warning("load_retrieval_tool_settings: %s missing, defaulting to true", KEY_TOOL_ENABLED, exc_info=True)
         tool_enabled = True
 
     try:
         policy = _coerce_policy(await settings_service.get(KEY_POLICY, db))
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.warning("load_retrieval_tool_settings: %s missing, defaulting to grounded", KEY_POLICY, exc_info=True)
         policy = RetrievalPolicy.GROUNDED
 
     try:
         max_rounds_grounded = int(await settings_service.get(KEY_MAX_ROUNDS_GROUNDED, db))
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.warning("load_retrieval_tool_settings: %s missing, defaulting to 2", KEY_MAX_ROUNDS_GROUNDED, exc_info=True)
         max_rounds_grounded = 2
 
     try:
         max_rounds_assistive = int(await settings_service.get(KEY_MAX_ROUNDS_ASSISTIVE, db))
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.warning("load_retrieval_tool_settings: %s missing, defaulting to 1", KEY_MAX_ROUNDS_ASSISTIVE, exc_info=True)
         max_rounds_assistive = 1
 
     try:
         evidence_token_budget = int(await settings_service.get(KEY_EVIDENCE_TOKEN_BUDGET, db))
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.warning("load_retrieval_tool_settings: %s missing, defaulting to 4000", KEY_EVIDENCE_TOKEN_BUDGET, exc_info=True)
         evidence_token_budget = 4000
 
@@ -113,11 +113,11 @@ async def load_retrieval_tool_settings(db: AsyncSession) -> RetrievalToolSetting
 
 
 __all__ = [
+    "KEY_EVIDENCE_TOKEN_BUDGET",
+    "KEY_MAX_ROUNDS_ASSISTIVE",
+    "KEY_MAX_ROUNDS_GROUNDED",
+    "KEY_POLICY",
+    "KEY_TOOL_ENABLED",
     "RetrievalToolSettings",
     "load_retrieval_tool_settings",
-    "KEY_TOOL_ENABLED",
-    "KEY_POLICY",
-    "KEY_MAX_ROUNDS_GROUNDED",
-    "KEY_MAX_ROUNDS_ASSISTIVE",
-    "KEY_EVIDENCE_TOKEN_BUDGET",
 ]

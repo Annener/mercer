@@ -19,13 +19,10 @@ from __future__ import annotations
 
 import os
 import uuid
-from datetime import datetime
-from typing import Any
+from datetime import UTC, datetime
 
 import pytest
 import pytest_asyncio
-
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 # ── модели БД ──
 from app.db.models import (
@@ -33,7 +30,6 @@ from app.db.models import (
     CampaignStateFieldConfig,
     CampaignStateListItem,
     CampaignStateValue,
-    CampaignStateVersion,
     Domain,
 )
 
@@ -41,7 +37,6 @@ from app.db.models import (
 from app.services.campaign_state_compiler import (
     DEFAULT_TOKEN_BUDGET,
     compile_campaign_state,
-    default_token_counter,
 )
 from app.services.campaign_state_value_service import (
     campaign_state_value_service,
@@ -51,19 +46,15 @@ from app.services.effective_context import (
     compose_full_system_prompt,
     compose_state_block_only,
 )
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+
 from shared_contracts.models import (
-    CampaignStateCompiledBlock,
-    CampaignStateCompiledFieldRead,
     CampaignStateFieldConfigRead,
     CampaignStateFieldValuesRead,
-    CampaignStateListItemRead,
     CampaignStateSingleValueRead,
     CampaignStateVersionRead,
     CampaignStateVersionSummary,
-    EffectiveContextBlock,
-    EffectiveContextRead,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -154,14 +145,14 @@ class TestDeterminism:
         cfg = CampaignStateFieldConfigRead(
             id="f1", campaign_id=str(uuid.uuid4()), key="focus", label="Фокус",
             description="", mode="single", enabled=True, display_order=0,
-            created_at=datetime(2026, 1, 1), updated_at=datetime(2026, 1, 1),
+            created_at=datetime(2026, 1, 1, tzinfo=UTC), updated_at=datetime(2026, 1, 1, tzinfo=UTC),
         )
         fv = CampaignStateFieldValuesRead(
             field_key="focus", field_id="f1", mode="single",
             enabled=True, display_order=0,
             single_value=CampaignStateSingleValueRead(
                 field_key="focus", text="X", source_refs=[],
-                updated_at=datetime(2026, 1, 1),
+                updated_at=datetime(2026, 1, 1, tzinfo=UTC),
             ),
             items=[],
         )
@@ -170,7 +161,7 @@ class TestDeterminism:
                 id=str(uuid.uuid4()), campaign_id=str(uuid.uuid4()),
                 state_version=1, config_version=1,
                 source_kind="initial", base_state_version=None,
-                created_at=datetime(2026, 1, 1), created_by=None,
+                created_at=datetime(2026, 1, 1, tzinfo=UTC), created_by=None,
             ),
             fields=[fv],
         )
@@ -191,14 +182,14 @@ class TestSoftStop:
         cfg = CampaignStateFieldConfigRead(
             id="big", campaign_id=str(uuid.uuid4()), key="big", label="Большое",
             description="", mode="single", enabled=True, display_order=0,
-            created_at=datetime(2026, 1, 1), updated_at=datetime(2026, 1, 1),
+            created_at=datetime(2026, 1, 1, tzinfo=UTC), updated_at=datetime(2026, 1, 1, tzinfo=UTC),
         )
         fv = CampaignStateFieldValuesRead(
             field_key="big", field_id="big", mode="single",
             enabled=True, display_order=0,
             single_value=CampaignStateSingleValueRead(
                 field_key="big", text="x" * 400, source_refs=[],
-                updated_at=datetime(2026, 1, 1),
+                updated_at=datetime(2026, 1, 1, tzinfo=UTC),
             ),
             items=[],
         )
@@ -207,7 +198,7 @@ class TestSoftStop:
                 id=str(uuid.uuid4()), campaign_id=str(uuid.uuid4()),
                 state_version=1, config_version=1,
                 source_kind="initial", base_state_version=None,
-                created_at=datetime(2026, 1, 1), created_by=None,
+                created_at=datetime(2026, 1, 1, tzinfo=UTC), created_by=None,
             ),
             fields=[fv],
         )
@@ -241,7 +232,12 @@ class TestPromptInjection:
         await db.flush()
 
         # Создаём state version напрямую через value-service.
-        from shared_contracts.models import CampaignStateInitialProposal, CampaignStateInitialProposalField, CampaignStateInitialFieldStatus, CampaignStateInitialSingleValue, DocumentSnapshot
+        from shared_contracts.models import (
+            CampaignStateInitialFieldStatus,
+            CampaignStateInitialProposal,
+            CampaignStateInitialProposalField,
+            CampaignStateInitialSingleValue,
+        )
 
         proposal = CampaignStateInitialProposal(
             fields=[
@@ -294,9 +290,9 @@ class TestPromptInjection:
         await db.flush()
 
         from shared_contracts.models import (
+            CampaignStateInitialFieldStatus,
             CampaignStateInitialProposal,
             CampaignStateInitialProposalField,
-            CampaignStateInitialFieldStatus,
             CampaignStateInitialSingleValue,
         )
         proposal = CampaignStateInitialProposal(
@@ -379,9 +375,9 @@ class TestEffectiveContext:
         await db.flush()
 
         from shared_contracts.models import (
+            CampaignStateInitialFieldStatus,
             CampaignStateInitialProposal,
             CampaignStateInitialProposalField,
-            CampaignStateInitialFieldStatus,
             CampaignStateInitialSingleValue,
         )
         proposal = CampaignStateInitialProposal(

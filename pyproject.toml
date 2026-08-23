@@ -1,0 +1,50 @@
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = [
+    ".venv",
+    "node_modules",
+    "build",
+    "dist",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".aider.tags.cache.v4",
+]
+
+[tool.ruff.lint]
+extend-select = [
+    "UP",
+    "SIM",
+    "RUF",
+    "TRY",
+    "G",
+    "BLE",
+    "DTZ",
+]
+ignore = [
+    "PLR0913",
+    "PLR0912",
+    "PLR0915",
+    "PLR0911",
+    "PLR2004",
+    "TRY003",
+    "TRY300",
+    "COM812",
+    "ISC001",
+    "RUF001",
+    "RUF002",
+    "RUF003",
+    "UP017",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"db-api-server/**/*.py" = ["B008"]
+"pdf-sidecar/app.py" = ["B008", "BLE001"]
+"rag-backend/app/api/**/*.py" = ["B008"]
+"tests/**/*.py" = ["S101", "PLR2004"]
+"**/tests/**/*.py" = ["S101", "PLR2004"]
+"rag-indexer/tests/**/*.py" = ["S101", "PLR2004"]
+"pdf-sidecar/embedder.py" = ["BLE001"]
+"pdf-sidecar/parser.py" = ["BLE001"]
+"rag-backend/app/pipelines/registry.py" = ["S102"]
+"**/migrations/**/*.py" = ["E501", "PLR0912", "PLR0915"]

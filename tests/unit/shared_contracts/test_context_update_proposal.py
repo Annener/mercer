@@ -10,6 +10,7 @@ Covers:
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from shared_contracts.models import (
     ContextFieldChange,
@@ -20,7 +21,6 @@ from shared_contracts.models import (
     UpdateModeStateFieldChangeDecisions,
     UpdateModeStateFieldChangeEntry,
 )
-
 
 # ---------------------------------------------------------------------------
 # ContextFieldChange
@@ -44,14 +44,14 @@ def test_context_field_change_create_minimal():
 
 def test_context_field_change_key_must_be_snake_case():
     """key must match ^[a-z][a-z0-9_]*$ — uppercase and starting digit are rejected."""
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         ContextFieldChange(
             operation=ContextFieldChangeOperation.CREATE_FIELD,
             key="MainVillains",
             label="x",
             mode="single",
         )
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         ContextFieldChange(
             operation=ContextFieldChangeOperation.CREATE_FIELD,
             key="1main",
@@ -71,14 +71,14 @@ def test_context_field_change_key_accepts_snake_and_digits():
 
 
 def test_context_field_change_label_length_bounds():
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         ContextFieldChange(
             operation=ContextFieldChangeOperation.CREATE_FIELD,
             key="x",
             label="",  # min_length=1
             mode="single",
         )
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         ContextFieldChange(
             operation=ContextFieldChangeOperation.CREATE_FIELD,
             key="x",
@@ -121,7 +121,7 @@ def test_proposal_serialises_to_json():
 
 def test_proposal_rejects_duplicate_create_keys():
     """Two create_field ops with the same key is a logic error."""
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         ContextUpdateProposal(
             field_changes=[
                 ContextFieldChange(
@@ -143,9 +143,9 @@ def test_proposal_rejects_duplicate_create_keys():
 
 
 def test_proposal_confidence_bounds():
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         ContextUpdateProposal(confidence=-0.1, reason="x")
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         ContextUpdateProposal(confidence=1.1, reason="x")
     # Boundaries accepted
     ContextUpdateProposal(confidence=0.0, reason="x")
@@ -155,7 +155,7 @@ def test_proposal_confidence_bounds():
 def test_proposal_no_delete_in_sprint_3():
     """delete_field is intentionally absent in Sprint 3. Verify by trying
     to construct one — pydantic will reject unknown enum values."""
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         ContextFieldChange(
             operation="delete_field",  # type: ignore[arg-type]
             key="x",
@@ -193,7 +193,7 @@ def test_field_change_decisions_empty_lists_ok():
 
 
 def test_field_change_decisions_no_overlap():
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         UpdateModeStateFieldChangeDecisions(
             accepted_op_indexes=[0, 1],
             rejected_op_indexes=[1, 2],
@@ -215,7 +215,6 @@ def test_field_change_decisions_distinct_indexes_ok():
 def test_session_round_trips_field_change_operations():
     from datetime import datetime, timedelta, timezone
 
-    from shared_contracts.models import ResolvedUpdateModeChange
 
     now = datetime.now(timezone.utc)
     s = UpdateModeSession(
@@ -295,7 +294,7 @@ def test_review_request_with_field_change_decisions():
 
 def test_review_request_empty_without_anything_raises():
     """Validator: must have at least one accept/reject somewhere."""
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         UpdateModeReviewRequest()
 
 

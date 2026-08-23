@@ -14,7 +14,6 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-
 revision = "0007_campaign_state_field_config"
 down_revision = "0006_audit_log_actor_payload"
 branch_labels = None

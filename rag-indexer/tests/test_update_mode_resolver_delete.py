@@ -45,10 +45,9 @@ from __future__ import annotations
 import hashlib
 import uuid
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
-
 from app.update_mode.resolver import (
     _AnchorAmbiguousError,
     _collapse_consecutive_blank_lines,
@@ -57,6 +56,7 @@ from app.update_mode.resolver import (
     _heading_level,
     _resolve_one,
 )
+
 from shared_contracts.models import (
     UpdateModeAction,
     UpdateModeAnchor,
@@ -65,7 +65,6 @@ from shared_contracts.models import (
     UpdateModeOperation,
     UpdateModeResolveRequest,
 )
-
 
 # ---------------------------------------------------------------------------
 # _heading_level

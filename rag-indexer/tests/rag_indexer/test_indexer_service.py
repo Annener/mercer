@@ -2,11 +2,11 @@
 from __future__ import annotations
 
 import asyncio
-import pytest
+import contextlib
 from unittest.mock import AsyncMock
 
 import fakeredis.aioredis as fakeredis
-
+import pytest
 from app.indexer_service import IndexerService
 from parser.state.redis_state_manager import RedisStateManager
 
@@ -60,10 +60,8 @@ async def test_cancel_task_sets_redis_flag(service, state_manager):
 
     # Чистим за собой
     task.cancel()
-    try:
+    with contextlib.suppress(asyncio.CancelledError):
         await task
-    except asyncio.CancelledError:
-        pass
 
 
 @pytest.mark.asyncio

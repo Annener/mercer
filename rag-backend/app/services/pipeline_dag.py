@@ -21,7 +21,7 @@ if TYPE_CHECKING:
     from shared_contracts.models import PipelineStep
 
 
-def build_dag(steps: list["PipelineStep"]) -> dict[str, list[str]]:
+def build_dag(steps: list[PipelineStep]) -> dict[str, list[str]]:
     """Строит граф смежности: {step_id: [child_step_ids]}.
 
     Ребро A→B означает: шаг B зависит от шага A (B.after_step_ids содержит A).
@@ -35,7 +35,7 @@ def build_dag(steps: list["PipelineStep"]) -> dict[str, list[str]]:
     return children
 
 
-def topological_sort(steps: list["PipelineStep"]) -> list[list[str]]:
+def topological_sort(steps: list[PipelineStep]) -> list[list[str]]:
     """Топологическая сортировка алгоритмом Кана.
 
     Возвращает список уровней (список списков step_id).
@@ -75,7 +75,7 @@ def topological_sort(steps: list["PipelineStep"]) -> list[list[str]]:
     return levels
 
 
-def detect_cycles(steps: list["PipelineStep"]) -> list[str] | None:
+def detect_cycles(steps: list[PipelineStep]) -> list[str] | None:
     """DFS-поиск цикла в графе.
 
     Возвращает список step_id, образующих цикл, или None если цикла нет.
@@ -106,14 +106,13 @@ def detect_cycles(steps: list["PipelineStep"]) -> list[str] | None:
         return False
 
     for step in steps:
-        if color[step.step_id] == 0:
-            if dfs(step.step_id):
-                return cycle_found
+        if color[step.step_id] == 0 and dfs(step.step_id):
+            return cycle_found
 
     return None
 
 
-def validate_dag(steps: list["PipelineStep"]) -> list[str]:
+def validate_dag(steps: list[PipelineStep]) -> list[str]:
     """Агрегирует все ошибки структуры DAG.
 
     Возвращает список строк с описаниями ошибок. Пустой список = граф корректен.
@@ -155,7 +154,7 @@ def validate_dag(steps: list["PipelineStep"]) -> list[str]:
     return errors
 
 
-def get_execution_levels(steps: list["PipelineStep"]) -> list[list["PipelineStep"]]:
+def get_execution_levels(steps: list[PipelineStep]) -> list[list[PipelineStep]]:
     """Возвращает уровни параллельности с объектами шагов.
 
     Использует topological_sort для вычисления уровней,

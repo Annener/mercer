@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Mercer — интерактивный генератор .env при первом make setup.
 
 Только stdlib. Идемпотентен: спрашивает только пустые/placeholder переменные.
@@ -6,13 +5,13 @@
 Запускается через Makefile с уже найденным совместимым интерпретатором
 (Python 3.11–3.13). Собственная проверка версии здесь не нужна.
 """
-import sys
 import base64
 import getpass
 import os
 import platform
 import re
 import secrets
+import sys
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -84,15 +83,13 @@ def is_set(key: str, val: str) -> bool:
     # Для прочих авто-ключей пропускаем проверку здесь (обрабатываются в compute-блоке).
     placeholders = {
         "changeme",
-        "<generate with: python -c \"import base64, secrets; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())\">",  # noqa: E501
+        "<generate with: python -c \"import base64, secrets; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())\">",
     }
     if val in placeholders:
         return False
     if val.startswith("<") and val.endswith(">"):
         return False
-    if key == "ENCRYPTION_KEY" and len(val) != 44:
-        return False
-    return True
+    return not (key == "ENCRYPTION_KEY" and len(val) != 44)
 
 
 # ---------------------------------------------------------------------------
@@ -115,10 +112,7 @@ def ask(prompt: str, default: str = "", secret: bool = False) -> str:
     full_prompt = f"  {prompt}{display_default}: "
     while True:
         try:
-            if secret:
-                val = getpass.getpass(full_prompt)
-            else:
-                val = input(full_prompt)
+            val = getpass.getpass(full_prompt) if secret else input(full_prompt)
         except (EOFError, KeyboardInterrupt):
             print()
             sys.exit("\nПрервано пользователем.")
@@ -164,7 +158,7 @@ def ask_password(current: str) -> str:
             sys.exit("\nПрервано пользователем.")
         if not choice or choice == "g":
             pwd = generate_password()
-            cprint(COLOR_GREEN, f"  ✓ Сгенерирован пароль (сохранён в .env)")
+            cprint(COLOR_GREEN, "  ✓ Сгенерирован пароль (сохранён в .env)")
             return pwd
         if choice == "c":
             return ask("Введите пароль", secret=True)
@@ -185,7 +179,7 @@ def ask_vaults_path(current: str) -> str:
             continue
         if not os.path.exists(val):
             try:
-                choice = input(f"  Папка не существует. Создать? [y/N]: ").strip().lower()
+                choice = input("  Папка не существует. Создать? [y/N]: ").strip().lower()
             except (EOFError, KeyboardInterrupt):
                 print()
                 sys.exit("\nПрервано пользователем.")

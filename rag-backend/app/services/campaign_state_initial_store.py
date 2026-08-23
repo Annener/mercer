@@ -17,16 +17,12 @@ Backward-compat: при чтении принимает и старый V1 paylo
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from shared_contracts.models import (
     CampaignStateInitialProposalRead,
     CampaignStateInitialProposalReadV2,
 )
-
-if TYPE_CHECKING:
-    import redis.asyncio as aioredis
-
 
 logger = logging.getLogger(__name__)
 

@@ -15,11 +15,7 @@ from shared_contracts.models import (
     UpdateModeOperation,
     UpdateModeResolveRequest,
     UpdateModeReviewRequest,
-    UpdateModeSession,
 )
-from datetime import datetime, timezone
-import uuid
-
 
 # ---------------------------------------------------------------------------
 # UpdateModeIntent validators
@@ -27,14 +23,14 @@ import uuid
 
 class TestUpdateModeIntent:
     def _create_intent(self, **overrides) -> UpdateModeIntent:
-        defaults = dict(
-            change_id="c1",
-            action=UpdateModeAction.CREATE,
-            description="add new note",
-            operation=UpdateModeOperation.CREATE_FILE,
-            suggested_filename="_campaign_notes/note.md",
-            content="# Note\nContent here",
-        )
+        defaults = {
+            "change_id": "c1",
+            "action": UpdateModeAction.CREATE,
+            "description": "add new note",
+            "operation": UpdateModeOperation.CREATE_FILE,
+            "suggested_filename": "_campaign_notes/note.md",
+            "content": "# Note\nContent here",
+        }
         defaults.update(overrides)
         return UpdateModeIntent(**defaults)
 
@@ -114,12 +110,12 @@ class TestUpdateModeIntent:
 
 class TestUpdateModeResolveRequest:
     def _base(self, **overrides):
-        defaults = dict(
-            chat_id="chat-1",
-            campaign_id="camp-1",
-            domain_id="domain-1",
-            vault_ids=["vault-a"],
-            intents=[
+        defaults = {
+            "chat_id": "chat-1",
+            "campaign_id": "camp-1",
+            "domain_id": "domain-1",
+            "vault_ids": ["vault-a"],
+            "intents": [
                 UpdateModeIntent(
                     change_id="c1",
                     action=UpdateModeAction.CREATE,
@@ -129,8 +125,8 @@ class TestUpdateModeResolveRequest:
                     content="content",
                 )
             ],
-            default_vault_id="vault-a",
-        )
+            "default_vault_id": "vault-a",
+        }
         defaults.update(overrides)
         return UpdateModeResolveRequest(**defaults)
 
@@ -229,7 +225,7 @@ class TestUpdateModeApplyRequest:
             )
 
     def test_duplicate_vault_path_pairs_rejected(self):
-        with pytest.raises(ValidationError, match="vault_id.*file_path.*unique"):
+        with pytest.raises(ValidationError, match=r"vault_id.*file_path.*unique"):
             UpdateModeApplyRequest(
                 apply_id="a",
                 chat_id="c",

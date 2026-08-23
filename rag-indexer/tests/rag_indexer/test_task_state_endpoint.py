@@ -1,9 +1,10 @@
 """Unit-тесты для polling endpoint GET /api/v1/tasks/{task_id}/state (этап 8)."""
 from __future__ import annotations
 
-import pytest
-from httpx import AsyncClient, ASGITransport
 from unittest.mock import AsyncMock
+
+import pytest
+from httpx import ASGITransport, AsyncClient
 
 
 @pytest.fixture

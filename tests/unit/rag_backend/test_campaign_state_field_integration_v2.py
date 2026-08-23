@@ -381,7 +381,7 @@ def test_delete_field_keeps_previous_state_versions_intact(client, service):
     service.state_versions[-1]["list_items"].add(f_agree["id"])
     pre_versions = list(service.state_versions)
 
-    r = client.delete(f"/api/settings/campaigns/{cid}/state-fields/{f_focus["id"]}")
+    r = client.delete(f"/api/settings/campaigns/{cid}/state-fields/{f_focus['id']}")
     assert r.status_code == 204
     # v1 не тронута (всё ещё содержит focus).
     assert service.state_versions[0]["values"] == pre_versions[0]["values"]
@@ -403,7 +403,7 @@ def test_delete_list_field_cascades_list_items(client, service):
     service.add_active_state_version(version=1)
     service.state_versions[-1]["list_items"].add(f["id"])
 
-    r = client.delete(f"/api/settings/campaigns/{cid}/state-fields/{f["id"]}")
+    r = client.delete(f"/api/settings/campaigns/{cid}/state-fields/{f['id']}")
     assert r.status_code == 204
     entry = service.audit_log[0]
     assert entry.payload["purged_values"] == 0

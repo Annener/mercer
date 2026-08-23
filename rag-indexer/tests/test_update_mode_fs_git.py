@@ -6,16 +6,11 @@ we test the actual subprocess integration, not a mock.
 """
 from __future__ import annotations
 
-import os
-import stat
 import subprocess
 from pathlib import Path
 
 import pytest
-
 from app.update_mode.fs_git import (
-    VAULT_ROOT,
-    AtomicWriteError,
     FileReadError,
     GitError,
     GitIdentity,
@@ -32,7 +27,6 @@ from app.update_mode.fs_git import (
     sha256_bytes,
     sha256_file,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -286,6 +280,7 @@ class TestGitInit:
             cwd=vault,
             capture_output=True,
             text=True,
+            check=False,
         )
         # No commits yet — git log returns non-zero or empty
         assert result.stdout.strip() == ""
@@ -317,6 +312,7 @@ class TestGitSnapshot:
             cwd=vault,
             capture_output=True,
             text=True,
+            check=False,
         )
         committed_files = result.stdout.strip().splitlines()
         assert "session.md" in committed_files
@@ -333,6 +329,7 @@ class TestGitSnapshot:
             cwd=vault,
             capture_output=True,
             text=True,
+            check=False,
         )
         assert "Mercer Bot" in result.stdout
         assert "mercer@local" in result.stdout
@@ -382,6 +379,7 @@ class TestGitApplyCommit:
             cwd=vault,
             capture_output=True,
             text=True,
+            check=False,
         )
         committed = result.stdout.strip().splitlines()
         assert "changed.md" in committed
@@ -398,13 +396,12 @@ class TestGitApplyCommit:
         git_apply_commit(vault, [target], _IDENTITY, "apply: my message")
         result = subprocess.run(
             ["git", "log", "-1", "--format=%s"],
-            cwd=vault, capture_output=True, text=True,
+            cwd=vault, capture_output=True, text=True, check=False,
         )
         assert "apply: my message" in result.stdout
 
     def test_no_shell_execution(self, tmp_path, monkeypatch):
         """Verify subprocess calls never use shell=True by monkeypatching."""
-        import app.update_mode.fs_git as module
         calls = []
         original_run = subprocess.run
 

@@ -6,19 +6,19 @@ keeps tests fast and DB-free.
 """
 from __future__ import annotations
 
+import contextlib
 import uuid
-from copy import deepcopy
 from typing import Any
 
 import pytest
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
-
 from app.api.settings.campaigns import router
 from app.db.models import CampaignStateFieldConfig
 from app.db.session import get_db
-from shared_contracts.models import CampaignStateFieldConfigRead
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from shared_contracts.models import CampaignStateFieldConfigRead
 
 # ---------------------------------------------------------------------------
 # In-memory fake DB session and service
@@ -29,7 +29,7 @@ class _FakeQueryResult:
     def __init__(self, items: list[Any]) -> None:
         self._items = items
 
-    def scalars(self) -> "_FakeQueryResult":
+    def scalars(self) -> _FakeQueryResult:
         return self
 
     def all(self) -> list[Any]:
@@ -64,9 +64,7 @@ class FakeSession:
     async def execute(self, stmt: Any) -> _FakeQueryResult:
         # Поддерживаем только select() со сравнениями .where(CampaignStateFieldConfig.campaign_id == X)
         # и select(...).where(CampaignStateFieldConfig.id == fid, ...).
-        from sqlalchemy import select as _select
-        from app.db.models import CampaignStateFieldConfig as _Csf
-        compiled = stmt.compile(dialect=type("D", (), {"statement_compiler": type("C", (), {"visit_select": lambda self, *a, **k: None})()})())  # noqa: E501
+        stmt.compile(dialect=type("D", (), {"statement_compiler": type("C", (), {"visit_select": lambda self, *a, **k: None})()})())
         # Проще — извлечь campaign_id из where-clauses через атрибуты stmt.whereclause.
         where = getattr(stmt, "whereclause", None)
         # Fallback: фильтруем все поля по campaign_id, найденному в where.
@@ -76,10 +74,8 @@ class FakeSession:
         target_field_id: str | None = None
 
         # Используем приватный API stmt: _whereclause / whereclause.
-        try:
-            clauses = list(getattr(stmt, "_whereclause", None) or [where]) if where else []
-        except Exception:
-            clauses = []
+        with contextlib.suppress(Exception):  # best-effort in fake DB
+            list(getattr(stmt, "_whereclause", None) or [where]) if where else []
 
         # Самый надёжный путь — обойти атрибуты stmt через извлечение right-hand-side
         # из whereclause. SQLAlchemy позволяет получить .right у ColumnOperators.
@@ -95,7 +91,7 @@ class FakeSession:
                 return _extract(left)
             return None
 
-        try:
+        with contextlib.suppress(Exception):  # best-effort filter extraction in fake DB
             rhs = _extract(where)
             if rhs is not None and hasattr(rhs, "value"):
                 val = rhs.value
@@ -103,19 +99,17 @@ class FakeSession:
                     # Если ищем по campaign_id, то поля фильтруются; если по id — то одна строка.
                     # Проверим имя колонки слева от whereclause.
                     left = getattr(where, "left", None)
-                    col_name = getattr(getattr(left, "key", None), "__hash__", None)
+                    getattr(getattr(left, "key", None), "__hash__", None)
                     # Надёжнее: получим ключ через .key у Column:
-                    try:
-                        left_table = getattr(left, "table", None)
+                    with contextlib.suppress(Exception):  # attribute introspection
+                        getattr(left, "table", None)
                         left_name = getattr(left, "name", None) or getattr(left, "key", None)
-                    except Exception:
-                        left_name = None
+                    if "left_name" not in locals() or left_name is None:
+                        left_name = None  # explicit fallback to keep mypy quiet
                     if left_name == "campaign_id":
                         target_campaign_id = str(val)
                     elif left_name == "id":
                         target_field_id = str(val)
-        except Exception:
-            pass
 
         if target_field_id is not None:
             row = self._fields.get(target_field_id)
@@ -160,9 +154,9 @@ class _FakeService:
     async def create_field(self, db: AsyncSession, campaign_id: uuid.UUID, payload) -> CampaignStateFieldConfigRead:
         from app.services.campaign_state_service import (
             CampaignNotFoundError,
+            CampaignStateFieldError,
             FieldKeyDuplicateError,
             InvalidFieldKeyError,
-            CampaignStateFieldError,
         )
         if str(campaign_id) not in self._campaigns:
             raise CampaignNotFoundError(str(campaign_id))
@@ -189,10 +183,9 @@ class _FakeService:
 
     async def update_field(self, db: AsyncSession, campaign_id: uuid.UUID, field_id: uuid.UUID, payload) -> CampaignStateFieldConfigRead:
         from app.services.campaign_state_service import (
-            FieldNotFoundError,
             FieldKeyImmutableError,
             FieldModeImmutableError,
-            CampaignStateFieldError,
+            FieldNotFoundError,
         )
         row = self._fields.get(str(field_id))
         if row is None or str(row.campaign_id) != str(campaign_id):
@@ -237,9 +230,9 @@ class _FakeService:
 
 
 # Re-export service-layer constants used by the fake.
-from app.services.campaign_state_service import (  # noqa: E402
-    _FIELD_KEY_RE,
+from app.services.campaign_state_service import (
     _ALLOWED_MODES,
+    _FIELD_KEY_RE,
 )
 
 

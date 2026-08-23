@@ -3,6 +3,7 @@ pytest config for integration tests.
 """
 import pytest
 
+
 # pytest-asyncio: все тесты в этой директории используют asyncio
 def pytest_collection_modifyitems(items):
     for item in items:

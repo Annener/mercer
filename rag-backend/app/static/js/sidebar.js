@@ -524,7 +524,7 @@ class SidebarManager {
 
     escapeHtml(text) {
         const div = document.createElement('div');
-        div.textContent = text == null ? '' : String(text);
+        div.textContent = (text === null || text === undefined) ? '' : String(text);
         return div.innerHTML;
     }
 }

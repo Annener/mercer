@@ -1,13 +1,10 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-
 from app.db.models import (
     Base,
     Campaign,
@@ -30,6 +27,8 @@ from app.services.update_mode_executor import (
     UpdateModeNoUsableContextError,
     UpdateModeSessionAlreadyActiveError,
 )
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
 from shared_contracts.models import (
     ResolvedUpdateModeChange,
     UpdateModeAction,
@@ -321,7 +320,7 @@ async def test_start_skips_oversized_document_and_sets_warning(db_session: Async
 
     # Добавляем второй документ, помеченный тем же campaign-тегом —
     # чтобы после отбрасывания oversized doc остался хотя бы один usable.
-    from app.db.models import Document, DocumentLabel, Tag
+    from app.db.models import Document, DocumentLabel
     extra_doc = Document(
         id=uuid.uuid4(),
         vault_id="vault-main",

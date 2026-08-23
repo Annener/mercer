@@ -5,13 +5,11 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 import uvicorn
-from fastapi import FastAPI
-
 from api.index import router as index_router
 from config_loader import get_storage_config
+from fastapi import FastAPI
 from logging_config import setup_logging
 from storage.lancedb_store import LanceDBStore
-
 
 logger = logging.getLogger(__name__)
 

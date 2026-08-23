@@ -7,8 +7,6 @@ from __future__ import annotations
 
 import unicodedata
 
-import pytest
-
 from app.update_mode.token_anchor import (
     build_char_map,
     extract_raw_fragment,
@@ -16,7 +14,6 @@ from app.update_mode.token_anchor import (
     resolve_anchor_in_raw,
 )
 from parser.preprocessing.preprocessor import preprocess
-
 
 # ---------------------------------------------------------------------------
 # Вспомогательная функция: строим нормализованный текст теми же шагами

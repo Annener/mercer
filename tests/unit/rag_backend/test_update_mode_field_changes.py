@@ -8,15 +8,15 @@ Covers:
 from __future__ import annotations
 
 import pytest
-
 from app.services.update_mode_executor import (
-    build_field_change_entries,
     _filter_state_patch_by_pending_field_changes,
     _validate_field_changes,
+    build_field_change_entries,
 )
+from pydantic import ValidationError
+
 from shared_contracts.models import (
     CampaignStateAddListItem,
-    CampaignStateFieldMode,
     CampaignStateFieldSnapshot,
     CampaignStateReplaceSingle,
     ContextFieldChange,
@@ -56,7 +56,7 @@ def test_validate_create_field_invalid_key_rejected_by_pydantic():
     We verify here that the DTO layer is the primary gate — bypassing
     it would require building a malformed object manually, which is out
     of scope."""
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         ContextFieldChange(
             operation=ContextFieldChangeOperation.CREATE_FIELD,
             key="Main Villains",  # space + uppercase
@@ -153,7 +153,7 @@ def test_validate_skips_unknown_operation():
         label: str = "x"
         mode: str = "single"
 
-    fc = BadOp()
+    BadOp()
     # Wrap as ContextFieldChange to satisfy type — but with a different
     # operation value it should drop. Easier: skip, just test with a real
     # unknown enum value via model_validate roundtrip.
@@ -165,7 +165,7 @@ def test_validate_unknown_operation_enum_rejected():
     """Constructing a ContextFieldChange with operation='delete_field'
     (which doesn't exist in enum) raises at Pydantic level — confirms
     our delete-field protection at the DTO layer too."""
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         ContextFieldChange(
             operation="delete_field",  # type: ignore[arg-type]
             key="x",

@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 from typing import Any
 
 from cryptography.fernet import Fernet
-from sqlalchemy import delete, select, update
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import EmbeddingModelConfig, GenerationModelConfig
@@ -14,7 +13,6 @@ from app.db.models import EmbeddingModel, GenerationModel, PlatformSetting, Rera
 from app.db.utils import transactional
 from app.providers.generation.base import GenerationProvider
 from app.providers.generation.openai_compatible import OpenAICompatibleProvider
-
 
 DEFAULTS: dict[str, Any] = {
     "retrieval.enabled": True,

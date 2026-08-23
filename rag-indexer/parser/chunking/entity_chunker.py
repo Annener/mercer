@@ -5,8 +5,8 @@ import logging
 import re
 from collections.abc import Iterable
 
-from shared_contracts.models import ChunkRecord, EntityRecord
 from parser.chunking.generic_chunker import chunk_text
+from shared_contracts.models import ChunkRecord, EntityRecord
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +69,7 @@ def chunk_with_entities(
             len(entities),
         )
         return enriched_chunks, entities
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001  # entity chunking is best-effort
         logger.warning("Entity-aware chunking failed, falling back to generic chunking: %s", exc)
         return chunk_text(text, document_id, vault_id, chunk_size=chunk_size, overlap=overlap, metadata=metadata), []
 
@@ -153,5 +153,5 @@ def _normalize_name(name: str) -> str:
 
 
 def _entity_id(kind: str, name: str) -> str:
-    digest = hashlib.sha256(f"{kind}:{name.lower()}".encode("utf-8")).hexdigest()[:16]
+    digest = hashlib.sha256(f"{kind}:{name.lower()}".encode()).hexdigest()[:16]
     return f"ent{digest}"

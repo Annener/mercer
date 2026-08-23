@@ -293,7 +293,7 @@ const CampaignsTabMixin = {
         };
         refreshTagsList();
 
-        let localLinkedGlobalTagIds = new Set(linkedGlobalTagIds);
+        const localLinkedGlobalTagIds = new Set(linkedGlobalTagIds);
 
         const refreshGlobalTagsList = () => {
             const list = overlay.querySelector('#camp-global-tags-list');

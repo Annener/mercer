@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import math
 
 import httpx
 
@@ -136,5 +135,5 @@ class OllamaEmbeddingProvider(EmbeddingProvider):
         try:
             return [float(value) for value in vector]
         except (TypeError, ValueError):
-            logger.error("Ollama vector contains non-numeric values.")
+            logger.exception("Ollama vector contains non-numeric values.")
             return []

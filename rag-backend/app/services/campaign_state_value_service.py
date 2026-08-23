@@ -470,10 +470,9 @@ def _build_initial_state_rows(
                 continue
             existing_keys: set[str] = set()
             used_prefix = 0
-            for item in pf.list_value.items:
+            for used_prefix, item in enumerate(pf.list_value.items):
                 new_key = _next_item_key(field.key, existing_keys, used_prefix)
                 existing_keys.add(new_key)
-                used_prefix += 1
                 items_rows.append(
                     {
                         "version_id": new_version_id,
@@ -547,7 +546,7 @@ class CampaignStateValueService:
             select(CampaignStateFieldConfig)
             .where(
                 CampaignStateFieldConfig.campaign_id == campaign_id,
-                CampaignStateFieldConfig.enabled == True,  # noqa: E712
+                CampaignStateFieldConfig.enabled == True,
             )
             .order_by(
                 CampaignStateFieldConfig.display_order.asc(),
@@ -847,7 +846,7 @@ class CampaignStateValueService:
                 s.document_id: s.content_sha for s in source_snapshot
             }
             try:
-                doc_uuids = [uuid.UUID(d) for d in snapshot_sha.keys()]
+                doc_uuids = [uuid.UUID(d) for d in snapshot_sha]
             except ValueError as exc:
                 raise SourceSnapshotStaleError(
                     stale_documents=list(snapshot_sha.keys())

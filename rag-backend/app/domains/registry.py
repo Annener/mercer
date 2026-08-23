@@ -8,7 +8,6 @@ import yaml
 
 from app.services.prompt_pack import PromptPack
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -52,7 +51,7 @@ def _load_prompt_pack(path: Path) -> PromptPack:
         payload: dict[str, Any] = yaml.safe_load(prompts_file) or {}
     prompts = payload.get("prompts") or {}
     if not isinstance(prompts, dict):
-        raise ValueError(f"prompts must be a mapping: {path}")
+        raise TypeError(f"prompts must be a mapping: {path}")
     return PromptPack(
         domain_id=str(payload["domain_id"]),
         description=str(payload.get("description", "")),

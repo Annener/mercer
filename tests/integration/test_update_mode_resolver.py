@@ -16,7 +16,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent / "rag-indexer"))
 
 from shared_contracts.models import (
     UpdateModeAction,
-    UpdateModeAnchor,
     UpdateModeChangeStatus,
     UpdateModeIntent,
     UpdateModeOperation,

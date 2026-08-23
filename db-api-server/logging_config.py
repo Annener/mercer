@@ -5,7 +5,6 @@ import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-
 NOISY_LOGGERS = ("pdfminer", "unstructured", "watchdog", "httpx", "httpcore", "uvicorn.access")
 
 

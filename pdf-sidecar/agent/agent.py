@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """host-agent — HTTP-агент для управления pdf-sidecar с хоста.
 
 Запускается на хосте (вне Docker), слушает на localhost:9090.
@@ -15,13 +14,12 @@ Backend из Docker обращается через host.docker.internal:9090.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
-import signal
-import subprocess
 import sys
+from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import AsyncIterator
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -102,10 +100,8 @@ def _sidecar_status() -> dict:
     pid = _read_pid()
     running = _is_running(pid)
     if not running and PIDFILE.exists():
-        try:
+        with contextlib.suppress(OSError):
             PIDFILE.unlink(missing_ok=True)
-        except OSError:
-            pass
         pid = None
     venv_exists = (SIDECAR_DIR / ".venv").exists()
     return {
@@ -130,7 +126,7 @@ async def _run_script(script: str, timeout: int = 30) -> dict:
     )
     try:
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         proc.kill()
         await proc.wait()
         raise HTTPException(status_code=504, detail=f"{script} timed out after {timeout}s")

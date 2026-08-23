@@ -20,7 +20,8 @@ import re
 import unicodedata
 
 from parser.preprocessing.preprocessor import CHAR_MAP, preprocess
-from app.update_mode.text_ops_utils import build_anchor_pattern, CHAR_MAP_MARKER
+
+from app.update_mode.text_ops_utils import CHAR_MAP_MARKER, build_anchor_pattern
 
 log = logging.getLogger(__name__)
 

@@ -17,24 +17,17 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from app.api.update_mode import router
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.update_mode import router
-from app.db.session import get_db
 from shared_contracts.models import (
-    CancelUpdateModeResponse,
     ResolvedUpdateModeChange,
-    StartUpdateModeResponse,
     UpdateModeAction,
     UpdateModeChangeStatus,
-    UpdateModeOperation,
-    UpdateModeResolveResponse,
     UpdateModeSession,
-    UpdateModeSessionResponse,
 )
-
 
 # ---------------------------------------------------------------------------
 # App fixture
@@ -164,9 +157,8 @@ async def test_get_session_returns_200():
     with patch(
         "app.api.update_mode.update_mode_store.get",
         new=AsyncMock(return_value=session),
-    ):
-        with TestClient(app) as client:
-            resp = client.get(f"/api/chats/{CHAT_ID}/update-mode/session")
+    ), TestClient(app) as client:
+        resp = client.get(f"/api/chats/{CHAT_ID}/update-mode/session")
 
     assert resp.status_code == 200
     data = resp.json()
@@ -182,9 +174,8 @@ async def test_get_session_returns_410_when_missing():
     with patch(
         "app.api.update_mode.update_mode_store.get",
         new=AsyncMock(return_value=None),
-    ):
-        with TestClient(app) as client:
-            resp = client.get(f"/api/chats/{CHAT_ID}/update-mode/session")
+    ), TestClient(app) as client:
+        resp = client.get(f"/api/chats/{CHAT_ID}/update-mode/session")
 
     assert resp.status_code == 410
 
@@ -206,12 +197,11 @@ async def test_review_accepts_changes():
     with patch(
         "app.api.update_mode.update_mode_store.update_review",
         new=AsyncMock(return_value=accepted_session),
-    ):
-        with TestClient(app) as client:
-            resp = client.patch(
-                f"/api/chats/{CHAT_ID}/update-mode/review",
-                json={"accepted_change_ids": ["ch-1"], "rejected_change_ids": []},
-            )
+    ), TestClient(app) as client:
+        resp = client.patch(
+            f"/api/chats/{CHAT_ID}/update-mode/review",
+            json={"accepted_change_ids": ["ch-1"], "rejected_change_ids": []},
+        )
 
     assert resp.status_code == 200
     data = resp.json()
@@ -228,12 +218,11 @@ async def test_review_returns_422_on_unknown_change():
     with patch(
         "app.api.update_mode.update_mode_store.update_review",
         new=AsyncMock(side_effect=UnknownChangeIdError("ch-999")),
-    ):
-        with TestClient(app) as client:
-            resp = client.patch(
-                f"/api/chats/{CHAT_ID}/update-mode/review",
-                json={"accepted_change_ids": ["ch-999"], "rejected_change_ids": []},
-            )
+    ), TestClient(app) as client:
+        resp = client.patch(
+            f"/api/chats/{CHAT_ID}/update-mode/review",
+            json={"accepted_change_ids": ["ch-999"], "rejected_change_ids": []},
+        )
 
     assert resp.status_code == 422
 
@@ -248,12 +237,11 @@ async def test_review_returns_410_on_expired_session():
     with patch(
         "app.api.update_mode.update_mode_store.update_review",
         new=AsyncMock(side_effect=SessionExpiredError(CHAT_ID)),
-    ):
-        with TestClient(app) as client:
-            resp = client.patch(
-                f"/api/chats/{CHAT_ID}/update-mode/review",
-                json={"accepted_change_ids": ["ch-1"], "rejected_change_ids": []},
-            )
+    ), TestClient(app) as client:
+        resp = client.patch(
+            f"/api/chats/{CHAT_ID}/update-mode/review",
+            json={"accepted_change_ids": ["ch-1"], "rejected_change_ids": []},
+        )
 
     assert resp.status_code == 410
 
@@ -275,12 +263,11 @@ async def test_apply_returns_422_when_no_accepted_changes():
     with patch(
         "app.api.update_mode.update_mode_store.begin_apply",
         new=AsyncMock(return_value=pending_session),
-    ):
-        with TestClient(app) as client:
-            resp = client.post(
-                f"/api/chats/{CHAT_ID}/update-mode/apply",
-                json={"apply_id": None},
-            )
+    ), TestClient(app) as client:
+        resp = client.post(
+            f"/api/chats/{CHAT_ID}/update-mode/apply",
+            json={"apply_id": None},
+        )
 
     assert resp.status_code == 422
 
@@ -298,9 +285,8 @@ async def test_cancel_returns_cancelled():
     with patch(
         "app.api.update_mode.update_mode_store.delete",
         new=AsyncMock(return_value=None),
-    ):
-        with TestClient(app) as client:
-            resp = client.delete(f"/api/chats/{CHAT_ID}/update-mode/session")
+    ), TestClient(app) as client:
+        resp = client.delete(f"/api/chats/{CHAT_ID}/update-mode/session")
 
     assert resp.status_code == 200
     assert resp.json()["status"] == "cancelled"

@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Iterable
+from collections.abc import Iterable
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -233,7 +233,7 @@ search_knowledge_service = SearchKnowledgeService()
 
 __all__ = [
     "SearchKnowledgeService",
-    "search_knowledge_service",
     # Re-exported for tests and direct callers.
     "format_context",
+    "search_knowledge_service",
 ]

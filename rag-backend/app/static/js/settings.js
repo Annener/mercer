@@ -134,7 +134,7 @@ class SettingsManager {
 
     // ─── Params ──────────────────────────────────────────────────────────────────────────────────────────────
 
-    async handleParamsAction(action, id, btn) {
+    async handleParamsAction(action) {
         if (action === 'save-params') {
             const inputs = this._tabContent.querySelectorAll('[data-key]');
             const updates = {};
@@ -166,7 +166,7 @@ class SettingsManager {
 
     // ─── Domains ─────────────────────────────────────────────────────────────────────────────────────────────
 
-    async handleDomainsAction(action, id, btn) {
+    async handleDomainsAction(action, id) {
         if (action === 'new-domain') {
             await this.showDomainModal();
         } else if (action === 'edit-domain') {
@@ -186,7 +186,7 @@ class SettingsManager {
 
     // ─── Campaigns ────────────────────────────────────────────────────────────────────────────────────────────
 
-    async handleCampaignsAction(action, id, btn) {
+    async handleCampaignsAction(action, id) {
         if (action === 'new-campaign') {
             await this.showCampaignModal();
         } else if (action === 'edit-campaign') {
@@ -202,7 +202,7 @@ class SettingsManager {
 
     // ─── Pipelines ────────────────────────────────────────────────────────────────────────────────────────────
 
-    async handlePipelinesAction(action, id, btn) {
+    async handlePipelinesAction(action, id) {
         if (action === 'new-pipeline') {
             await this.showPipelineModal();
         } else if (action === 'edit-pipeline') {
@@ -266,7 +266,7 @@ class SettingsManager {
 
     // ─── Embedding Models ──────────────────────────────────────────────────────────────────────────────────────────
 
-    async handleEmbModelsAction(action, id, btn) {
+    async handleEmbModelsAction(action, id) {
         if (action === 'new-emb') {
             await this.showEmbeddingModelModal();
         } else if (action === 'edit-emb') {
@@ -337,7 +337,7 @@ class SettingsManager {
 
     // ─── Vaults ──────────────────────────────────────────────────────────────────────────────────────────────
 
-    async handleVaultsAction(action, id, btn) {
+    async handleVaultsAction(action, id) {
         if (action === 'new-vault') {
             await this.showVaultModal();
         } else if (action === 'edit-vault') {

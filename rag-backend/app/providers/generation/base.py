@@ -3,9 +3,8 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from typing import Any
 
-from shared_contracts.models import LLMToolCall, LLMToolDefinition, LLMToolChoice
+from shared_contracts.models import LLMToolCall, LLMToolChoice, LLMToolDefinition
 
 
 class GenerationProviderUnavailableError(Exception):
@@ -22,7 +21,7 @@ class LLMStreamChunk:
     """
 
     content_delta: str = ""
-    tool_call_delta: "ToolCallDelta | None" = None
+    tool_call_delta: ToolCallDelta | None = None
     finish_reason: str | None = None
 
 
@@ -108,7 +107,7 @@ class GenerationProvider(ABC):
 __all__ = [
     "GenerationProvider",
     "GenerationProviderUnavailableError",
-    "LLMStreamChunk",
     "LLMFullResponse",
+    "LLMStreamChunk",
     "ToolCallDelta",
 ]

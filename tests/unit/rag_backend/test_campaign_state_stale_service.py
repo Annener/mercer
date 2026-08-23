@@ -11,9 +11,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 import pytest
-
 from app.services.campaign_state_stale_service import (
-    CampaignStateStaleError,
     CampaignNotFoundError,
     _detect_stale_documents,
     _maybe_log_stale_transition,
@@ -21,7 +19,6 @@ from app.services.campaign_state_stale_service import (
     _should_log_transition,
     campaign_state_stale_service,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fakes
@@ -65,7 +62,7 @@ class _FakeScalarResult:
     def __init__(self, rows: list[Any]) -> None:
         self._rows = rows
 
-    def scalars(self) -> "_FakeScalarResult":
+    def scalars(self) -> _FakeScalarResult:
         return self
 
     def all(self) -> list[Any]:

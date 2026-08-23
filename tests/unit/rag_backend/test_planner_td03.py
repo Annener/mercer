@@ -19,12 +19,10 @@ test_planner_td03.py — TD-03
 """
 from __future__ import annotations
 
-import importlib
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from app.services.planner import Planner
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -64,7 +62,7 @@ def _make_db(
 def _make_settings_svc(retrieval_enabled: bool = True, max_clarification_turns: int = 3) -> MagicMock:
     svc = MagicMock()
 
-    async def _get(key: str, db):  # noqa: ARG001
+    async def _get(key: str, db):
         if key == "retrieval.enabled":
             return retrieval_enabled
         if key == "chat.max_clarification_turns":

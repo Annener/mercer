@@ -2,11 +2,10 @@
 from __future__ import annotations
 
 import inspect
-import pytest
 from unittest.mock import AsyncMock, patch
 
 import fakeredis.aioredis as fakeredis
-
+import pytest
 from parser.state.redis_state_manager import RedisStateManager
 
 # Полный набор ключей, которые читает run_indexing из settings
@@ -145,19 +144,21 @@ async def test_mark_file_indexed_called_after_success(state_manager):
     db_client.update_document_status = AsyncMock()
     db_client.update_vault_chunk_count = AsyncMock()
 
-    with patch("indexer_worker.scan_vault", return_value=[{
-        "relative_path": "doc.md", "path": "/data/vaults/v2/doc.md",
-        "checksum": "md5abc", "last_modified": 0, "extension": ".md",
-    }]):
-        with patch("indexer_worker._process_file", new_callable=AsyncMock, return_value=(5, "doc-uuid-1")):
-            from indexer_worker import run_indexing
-            await run_indexing(
-                task_id="t2",
-                vault_id="v2",
-                force_reindex=True,
-                db_client=db_client,
-                state_manager=sm_spy,
-            )
+    with (
+        patch("indexer_worker.scan_vault", return_value=[{
+            "relative_path": "doc.md", "path": "/data/vaults/v2/doc.md",
+            "checksum": "md5abc", "last_modified": 0, "extension": ".md",
+        }]),
+        patch("indexer_worker._process_file", new_callable=AsyncMock, return_value=(5, "doc-uuid-1")),
+    ):
+        from indexer_worker import run_indexing
+        await run_indexing(
+            task_id="t2",
+            vault_id="v2",
+            force_reindex=True,
+            db_client=db_client,
+            state_manager=sm_spy,
+        )
 
     sm_spy.mark_file_indexed.assert_called_once_with("v2", "doc.md", "md5abc", 5)
     sm_spy.mark_task_done.assert_called_once_with("t2")

@@ -21,20 +21,18 @@ from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
-
 from app.providers.generation.base import LLMStreamChunk, ToolCallDelta
 from app.services import agent_loop as al
-from app.services.agent_loop import AgentEvent, AgentLoop
+from app.services.agent_loop import AgentLoop
 from app.services.effective_context import append_tool_use_rules
 from app.services.retrieval_tool_settings import load_retrieval_tool_settings
-from app.services.search_knowledge_service import SearchKnowledgeService
+
 from shared_contracts.models import (
     AgentLoopResult,
     RetrievalPolicy,
     SearchHit,
     SearchKnowledgeResult,
 )
-
 
 # ---------------------------------------------------------------------------
 # Scripted provider

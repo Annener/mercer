@@ -10,20 +10,18 @@ Tests cover:
 """
 from __future__ import annotations
 
-import json
 import uuid
-from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
-
 from app.services.indexer_client import (
     IndexerClient,
     IndexerConflictError,
     IndexerUnavailableError,
     indexer_client,
 )
+
 from shared_contracts.models import (
     ResolvedUpdateModeChange,
     UpdateModeAction,
@@ -31,15 +29,13 @@ from shared_contracts.models import (
     UpdateModeApplyRequest,
     UpdateModeApplyResponse,
     UpdateModeChangeStatus,
+    UpdateModeIntent,
     UpdateModeOperation,
     UpdateModeResolveRequest,
     UpdateModeResolveResponse,
     UpdateModeVaultApplyResult,
     UpdateModeVaultApplyStatus,
-    UpdateModeAnchor,
-    UpdateModeIntent,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -228,9 +224,11 @@ async def test_resolve_4xx_raises_indexer_unavailable() -> None:
     mock_http_client.__aexit__ = AsyncMock(return_value=None)
     mock_http_client.post = AsyncMock(return_value=mock_response)
 
-    with patch("app.services.indexer_client.httpx.AsyncClient", return_value=mock_http_client):
-        with pytest.raises(IndexerUnavailableError) as exc_info:
-            await client.resolve(request)
+    with (
+        patch("app.services.indexer_client.httpx.AsyncClient", return_value=mock_http_client),
+        pytest.raises(IndexerUnavailableError) as exc_info,
+    ):
+        await client.resolve(request)
 
     assert exc_info.value.status_code == 422
     assert "Validation error" in exc_info.value.detail
@@ -249,9 +247,11 @@ async def test_resolve_transport_error_raises_indexer_unavailable() -> None:
         side_effect=httpx.ConnectError("Connection refused")
     )
 
-    with patch("app.services.indexer_client.httpx.AsyncClient", return_value=mock_http_client):
-        with pytest.raises(IndexerUnavailableError) as exc_info:
-            await client.resolve(request)
+    with (
+        patch("app.services.indexer_client.httpx.AsyncClient", return_value=mock_http_client),
+        pytest.raises(IndexerUnavailableError) as exc_info,
+    ):
+        await client.resolve(request)
 
     assert exc_info.value.status_code is None
     assert "transport" in exc_info.value.detail
@@ -368,9 +368,11 @@ async def test_apply_409_raises_indexer_conflict() -> None:
     mock_http_client.__aexit__ = AsyncMock(return_value=None)
     mock_http_client.post = AsyncMock(return_value=mock_response)
 
-    with patch("app.services.indexer_client.httpx.AsyncClient", return_value=mock_http_client):
-        with pytest.raises(IndexerConflictError) as exc_info:
-            await client.apply(request)
+    with (
+        patch("app.services.indexer_client.httpx.AsyncClient", return_value=mock_http_client),
+        pytest.raises(IndexerConflictError) as exc_info,
+    ):
+        await client.apply(request)
 
     assert conflict_detail in exc_info.value.detail
 
@@ -390,9 +392,11 @@ async def test_apply_500_raises_indexer_unavailable() -> None:
     mock_http_client.__aexit__ = AsyncMock(return_value=None)
     mock_http_client.post = AsyncMock(return_value=mock_response)
 
-    with patch("app.services.indexer_client.httpx.AsyncClient", return_value=mock_http_client):
-        with pytest.raises(IndexerUnavailableError) as exc_info:
-            await client.apply(request)
+    with (
+        patch("app.services.indexer_client.httpx.AsyncClient", return_value=mock_http_client),
+        pytest.raises(IndexerUnavailableError) as exc_info,
+    ):
+        await client.apply(request)
 
     assert exc_info.value.status_code == 500
 
@@ -412,9 +416,11 @@ async def test_apply_transport_error_raises_indexer_unavailable() -> None:
         side_effect=httpx.TimeoutException("Request timed out", request=mock_request)
     )
 
-    with patch("app.services.indexer_client.httpx.AsyncClient", return_value=mock_http_client):
-        with pytest.raises(IndexerUnavailableError) as exc_info:
-            await client.apply(request)
+    with (
+        patch("app.services.indexer_client.httpx.AsyncClient", return_value=mock_http_client),
+        pytest.raises(IndexerUnavailableError) as exc_info,
+    ):
+        await client.apply(request)
 
     assert exc_info.value.status_code is None
     assert "timeout" in exc_info.value.detail
@@ -440,9 +446,11 @@ async def test_apply_409_is_conflict_not_unavailable() -> None:
     mock_http_client.__aexit__ = AsyncMock(return_value=None)
     mock_http_client.post = AsyncMock(return_value=mock_response)
 
-    with patch("app.services.indexer_client.httpx.AsyncClient", return_value=mock_http_client):
-        with pytest.raises(IndexerConflictError):
-            await client.apply(request)
+    with (
+        patch("app.services.indexer_client.httpx.AsyncClient", return_value=mock_http_client),
+        pytest.raises(IndexerConflictError),
+    ):
+        await client.apply(request)
 
 
 # ---------------------------------------------------------------------------
@@ -465,9 +473,11 @@ async def test_resolve_409_raises_unavailable_not_conflict() -> None:
     mock_http_client.__aexit__ = AsyncMock(return_value=None)
     mock_http_client.post = AsyncMock(return_value=mock_response)
 
-    with patch("app.services.indexer_client.httpx.AsyncClient", return_value=mock_http_client):
-        with pytest.raises(IndexerUnavailableError):
-            await client.resolve(request)
+    with (
+        patch("app.services.indexer_client.httpx.AsyncClient", return_value=mock_http_client),
+        pytest.raises(IndexerUnavailableError),
+    ):
+        await client.resolve(request)
 
 
 # ---------------------------------------------------------------------------

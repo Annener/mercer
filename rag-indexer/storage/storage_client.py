@@ -7,7 +7,6 @@ import httpx
 
 from shared_contracts.models import SearchRequest, SearchResponse, UpsertRequest, UpsertResponse
 
-
 logger = logging.getLogger(__name__)
 
 MAX_RETRIES = 3

@@ -6,7 +6,6 @@ import logging
 from alembic import command
 from alembic.config import Config
 
-
 logger = logging.getLogger(__name__)
 
 

@@ -7,8 +7,13 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Pipeline
-from shared_contracts.models import FinalComposition, PipelineCreate, PipelineRead, PipelineStep, PipelineUpdate
-
+from shared_contracts.models import (
+    FinalComposition,
+    PipelineCreate,
+    PipelineRead,
+    PipelineStep,
+    PipelineUpdate,
+)
 
 VALID_ROLES = {"methodology", "lore", "campaign_context", "character_sheet", "session_log", "rules"}
 VALID_STEP_TYPES = {"book", "world", "campaign"}
@@ -158,7 +163,7 @@ def validate_pipeline_payload(steps: list[dict[str, Any]], final_composition: di
         if step["type"] == "campaign" and not step.get("campaign_id"):
             raise ValueError("campaign step requires campaign_id")
     if not isinstance(final_composition.get("system_prompt"), str):
-        raise ValueError("final_composition.system_prompt is required")
+        raise TypeError("final_composition.system_prompt is required")
 
 
 def _increment_patch(version: str) -> str:

@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import EmbeddingModel, Vault
 from app.db.session import get_db
 from app.services.settings_service import settings_service
+
 from .helpers import _check_embedding_provider
 from .schemas import EmbeddingModelCreateRequest, EmbeddingModelUpdateRequest
 
@@ -47,7 +48,7 @@ async def check_embedding_model(model_id: str, db: AsyncSession = Depends(get_db
     try:
         vector = await _check_embedding_provider(model)
         return {"ok": True, "latency_ms": int((time.perf_counter() - started) * 1000), "dimensions": len(vector), "error": None}
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001  # health check must catch all errors
         return {"ok": False, "latency_ms": int((time.perf_counter() - started) * 1000), "dimensions": None, "error": str(exc)}
 
 

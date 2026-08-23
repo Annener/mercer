@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import AsyncIterator
+from collections.abc import AsyncIterator
 
 import httpx
 from fastapi import APIRouter, HTTPException
@@ -46,7 +46,7 @@ def _safe_json(resp: httpx.Response) -> dict:
     """Парсит JSON из ответа; при ошибке возвращает dict с raw-текстом."""
     try:
         return resp.json()
-    except Exception:
+    except Exception:  # noqa: BLE001  # fallback to raw text on parse error
         return {"error": resp.text}
 
 
@@ -129,19 +129,18 @@ async def sidecar_install_stream() -> StreamingResponse:
 
     async def _proxy_stream() -> AsyncIterator[bytes]:
         try:
-            async with httpx.AsyncClient(timeout=None) as client:
-                async with client.stream(
-                    "GET",
-                    f"{HOST_AGENT_URL}/sidecar/install/stream",
-                    headers=_agent_headers(),
-                ) as response:
-                    async for chunk in response.aiter_bytes(1024):
-                        yield chunk
+            async with httpx.AsyncClient(timeout=None) as client, client.stream(
+                "GET",
+                f"{HOST_AGENT_URL}/sidecar/install/stream",
+                headers=_agent_headers(),
+            ) as response:
+                async for chunk in response.aiter_bytes(1024):
+                    yield chunk
         except httpx.ConnectError:
-            yield "data: ERROR: host-agent недоступен\n\n".encode("utf-8")
+            yield "data: ERROR: host-agent недоступен\n\n".encode()
         except Exception as exc:
             logger.exception("install stream error")
-            yield f"data: ERROR: {exc}\n\n".encode("utf-8")
+            yield f"data: ERROR: {exc}\n\n".encode()
 
     return StreamingResponse(
         _proxy_stream(),

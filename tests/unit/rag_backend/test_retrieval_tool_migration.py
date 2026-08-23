@@ -11,10 +11,7 @@ import importlib.util
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from shared_contracts.models import RetrievalPolicy
-
 
 MIGRATION_PATH = (
     Path(__file__).resolve().parents[3]

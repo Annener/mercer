@@ -1,15 +1,18 @@
 from __future__ import annotations
+
 import logging
 import os
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
+
 import redis.asyncio as aioredis
 import uvicorn
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+
 from app.api.chat import router as chat_router
 from app.api.config_api import router as config_router
 from app.api.db_management import router as db_management_router

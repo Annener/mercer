@@ -8,18 +8,16 @@ test_pipeline_resume.py — интеграционные тесты для endpo
 from __future__ import annotations
 
 import asyncio
-import json
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
-
 from app.api.pipeline_resume import router
 from app.db.models import Chat
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
 # ---------------------------------------------------------------------------
 # Фикстуры
@@ -260,8 +258,7 @@ class TestPipelineResume:
             instance = MockExecutor.return_value
             instance.resume_from_validation = mock_executor_stream
 
-            from app.api.pipeline_resume import pipeline_resume
-            from app.api.pipeline_resume import PipelineResumeRequest
+            from app.api.pipeline_resume import PipelineResumeRequest, pipeline_resume
 
             req = PipelineResumeRequest(
                 resume_token=TEST_RESUME_TOKEN,

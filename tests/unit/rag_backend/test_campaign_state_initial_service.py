@@ -11,23 +11,21 @@ from __future__ import annotations
 
 import uuid
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
 from app.services.campaign_state_value_service import (
     _build_initial_state_rows,
 )
+
 from shared_contracts.models import (
     CampaignStateInitialFieldStatus,
-    CampaignStateInitialListValue,
     CampaignStateInitialListItem,
+    CampaignStateInitialListValue,
     CampaignStateInitialProposal,
     CampaignStateInitialProposalField,
     CampaignStateInitialSingleValue,
-    CampaignStateFieldMode,
 )
-
 
 # ---------------------------------------------------------------------------
 # _build_initial_state_rows — публичный через apply_initial
@@ -143,7 +141,7 @@ def test_normalize_proposal_keeps_enabled_proposed_single():
         ],
         "questions": ["Q1"],
     }
-    out, warns = _normalize(raw, fields, snap)
+    out, _warns = _normalize(raw, fields, snap)
     assert len(out.fields) == 1
     assert out.fields[0].single_value is not None
     assert out.fields[0].single_value.text == "value"
@@ -213,7 +211,7 @@ def test_normalize_proposal_keeps_needs_clarification_with_question():
             }
         ]
     }
-    out, warns = _normalize(raw, fields, snapshot=set())
+    out, _warns = _normalize(raw, fields, snapshot=set())
     assert len(out.fields) == 1
     assert out.fields[0].status.status == "needs_clarification"
     assert out.fields[0].status.clarification_question == "Что именно?"
@@ -257,8 +255,8 @@ def test_normalize_proposal_rejects_mode_mismatch():
 
 
 def test_build_system_prompt_includes_field_keys_and_descriptions():
-    from app.services.campaign_state_initial_service import _build_system_prompt
     from app.db.models import CampaignStateFieldConfig
+    from app.services.campaign_state_initial_service import _build_system_prompt
 
     fields = [
         CampaignStateFieldConfig(
@@ -302,6 +300,7 @@ def test_build_system_prompt_includes_field_keys_and_descriptions():
 
 def test_build_user_message_wraps_documents_with_id_and_sha():
     from app.services.campaign_state_initial_service import _build_user_message
+
     from shared_contracts.models import DocumentSnapshot
 
     snap1 = DocumentSnapshot(
@@ -342,7 +341,6 @@ def test_build_user_message_wraps_documents_with_id_and_sha():
 async def test_call_provider_with_repair_succeeds_on_second_attempt():
     from app.services.campaign_state_initial_service import (
         _call_provider_with_repair_raw,
-        InvalidGenerationOutputError,
     )
 
     provider = MagicMock()
@@ -374,8 +372,8 @@ async def test_call_provider_with_repair_succeeds_on_second_attempt():
 @pytest.mark.asyncio
 async def test_call_provider_with_repair_raises_after_two_invalid_attempts():
     from app.services.campaign_state_initial_service import (
-        _call_provider_with_repair_raw,
         InvalidGenerationOutputError,
+        _call_provider_with_repair_raw,
     )
 
     provider = MagicMock()

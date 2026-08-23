@@ -24,11 +24,9 @@ import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 from app.config import EmbeddingModelConfig
-from app.services.settings_service import SettingsService
 from app.services.retrieval import _embed_openai_compatible
-
+from app.services.settings_service import SettingsService
 
 # ---------------------------------------------------------------------------
 # Helpers

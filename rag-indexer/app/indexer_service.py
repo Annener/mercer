@@ -4,8 +4,9 @@ import asyncio
 import logging
 import uuid
 
-from app.db_client import IndexerDBClient
 from parser.state.redis_state_manager import RedisStateManager
+
+from app.db_client import IndexerDBClient
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +80,7 @@ class IndexerService:
             try:
                 task.result()
             except Exception:
-                logger.error("Indexer task failed during shutdown.", exc_info=True)
+                logger.exception("Indexer task failed during shutdown.")
         for task in pending:
             logger.warning(
                 "Indexer task did not finish during graceful shutdown: %s", task.get_name()

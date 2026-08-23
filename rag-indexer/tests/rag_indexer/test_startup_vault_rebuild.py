@@ -8,7 +8,6 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, patch
 
 import pytest
-
 from app.main import _rebuild_one_vault
 
 
@@ -52,6 +51,8 @@ async def test_rebuild_error_propagates_to_caller(tmp_path: object) -> None:
     db_client = AsyncMock()
     db_client.get_all_documents.return_value = []
 
-    with patch("app.main.scan_vault", return_value=[]):
-        with pytest.raises(RuntimeError, match="Redis down"):
-            await _rebuild_one_vault(state_manager, db_client, "v1", vault_path)
+    with (
+        patch("app.main.scan_vault", return_value=[]),
+        pytest.raises(RuntimeError, match="Redis down"),
+    ):
+        await _rebuild_one_vault(state_manager, db_client, "v1", vault_path)

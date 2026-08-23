@@ -15,24 +15,23 @@ from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
-
 from app.providers.generation.base import LLMStreamChunk, ToolCallDelta
 from app.services import agent_loop as al
 from app.services.agent_loop import (
+    SEARCH_KNOWLEDGE_TOOL,
     AgentEvent,
     AgentLoop,
-    SEARCH_KNOWLEDGE_TOOL,
     _extract_search_queries,
     _format_tool_result_text,
     _parse_tool_arguments,
 )
+
 from shared_contracts.models import (
     AgentLoopResult,
     RetrievalPolicy,
     SearchHit,
     SearchKnowledgeResult,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fake provider
@@ -102,18 +101,18 @@ async def _collect(events: AsyncIterator[AgentEvent]) -> list[AgentEvent]:
     return out
 
 
-_BASE_KWARGS: dict[str, Any] = dict(
-    system_prompt="sys",
-    history=[{"role": "user", "content": "earlier turn"}],
-    user_message="now",
-    domain_id="dnd",
-    campaign_id="c1",
-    vault_ids=["v1"],
-    max_rounds=2,
-    evidence_token_budget=4000,
-    policy=RetrievalPolicy.GROUNDED,
-    db=AsyncMock(),
-)
+_BASE_KWARGS: dict[str, Any] = {
+    "system_prompt": "sys",
+    "history": [{"role": "user", "content": "earlier turn"}],
+    "user_message": "now",
+    "domain_id": "dnd",
+    "campaign_id": "c1",
+    "vault_ids": ["v1"],
+    "max_rounds": 2,
+    "evidence_token_budget": 4000,
+    "policy": RetrievalPolicy.GROUNDED,
+    "db": AsyncMock(),
+}
 
 
 # ---------------------------------------------------------------------------
@@ -454,7 +453,7 @@ async def test_grounded_round_0_sends_tool_choice_required():
             yield _content_chunk("fallback answer")
 
     loop = AgentLoop()
-    events = await _collect(loop.run_stream(
+    await _collect(loop.run_stream(
         provider=CapturingProvider(),
         **{**_BASE_KWARGS, "policy": RetrievalPolicy.GROUNDED, "max_rounds": 2},
     ))
@@ -512,8 +511,8 @@ def test_extract_scene_state_patch_handles_non_dict_and_truncates():
       - preserve null values (explicit delete marker)
     """
     from app.services.agent_loop import (
-        _extract_scene_state_patch,
         _SCENE_STATE_PATCH_MAX_KEYS,
+        _extract_scene_state_patch,
     )
     fake_call = type("C", (), {})()
     fake_call.function = type("F", (), {})()
@@ -546,9 +545,8 @@ async def test_update_scene_state_tool_call_merges_into_chat_metadata():
     """Round 0: model calls update_scene_state with a patch. Host merges
     patch into Chat.metadata_json['scene_state'] and persists.
     """
-    from app.db.models import Chat, Base
-    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-    from sqlalchemy.ext.asyncio import create_async_engine
+    from app.db.models import Base, Chat
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as conn:

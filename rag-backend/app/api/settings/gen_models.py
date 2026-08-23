@@ -12,6 +12,7 @@ from app.db.models import GenerationModel
 from app.db.session import get_db
 from app.providers.generation.openai_compatible import OpenAICompatibleProvider
 from app.services.settings_service import settings_service
+
 from .schemas import GenerationModelCreateRequest, GenerationModelUpdateRequest
 
 router = APIRouter()
@@ -86,7 +87,7 @@ async def check_generation_model(model_id: str, db: AsyncSession = Depends(get_d
     try:
         api_key = settings_service.decrypt_api_key(model.encrypted_api_key) if model.encrypted_api_key else ""
         if model.provider != "openai_compatible":
-            raise ValueError(f"Unsupported provider {model.provider}")
+            raise ValueError(f"Unsupported provider {model.provider}")  # noqa: TRY301
         provider = OpenAICompatibleProvider(
             config=GenerationModelConfig(
                 model_id=model.model_id, provider="openai_compatible",
@@ -97,7 +98,7 @@ async def check_generation_model(model_id: str, db: AsyncSession = Depends(get_d
         )
         await provider.generate([{"role": "user", "content": "ping"}])
         return {"ok": True, "latency_ms": int((time.perf_counter() - started) * 1000), "error": None}
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001  # health check must catch all errors
         return {"ok": False, "latency_ms": int((time.perf_counter() - started) * 1000), "error": str(exc)}
 
 

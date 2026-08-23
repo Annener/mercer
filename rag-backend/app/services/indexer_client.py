@@ -182,7 +182,7 @@ class IndexerClient:
             if isinstance(body, dict):
                 return body.get("detail", str(body))
             return str(body)
-        except Exception:
+        except Exception:  # noqa: BLE001  # fallback to raw text
             return response.text[:512]
 
 

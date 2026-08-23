@@ -135,7 +135,7 @@ export const chatMixin = {
      */
     async setFullDocMode(chatId, enabled, campaignId = null) {
         const body = { full_document_mode_enabled: enabled };
-        if (campaignId != null) body.campaign_id = campaignId;
+        if (campaignId !== null && campaignId !== undefined) body.campaign_id = campaignId;
         const response = await fetch(`${this.baseUrl}/chat/${chatId}`, {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },

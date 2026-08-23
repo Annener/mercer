@@ -21,7 +21,7 @@
 // позволит выбрать документы и запустить preview — backend вернёт 422
 // no_fields_configured_no_propose, и Wizard покажет понятную ошибку.
 
-(function () {
+const InitialStateWizardImpl = (function () {
     'use strict';
 
     const PER_DOC_TOKEN_LIMIT = 32000;
@@ -1287,7 +1287,7 @@ _renderActions([
             .replace(/'/g, '&#39;');
     }
 
-    window.InitialStateWizard = {
+    return {
         open,
         close,
         PER_DOC_TOKEN_LIMIT,
@@ -1295,3 +1295,6 @@ _renderActions([
         _internals: { _escapeHtml, _isMarkdown, _docIsOversized, _errMessage, ERROR_MESSAGES },
     };
 })();
+
+window.InitialStateWizard = InitialStateWizardImpl;
+export { InitialStateWizardImpl as InitialStateWizard };

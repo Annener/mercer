@@ -1,7 +1,10 @@
 from __future__ import annotations
+
 import logging
+
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.config import AppConfig
 from app.db.models import Vault
 from app.pipelines.registry import PipelineRegistry
@@ -132,9 +135,7 @@ class Planner:
         recent_history = history[-6:] if history else []
 
         messages = (
-            [{"role": "system", "content": system_content}]
-            + recent_history
-            + [{"role": "user", "content": query}]
+            [{"role": "system", "content": system_content}, *recent_history, {"role": "user", "content": query}]
         )
 
         try:
@@ -147,6 +148,6 @@ class Planner:
             missing = [f for f in raw_fields if isinstance(f, str) and f in allowed]
             logger.info("Planner LLM router: query=%r missing_fields=%s", query[:80], missing)
             return missing
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001  # planner is best-effort
             logger.warning("Planner LLM router failed, skipping clarification: %s", exc)
             return []

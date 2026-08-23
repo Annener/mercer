@@ -6,8 +6,8 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import delete, select
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Document, DocumentLabel, Tag, Vault
 from app.db.session import get_db

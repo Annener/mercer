@@ -8,8 +8,6 @@ Unit-тесты для pipeline_dag.py.
 from __future__ import annotations
 
 import pytest
-from pydantic import ValidationError
-
 from app.services.pipeline_dag import (
     build_dag,
     detect_cycles,
@@ -17,13 +15,13 @@ from app.services.pipeline_dag import (
     topological_sort,
     validate_dag,
 )
+from pydantic import ValidationError
 
 # ---------------------------------------------------------------------------
 # Вспомогательная фабрика шагов (создаём Pydantic-объекты напрямую,
 # чтобы тесты не зависели от полного импорта приложения)
 # ---------------------------------------------------------------------------
-
-from shared_contracts.models import PipelineStep  # noqa: E402
+from shared_contracts.models import PipelineStep
 
 
 def make_retrieval(step_id: str, after: list[str] | None = None) -> PipelineStep:

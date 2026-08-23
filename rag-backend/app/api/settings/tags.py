@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Tag
 from app.db.session import get_db
-from shared_contracts.models import TagCreate, TagRead, TagUpdate, TagsGrouped
+from shared_contracts.models import TagCreate, TagRead, TagsGrouped, TagUpdate
 
 logger = logging.getLogger(__name__)
 
@@ -82,9 +82,9 @@ async def create_tag(req: TagCreate, db: AsyncSession = Depends(get_db)) -> TagR
     db.add(tag)
     try:
         await db.commit()
-    except Exception:
+    except Exception:  # noqa: BLE001  # catch IntegrityError / OperationalError / etc.
         await db.rollback()
-        raise HTTPException(409, f"Tag with name '{req.name}' already exists in this domain")
+        raise HTTPException(409, f"Tag with name '{req.name}' already exists in this domain") from None
     await db.refresh(tag)
     return TagRead.model_validate(tag, from_attributes=True)
 
@@ -104,9 +104,9 @@ async def update_tag(
         tag.color = req.color
     try:
         await db.commit()
-    except Exception:
+    except Exception:  # noqa: BLE001  # catch IntegrityError / OperationalError / etc.
         await db.rollback()
-        raise HTTPException(409, f"Tag with name '{req.name}' already exists in this domain")
+        raise HTTPException(409, f"Tag with name '{req.name}' already exists in this domain") from None
     await db.refresh(tag)
     return TagRead.model_validate(tag, from_attributes=True)
 

@@ -10,10 +10,10 @@ import uuid
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-
 from app.api.chat import _prefill_rag
 from app.db.models import Base
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
 from shared_contracts.models import SearchHit
 
 

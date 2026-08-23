@@ -120,7 +120,8 @@ def _collect_all_hits(ctx: PipelineExecutionContext) -> list[SearchHit]:
             elif isinstance(item, dict):
                 try:
                     hit = SearchHit.model_validate(item)
-                except Exception:
+                except Exception as exc:  # noqa: BLE001  # skip malformed entries
+                    logger.debug("Skipping malformed search hit entry: %s", exc)
                     continue
             else:
                 continue
@@ -155,7 +156,8 @@ def _collect_step_sources(ctx: PipelineExecutionContext) -> list[SourceGroup]:
                 elif isinstance(item, dict):
                     try:
                         hits.append(SearchHit.model_validate(item))
-                    except Exception:
+                    except Exception as exc:  # noqa: BLE001  # skip malformed entries
+                        logger.debug("Skipping malformed SearchHit entry: %s", exc)
                         continue
             sources.extend(hits_to_sources(hits))
 
@@ -169,7 +171,8 @@ def _collect_step_sources(ctx: PipelineExecutionContext) -> list[SourceGroup]:
                 elif isinstance(item, dict):
                     try:
                         sources.append(Source.model_validate(item))
-                    except Exception:
+                    except Exception as exc:  # noqa: BLE001  # skip malformed entries
+                        logger.debug("Skipping malformed Source entry: %s", exc)
                         continue
 
         if sources:
@@ -287,15 +290,15 @@ class PipelineExecutor:
         for h in saved_hits_raw:
             try:
                 saved_hits.append(SearchHit.model_validate(h))
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001  # skip malformed entries
+                logger.debug("Skipping malformed SearchHit entry: %s", exc)
 
         candidates: list[DocumentCandidate] = []
         for c in candidates_raw:
             try:
                 candidates.append(DocumentCandidate.model_validate(c))
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001  # skip malformed entries
+                logger.debug("Skipping malformed DocumentCandidate entry: %s", exc)
 
         # 2. Загружаем full texts параллельно
         full_texts: dict[str, str] = {}
@@ -370,7 +373,7 @@ class PipelineExecutor:
             chat.sent_full_document_ids = existing_sent
             chat.pipeline_pause_state = None
             await db.commit()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001  # best-effort state reset
             logger.warning(
                 "resume_from_full_doc_selection: failed to update chat: %s", exc
             )
@@ -410,10 +413,8 @@ class PipelineExecutor:
                     full_answer += token
                     yield {"type": "token", "content": token}
             except Exception as exc:
-                logger.error(
-                    "resume_from_full_doc_selection plain-fallback stream error: %s",
-                    exc,
-                    exc_info=True,
+                logger.exception(
+                    "resume_from_full_doc_selection plain-fallback stream error"
                 )
                 yield {"type": "error", "message": f"LLM stream error: {exc}"}
                 return
@@ -465,7 +466,7 @@ class PipelineExecutor:
                 )
                 db.add(assistant_msg)
                 await db.commit()
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001  # best-effort persistence
                 logger.warning(
                     "resume_from_full_doc_selection: failed to save assistant message: %s",
                     exc,
@@ -634,7 +635,7 @@ class PipelineExecutor:
         try:
             chat.pipeline_pause_state = pause_state
             await self.db.commit()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001  # best-effort persistence
             logger.warning(
                 "_maybe_pause_for_full_doc: failed to save pause_state: %s", exc
             )
@@ -677,11 +678,9 @@ class PipelineExecutor:
             try:
                 hits = await self._retrieve_full_documents_for_step_dag(step, ctx)
             except Exception as exc:
-                logger.error(
-                    "Step full-document retrieval error: step=%s err=%s",
+                logger.exception(
+                    "Step full-document retrieval error: step=%s",
                     step.step_id,
-                    exc,
-                    exc_info=True,
                 )
                 ctx.step_results[step.step_id] = ""
                 yield {
@@ -722,9 +721,7 @@ class PipelineExecutor:
         try:
             hits = await self._retrieve_for_step_dag(step, ctx, provider)
         except Exception as exc:
-            logger.error(
-                "Step retrieval error: step=%s err=%s", step.step_id, exc, exc_info=True
-            )
+            logger.exception("Step retrieval error: step=%s", step.step_id)
             ctx.step_results[step.step_id] = ""
             yield {"type": "step_error", "step_id": step.step_id, "message": str(exc)}
             return
@@ -744,7 +741,7 @@ class PipelineExecutor:
             yield _status(f"Reranking results: {step.name}...")
             try:
                 hits = await rerank_hits(ctx.query, hits, self.db)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001  # rerank is best-effort
                 logger.warning(
                     "Rerank failed for step=%s, using original order: %s",
                     step.step_id,
@@ -820,7 +817,7 @@ class PipelineExecutor:
 
         for result in results:
             if isinstance(result, Exception):
-                logger.error("Parallel step error: %s", result, exc_info=True)
+                logger.error("Parallel step error: %s", result)
                 yield {"type": "error", "message": str(result)}
                 continue
             for chunk in result:
@@ -860,7 +857,7 @@ class PipelineExecutor:
             ):
                 yield {"type": "token", "content": token}
         except Exception as exc:
-            logger.error("FinalComposition stream error: %s", exc, exc_info=True)
+            logger.exception("FinalComposition stream error")
             yield {"type": "error", "message": f"LLM stream error: {exc}"}
             return
 
@@ -999,7 +996,7 @@ class PipelineExecutor:
         )
 
         # Параллельный fetch через singleton httpx из full_document_service
-        fetch_results: list[str | None | BaseException] = await asyncio.gather(
+        fetch_results: list[str | BaseException | None] = await asyncio.gather(
             *[
                 reconstruct_full_text(
                     document_id=d["document_id"],
@@ -1104,5 +1101,5 @@ class PipelineExecutor:
                 "expires_at": (datetime.now(UTC) + _VALIDATION_TTL).isoformat(),
             }
             await self.db.commit()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001  # best-effort persistence
             logger.warning("_save_pause_state failed: %s", exc)

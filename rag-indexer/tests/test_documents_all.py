@@ -12,9 +12,8 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from httpx import ASGITransport, AsyncClient
-
 from app.main import app
+from httpx import ASGITransport, AsyncClient
 
 
 def _make_app_with_db(mock_db: MagicMock) -> None:

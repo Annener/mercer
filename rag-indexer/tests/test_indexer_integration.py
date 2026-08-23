@@ -12,16 +12,13 @@
 
 from __future__ import annotations
 
-import asyncio
-from datetime import datetime, timezone
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, call, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 from indexer_worker import _process_file
-from shared_contracts.models import UpsertRequest
 
+from shared_contracts.models import UpsertRequest
 
 # ---------------------------------------------------------------------------
 # Вспомогательные фабрики

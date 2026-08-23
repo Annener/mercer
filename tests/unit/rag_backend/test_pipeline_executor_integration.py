@@ -15,7 +15,6 @@ test_pipeline_executor_integration.py — Этап 11: сквозные инте
 """
 from __future__ import annotations
 
-import asyncio
 import uuid
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
@@ -23,10 +22,9 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 from app.services.pipeline_executor import PipelineExecutor, _build_levels, _resolve_prompt
-from shared_contracts.models import FinalComposition, PipelineExecutionContext, PipelineStep
 
+from shared_contracts.models import FinalComposition, PipelineExecutionContext, PipelineStep
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -131,7 +129,7 @@ class TestParallelDagIntegration:
             _retrieval("r3", after=["r1", "r2"]),
         ]
         ctx = _make_ctx(steps, final_prompt="Итог: {r3.result}")
-        executor, db, _ = _make_executor(with_session_factory=True)
+        executor, _db, _ = _make_executor(with_session_factory=True)
 
         with patch("app.services.pipeline_executor.settings_service") as svc, \
              patch.object(executor, "_retrieve_for_step_dag", new_callable=AsyncMock, return_value=[]):
@@ -175,7 +173,6 @@ class TestParallelDagIntegration:
         ctx = _make_ctx(steps, final_prompt="{r1.result} | {r2.result}")
         executor, _, _ = _make_executor(with_session_factory=True)
 
-        from app.services.retrieval import format_context_with_role
         from shared_contracts.models import SearchHit
 
         def _make_hit(doc_id: str) -> SearchHit:
@@ -487,8 +484,7 @@ class TestValidationTimeoutIntegration:
         pipeline_resume endpoint должен вернуть 410 если expires_at в прошлом.
         Тест мокирует DB так как endpoint импортируется отдельно.
         """
-        from datetime import timezone
-        from unittest.mock import AsyncMock, patch
+        from unittest.mock import AsyncMock
 
         # Строим expired pause_state
         expired_state = {
@@ -541,7 +537,6 @@ class TestValidationTimeoutIntegration:
         """
         Unit-тест логики сравнения таймаута: expires_at в прошлом → должен быть признан истёкшим.
         """
-        from datetime import timezone
 
         past = (datetime.now(UTC) - timedelta(seconds=10)).isoformat()
         future = (datetime.now(UTC) + timedelta(hours=1)).isoformat()

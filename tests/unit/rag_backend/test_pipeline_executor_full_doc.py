@@ -4,13 +4,12 @@ from __future__ import annotations
 from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.services.pipeline_executor import (
     PER_DOC_TOKEN_LIMIT,
-    TOTAL_TOKEN_BUDGET,
     PipelineExecutor,
 )
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from shared_contracts.models import PipelineExecutionContext, PipelineStep
 
 

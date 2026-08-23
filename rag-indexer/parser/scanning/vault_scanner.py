@@ -5,7 +5,6 @@ import logging
 from pathlib import Path
 from typing import Any
 
-
 logger = logging.getLogger(__name__)
 
 SUPPORTED_EXTENSIONS = {".md", ".pdf"}
@@ -13,7 +12,7 @@ READ_BLOCK_SIZE = 8192
 
 
 def _md5(path: Path) -> str:
-    digest = hashlib.md5()  # noqa: S324 - SPEC-03 requires MD5 file checksums.
+    digest = hashlib.md5()
     with path.open("rb") as file:
         for chunk in iter(lambda: file.read(READ_BLOCK_SIZE), b""):
             digest.update(chunk)

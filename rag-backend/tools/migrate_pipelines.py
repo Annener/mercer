@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 """
 migrate_pipelines.py — Миграция JSONB-данных пайплайнов на новую схему (Stage 2).
 
@@ -48,7 +47,6 @@ from typing import Any
 
 import psycopg2
 import psycopg2.extras
-
 
 # ---------------------------------------------------------------------------
 # DB connection
@@ -151,7 +149,7 @@ def main() -> int:
     dsn = _get_dsn()
     try:
         conn = psycopg2.connect(dsn)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001  # report any DB connection error
         print(f"[ERROR] Cannot connect to DB: {exc}", file=sys.stderr)
         print(f"[DEBUG] DSN used: {dsn}", file=sys.stderr)
         return 2
@@ -201,7 +199,7 @@ def main() -> int:
                 )
 
     # Report
-    print(f"\n=== Pipeline Migration Report ===")
+    print("\n=== Pipeline Migration Report ===")
     print(f"Total pipelines:     {len(rows)}")
     print(f"Already migrated:    {len(already_migrated)}")
     print(f"Needs migration:     {len(needs_migration)}")
@@ -231,7 +229,7 @@ def main() -> int:
             for s in new_steps:
                 print(f"      step_id={s['step_id']} after={s['after_step_ids']} type={s['type']}")
             if final_override:
-                print(f"    NEW final_composition (system_prompt extracted from old final step):")
+                print("    NEW final_composition (system_prompt extracted from old final step):")
                 print(f"      system_prompt length: {len(new_fc.get('system_prompt', ''))} chars")
 
             if args.apply:
@@ -244,7 +242,7 @@ def main() -> int:
                             str(row["id"]),
                         ),
                     )
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001  # rollback on any per-row failure
                     print(f"[ERROR] Failed to update {row['pipeline_id']}: {exc}", file=sys.stderr)
                     conn.rollback()
                     conn.close()
@@ -254,7 +252,7 @@ def main() -> int:
         conn.commit()
         print(f"\n[OK] Applied migration to {len(needs_migration)} pipeline(s).")
     elif args.dry_run and needs_migration:
-        print(f"\n[DRY-RUN] No changes written. Run with --apply to commit.")
+        print("\n[DRY-RUN] No changes written. Run with --apply to commit.")
         conn.close()
         return 1  # signal: migration needed
 

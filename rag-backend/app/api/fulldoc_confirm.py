@@ -95,7 +95,7 @@ async def full_document_confirm(
                     # Сохраняем, чтобы записать в Message при pipeline_complete.
                     captured_sources = chunk.get("sources") or chunk.get("step_groups")
 
-                if chunk_type == "pipeline_complete":
+                if chunk_type == "pipeline_complete":  # noqa: SIM102
                     # Сохраняем ответ ассистента в БД перед отправкой pipeline_complete
                     if full_answer and not message_saved:
                         try:
@@ -120,7 +120,7 @@ async def full_document_confirm(
                                     len(full_answer),
                                     len(captured_sources) if captured_sources else 0,
                                 )
-                        except Exception as save_exc:
+                        except Exception as save_exc:  # noqa: BLE001  # best-effort persistence
                             logger.warning(
                                 "full_document_confirm: failed to save message: %s",
                                 save_exc,

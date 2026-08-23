@@ -5,7 +5,6 @@ from collections.abc import AsyncGenerator
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+asyncpg://raguser:changeme@rag-db:5432/ragplatform")
 
 engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)

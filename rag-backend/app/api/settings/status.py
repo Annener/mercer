@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import EmbeddingModel, Vault
 from app.db.session import get_db
 from app.services.settings_service import settings_service
+
 from .helpers import _check_pdf_sidecar
 
 router = APIRouter()

@@ -49,7 +49,6 @@ if TYPE_CHECKING:
     import redis.asyncio as aioredis
 
 from shared_contracts.models import (
-    CampaignStatePatchOperation,
     UpdateModeApplyResponse,
     UpdateModeSession,
 )
@@ -409,9 +408,12 @@ def _normalize_session_lists(data: dict[str, Any]) -> dict[str, Any]:
             data[field] = []
     # Nested: apply_result.results
     apply_result = data.get("apply_result")
-    if isinstance(apply_result, dict):
-        if isinstance(apply_result.get("results"), dict) and not apply_result["results"]:
-            apply_result["results"] = []
+    if (
+        isinstance(apply_result, dict)
+        and isinstance(apply_result.get("results"), dict)
+        and not apply_result["results"]
+    ):
+        apply_result["results"] = []
     return data
 
 
@@ -441,14 +443,14 @@ class UpdateModeStore:
     # Public API
     # ------------------------------------------------------------------
 
-    async def get(self, redis: "aioredis.Redis", chat_id: str) -> UpdateModeSession | None:
+    async def get(self, redis: aioredis.Redis, chat_id: str) -> UpdateModeSession | None:
         raw = await redis.get(self._key(chat_id))
         if raw is None:
             return None
         data = _normalize_session_lists(json.loads(raw))
         return UpdateModeSession.model_validate(data)
 
-    async def create(self, redis: "aioredis.Redis", session: UpdateModeSession) -> None:
+    async def create(self, redis: aioredis.Redis, session: UpdateModeSession) -> None:
         key = self._key(session.chat_id)
         # NX = only set if not exists — prevents overwriting an active session
         payload = json.dumps(session.model_dump(mode="json"), ensure_ascii=False)
@@ -459,7 +461,7 @@ class UpdateModeStore:
 
     async def update_review(
         self,
-        redis: "aioredis.Redis",
+        redis: aioredis.Redis,
         chat_id: str,
         accepted_change_ids: set[str],
         rejected_change_ids: set[str],
@@ -516,7 +518,7 @@ class UpdateModeStore:
 
     async def begin_apply(
         self,
-        redis: "aioredis.Redis",
+        redis: aioredis.Redis,
         chat_id: str,
         requested_apply_id: str | None,
     ) -> UpdateModeSession:
@@ -544,7 +546,7 @@ class UpdateModeStore:
 
     async def complete_apply(
         self,
-        redis: "aioredis.Redis",
+        redis: aioredis.Redis,
         chat_id: str,
         result: UpdateModeApplyResponse,
     ) -> UpdateModeSession | None:
@@ -581,7 +583,7 @@ class UpdateModeStore:
         data = _normalize_session_lists(json.loads(raw))
         return UpdateModeSession.model_validate(data)
 
-    async def delete(self, redis: "aioredis.Redis", chat_id: str) -> None:
+    async def delete(self, redis: aioredis.Redis, chat_id: str) -> None:
         await redis.delete(self._key(chat_id))
         logger.info("update_mode session deleted chat_id=%s", chat_id)
 
@@ -593,17 +595,17 @@ class UpdateModeStore:
     # evalsha to raise — the fix is to clear the cached SHA and reload.
     # That edge case is not handled here; a process restart recovers it.
 
-    async def _ensure_review_script(self, redis: "aioredis.Redis") -> str:
+    async def _ensure_review_script(self, redis: aioredis.Redis) -> str:
         if UpdateModeStore._review_sha is None:
             UpdateModeStore._review_sha = await redis.script_load(_REVIEW_LUA)
         return UpdateModeStore._review_sha
 
-    async def _ensure_apply_script(self, redis: "aioredis.Redis") -> str:
+    async def _ensure_apply_script(self, redis: aioredis.Redis) -> str:
         if UpdateModeStore._apply_sha is None:
             UpdateModeStore._apply_sha = await redis.script_load(_APPLY_BEGIN_LUA)
         return UpdateModeStore._apply_sha
 
-    async def _ensure_complete_script(self, redis: "aioredis.Redis") -> str:
+    async def _ensure_complete_script(self, redis: aioredis.Redis) -> str:
         if UpdateModeStore._complete_sha is None:
             UpdateModeStore._complete_sha = await redis.script_load(_APPLY_COMPLETE_LUA)
         return UpdateModeStore._complete_sha

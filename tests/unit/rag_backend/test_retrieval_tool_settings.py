@@ -10,8 +10,8 @@ from __future__ import annotations
 from unittest.mock import AsyncMock
 
 import pytest
-
 from app.services import retrieval_tool_settings as rts
+
 from shared_contracts.models import RetrievalPolicy
 
 

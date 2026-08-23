@@ -18,7 +18,6 @@ from app.db.models import (
     Vault,
 )
 
-
 __all__ = [
     "AuditLog",
     "Base",

@@ -1,9 +1,12 @@
 from __future__ import annotations
+
 import asyncio
 import json
 import logging
 from collections.abc import AsyncIterator
+
 import httpx
+
 from app.config import GenerationModelConfig
 from app.providers.generation.base import (
     GenerationProvider,
@@ -14,9 +17,9 @@ from app.providers.generation.base import (
 )
 from shared_contracts.models import (
     LLMToolCall,
+    LLMToolCallFunction,
     LLMToolChoice,
     LLMToolDefinition,
-    LLMToolCallFunction,
 )
 
 logger = logging.getLogger(__name__)
@@ -41,19 +44,21 @@ class OpenAICompatibleProvider(GenerationProvider):
         last_error: Exception | None = None
         for attempt in range(self.max_retries):
             try:
-                async with httpx.AsyncClient(timeout=self.timeout) as client:
-                    async with client.stream(
+                async with (
+                    httpx.AsyncClient(timeout=self.timeout) as client,
+                    client.stream(
                         "POST",
                         f"{self.config.base_url.rstrip('/')}/chat/completions",
                         headers=self._headers(),
                         json=_build_chat_payload(self.config.model_id, messages, stream=True),
-                    ) as response:
-                        response.raise_for_status()
-                        async for line in response.aiter_lines():
-                            token = _parse_stream_line(line)
-                            if token:
-                                yield token
-                        return
+                    ) as response,
+                ):
+                    response.raise_for_status()
+                    async for line in response.aiter_lines():
+                        token = _parse_stream_line(line)
+                        if token:
+                            yield token
+                    return
             except StreamProviderError as exc:
                 # Ошибка внутри SSE-потока (напр., finish_reason=error от OpenRouter)
                 last_error = exc
@@ -127,7 +132,7 @@ class OpenAICompatibleProvider(GenerationProvider):
                 "content": enriched[0]["content"] + "\n\nIMPORTANT: Respond with valid JSON only.",
             }
         else:
-            enriched = [json_system] + list(messages)
+            enriched = [json_system, *list(messages)]
 
         last_error: Exception | None = None
         for attempt in range(self.max_retries):
@@ -183,8 +188,9 @@ class OpenAICompatibleProvider(GenerationProvider):
         last_error: Exception | None = None
         for attempt in range(self.max_retries):
             try:
-                async with httpx.AsyncClient(timeout=self.timeout) as client:
-                    async with client.stream(
+                async with (
+                    httpx.AsyncClient(timeout=self.timeout) as client,
+                    client.stream(
                         "POST",
                         f"{self.config.base_url.rstrip('/')}/chat/completions",
                         headers=self._headers(),
@@ -195,13 +201,14 @@ class OpenAICompatibleProvider(GenerationProvider):
                             tools=tools or None,
                             tool_choice=tool_choice,
                         ),
-                    ) as response:
-                        response.raise_for_status()
-                        async for line in response.aiter_lines():
-                            chunk = _parse_stream_line_with_tools(line)
-                            if chunk.content_delta or chunk.tool_call_delta or chunk.finish_reason:
-                                yield chunk
-                        return
+                    ) as response,
+                ):
+                    response.raise_for_status()
+                    async for line in response.aiter_lines():
+                        chunk = _parse_stream_line_with_tools(line)
+                        if chunk.content_delta or chunk.tool_call_delta or chunk.finish_reason:
+                            yield chunk
+                    return
             except StreamProviderError as exc:
                 last_error = exc
                 logger.warning("Stream provider error on attempt %s: %s", attempt + 1, exc)
@@ -400,7 +407,7 @@ def _parse_completion_response_full(payload: dict) -> LLMFullResponse:
     choice = choices[0]
     message = choice.get("message")
     if not isinstance(message, dict):
-        raise ValueError("Generation response choice has no message.")
+        raise TypeError("Generation response choice has no message.")
     content_raw = message.get("content")
     content = content_raw.strip() if isinstance(content_raw, str) else ""
 

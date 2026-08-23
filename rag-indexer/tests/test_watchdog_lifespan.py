@@ -1,8 +1,10 @@
 import asyncio
-import pytest
+import contextlib
 from unittest.mock import AsyncMock, patch
-from storage.storage_client import StorageClient
+
+import pytest
 from parser.watchdog.vault_watchdog import watchdog_loop
+from storage.storage_client import StorageClient
 
 pytestmark = pytest.mark.asyncio
 
@@ -26,10 +28,8 @@ async def test_watchdog_loop_stops_on_cancel():
     )
     await asyncio.sleep(0)  # даём loop запуститься
     task.cancel()
-    try:
+    with contextlib.suppress(TimeoutError, asyncio.CancelledError):
         await asyncio.wait_for(task, timeout=1.0)
-    except (asyncio.CancelledError, asyncio.TimeoutError):
-        pass
     assert task.done()
 
 
@@ -61,9 +61,7 @@ async def test_watchdog_loop_calls_run_once():
         )
         await asyncio.sleep(0.05)
         task.cancel()
-        try:
+        with contextlib.suppress(asyncio.CancelledError):
             await task
-        except asyncio.CancelledError:
-            pass
 
     assert call_count >= 1

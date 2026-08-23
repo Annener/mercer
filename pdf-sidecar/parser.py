@@ -55,22 +55,23 @@ warmup_models() вызывается при старте сервера (lifespa
 Tesseract возвращает тексты с \n внутри элементов для переносов строк
 в PDF-колонках: «выва-\nливается». Это нормализуется сразу после получения
 текста элемента (до попадания в чанкер) через:
-    re.sub(r'(\w+)-\s*\n\s*(\w)', r'\1\2', text)
+    re.sub(r'(\\w+)-\\s*\n\\s*(\\w)', r'\1\2', text)
 Дополнительная защита — в preprocessor.py (шаг 4a).
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 import math
-import multiprocessing
 import os
 import re
 import subprocess
 import tempfile
 import time
 from collections import defaultdict
+from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from typing import Any, Callable, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -246,12 +247,12 @@ def _normalize_with_ghostscript(src_path: str, source_name: str) -> str:
         subprocess.CalledProcessError: если gs вернул ненулевой код
         subprocess.TimeoutExpired: если нормализация превысила _GS_TIMEOUT
     """
-    tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
-    tmp.close()
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp_file:
+        tmp_path = tmp_file.name
 
     logger.info(
         "[gs] Normalizing '%s' → %s (timeout=%ds)",
-        source_name, tmp.name, _GS_TIMEOUT,
+        source_name, tmp_path, _GS_TIMEOUT,
     )
     t0 = time.monotonic()
 
@@ -262,7 +263,7 @@ def _normalize_with_ghostscript(src_path: str, source_name: str) -> str:
             "-dNOPAUSE",
             "-dQUIET",
             "-sDEVICE=pdfwrite",
-            f"-sOutputFile={tmp.name}",
+            f"-sOutputFile={tmp_path}",
             src_path,
         ],
         check=True,
@@ -270,12 +271,12 @@ def _normalize_with_ghostscript(src_path: str, source_name: str) -> str:
     )
 
     elapsed = time.monotonic() - t0
-    size_mb = _file_size_mb(tmp.name)
+    size_mb = _file_size_mb(tmp_path)
     logger.info(
         "[gs] Normalization complete: '%s' → %.1f MB in %.1fs",
         source_name, size_mb, elapsed,
     )
-    return tmp.name
+    return tmp_path
 
 
 # ---------------------------------------------------------------------------
@@ -285,7 +286,7 @@ def _normalize_with_ghostscript(src_path: str, source_name: str) -> str:
 def parse_pdf_unstructured(
     path: str,
     source_name: str = "",
-    progress_callback: Optional[ProgressCallback] = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     """
     Парсит PDF через unstructured hi_res с параллельным батч-парсингом.
@@ -313,23 +314,24 @@ def parse_pdf_unstructured(
         if not _is_pdfium_error(exc):
             # Не PDFium-ошибка (например, YOLO упал, OOM) — пробрасываем как есть
             raise
+        pdfium_error: Exception | None = exc
 
     # PDFium не смог открыть файл — пробуем нормализацию
     logger.warning(
         "[gs] PDFium error for '%s', attempting Ghostscript normalization: %s",
-        source_name, exc,
+        source_name, pdfium_error,
     )
 
-    normalized_path: Optional[str] = None
+    normalized_path: str | None = None
     try:
         normalized_path = _normalize_with_ghostscript(path, source_name)
         # Парсим нормализованный файл, но source_name оставляем оригинальным —
         # чтобы метаданные чанков ссылались на исходный файл
         return _parse_hi_res(normalized_path, source_name, progress_callback)
-    except Exception as exc2:
-        logger.error(
-            "[gs] hi_res failed even after normalization for '%s': %s",
-            source_name, exc2,
+    except Exception:
+        logger.exception(
+            "[gs] hi_res failed even after normalization for '%s'",
+            source_name,
         )
         # Пробрасываем исключение после нормализации — app.py вернёт {"type": "error"}
         raise
@@ -349,7 +351,7 @@ def parse_pdf_unstructured(
 def _parse_hi_res(
     path: str,
     source_name: str,
-    progress_callback: Optional[ProgressCallback],
+    progress_callback: ProgressCallback | None,
 ) -> dict[str, Any]:
     """
     Запускает hi_res парсинг для указанного пути.
@@ -436,15 +438,15 @@ def _count_pdf_pages(path: str) -> int:
         count = len(doc)
         doc.close()
         return count
-    except Exception:
-        pass
+    except Exception as exc:  # fallback path is best-effort
+        logger.debug("count_pages: pdfium failed, will try pdfminer: %s", exc)
 
     # Fallback: pdfminer
     try:
         from pdfminer.high_level import extract_pages  # type: ignore[import]
         return sum(1 for _ in extract_pages(path))
-    except Exception:
-        pass
+    except Exception as exc:  # fallback path is best-effort
+        logger.debug("count_pages: pdfminer failed: %s", exc)
 
     return 0
 
@@ -467,9 +469,8 @@ def _extract_pdf_pages(src_path: str, first_page: int, last_page: int) -> str:
     pages_0based = list(range(first_page - 1, last_page))
     dst.import_pages(src, pages=pages_0based)
 
-    tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
-    tmp.close()
-    dst.save(tmp.name)
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+        dst.save(tmp.name)
 
     src.close()
     dst.close()
@@ -542,8 +543,8 @@ def _parse_batch_worker(
             hi_res_model_name=yolo_model,
             starting_page_number=first_page,
         )
-    except Exception as exc:
-        log.error("Batch [%d-%d] failed: %s", first_page, last_page, exc)
+    except Exception:
+        log.exception("Batch [%d-%d] failed", first_page, last_page)
         raise
 
     elapsed = time.monotonic() - t0
@@ -578,7 +579,7 @@ def _parse_batch_worker(
         # Фикс A: склеиваем OCR-переносы пока \n ещё в тексте элемента
         text = _fix_ocr_hyphenation((raw_text or "").strip())
 
-        text_as_html: Optional[str] = None
+        text_as_html: str | None = None
         if category == "Table" and meta is not None:
             text_as_html = getattr(meta, "text_as_html", None)
 
@@ -605,7 +606,7 @@ def _parse_parallel(
     total_pages: int,
     batches: list[tuple[int, int]],
     t_start: float,
-    progress_callback: Optional[ProgressCallback],
+    progress_callback: ProgressCallback | None,
 ) -> dict[str, Any]:
     """
     Запускает батчи параллельно через ProcessPoolExecutor.
@@ -670,29 +671,24 @@ def _parse_parallel(
                                 e["category"] == "Table" and e["page_number"] == p
                                 for e in batch_elements
                             )
-                            try:
+                            with contextlib.suppress(Exception):
                                 progress_callback(p, total_pages, n_el, has_tbl)
-                            except Exception:
-                                pass
 
-                except Exception as exc:
+                except Exception:
                     # Ошибка одного батча не должна убивать весь парсинг.
                     # Остальные батчи могут быть уже в all_elements.
                     # Логируем страницы которые потеряны, продолжаем.
                     lost_pages = last_page - first_page + 1
-                    logger.error(
-                        "[hi_res] Batch [%d-%d] error (skipping %d pages): %s",
+                    logger.exception(
+                        "[hi_res] Batch [%d-%d] error (skipping %d pages)",
                         first_page, last_page, lost_pages,
-                        exc, exc_info=True,
                     )
 
     finally:
         # Всегда удаляем временные файлы
         for _, _, tmp_path in batch_files:
-            try:
+            with contextlib.suppress(OSError):
                 os.unlink(tmp_path)
-            except OSError:
-                pass
 
     # Сортируем все элементы по номеру страницы для корректной склейки
     all_elements.sort(key=lambda e: (e["page_number"], e.get("y0", 0.0)))
@@ -716,7 +712,7 @@ def _parse_single(
     first_page: int,
     total_pages: int,
     t_start: float,
-    progress_callback: Optional[ProgressCallback],
+    progress_callback: ProgressCallback | None,
 ) -> dict[str, Any]:
     from unstructured.partition.pdf import partition_pdf  # type: ignore[import]
 
@@ -860,7 +856,7 @@ def _install_page_progress_hook(
     source_name: str,
     t_start: float,
     total_pages: int,
-    progress_callback: Optional[ProgressCallback],
+    progress_callback: ProgressCallback | None,
 ) -> None:
     global _ORIGINAL_FROM_IMAGE, _HOOK_INSTALLED
     if _HOOK_INSTALLED:
@@ -869,6 +865,7 @@ def _install_page_progress_hook(
         from unstructured_inference.inference.layout import PageLayout  # type: ignore[import]
 
         _orig = PageLayout.from_image
+        _ORIGINAL_FROM_IMAGE = _orig
         _state: dict[str, Any] = {"count": 0}
 
         @classmethod  # type: ignore[misc]
@@ -891,10 +888,8 @@ def _install_page_progress_hook(
             )
 
             if progress_callback is not None:
-                try:
+                with contextlib.suppress(Exception):
                     progress_callback(number, total_pages, n_elements, has_table)
-                except Exception:
-                    pass
             return page
 
         PageLayout.from_image = _hooked
@@ -911,8 +906,8 @@ def _remove_page_progress_hook() -> None:
         from unstructured_inference.inference.layout import PageLayout  # type: ignore[import]
         if _ORIGINAL_FROM_IMAGE is not None:
             PageLayout.from_image = classmethod(_ORIGINAL_FROM_IMAGE)
-    except Exception:
-        pass
+    except Exception as exc:  # best-effort cleanup
+        logger.debug("_remove_page_progress_hook: failed to restore from_image: %s", exc)
     finally:
         _HOOK_INSTALLED = False
         _ORIGINAL_FROM_IMAGE = None
@@ -933,8 +928,8 @@ def _extract_y0(element: Any) -> float:
         points = getattr(coords, "points", None)
         if points and len(points) >= 1:
             return float(min(p[1] for p in points))
-    except Exception:
-        pass
+    except Exception as exc:  # fallback to 0.0
+        logger.debug("_extract_y0: failed to extract y0, using 0.0: %s", exc)
     return 0.0
 
 

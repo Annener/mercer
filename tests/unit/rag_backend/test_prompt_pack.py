@@ -6,10 +6,8 @@
 from __future__ import annotations
 
 import json
-import pytest
 
 from app.services.prompt_pack import resolve_step_vars
-
 
 # ---------------------------------------------------------------------------
 # Базовые случаи

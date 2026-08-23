@@ -33,14 +33,12 @@ from typing import Any
 
 from app.db_client import IndexerDBClient
 from app.update_mode.fs_git import (
-    VAULT_ROOT,
-    PathValidationError,
     FileReadError,
+    PathValidationError,
     build_unified_diff,
-    resolve_vault_root,
-    resolve_file_path,
     read_original_utf8,
-    sha256_bytes,
+    resolve_file_path,
+    resolve_vault_root,
 )
 from app.update_mode.text_ops import (
     AnchorAmbiguousError,

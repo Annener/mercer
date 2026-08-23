@@ -21,21 +21,20 @@ from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
-
 from app.providers.generation.base import LLMStreamChunk, ToolCallDelta
 from app.services import agent_loop as al
 from app.services.agent_loop import (
-    PROPOSE_CONTEXT_UPDATE_TOOL,
     PROPOSAL_MIN_CONFIDENCE,
+    PROPOSE_CONTEXT_UPDATE_TOOL,
+    SEARCH_KNOWLEDGE_TOOL,
+    UPDATE_SCENE_STATE_TOOL,
     AgentEvent,
     AgentLoop,
     _execute_propose_context_update,
     _extract_proposal,
-    SEARCH_KNOWLEDGE_TOOL,
-    UPDATE_SCENE_STATE_TOOL,
 )
-from shared_contracts.models import RetrievalPolicy
 
+from shared_contracts.models import RetrievalPolicy
 
 # ---------------------------------------------------------------------------
 # Tool schema
@@ -101,19 +100,19 @@ async def _collect(events: AsyncIterator[AgentEvent]) -> list[AgentEvent]:
     return out
 
 
-_BASE_KWARGS: dict[str, Any] = dict(
-    system_prompt="sys",
-    history=[],
-    user_message="user q",
-    domain_id="dnd",
-    campaign_id="c1",
-    chat_id="chat-1",
-    vault_ids=["v1"],
-    max_rounds=2,
-    evidence_token_budget=4000,
-    policy=RetrievalPolicy.GROUNDED,
-    db=AsyncMock(),
-)
+_BASE_KWARGS: dict[str, Any] = {
+    "system_prompt": "sys",
+    "history": [],
+    "user_message": "user q",
+    "domain_id": "dnd",
+    "campaign_id": "c1",
+    "chat_id": "chat-1",
+    "vault_ids": ["v1"],
+    "max_rounds": 2,
+    "evidence_token_budget": 4000,
+    "policy": RetrievalPolicy.GROUNDED,
+    "db": AsyncMock(),
+}
 
 
 def _fake_call(name: str, args: dict[str, Any]):
@@ -130,7 +129,7 @@ def _fake_call(name: str, args: dict[str, Any]):
 
 
 def test_extract_proposal_valid_full():
-    p, reason, err = _extract_proposal(_fake_call("propose_context_update", {
+    p, _reason, err = _extract_proposal(_fake_call("propose_context_update", {
         "field_changes": [
             {"operation": "create_field", "key": "k", "label": "K", "mode": "list"}
         ],
@@ -150,7 +149,7 @@ def test_extract_proposal_valid_full():
 
 
 def test_extract_proposal_invalid_arguments_returns_error():
-    p, reason, err = _extract_proposal(_fake_call("propose_context_update", {
+    p, _reason, err = _extract_proposal(_fake_call("propose_context_update", {
         "field_changes": "not a list",  # invalid
         "confidence": 0.5,
         "reason": "x",
@@ -163,7 +162,7 @@ def test_extract_proposal_invalid_arguments_returns_error():
 def test_extract_proposal_missing_confidence_defaults_to_zero():
     """Missing confidence is normalised to 0.0; downstream
     _execute_propose_context_update drops it via the threshold check."""
-    p, reason, err = _extract_proposal(_fake_call("propose_context_update", {
+    p, _reason, err = _extract_proposal(_fake_call("propose_context_update", {
         "reason": "x",
     }))
     assert err is None
@@ -384,11 +383,11 @@ async def test_execute_propose_session_already_active_returns_blocked():
 def test_propose_tool_only_registered_when_context_update_mode_enabled():
     """When `context_update_mode_enabled=False` (default), the tool
     is NOT in the registered tools list — only search + scene_state."""
-    loop = AgentLoop()
+    AgentLoop()
     # We can't easily inspect `tools` from outside, but we can verify
     # by checking that the tool name is filtered when running a turn.
     # For now: just verify the constants.
-    assert "propose_context_update" == PROPOSE_CONTEXT_UPDATE_TOOL.function.name
+    assert PROPOSE_CONTEXT_UPDATE_TOOL.function.name == "propose_context_update"
     assert "search_knowledge" in SEARCH_KNOWLEDGE_TOOL.function.name
     assert "update_scene_state" in UPDATE_SCENE_STATE_TOOL.function.name
 

@@ -211,7 +211,7 @@ async def reconstruct_full_text(
             exc.response.status_code, document_id, vault_id, exc,
         )
         return None
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001  # best-effort reconstruction
         logger.warning(
             "reconstruct_full_text: error for doc=%s vault=%s: %s",
             document_id, vault_id, exc,

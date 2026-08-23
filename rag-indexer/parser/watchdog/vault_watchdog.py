@@ -17,9 +17,10 @@ import logging
 import os
 from typing import TYPE_CHECKING, Any
 
+from storage.storage_client import StorageClient
+
 from parser.scanning.vault_scanner import scan_vault
 from parser.state.redis_state_manager import RedisStateManager
-from storage.storage_client import StorageClient
 
 if TYPE_CHECKING:
     from app.db_client import IndexerDBClient
@@ -35,9 +36,9 @@ WATCHDOG_MIN_INTERVAL = 10
 
 
 async def watchdog_loop(
-    db_client: "IndexerDBClient",
+    db_client: IndexerDBClient,
     state_manager: RedisStateManager,
-    indexer_service: "IndexerService",
+    indexer_service: IndexerService,
     storage_client: StorageClient,
 ) -> None:
     """Background loop. Started via asyncio.create_task in lifespan.
@@ -59,7 +60,7 @@ async def watchdog_loop(
         await asyncio.sleep(interval_sec)
 
 
-async def _read_interval(db_client: "IndexerDBClient") -> int:
+async def _read_interval(db_client: IndexerDBClient) -> int:
     """Reads watchdog.interval_sec from DB. Falls back to default on any error."""
     try:
         raw = await db_client.get_setting(WATCHDOG_INTERVAL_KEY)
@@ -76,9 +77,9 @@ async def _read_interval(db_client: "IndexerDBClient") -> int:
 
 
 async def _run_once(
-    db_client: "IndexerDBClient",
+    db_client: IndexerDBClient,
     state_manager: RedisStateManager,
-    indexer_service: "IndexerService",
+    indexer_service: IndexerService,
     storage_client: StorageClient,
 ) -> None:
     """One watchdog iteration across all enabled vaults."""
@@ -111,9 +112,9 @@ async def _run_once(
 async def _process_vault(
     vault_id: str,
     auto_extensions: set[str],
-    db_client: "IndexerDBClient",
+    db_client: IndexerDBClient,
     state_manager: RedisStateManager,
-    indexer_service: "IndexerService",
+    indexer_service: IndexerService,
     storage_client: StorageClient,
 ) -> None:
     # vault_path строится из env, т.к. vault_path — не колонка в БД
@@ -227,7 +228,7 @@ async def _process_vault(
 async def _handle_deleted(
     vault_id: str,
     relative_path: str,
-    db_client: "IndexerDBClient",
+    db_client: IndexerDBClient,
     state_manager: RedisStateManager,
     storage_client: StorageClient,
 ) -> None:

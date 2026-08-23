@@ -8,8 +8,15 @@ from typing import Any
 
 import lancedb
 
-from shared_contracts.models import ChunkRecord, DocumentRecord, SearchHit, SearchRequest, SearchResponse, UpsertRequest, UpsertResponse
-
+from shared_contracts.models import (
+    ChunkRecord,
+    DocumentRecord,
+    SearchHit,
+    SearchRequest,
+    SearchResponse,
+    UpsertRequest,
+    UpsertResponse,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -382,12 +389,10 @@ def _matches_filter(row: dict[str, Any], metadata: dict[str, Any], filter_values
             if "$in" in condition:
                 if value not in condition["$in"]:
                     return False
-            elif "$eq" in condition:
-                if value != condition["$eq"]:
-                    return False
-        else:
-            if value != condition:
+            elif "$eq" in condition and value != condition["$eq"]:
                 return False
+        elif value != condition:
+            return False
     return True
 
 

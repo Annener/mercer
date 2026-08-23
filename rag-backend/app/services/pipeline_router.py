@@ -13,7 +13,6 @@ from app.services.pipeline_service import pipeline_service
 from app.services.settings_service import settings_service
 from shared_contracts.models import PipelineExecutionContext, PipelineRead
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -155,7 +154,7 @@ class PipelineRouter:
             pipeline_id = payload.get("pipeline_id")
             confidence = float(payload.get("confidence") or 0.0)
             reasoning = str(payload.get("reasoning") or "")
-        except Exception:
+        except Exception:  # noqa: BLE001  # malformed router output falls back to default pipeline
             await self._log_failure(query, raw_output, list(available), db)
             return None
 

@@ -45,14 +45,16 @@ from pathlib import Path
 from typing import Any
 
 import uvicorn
+from embedder import embed as _embed
+from embedder import is_loaded as embedder_is_loaded
+from embedder import load_embedder
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel
-
 from parser import parse_pdf_unstructured, warmup_models
 from preprocessor import preprocess
-from reranker import load_reranker, rerank, is_loaded as reranker_is_loaded
-from embedder import load_embedder, embed as _embed, is_loaded as embedder_is_loaded
+from pydantic import BaseModel
+from reranker import is_loaded as reranker_is_loaded
+from reranker import load_reranker, rerank
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 PORT = int(os.getenv("PDF_SIDECAR_PORT", "8765"))
@@ -169,7 +171,7 @@ async def parse_pdf(file: UploadFile = File(...)) -> JSONResponse:
             parse_pdf_unstructured, tmp_path, file.filename
         )
     except Exception as exc:
-        logger.error("Parsing failed for %s: %s", file.filename, exc, exc_info=True)
+        logger.exception("Parsing failed for %s", file.filename)
         raise HTTPException(status_code=500, detail=f"Parse error: {exc}") from exc
     finally:
         Path(tmp_path).unlink(missing_ok=True)
@@ -251,7 +253,7 @@ async def parse_pdf_stream(file: UploadFile = File(...)) -> StreamingResponse:
             while True:
                 try:
                     event = await asyncio.wait_for(progress_q.get(), timeout=5.0)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     yield "\n"
                     continue
 
@@ -324,7 +326,7 @@ async def rerank_documents(req: RerankRequest) -> JSONResponse:
     try:
         results = await asyncio.to_thread(rerank, req.query, req.documents)
     except Exception as exc:
-        logger.error("Rerank failed: %s", exc, exc_info=True)
+        logger.exception("Rerank failed")
         raise HTTPException(status_code=500, detail=f"Rerank error: {exc}") from exc
 
     logger.info(
@@ -369,7 +371,7 @@ async def embed_texts(req: EmbedRequest) -> JSONResponse:
     try:
         vectors = await asyncio.to_thread(_embed, texts)
     except Exception as exc:
-        logger.error("Embed failed: %s", exc, exc_info=True)
+        logger.exception("Embed failed")
         raise HTTPException(status_code=500, detail=f"Embed error: {exc}") from exc
 
     logger.info("EMBED done: texts=%d dim=%d", len(vectors), len(vectors[0]) if vectors else 0)

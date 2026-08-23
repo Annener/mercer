@@ -26,7 +26,7 @@ def test_chat_module_imports_agent_loop_dependencies():
     """
     source = chat_module.__file__
     assert source is not None
-    with open(source, "r", encoding="utf-8") as f:
+    with open(source, encoding="utf-8") as f:
         text = f.read()
 
     # The tool-settings loader must be imported inside the function (lazy
@@ -83,7 +83,7 @@ def test_chat_module_does_not_break_when_tool_disabled():
     """If the master switch is off, the code path must still exist —
     i.e. the legacy single-shot retrieval block is reachable."""
     source = chat_module.__file__
-    with open(source, "r", encoding="utf-8") as f:
+    with open(source, encoding="utf-8") as f:
         text = f.read()
     # `use_tool = ...` and the `if use_tool:` branch must exist
     assert "use_tool = " in text

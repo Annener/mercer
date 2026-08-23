@@ -48,10 +48,7 @@ def _is_allowed_char(char: str) -> bool:
     cp = ord(char)
     if cp in _ALLOWED_SINGLE:
         return True
-    for start, end in _ALLOWED_RANGES:
-        if start <= cp <= end:
-            return True
-    return False
+    return any(start <= cp <= end for start, end in _ALLOWED_RANGES)
 
 
 def _detect_suspicious_chars(text: str, source_hint: str) -> None:

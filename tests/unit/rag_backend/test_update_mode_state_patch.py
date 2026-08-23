@@ -15,16 +15,11 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
-
-from app.api import update_mode as update_mode_module
 from app.api.update_mode import router
 from app.services.update_mode_executor import (
-    UpdateModeExecutor,
     _validate_state_patch_against_snapshot,
     build_state_patch_entries,
 )
@@ -33,14 +28,15 @@ from app.services.update_mode_store import (
     UnknownStateOpIndexError,
     UpdateModeStore,
 )
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
 from shared_contracts.models import (
     CampaignStateAddListItem,
     CampaignStateClearSingle,
-    CampaignStateFieldConfigRead,
     CampaignStateFieldSnapshot,
     CampaignStateFieldValuesRead,
     CampaignStateListItemRead,
-    CampaignStatePatchRequest,
     CampaignStatePatchResponse,
     CampaignStateRemoveListItem,
     CampaignStateReplaceSingle,
@@ -60,7 +56,6 @@ from shared_contracts.models import (
     UpdateModeStatePatchDecisions,
     UpdateModeStatePatchEntry,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures and helpers
@@ -389,7 +384,7 @@ def test_build_state_patch_entries_reads_previous_text_from_current_state() -> N
 
 
 def test_build_state_patch_entries_uses_key_as_label_fallback() -> None:
-    snapshot = [_make_field_snapshot(field_id="fid-x", key="mystery", mode="single")]
+    [_make_field_snapshot(field_id="fid-x", key="mystery", mode="single")]
     ops = [_make_replace_single(field_key="mystery", text="z")]
     # snapshot lookup is by key; label fallback applies when snapshot row absent
     entries = build_state_patch_entries(ops, [], None)
@@ -901,7 +896,7 @@ def _build_session_for_apply() -> UpdateModeSession:
 
 def test_post_apply_state_patch_only(client, monkeypatch) -> None:
     """Apply succeeds when only state patch is accepted (no file changes)."""
-    now = datetime.now(timezone.utc)
+    datetime.now(timezone.utc)
     entries = [
         _state_op_entry(0, "current_focus", "replace_single", text="new focus"),
     ]

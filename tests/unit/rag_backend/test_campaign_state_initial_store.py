@@ -8,19 +8,18 @@ from __future__ import annotations
 import datetime as _dt
 
 import pytest
-
 from app.services.campaign_state_initial_store import (
     INITIAL_TTL_SECONDS,
     campaign_state_initial_store,
 )
+
 from shared_contracts.models import (
+    CampaignStateInitialFieldStatus,
     CampaignStateInitialProposal,
     CampaignStateInitialProposalField,
     CampaignStateInitialProposalRead,
-    CampaignStateInitialFieldStatus,
     DocumentSnapshot,
 )
-
 
 # ---------------------------------------------------------------------------
 # FakeRedis

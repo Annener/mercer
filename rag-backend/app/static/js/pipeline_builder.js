@@ -799,7 +799,7 @@ const PipelineBuilder = (() => {
       } else {
         const rawId    = _modal?.querySelector('#pb-id')?.value?.trim();
         const pipelineId = rawId || `pipeline-${Date.now()}`;
-        if (!/^[a-z0-9_\-]{3,64}$/.test(pipelineId)) {
+        if (!/^[a-z0-9_-]{3,64}$/.test(pipelineId)) {
           if (btn) { btn.disabled = false; btn.textContent = '💾 Сохранить'; }
           return _showError('ID pipeline: только a-z, 0-9, дефис, underscore, 3–64 символа');
         }
@@ -837,7 +837,7 @@ const PipelineBuilder = (() => {
   }
 
   function _esc(str) {
-    if (str == null) return '';
+    if (str === null || str === undefined) return '';
     return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   }
 
@@ -975,3 +975,5 @@ const PipelineBuilder = (() => {
 })();
 
 window.PipelineBuilder = PipelineBuilder;
+export { PipelineBuilder };
+

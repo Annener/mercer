@@ -952,7 +952,7 @@ async def send_message_stream(
                         for src in round_sources_raw:
                             try:
                                 all_sources.append(Source.model_validate(src))
-                            except Exception:
+                            except Exception:  # noqa: BLE001  # skip malformed sources
                                 logger.warning(
                                     "agent_loop: invalid source payload, skipping: %r",
                                     src,
@@ -1017,8 +1017,10 @@ async def send_message_stream(
                     title_query=context.original_query or req.content,
                     sources=persisted_sources,
                 )
-                if cancelled:
-                    return
+                was_cancelled = cancelled
+
+            if was_cancelled:
+                return
 
             # Эмитим финальный `sources` event для UI — даже если LLM не
             # сгенерировал токенов, источники должны быть видны.
@@ -1133,8 +1135,10 @@ async def send_message_stream(
                 title_query=context.original_query or req.content,
                 sources=legacy_message_sources,
             )
-            if cancelled:
-                return
+            was_cancelled = cancelled
+
+        if was_cancelled:
+            return
 
         if hits:
             sources_chunk = json.dumps(
@@ -1270,13 +1274,13 @@ async def _prefill_rag(
         prefill_top_k = int(
             await settings_service.get("retrieval.top_k", db)
         )
-    except Exception:
+    except Exception:  # noqa: BLE001  # use safe default if settings unavailable
         prefill_top_k = 20
     try:
         prefill_budget = int(
             await settings_service.get("retrieval.evidence_token_budget", db)
         )
-    except Exception:
+    except Exception:  # noqa: BLE001  # use safe default if settings unavailable
         prefill_budget = 6000
 
     # Scope to campaign tags.

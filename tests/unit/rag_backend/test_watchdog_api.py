@@ -1,11 +1,11 @@
 import json
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
-from httpx import AsyncClient, ASGITransport
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.main import app
+import pytest
 from app.db.session import get_db
+from app.main import app
+from httpx import ASGITransport, AsyncClient
+from sqlalchemy.ext.asyncio import AsyncSession
 
 pytestmark = pytest.mark.asyncio
 

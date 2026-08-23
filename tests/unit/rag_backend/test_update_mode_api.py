@@ -2,12 +2,8 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timedelta, timezone
-from types import SimpleNamespace
 
 import pytest
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
-
 from app.api.update_mode import router
 from app.services.update_mode_executor import (
     UpdateModeCampaignDomainMismatchError,
@@ -23,8 +19,10 @@ from app.services.update_mode_executor import (
     UpdateModeReviewStoreUnavailableError,
     UpdateModeSessionAlreadyActiveError,
 )
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
 from shared_contracts.models import (
-    CancelUpdateModeResponse,
     ResolvedUpdateModeChange,
     UpdateModeAction,
     UpdateModeChangeStatus,
@@ -50,7 +48,6 @@ def client(monkeypatch):
     async def fake_get_db():
         yield object()
 
-    from app.api import update_mode as update_mode_module
     from app.db.session import get_db
 
     app.dependency_overrides[get_db] = fake_get_db

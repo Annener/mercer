@@ -10,7 +10,6 @@ from app.db.models import ClarificationState as ClarificationStateRow
 from app.services.prompt_pack import PromptPack, format_prompt
 from shared_contracts.models import ClarificationState
 
-
 logger = logging.getLogger(__name__)
 
 

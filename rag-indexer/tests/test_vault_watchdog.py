@@ -1,6 +1,7 @@
-import pytest
 from unittest.mock import AsyncMock, patch
+
 import fakeredis.aioredis
+import pytest
 from parser.state.redis_state_manager import RedisStateManager
 from parser.watchdog.vault_watchdog import _process_vault
 from storage.storage_client import StorageClient

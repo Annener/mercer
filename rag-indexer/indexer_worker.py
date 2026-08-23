@@ -9,7 +9,6 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app.db_client import IndexerDBClient
-from config import EmbeddingModelConfig
 from embedding.base_provider import EmbeddingProvider
 from embedding.ollama_provider import OllamaEmbeddingProvider
 from embedding.openai_provider import OpenAICompatibleProvider
@@ -29,12 +28,14 @@ from parser.preprocessing.preprocessor import preprocess
 from parser.scanning.vault_scanner import scan_vault
 from parser.semantic_chunker import SemanticChunker
 from parser.state.redis_state_manager import RedisStateManager
+from storage.storage_client import StorageClient
+
+from config import EmbeddingModelConfig
 from shared_contracts.models import (
     ChunkRecord,
     UpsertChunk,
     UpsertRequest,
 )
-from storage.storage_client import StorageClient
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +95,7 @@ async def run_indexing(
             api_key = db_client.decrypt_api_key(embedding_model_data.get("encrypted_api_key"))
         except Exception:
             await db_client.update_vault_binding_status(vault_id, "error")
-            logger.error("Indexing task aborted: failed to decrypt embedding key: vault_id=%s", vault_id, exc_info=True)
+            logger.exception("Indexing task aborted: failed to decrypt embedding key: vault_id=%s", vault_id)
             return
 
         embedding_model = _embedding_model_config(embedding_model_data)
@@ -199,7 +200,6 @@ async def run_indexing(
                 logger.warning("Skipping file with missing relative_path")
                 continue
 
-            absolute_path = str(file_info["path"])
             md5 = file_info["checksum"]
             mtime = int(file_info.get("last_modified") or 0)
 
@@ -251,8 +251,8 @@ async def run_indexing(
                         stage="error",
                         error=str(exc),
                     )
-                except Exception as state_err:
-                    logger.error("Failed to update state for %s: %s", relative_path, state_err)
+                except Exception:  # best-effort state update
+                    logger.exception("Failed to update state for %s", relative_path)
                 if uploaded_document_ids:
                     logger.warning("Partial indexing detected. Rolling back documents: %s", uploaded_document_ids)
                     for document_id in uploaded_document_ids:
@@ -275,12 +275,12 @@ async def run_indexing(
         try:
             await db_client.update_vault_binding_status(vault_id, "error")
         except Exception:
-            logger.warning("Failed to update vault status after indexing error: vault_id=%s", vault_id, exc_info=True)
-        logger.error("Indexing task failed: task_id=%s vault_id=%s", task_id, vault_id, exc_info=True)
+            logger.exception("Failed to update vault status after indexing error: vault_id=%s", vault_id)
+        logger.exception("Indexing task failed: task_id=%s vault_id=%s", task_id, vault_id)
         try:
             await state_manager.mark_task_done(task_id, error=str(exc))
         except Exception:
-            logger.warning("Failed to mark task as error: %s", task_id, exc_info=True)
+            logger.exception("Failed to mark task as error: %s", task_id)
 
 
 async def _delete_chunks_from_lancedb(
@@ -590,14 +590,14 @@ async def _parse_file_with_progress(
                 await asyncio.wait_for(
                     asyncio.shield(parse_task), timeout=_PARSING_HEARTBEAT_INTERVAL
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 if await state_manager.is_cancelled(task_id):
                     parse_task.cancel()
                     raise asyncio.CancelledError
             except asyncio.CancelledError:
                 parse_task.cancel()
                 raise
-            except Exception:
+            except Exception:  # noqa: BLE001  # exit parse-wait loop on any failure
                 break
     return await parse_task
 
@@ -635,9 +635,12 @@ async def _embed_chunks(
         vectors: list[list[float]] = []
         total = len(embedding_texts)
         for batch_start in range(0, total, _BATCH_EMBED_SIZE):
-            if state_manager is not None and task_id is not None:
-                if await state_manager.is_cancelled(task_id):
-                    raise asyncio.CancelledError
+            if (
+                state_manager is not None
+                and task_id is not None
+                and await state_manager.is_cancelled(task_id)
+            ):
+                raise asyncio.CancelledError
 
             batch = embedding_texts[batch_start: batch_start + _BATCH_EMBED_SIZE]
             batch_vectors = await provider.embed_batch(batch)
@@ -668,9 +671,13 @@ async def _embed_chunks(
         # --- Почанковый путь: Ollama — N параллельных HTTP-запросов с semaphore ---
         vectors = []
         for index, embedding_text in enumerate(embedding_texts):
-            if state_manager is not None and task_id is not None and index % CHECK_CANCEL_INTERVAL == 0:
-                if await state_manager.is_cancelled(task_id):
-                    raise asyncio.CancelledError
+            if (
+                state_manager is not None
+                and task_id is not None
+                and index % CHECK_CANCEL_INTERVAL == 0
+                and await state_manager.is_cancelled(task_id)
+            ):
+                raise asyncio.CancelledError
 
             result = await provider.embed([embedding_text])
             vector = result[0] if result else []
@@ -749,7 +756,7 @@ def _build_provider(embedding_model: EmbeddingModelConfig, api_key: str = "") ->
 
 
 def _document_id(vault_id: str, relative_path: str) -> str:
-    digest = hashlib.sha256(f"{vault_id}:{relative_path}".encode("utf-8")).hexdigest()[:16]
+    digest = hashlib.sha256(f"{vault_id}:{relative_path}".encode()).hexdigest()[:16]
     return f"doc{digest}"
 
 

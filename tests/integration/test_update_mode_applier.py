@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from pydantic import ValidationError
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "rag-indexer"))
 
@@ -195,7 +196,7 @@ class TestApplierNoChanges:
         # Simplest: use a request with a CREATE where vault dir exists but we
         # intercept apply to produce zero written paths via mocking.
         # Actually: just verify apply with 0 changes in request raises ValidationError.
-        with pytest.raises(Exception):  # min_length=1
+        with pytest.raises(ValidationError):  # min_length=1
             UpdateModeApplyRequest(
                 apply_id="a",
                 chat_id="c",

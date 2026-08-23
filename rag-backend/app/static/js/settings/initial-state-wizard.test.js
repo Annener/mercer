@@ -606,7 +606,7 @@ describe('InitialStateWizard', () => {
         addBtn.click();
         await flushMicrotasks();
 
-        let items = document.querySelectorAll('.iswizard__list-item');
+        const items = document.querySelectorAll('.iswizard__list-item');
         expect(items.length).toBe(2);
 
         // Кликаем ✎ на новом (последнем) элементе, чтобы войти в режим редактирования.

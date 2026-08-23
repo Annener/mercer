@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Domain, EmbeddingModel, Vault
 from app.db.session import get_db
+
 from .helpers import _delete_vault_vectors, vault_dict
 from .schemas import VaultCreateRequest, VaultUpdateRequest
 

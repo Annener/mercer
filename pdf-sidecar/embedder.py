@@ -32,8 +32,8 @@ def _resolve_device() -> str:
         if torch.cuda.is_available():
             logger.info("Embedder: using CUDA")
             return "cuda"
-    except Exception:
-        pass
+    except Exception as exc:  # device detection is best-effort
+        logger.debug("Embedder: device detection failed, falling back to CPU: %s", exc)
     logger.info("Embedder: using CPU")
     return "cpu"
 

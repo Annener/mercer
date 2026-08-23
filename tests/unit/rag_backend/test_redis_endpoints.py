@@ -6,12 +6,11 @@
 from __future__ import annotations
 
 import json
-import pytest
-from httpx import AsyncClient, ASGITransport
 from unittest.mock import AsyncMock
 
+import pytest
 from app.main import app
-
+from httpx import ASGITransport, AsyncClient
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -105,5 +104,6 @@ def test_no_websocket_in_rag_backend():
         ["grep", "-r", "websocket", "rag-backend/", "--include=*.py", "-l"],
         capture_output=True,
         text=True,
+        check=False,
     )
     assert result.stdout.strip() == "", f"Найдены WS-файлы: {result.stdout}"

@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging as _logging
 import uuid as _uuid
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -719,14 +719,13 @@ class CampaignStateInitialFieldStatus(BaseModel):
 
     @model_validator(mode="after")
     def _check_clarification_question(self) -> CampaignStateInitialFieldStatus:
-        if self.status == "needs_clarification":
-            if (
-                not self.clarification_question
-                or not self.clarification_question.strip()
-            ):
-                raise ValueError(
-                    "clarification_question is required when status == 'needs_clarification'"
-                )
+        if self.status == "needs_clarification" and (
+            not self.clarification_question
+            or not self.clarification_question.strip()
+        ):
+            raise ValueError(
+                "clarification_question is required when status == 'needs_clarification'"
+            )
         return self
 
 
@@ -839,14 +838,13 @@ class CampaignStateSuggestedFieldConfig(BaseModel):
     @model_validator(mode="after")
     def _check_mode_value_consistency(self) -> CampaignStateSuggestedFieldConfig:
         # 1) needs_clarification ↔ clarification_question обязательно
-        if self.initial_status == "needs_clarification":
-            if (
-                not self.clarification_question
-                or not self.clarification_question.strip()
-            ):
-                raise ValueError(
-                    "clarification_question is required when initial_status == 'needs_clarification'"
-                )
+        if self.initial_status == "needs_clarification" and (
+            not self.clarification_question
+            or not self.clarification_question.strip()
+        ):
+            raise ValueError(
+                "clarification_question is required when initial_status == 'needs_clarification'"
+            )
         # 2) mode ↔ value shape
         if self.initial_status == "proposed":
             if self.mode == "single" and self.single_value is None:
@@ -1262,7 +1260,7 @@ class LLMToolMessage(BaseModel):
     content: str
 
 
-class RetrievalPolicy(str, Enum):
+class RetrievalPolicy(StrEnum):
     ASSISTIVE = "assistive"
     GROUNDED = "grounded"
 
@@ -1712,12 +1710,12 @@ class PlannerDecision(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class UpdateModeAction(str, Enum):
+class UpdateModeAction(StrEnum):
     UPDATE = "update"
     CREATE = "create"
 
 
-class UpdateModeOperation(str, Enum):
+class UpdateModeOperation(StrEnum):
     APPEND_AFTER_SECTION = "append_after_section"
     APPEND_TO_FILE = "append_to_file"
     REPLACE_UNIQUE_TEXT = "replace_unique_text"
@@ -1736,14 +1734,14 @@ _DELETE_OPERATIONS: frozenset[UpdateModeOperation] = frozenset(
 )
 
 
-class UpdateModeChangeStatus(str, Enum):
+class UpdateModeChangeStatus(StrEnum):
     PENDING = "pending"
     ACCEPTED = "accepted"
     REJECTED = "rejected"
     RESOLUTION_FAILED = "resolution_failed"
 
 
-class UpdateModeVaultApplyStatus(str, Enum):
+class UpdateModeVaultApplyStatus(StrEnum):
     APPLIED = "applied"
     CONFLICT = "conflict"
     FAILED = "failed"
@@ -1809,29 +1807,36 @@ class UpdateModeIntent(BaseModel):
                 raise ValueError(
                     f"update action requires operation in {[o.value for o in valid_ops]}"
                 )
-            if self.operation == UpdateModeOperation.APPEND_AFTER_SECTION:
-                if self.anchor is None or self.anchor.kind != "markdown_heading":
-                    raise ValueError(
-                        "append_after_section requires anchor.kind == markdown_heading"
-                    )
-            if self.operation == UpdateModeOperation.REPLACE_UNIQUE_TEXT:
-                if self.anchor is None or self.anchor.kind != "exact_text":
-                    raise ValueError(
-                        "replace_unique_text requires anchor.kind == exact_text"
-                    )
-            if self.operation == UpdateModeOperation.APPEND_TO_FILE:
-                if self.anchor is not None:
-                    raise ValueError("append_to_file must not have anchor")
-            if self.operation == UpdateModeOperation.DELETE_SECTION:
-                if self.anchor is None or self.anchor.kind != "markdown_heading":
-                    raise ValueError(
-                        "delete_section requires anchor.kind == markdown_heading"
-                    )
-            if self.operation == UpdateModeOperation.DELETE_UNIQUE_TEXT:
-                if self.anchor is None or self.anchor.kind != "exact_text":
-                    raise ValueError(
-                        "delete_unique_text requires anchor.kind == exact_text"
-                    )
+            if (
+                self.operation == UpdateModeOperation.APPEND_AFTER_SECTION
+                and (self.anchor is None or self.anchor.kind != "markdown_heading")
+            ):
+                raise ValueError(
+                    "append_after_section requires anchor.kind == markdown_heading"
+                )
+            if (
+                self.operation == UpdateModeOperation.REPLACE_UNIQUE_TEXT
+                and (self.anchor is None or self.anchor.kind != "exact_text")
+            ):
+                raise ValueError(
+                    "replace_unique_text requires anchor.kind == exact_text"
+                )
+            if self.operation == UpdateModeOperation.APPEND_TO_FILE and self.anchor is not None:
+                raise ValueError("append_to_file must not have anchor")
+            if (
+                self.operation == UpdateModeOperation.DELETE_SECTION
+                and (self.anchor is None or self.anchor.kind != "markdown_heading")
+            ):
+                raise ValueError(
+                    "delete_section requires anchor.kind == markdown_heading"
+                )
+            if (
+                self.operation == UpdateModeOperation.DELETE_UNIQUE_TEXT
+                and (self.anchor is None or self.anchor.kind != "exact_text")
+            ):
+                raise ValueError(
+                    "delete_unique_text requires anchor.kind == exact_text"
+                )
 
         # --- create action rules ---
         if self.action == UpdateModeAction.CREATE:
@@ -2434,7 +2439,7 @@ class UpdateModeSession(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class ContextFieldChangeOperation(str, Enum):
+class ContextFieldChangeOperation(StrEnum):
     """Тип schema-операции, которую модель предлагает в proposal-е."""
 
     CREATE_FIELD = "create_field"

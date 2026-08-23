@@ -6,20 +6,18 @@ partial failure, and audit log emission.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-
 from app.api.update_mode import _apply_schema_changes
 from app.db.models import AuditLog, Base, Campaign, CampaignStateFieldConfig
 from app.services.campaign_state_service import (
     CampaignStateFieldError,
 )
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
 from shared_contracts.models import (
     ContextFieldChangeOperation,
-    UpdateModeStateFieldChangeApplyResult,
     UpdateModeStateFieldChangeEntry,
 )
 
@@ -208,7 +206,7 @@ async def test_apply_schema_changes_update_existing_field(db_session):
     db.add(field)
     await db.commit()
     await db.refresh(field)
-    field_id = str(field.id)
+    str(field.id)
     field.config_version = 1
     # bump config_version on the campaign as well.
     from app.db.models import Campaign

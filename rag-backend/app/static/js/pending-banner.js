@@ -102,7 +102,7 @@ class PendingFilesBanner {
     _showIndexing(remaining) {
         if (!this._container) return;
         this._ensureEl();
-        const label = remaining != null
+        const label = (remaining !== null && remaining !== undefined)
             ? `Индексация… (осталось ${remaining} ${this._fileForm(remaining)})`
             : 'Индексация…';
         this._el.querySelector('.pending-banner__text').textContent = '';
@@ -182,3 +182,7 @@ class PendingFilesBanner {
         return 'файлов';
     }
 }
+
+window.PendingFilesBanner = PendingFilesBanner;
+export { PendingFilesBanner };
+

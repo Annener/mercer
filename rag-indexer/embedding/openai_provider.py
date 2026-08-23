@@ -7,7 +7,6 @@ import httpx
 
 from embedding.base_provider import EmbeddingProvider, ProviderUnavailableError
 
-
 logger = logging.getLogger(__name__)
 
 # TODO: expose via EmbeddingModelConfig, UI and DB so users can tune
@@ -165,5 +164,5 @@ class OpenAICompatibleProvider(EmbeddingProvider):
         try:
             return [float(value) for value in vector]
         except (TypeError, ValueError):
-            logger.error("OpenAI-compatible vector contains non-numeric values.")
+            logger.exception("OpenAI-compatible vector contains non-numeric values.")
             return []

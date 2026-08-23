@@ -13,10 +13,9 @@ test_vaults_domain_filter.py — Шаг 3 (backend-часть)
 """
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
-
 
 # ---------------------------------------------------------------------------
 # Вспомогательные фабрики

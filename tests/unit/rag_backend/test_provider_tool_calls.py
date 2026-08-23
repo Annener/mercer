@@ -15,25 +15,21 @@ import json
 from typing import Any
 
 import pytest
-
 from app.config import GenerationModelConfig
 from app.providers.generation.base import (
     LLMFullResponse,
-    LLMStreamChunk,
-    ToolCallDelta,
 )
 from app.providers.generation.openai_compatible import (
     OpenAICompatibleProvider,
     _parse_completion_response_full,
     _parse_stream_line_with_tools,
 )
+
 from shared_contracts.models import (
-    LLMToolCallFunction,
     LLMToolChoice,
     LLMToolDefinition,
     LLMToolDefinitionFunction,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers

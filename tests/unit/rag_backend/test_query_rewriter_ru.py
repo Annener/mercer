@@ -12,14 +12,12 @@ Tests cover:
 from __future__ import annotations
 
 import pytest
-
 from app.services.query_rewriter import (
     QueryRewriter,
     _cyrillic_ratio,
     is_cyrillic_query,
     query_rewriter,
 )
-
 
 # ---------------------------------------------------------------------------
 # Pure heuristics

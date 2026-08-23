@@ -45,7 +45,6 @@ from app.services.campaign_state_service import (
     campaign_state_field_service,
 )
 from app.services.campaign_state_value_service import (
-    CampaignStateValueError,
     ConfigVersionConflictError,
     campaign_state_value_service,
 )
@@ -776,8 +775,8 @@ async def _call_provider_with_repair(
         data2 = await provider.generate_json(repair_messages)
         return CampaignStateInitialProposal.model_validate(data2)
     except (ValidationError, ValueError) as second_err:
-        logger.error(
-            "initial_state: repair attempt also invalid: %s", second_err,
+        logger.exception(
+            "initial_state: repair attempt also invalid",
         )
         raise InvalidGenerationOutputError(
             f"LLM returned invalid output after repair attempt: {second_err}"
@@ -897,7 +896,7 @@ class CampaignStateInitialService:
         ]
 
         # Параллельный fetch полных текстов.
-        fetch_results: list[str | None | BaseException] = await asyncio.gather(
+        fetch_results: list[str | BaseException | None] = await asyncio.gather(
             *[
                 reconstruct_full_text(
                     document_id=str(d.id),
@@ -1111,22 +1110,19 @@ class CampaignStateInitialService:
         )
 
         # ---- 4. Делегируем в value-сервис ----
-        try:
-            version_read = await campaign_state_value_service.apply_initial(
-                db=db,
-                campaign_id=campaign_id,
-                proposal=effective_proposal,
-                source_snapshot=payload.source_snapshot,
-                config_version=current_config_version,
-                created_by=current_user,
-            )
-        except CampaignStateValueError:
-            # Не удаляем Redis-ключ: пользователь может исправить и повторить.
-            # При этом уже созданные поля остаются в БД — это намеренно
-            # (предложенные ИИ поля видимы пользователю через /state-fields).
-            raise
+        # NOTE: при CampaignStateValueError Redis-ключ сохраняется (пользователь может
+        # исправить и повторить), а уже созданные поля остаются в БД — это намеренно
+        # (предложенные ИИ поля видимы пользователю через /state-fields).
+        version_read = await campaign_state_value_service.apply_initial(
+            db=db,
+            campaign_id=campaign_id,
+            proposal=effective_proposal,
+            source_snapshot=payload.source_snapshot,
+            config_version=current_config_version,
+            created_by=current_user,
+        )
 
-        # ---- 5. Audit log (если были suggested) ----
+# ---- 5. Audit log (если были suggested) ----
         if suggested_total:
             try:
                 from app.db.models import AuditLog
@@ -1251,7 +1247,7 @@ def _unify_proposal_for_apply(
 
     # 2. Accepted suggested_fields → синтетические CampaignStateInitialProposalField.
     sf_by_key = {sf.key: sf for sf in accepted_sf}
-    for key, field in new_fields_by_key.items():
+    for key in new_fields_by_key:
         sf = sf_by_key.get(key)
         if sf is None:
             continue
@@ -1376,13 +1372,9 @@ async def _call_provider_with_repair_raw(
     try:
         data = await provider.generate_json(messages)
         if not isinstance(data, dict):
-            raise ValueError(
-                f"LLM output is not a JSON object: {type(data).__name__}"
-            )
+            raise TypeError(f"LLM output is not a JSON object: {type(data).__name__}")  # noqa: TRY301
         if "fields" not in data:
-            raise ValueError(
-                "LLM output is missing required 'fields' key"
-            )
+            raise ValueError("LLM output is missing required 'fields' key")  # noqa: TRY301
         return data
     except (ValidationError, ValueError, TypeError) as first_err:
         logger.warning(
@@ -1405,17 +1397,13 @@ async def _call_provider_with_repair_raw(
     try:
         data2 = await provider.generate_json(repair_messages)
         if not isinstance(data2, dict):
-            raise ValueError(
-                f"LLM output is not a JSON object after repair: {type(data2).__name__}"
-            )
+            raise TypeError(f"LLM output is not a JSON object after repair: {type(data2).__name__}")  # noqa: TRY301
         if "fields" not in data2:
-            raise ValueError(
-                "LLM output is missing required 'fields' key after repair"
-            )
+            raise ValueError("LLM output is missing required 'fields' key after repair")  # noqa: TRY301
         return data2
     except (ValidationError, ValueError, TypeError) as second_err:
-        logger.error(
-            "initial_state: repair attempt also failed: %s", second_err,
+        logger.exception(
+            "initial_state: repair attempt also failed",
         )
         raise InvalidGenerationOutputError(
             f"LLM returned invalid output after repair attempt: {second_err}"

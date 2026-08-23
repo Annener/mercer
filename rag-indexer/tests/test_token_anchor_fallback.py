@@ -10,8 +10,8 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 from app.update_mode.resolver import _resolve_one
+
 from shared_contracts.models import (
     UpdateModeAction,
     UpdateModeAnchor,
@@ -20,7 +20,6 @@ from shared_contracts.models import (
     UpdateModeOperation,
     UpdateModeResolveRequest,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers

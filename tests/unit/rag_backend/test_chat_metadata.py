@@ -9,14 +9,13 @@ Covers the model-side contract:
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 
 import pytest
+from app.db.models import Base, Chat
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.db.models import Base, Chat
 from shared_contracts.models import ChatRecord
-
 
 # ---------------------------------------------------------------------------
 # Async DB fixture
@@ -120,8 +119,8 @@ def test_chat_record_accepts_dict_construction_with_metadata():
         id=str(uuid.uuid4()),
         title="t",
         domain_id="dnd",
-        created_at=datetime.now(),
-        updated_at=datetime.now(),
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
         metadata={"scene_state": {"location": "cave"}},
         context_update_mode=True,
     )

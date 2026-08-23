@@ -2,12 +2,20 @@ from __future__ import annotations
 
 import asyncio
 import logging
+
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
-
-from shared_contracts.models import ChunkRecord, DocumentRecord, SearchHit, SearchRequest, SearchResponse, UpsertRequest, UpsertResponse
 from storage.lancedb_store import LanceDBStore
 
+from shared_contracts.models import (
+    ChunkRecord,
+    DocumentRecord,
+    SearchHit,
+    SearchRequest,
+    SearchResponse,
+    UpsertRequest,
+    UpsertResponse,
+)
 
 logger = logging.getLogger(__name__)
 

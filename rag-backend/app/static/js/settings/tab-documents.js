@@ -958,8 +958,7 @@ const DocumentsTabMixin = {
             this._renderDirModalInner(
                 backdrop.querySelector('#docs-dir-modal-inner'),
                 allTags,
-                allDocs,
-                closeModal
+                allDocs
             );
         } catch (e) {
             const inner = backdrop.querySelector('#docs-dir-modal-inner');
@@ -967,7 +966,7 @@ const DocumentsTabMixin = {
         }
     },
 
-    _renderDirModalInner(container, allTags, allDocs, closeModal) {
+    _renderDirModalInner(container, allTags, allDocs) {
         const tagDocCount = {};
         for (const doc of allDocs) {
             for (const t of (doc.tags || [])) {
@@ -1030,7 +1029,7 @@ const DocumentsTabMixin = {
             badge.addEventListener('click', async () => {
                 const tagId = badge.dataset.tagId;
                 const statusEl = container.querySelector('#docs-dir-assign-status');
-                await this._applyDirTagOp({ docs: allDocs, tagId, mode: 'assign', statusEl, container, closeModal, allTags });
+                await this._applyDirTagOp({ docs: allDocs, tagId, mode: 'assign', statusEl, container });
             });
         });
 
@@ -1038,12 +1037,12 @@ const DocumentsTabMixin = {
             badge.addEventListener('click', async () => {
                 const tagId = badge.dataset.tagId;
                 const statusEl = container.querySelector('#docs-dir-remove-status');
-                await this._applyDirTagOp({ docs: allDocs, tagId, mode: 'remove', statusEl, container, closeModal, allTags });
+                await this._applyDirTagOp({ docs: allDocs, tagId, mode: 'remove', statusEl, container });
             });
         });
     },
 
-    async _applyDirTagOp({ docs, tagId, mode, statusEl, container, closeModal, allTags }) {
+    async _applyDirTagOp({ docs, tagId, mode, statusEl, container }) {
         container.querySelectorAll('.docs-dir-tag-assign, .docs-dir-tag-remove').forEach(b => {
             b.style.pointerEvents = 'none';
             b.style.opacity = '0.5';
@@ -1122,9 +1121,9 @@ const DocumentsTabMixin = {
             ['Путь',       fullPath],
             ['Статус',     doc.status       || '—'],
             ['Мим-тип',   doc.mime_type    || '—'],
-            ['Размер',     doc.file_size != null ? `${(doc.file_size / 1024).toFixed(1)} KB` : '—'],
-            ['Страниц',  doc.page_count   != null ? doc.page_count : '—'],
-            ['Чанков',   doc.chunk_count  != null ? doc.chunk_count : '—'],
+            ['Размер',     (doc.file_size !== null && doc.file_size !== undefined) ? `${(doc.file_size / 1024).toFixed(1)} KB` : '—'],
+            ['Страниц',  (doc.page_count !== null && doc.page_count !== undefined) ? doc.page_count : '—'],
+            ['Чанков',   (doc.chunk_count !== null && doc.chunk_count !== undefined) ? doc.chunk_count : '—'],
             ['Добавлен', doc.created_at ? new Date(doc.created_at).toLocaleString('ru') : '—'],
             ['Изменён',  doc.updated_at ? new Date(doc.updated_at).toLocaleString('ru') : '—'],
         ].filter(([, v]) => v && v !== '—');
@@ -1258,7 +1257,7 @@ const DocumentsTabMixin = {
         });
     },
 
-    async handleDocumentsAction(action, btn) {
+    async handleDocumentsAction(action) {
         if (action === 'run-indexer') {
             const runBtn = document.querySelector('[data-action="run-indexer"]');
             if (runBtn) { runBtn.disabled = true; runBtn.textContent = '⏳ Запуск…'; }

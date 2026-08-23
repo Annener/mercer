@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Seed default embedding and reranker models into rag-backend.
 
@@ -72,8 +71,8 @@ def wait_for_backend(base_url: str, retries: int = 15, delay: float = 2.0) -> No
                 if r.status == 200:
                     print(f"{GREEN}✓ Backend доступен.{RESET}")
                     return
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001  # retry on any connection error
+            print(f"  попытка {attempt}: {exc}")
         print(f"  попытка {attempt}/{retries}, жду {delay}s...")
         time.sleep(delay)
     print(f"{RED}✗ Backend не отвечает после {retries} попыток. Прерываю.{RESET}")
@@ -139,7 +138,7 @@ def main() -> None:
 
     print()
     print("=== Rerank model ===")
-    result = create_model(
+    create_model(
         base,
         "/api/settings/models/rerank",
         RERANK_MODEL,

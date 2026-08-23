@@ -56,8 +56,8 @@ def merge_pdf_pages(
         pn = int(h.get("page_number", 0))
         headings_by_page.setdefault(pn, []).append(h)
 
-    for pn in headings_by_page:
-        headings_by_page[pn].sort(key=lambda x: float(x.get("y0", 0.0)), reverse=True)
+    for pn, items in headings_by_page.items():
+        items.sort(key=lambda x: float(x.get("y0", 0.0)), reverse=True)
 
     merged_parts: list[str] = []
     page_offsets: list[tuple[int, int]] = []
@@ -124,9 +124,12 @@ def _detect_headers_footers(pages: list[dict[str, Any]]) -> set[str]:
 
     for counter in (first_lines, last_lines):
         for line, count in counter.items():
-            if count >= threshold and len(line) <= 200:
-                if not _looks_like_real_header(line):
-                    result.add(line)
+            if (
+                count >= threshold
+                and len(line) <= 200
+                and not _looks_like_real_header(line)
+            ):
+                result.add(line)
 
     return result
 
@@ -145,9 +148,7 @@ def _looks_like_real_header(line: str) -> bool:
     # Колонтитул-признак: содержит '|', '—', '/', '\\' — типичный разделитель
     # в строках вида "ГЛАВА 2 | Сигил, ГОРОД ДВЕРЕЙ» или «Часть 1 / Введение"
     _HEADER_FOOTER_SEPARATORS = ('|', ' — ', ' / ', ' \\ ')
-    if any(sep in line for sep in _HEADER_FOOTER_SEPARATORS):
-        return False  # это колонтитул, не настоящий заголовок
-    return True
+    return not any(sep in line for sep in _HEADER_FOOTER_SEPARATORS)
 
 
 def _strip_headers_footers(text: str, headers_footers: set[str]) -> str:

@@ -6,21 +6,18 @@ test_pipeline_executor.py — unit-тесты PipelineExecutor (DAG API).
 """
 from __future__ import annotations
 
-import asyncio
 import uuid
-from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 from app.services.pipeline_executor import (
     PipelineExecutor,
     _build_levels,
     _resolve_prompt,
 )
-from shared_contracts.models import FinalComposition, PipelineExecutionContext, PipelineStep
 
+from shared_contracts.models import FinalComposition, PipelineExecutionContext, PipelineStep
 
 # ---------------------------------------------------------------------------
 # Вспомогатели

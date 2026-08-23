@@ -4,24 +4,23 @@ import asyncio
 import logging
 import os
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Any
 
 import redis.asyncio as aioredis
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
-
-from app.db_client import IndexerDBClient
-from app.indexer_service import IndexerService
-from app.update_mode.router import router as update_mode_router
 from logging_config import setup_logging
 from parser.scanning.vault_scanner import scan_vault
 from parser.state.redis_state_manager import RedisStateManager
 from parser.watchdog.vault_watchdog import watchdog_loop
-from shared_contracts.models import StartIndexTaskRequest, StartIndexTaskResponse, TaskStateResponse
 from storage.storage_client import StorageClient
 
+from app.db_client import IndexerDBClient
+from app.indexer_service import IndexerService
+from app.update_mode.router import router as update_mode_router
+from shared_contracts.models import StartIndexTaskRequest, StartIndexTaskResponse
 
 logger = logging.getLogger(__name__)
 
@@ -98,10 +97,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         logger.info("Service shutdown requested. Cancelling active indexer tasks.")
         if watchdog_task is not None:
             watchdog_task.cancel()
-            try:
+            with suppress(asyncio.CancelledError):
                 await watchdog_task
-            except asyncio.CancelledError:
-                pass
         await app.state.indexer_service.shutdown(timeout_seconds=30)
         await db_client.close()
         await redis_client.aclose()
@@ -128,9 +125,9 @@ async def _rebuild_one_vault(
     try:
         from app.update_mode.fs_git import (
             GitIdentity,
+            ensure_vault_gitignore,
             git_init_if_needed,
             git_initial_commit,
-            ensure_vault_gitignore,
         )
 
         vault_root = Path(vault_path)

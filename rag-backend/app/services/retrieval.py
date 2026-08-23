@@ -1,20 +1,19 @@
 from __future__ import annotations
+
 import asyncio
 import logging
-import json
-import math
 import os
 import re
 import uuid
 from typing import Any
+
 import httpx
 from sqlalchemy import select
-from sqlalchemy.orm import selectinload
-from sqlalchemy import or_
 from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.config import AppConfig, EmbeddingModelConfig
+from app.db.models import Document, DocumentLabel, Tag, Vault, campaign_tags
 from app.services.settings_service import settings_service
-from app.db.models import Tag, Document, DocumentLabel, Vault, campaign_tags
 from shared_contracts.models import SearchHit, SearchRequest, SearchResponse
 
 logger = logging.getLogger(__name__)
@@ -604,7 +603,7 @@ async def _embed_ollama(query: str, model: EmbeddingModelConfig) -> list[float]:
                 response.raise_for_status()
                 vector = response.json().get("embedding")
                 return _validate_vector(vector, model.dimensions)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001  # retry on any transient error
             last_error = exc
             if attempt < model.max_retries - 1:
                 await asyncio.sleep(2**attempt)
@@ -631,7 +630,7 @@ async def _embed_openai_compatible(query: str, model: EmbeddingModelConfig) -> l
                 data = response.json().get("data")
                 vector = data[0].get("embedding") if isinstance(data, list) and data else None
                 return _validate_vector(vector, model.dimensions)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001  # retry on any transient error
             last_error = exc
             if attempt < model.max_retries - 1:
                 await asyncio.sleep(2**attempt)
@@ -653,7 +652,7 @@ async def _embed_sidecar(query: str, model: EmbeddingModelConfig) -> list[float]
                 data = payload.get("data")
                 vector = data[0].get("embedding") if isinstance(data, list) and data else payload.get("embedding")
                 return _validate_vector(vector, model.dimensions)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001  # retry on any transient error
             last_error = exc
             if attempt < model.max_retries - 1:
                 await asyncio.sleep(2**attempt)
@@ -759,7 +758,7 @@ async def _rerank_single_ollama(
             response.raise_for_status()
             data = response.json()
             if "error" in data:
-                raise ValueError(f"Ollama error: {data['error']}")
+                raise ValueError(f"Ollama error: {data['error']}")  # noqa: TRY301
             response_text = data.get("response", "")
             score = _score_from_response_text(response_text)
             logger.debug(

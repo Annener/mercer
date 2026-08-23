@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
 from app.services.settings_service import settings_service
+
 from .schemas import ParamUpdateRequest
 
 router = APIRouter()

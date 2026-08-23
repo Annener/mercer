@@ -46,7 +46,6 @@ import logging
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import redis.asyncio as aioredis
 
@@ -259,7 +258,7 @@ async def _apply_vault(
     # 3. Resolve vault identity
     try:
         vault_identity = await _get_vault_identity(db, vault_id)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001  # git identity is optional
         log.warning("Could not fetch vault git identity vault_id=%s: %s", vault_id, exc)
         vault_identity = None
 
@@ -346,9 +345,9 @@ async def _apply_vault(
         try:
             abs_path = resolve_file_path(vault_root, file_path)
         except PathValidationError as exc:
-            log.error(
-                "update-mode path validation failed vault=%s path=%s: %s",
-                vault_id, file_path, exc,
+            log.exception(
+                "update-mode path validation failed vault=%s path=%s",
+                vault_id, file_path,
             )
             return _fail(
                 exc.code,
@@ -357,10 +356,7 @@ async def _apply_vault(
             )
 
         # Read current on-disk content (empty string for new files).
-        if abs_path.exists():
-            current_content = abs_path.read_text(encoding="utf-8")
-        else:
-            current_content = ""
+        current_content = abs_path.read_text(encoding="utf-8") if abs_path.exists() else ""
 
         # CREATE: ensure parent directory exists before writing.
         if batch.action == UpdateModeAction.CREATE:
@@ -377,7 +373,7 @@ async def _apply_vault(
                     vault_id, file_path, op.change_id, op.operation.value,
                 )
             except AnchorNotFoundError as exc:
-                log.error(
+                log.exception(
                     "update-mode anchor not found vault=%s path=%s change_id=%s anchor=%r written_paths=%s",
                     vault_id, file_path, op.change_id, exc.anchor_value, written_paths,
                 )
@@ -387,7 +383,7 @@ async def _apply_vault(
                     manual_recovery_required=bool(written_paths),
                 )
             except AnchorAmbiguousError as exc:
-                log.error(
+                log.exception(
                     "update-mode anchor ambiguous vault=%s path=%s change_id=%s anchor=%r written_paths=%s",
                     vault_id, file_path, op.change_id, exc.anchor_value, written_paths,
                 )
@@ -444,7 +440,7 @@ async def _apply_vault(
             vault_id, commit_sha, len(written_paths), total_ops_applied,
         )
     except GitError as exc:
-        log.error("update-mode git commit failed vault=%s: %s", vault_id, exc)
+        log.exception("update-mode git commit failed vault=%s", vault_id)
         return _fail(exc.code, str(exc), manual_recovery_required=True)
 
     # 9. Trigger TARGETED re-index.
@@ -464,10 +460,7 @@ async def _apply_vault(
         log.warning("update-mode re-index not started vault=%s: %s", vault_id, exc)
         reindex_error = str(exc)
     except Exception as exc:
-        log.error(
-            "update-mode re-index unexpected error vault=%s: %s", vault_id, exc,
-            exc_info=True,
-        )
+        log.exception("update-mode re-index unexpected error vault=%s", vault_id)
         reindex_error = str(exc)
 
     return UpdateModeVaultApplyResult(
@@ -598,7 +591,6 @@ async def apply_changes(
 
 class _ApplyInProgressError(Exception):
     """Raised when a distributed lock prevents duplicate concurrent apply."""
-    pass
 
 
 # Expose for import in router

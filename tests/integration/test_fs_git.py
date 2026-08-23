@@ -5,8 +5,6 @@ Git tests are skipped if `git` is not available.
 """
 from __future__ import annotations
 
-import os
-import subprocess
 import sys
 from pathlib import Path
 
@@ -16,10 +14,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "rag-indexer"))
 
 from app.update_mode.fs_git import (
-    VAULT_ROOT,
-    AtomicWriteError,
     FileReadError,
-    GitIdentity,
     PathValidationError,
     _append_string_not_used,  # noqa: F401 — only used as import guard
     atomic_write,
@@ -30,7 +25,6 @@ from app.update_mode.fs_git import (
     resolve_file_path,
     sha256_bytes,
 )
-
 
 GIT_AVAILABLE = git_check_available()
 
@@ -59,7 +53,7 @@ class TestResolveFilePath:
             resolve_file_path(tmp_path, ".git/config")
 
     def test_non_md_rejected(self, tmp_path: Path):
-        with pytest.raises(PathValidationError, match="\.md"):
+        with pytest.raises(PathValidationError, match=r"\.md"):
             resolve_file_path(tmp_path, "script.py")
 
     def test_nul_byte_rejected(self, tmp_path: Path):

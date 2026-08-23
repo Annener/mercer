@@ -8,7 +8,7 @@
 //   await section.load(campaignId);
 //   section.refreshAfterChange();
 
-(function () {
+const StateFieldsImpl = (function () {
     'use strict';
 
     function escapeHtml(value) {
@@ -317,5 +317,9 @@
         };
     }
 
-    window.StateFieldsSection = { build };
+    return { build };
 })();
+
+window.StateFieldsSection = StateFieldsImpl;
+export { StateFieldsImpl as StateFieldsSection };
+

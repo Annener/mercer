@@ -14,7 +14,6 @@ import yaml
 
 from shared_contracts.models import PipelineExecutionContext, PipelineResult
 
-
 logger = logging.getLogger(__name__)
 
 ExecuteCallable = Callable[[PipelineExecutionContext], Awaitable[PipelineResult]]
@@ -59,7 +58,7 @@ class PipelineRegistry:
             try:
                 runner = _load_pipeline(metadata_path)
             except Exception:
-                logger.error("Failed to load pipeline: %s", metadata_path, exc_info=True)
+                logger.exception("Failed to load pipeline: %s", metadata_path)
                 continue
             runners.append(runner)
 

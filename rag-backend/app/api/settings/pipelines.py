@@ -8,8 +8,9 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Campaign, Domain, Pipeline, Tag
+from app.db.models import Campaign, Domain, Pipeline
 from app.db.session import get_db
+
 from .helpers import _get_pipeline_by_uuid, pipeline_dict
 from .schemas import PipelineCreateRequest, PipelineUpdateRequest
 

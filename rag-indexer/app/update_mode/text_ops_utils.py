@@ -29,7 +29,7 @@ import re
 CHAR_MAP_MARKER: str = "\uE000\uE001"
 
 
-def build_anchor_pattern(anchor_value: str) -> "re.Pattern[str]":
+def build_anchor_pattern(anchor_value: str) -> re.Pattern[str]:
     """Build a whitespace-tolerant regex that matches *anchor_value* in text.
 
     The pattern splits *anchor_value* on whitespace and re-joins the escaped

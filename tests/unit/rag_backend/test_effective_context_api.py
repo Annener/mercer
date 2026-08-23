@@ -16,8 +16,7 @@ from app.db.session import get_db
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from shared_contracts.models import EffectiveContextRead, EffectiveContextBlock
-
+from shared_contracts.models import EffectiveContextBlock, EffectiveContextRead
 
 # ---------------------------------------------------------------------------
 # Fake service
@@ -161,7 +160,7 @@ def test_get_effective_context_returns_200_with_blocks(client):
 
 
 def test_get_effective_context_404_for_unknown_campaign(client):
-    cli, fake = client
+    cli, _fake = client
     cid = uuid.uuid4()
     db = _FakeDBSession(campaign=None)
     app = cli.app
@@ -176,13 +175,13 @@ def test_get_effective_context_404_for_unknown_campaign(client):
 
 
 def test_get_effective_context_404_for_invalid_uuid(client):
-    cli, fake = client
+    cli, _fake = client
     r = cli.get("/api/settings/campaigns/not-a-uuid/effective-context")
     assert r.status_code == 404
 
 
 def test_get_effective_context_uses_chat_domain_when_provided(client):
-    cli, fake = client
+    cli, _fake = client
     cid = uuid.uuid4()
     chat_id = uuid.uuid4()
     fake_campaign = _FakeCampaign(cid, "dnd")
@@ -205,7 +204,7 @@ def test_get_effective_context_uses_chat_domain_when_provided(client):
 
 
 def test_get_effective_context_with_truncated_fields(client, monkeypatch):
-    cli, fake = client
+    cli, _fake = client
 
     async def stub(*args: Any, **kwargs: Any) -> EffectiveContextRead:
         return EffectiveContextRead(
@@ -241,7 +240,7 @@ def test_get_effective_context_with_truncated_fields(client, monkeypatch):
 
 
 def test_get_effective_context_handles_empty_state(client, monkeypatch):
-    cli, fake = client
+    cli, _fake = client
 
     async def stub(*args: Any, **kwargs: Any) -> EffectiveContextRead:
         # Кампания есть, но state нет → блоков нет.

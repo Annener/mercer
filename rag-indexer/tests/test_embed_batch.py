@@ -14,10 +14,8 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 from embedding.ollama_provider import OllamaEmbeddingProvider
 from embedding.openai_provider import OpenAICompatibleProvider
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -58,7 +56,7 @@ class TestOllamaEmbedBatch:
         provider = self._make_provider()
         call_order: list[str] = []
 
-        async def fake_post(url: str, json: dict, **kwargs) -> MagicMock:  # noqa: ARG001
+        async def fake_post(url: str, json: dict, **kwargs) -> MagicMock:
             text = json["prompt"]
             idx = TEXTS.index(text)
             call_order.append(text)
@@ -74,15 +72,13 @@ class TestOllamaEmbedBatch:
         """All N tasks are launched via asyncio.gather — not awaited one-by-one."""
         provider = self._make_provider()
         # Track concurrent "in-flight" requests
-        in_flight: list[int] = []
         peak: list[int] = [0]
         active = 0
 
-        async def fake_post(url: str, json: dict, **kwargs) -> MagicMock:  # noqa: ARG001
+        async def fake_post(url: str, json: dict, **kwargs) -> MagicMock:
             nonlocal active
             active += 1
-            if active > peak[0]:
-                peak[0] = active
+            peak[0] = max(peak[0], active)
             await asyncio.sleep(0)  # yield so others can start
             active -= 1
             text = json["prompt"]
@@ -137,7 +133,7 @@ class TestOpenAIEmbedBatch:
         provider = self._make_provider()
         call_count = 0
 
-        async def fake_post(url: str, json: dict, **kwargs) -> MagicMock:  # noqa: ARG001
+        async def fake_post(url: str, json: dict, **kwargs) -> MagicMock:
             nonlocal call_count
             call_count += 1
             assert isinstance(json["input"], list), "input must be a list for batch requests"
@@ -156,7 +152,7 @@ class TestOpenAIEmbedBatch:
     async def test_returns_vectors_in_order(self) -> None:
         provider = self._make_provider()
 
-        async def fake_post(url: str, json: dict, **kwargs) -> MagicMock:  # noqa: ARG001
+        async def fake_post(url: str, json: dict, **kwargs) -> MagicMock:
             return self._make_response(VECS)
 
         with patch("httpx.AsyncClient.post", new=AsyncMock(side_effect=fake_post)):
@@ -177,7 +173,7 @@ class TestOpenAIEmbedBatch:
         """If the API returns fewer embeddings than requested, return [] per text."""
         provider = self._make_provider()
 
-        async def fake_post(url: str, json: dict, **kwargs) -> MagicMock:  # noqa: ARG001
+        async def fake_post(url: str, json: dict, **kwargs) -> MagicMock:
             # Return only 1 item for 3-text input
             return self._make_response([VECS[0]])
 

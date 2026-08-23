@@ -17,12 +17,11 @@ test_pipeline_cross_domain.py — Шаг 6
 from __future__ import annotations
 
 import uuid
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from fastapi import HTTPException
-
 from app.api.settings.pipelines import _check_campaign_domain
+from fastapi import HTTPException
 
 
 def _make_campaign(domain_id: str) -> MagicMock:

@@ -6,7 +6,6 @@ from typing import Any
 
 import httpx
 from fastapi import HTTPException
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Campaign, EmbeddingModel, Pipeline, RerankModel, Vault
@@ -67,7 +66,7 @@ async def _check_embedding_provider(model: EmbeddingModel) -> list[float]:
         data = payload.get("data")
         vector = data[0].get("embedding") if isinstance(data, list) and data else None
     if not isinstance(vector, list):
-        raise ValueError("Provider returned no embedding vector")
+        raise TypeError("Provider returned no embedding vector")
     return [float(value) for value in vector]
 
 
@@ -195,5 +194,5 @@ async def _check_reranker_provider(model: RerankModel) -> dict:
     data = response.json()
     results = data.get("results") or data.get("data") or []
     if not isinstance(results, list):
-        raise ValueError("Provider returned unexpected rerank response format")
+        raise TypeError("Provider returned unexpected rerank response format")
     return data
