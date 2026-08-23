@@ -454,8 +454,18 @@ class AgentLoop:
                 "finish_reason": "tool_calls",
                 "tool_calls_in_round": len(full_calls),
             })
+            logger.info(
+                "AGENT_LOOP_ROUND round=%d tool_calls=%d",
+                round_idx, len(full_calls),
+            )
 
         final_content = "".join(final_content_parts)
+        logger.info(
+            "AGENT_LOOP_DONE campaign_id=%s domain_id=%s policy=%s "
+            "rounds=%d tool_calls=%d content_chars=%d",
+            campaign_id, domain_id, policy.value,
+            len(rounds_meta), tool_calls_made, len(final_content),
+        )
         yield AgentEvent(type="final", payload={
             "content_chars": len(final_content),
             "rounds": [r.model_dump() for r in rounds_meta],

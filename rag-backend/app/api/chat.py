@@ -744,6 +744,25 @@ async def send_message_stream(
                             event.payload.get("tool_calls_made", 0),
                             event.payload.get("content_chars", 0),
                         )
+                        # Stage 8.7: audit trail for retrieval tool calls.
+                        # Persist a single row summarising the whole turn
+                        # so admins can inspect "did the model actually
+                        # use search_knowledge and with what scope".
+                        try:
+                            await _audit(
+                                db, "chat.agent_loop", "chat", str(_chat.id),
+                                {
+                                    "campaign_id": context.campaign_id,
+                                    "domain_id": domain_id,
+                                    "policy": tool_settings.policy.value,
+                                    "rounds": event.payload.get("rounds", []),
+                                    "tool_calls_made": event.payload.get("tool_calls_made", 0),
+                                },
+                            )
+                        except Exception:  # noqa: BLE001
+                            logger.exception(
+                                "audit chat.agent_loop failed for chat_id=%s", _chat.id,
+                            )
             except asyncio.CancelledError:
                 cancelled = True
             finally:
