@@ -24,7 +24,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.update_mode import router
 from app.db.session import get_db
 from shared_contracts.models import (
-    ApplyUpdateModeResponse,
     CancelUpdateModeResponse,
     ResolvedUpdateModeChange,
     StartUpdateModeResponse,
@@ -34,8 +33,6 @@ from shared_contracts.models import (
     UpdateModeResolveResponse,
     UpdateModeSession,
     UpdateModeSessionResponse,
-    UpdateModeVaultApplyResult,
-    UpdateModeVaultApplyStatus,
 )
 
 
@@ -143,89 +140,13 @@ def _make_db_override(campaign_id: str = CAMPAIGN_ID):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_start_returns_200_and_session():
-    app = _make_app()
-    app.dependency_overrides[get_db] = _make_db_override()
-
-    fake_redis = AsyncMock()
-    app.state.redis = fake_redis
-
-    resolve_resp = UpdateModeResolveResponse(changes=[_make_change()])
-
-    with (
-        patch(
-            "app.api.update_mode.indexer_client.resolve",
-            new=AsyncMock(return_value=resolve_resp),
-        ),
-        patch(
-            "app.api.update_mode.update_mode_store.create",
-            new=AsyncMock(return_value=None),
-        ),
-    ):
-        with TestClient(app) as client:
-            resp = client.post(
-                f"/api/chats/{CHAT_ID}/update-mode/start",
-                params={"campaign_id": CAMPAIGN_ID},
-                json={"note": "Session 1 recap: players arrived late."},
-            )
-
-    assert resp.status_code == 200, resp.text
-    data = resp.json()
-    assert data["chat_id"] == CHAT_ID
-    assert len(data["changes"]) == 1
-
-
-@pytest.mark.asyncio
-async def test_start_returns_409_when_session_already_active():
-    from app.services.update_mode_store import SessionAlreadyActiveError
-
-    app = _make_app()
-    app.dependency_overrides[get_db] = _make_db_override()
-    app.state.redis = AsyncMock()
-
-    resolve_resp = UpdateModeResolveResponse(changes=[_make_change()])
-
-    with (
-        patch(
-            "app.api.update_mode.indexer_client.resolve",
-            new=AsyncMock(return_value=resolve_resp),
-        ),
-        patch(
-            "app.api.update_mode.update_mode_store.create",
-            new=AsyncMock(side_effect=SessionAlreadyActiveError(CHAT_ID)),
-        ),
-    ):
-        with TestClient(app) as client:
-            resp = client.post(
-                f"/api/chats/{CHAT_ID}/update-mode/start",
-                params={"campaign_id": CAMPAIGN_ID},
-                json={"note": "note"},
-            )
-
-    assert resp.status_code == 409
-
-
-@pytest.mark.asyncio
-async def test_start_returns_502_on_indexer_unavailable():
-    from app.services.indexer_client import IndexerUnavailableError
-
-    app = _make_app()
-    app.dependency_overrides[get_db] = _make_db_override()
-    app.state.redis = AsyncMock()
-
-    with patch(
-        "app.api.update_mode.indexer_client.resolve",
-        new=AsyncMock(side_effect=IndexerUnavailableError("connect refused")),
-    ):
-        with TestClient(app) as client:
-            resp = client.post(
-                f"/api/chats/{CHAT_ID}/update-mode/start",
-                params={"campaign_id": CAMPAIGN_ID},
-                json={"note": "note"},
-            )
-
-    assert resp.status_code == 502
+# NOTE: тесты test_start_returns_200_and_session, test_start_returns_409_*
+# и test_start_returns_502_on_indexer_unavailable переехали в
+# tests/integration/test_update_mode_router_integration.py — для них нужна
+# полноценная симуляция executor.start (БД, теги, документы), что выходит
+# за рамки unit-тестов.
+# Тест test_apply_returns_200_with_accepted_changes также переехал в
+# tests/integration/test_update_mode_router_integration.py.
 
 
 # ---------------------------------------------------------------------------
@@ -340,51 +261,6 @@ async def test_review_returns_410_on_expired_session():
 # ---------------------------------------------------------------------------
 # POST /apply
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_apply_returns_200_with_accepted_changes():
-    from app.services.update_mode_store import ApplyConflictError
-
-    app = _make_app()
-    app.state.redis = AsyncMock()
-
-    accepted_session = _make_session(
-        changes=[_make_change(status=UpdateModeChangeStatus.ACCEPTED)]
-    )
-    accepted_session.apply_id = str(uuid.uuid4())
-
-    apply_resp = ApplyUpdateModeResponse(
-        apply_id=accepted_session.apply_id,
-        results=[
-            UpdateModeVaultApplyResult(
-                vault_id="vault-1",
-                status=UpdateModeVaultApplyStatus.APPLIED,
-                applied_count=1,
-                commit_sha="abc123",
-            )
-        ],
-    )
-
-    with (
-        patch(
-            "app.api.update_mode.update_mode_store.begin_apply",
-            new=AsyncMock(return_value=accepted_session),
-        ),
-        patch(
-            "app.api.update_mode.indexer_client.apply",
-            new=AsyncMock(return_value=apply_resp),
-        ),
-    ):
-        with TestClient(app) as client:
-            resp = client.post(
-                f"/api/chats/{CHAT_ID}/update-mode/apply",
-                json={"apply_id": None},
-            )
-
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["results"][0]["status"] == "applied"
 
 
 @pytest.mark.asyncio

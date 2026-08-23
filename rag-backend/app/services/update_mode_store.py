@@ -67,6 +67,8 @@ class UpdateModeError(Exception):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
         self.code = code
+        # `detail` — алиас для message, удобно для тестов и HTTP-слоёв.
+        self.detail = message
 
 
 class SessionAlreadyActiveError(UpdateModeError):

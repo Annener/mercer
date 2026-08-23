@@ -162,6 +162,7 @@ async def _seed_base(session: AsyncSession):
         "domain": domain,
         "campaign": campaign,
         "chat": chat,
+        "camp_tag_id": camp_tag.id,
         "doc_ok": doc_ok,
         "doc_ok_2": doc_ok_2,
         "doc_pdf": doc_pdf,
@@ -234,6 +235,12 @@ async def test_start_requires_indexed_markdown_docs(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_start_passes_only_allowed_doc_ids_and_vault_ids(db_session: AsyncSession, monkeypatch):
+    """Только разрешённые doc_ids (campaign-scoped, .md, indexed) и активные vault'ы
+    передаются в retrieve_multi_vault и в indexer.
+
+    По seed-данным только doc_ok помечен campaign-тегом и попадает в allowed.
+    PDF, pending и foreign-domain документы отфильтрованы.
+    """
     seeded = await _seed_base(db_session)
     store = DummyStore()
     indexer = DummyIndexerClient(
@@ -254,16 +261,13 @@ async def test_start_passes_only_allowed_doc_ids_and_vault_ids(db_session: Async
         )
     )
 
+    # Retrieve возвращает несколько hit'ов, но в allowed попадает только doc_ok.
+    from shared_contracts.models import SearchHit
     retrieve_mock = AsyncMock(return_value=[
-        SimpleNamespace(document_id=str(seeded["doc_ok"].id)),
-        SimpleNamespace(document_id=str(seeded["doc_ok"].id)),
-        SimpleNamespace(document_id=str(seeded["doc_ok_2"].id)),
-        SimpleNamespace(document_id=str(seeded["doc_pdf"].id)),
-        SimpleNamespace(document_id=str(seeded["doc_other_domain"].id)),
+        SearchHit(document_id=str(seeded["doc_ok"].id), chunk_id="c1", text="a", score=0.9),
     ])
     reconstruct_mock = AsyncMock(side_effect=lambda document_id, vault_id, db_api_url: {
         str(seeded["doc_ok"].id): "# Session 12\nBody",
-        str(seeded["doc_ok_2"].id): "# City\nBody",
     }.get(document_id, ""))
 
     intent = UpdateModeIntent(
@@ -283,40 +287,82 @@ async def test_start_passes_only_allowed_doc_ids_and_vault_ids(db_session: Async
         SimpleNamespace(get_active_provider=lambda: object()),
     )
     monkeypatch.setattr(
-        "app.services.update_mode_executor._generate_intents",
-        AsyncMock(return_value=SimpleNamespace(intents=[intent], no_change_reason=None)),
+        "app.services.update_mode_executor._generate_intents_and_state_patch",
+        AsyncMock(return_value=SimpleNamespace(intents=[intent], no_change_reason=None, state_patch=[])),
     )
 
     executor = UpdateModeExecutor(db_session, store, indexer)
     session = await executor.start(str(seeded["chat"].id), object(), "alliance note")
 
-    allowed_doc_ids = set(retrieve_mock.await_args.kwargs["document_ids"])
-    assert allowed_doc_ids == {str(seeded["doc_ok"].id), str(seeded["doc_ok_2"].id)}
-    assert retrieve_mock.await_args.args[1] == ["vault-main", "vault-side"]
-    assert session.candidate_document_ids == [str(seeded["doc_ok"].id), str(seeded["doc_ok_2"].id)]
-    assert indexer.last_request.vault_ids == ["vault-main", "vault-side"]
-    assert indexer.last_request.candidate_document_ids == [str(seeded["doc_ok"].id), str(seeded["doc_ok_2"].id)]
+    # retrieve_multi_vault получил query, vault_ids (positional) и document_ids (kw).
+    retrieve_args = retrieve_mock.await_args.args
+    retrieve_kwargs = retrieve_mock.await_args.kwargs
+    assert retrieve_args[1] == ["vault-main", "vault-side"]
+    allowed_doc_ids = set(retrieve_kwargs["document_ids"])
+    # Только doc_ok помечен campaign-тегом (camp_tag.campaign_id == chat.campaign_id),
+    # остальные документы отфильтрованы по одному из критериев.
+    assert allowed_doc_ids == {str(seeded["doc_ok"].id)}
+    assert str(seeded["doc_pdf"].id) not in allowed_doc_ids  # не .md
+    assert str(seeded["doc_other_domain"].id) not in allowed_doc_ids  # другой домен
+    assert str(seeded["doc_pending"].id) not in allowed_doc_ids  # не indexed
+    # Indexer получил только активные vault'ы и разрешённые документы
+    assert set(indexer.last_request.vault_ids) == {"vault-main", "vault-side"}
+    assert indexer.last_request.candidate_document_ids == [str(seeded["doc_ok"].id)]
+    # Session содержит только разрешённые doc_ids
+    assert session.candidate_document_ids == [str(seeded["doc_ok"].id)]
 
 
 @pytest.mark.asyncio
 async def test_start_skips_oversized_document_and_sets_warning(db_session: AsyncSession, monkeypatch):
+    """Документ, превышающий per-doc token limit, отбрасывается с warning;
+    остальные документы из allowed остаются в session.candidate_document_ids.
+    """
     seeded = await _seed_base(db_session)
+
+    # Добавляем второй документ, помеченный тем же campaign-тегом —
+    # чтобы после отбрасывания oversized doc остался хотя бы один usable.
+    from app.db.models import Document, DocumentLabel, Tag
+    extra_doc = Document(
+        id=uuid.uuid4(),
+        vault_id="vault-main",
+        source_path="sessions/session-13.md",
+        title="Session 13",
+        md5="f" * 32,
+        mtime=1,
+        status="indexed",
+    )
+    db_session.add(extra_doc)
+    await db_session.flush()
+    db_session.add(DocumentLabel(document_id=extra_doc.id, tag_id=seeded["camp_tag_id"]))
+    await db_session.commit()
+
     store = DummyStore()
+    indexer = DummyIndexerClient()
+
+    from shared_contracts.models import SearchHit
     retrieve_mock = AsyncMock(return_value=[
-        SimpleNamespace(document_id=str(seeded["doc_ok"].id)),
-        SimpleNamespace(document_id=str(seeded["doc_ok_2"].id)),
+        SearchHit(document_id=str(seeded["doc_ok"].id), chunk_id="c1", text="a", score=0.9),
+        SearchHit(document_id=str(extra_doc.id), chunk_id="c2", text="b", score=0.8),
     ])
-    reconstruct_mock = AsyncMock(side_effect=lambda document_id, vault_id, db_api_url: {
-        str(seeded["doc_ok"].id): "x" * 70000,
-        str(seeded["doc_ok_2"].id): "# City\nBody",
-    }[document_id])
+    big_text = "x" * (4 * 200_000)  # 200K токенов — больше _PER_DOC_TOKEN_LIMIT
+
+    async def _reconstruct(document_id, vault_id, db_api_url):
+        if document_id == str(seeded["doc_ok"].id):
+            return big_text
+        if document_id == str(extra_doc.id):
+            return "# Session 13\nBody"
+        return ""
+
+    reconstruct_mock = AsyncMock(side_effect=_reconstruct)
+
+    # Intent ссылается на extra_doc, потому что doc_ok отбрасывается как oversized.
     intent = UpdateModeIntent(
-        change_id="chg-2",
+        change_id="chg-1",
         action=UpdateModeAction.UPDATE,
-        description="append city",
-        document_id=str(seeded["doc_ok_2"].id),
+        description="append alliance",
+        document_id=str(extra_doc.id),
         operation=UpdateModeOperation.APPEND_AFTER_SECTION,
-        anchor={"kind": "markdown_heading", "value": "City"},
+        anchor={"kind": "markdown_heading", "value": "Session 13"},
         content="## Alliance\nText",
     )
 
@@ -327,15 +373,18 @@ async def test_start_skips_oversized_document_and_sets_warning(db_session: Async
         SimpleNamespace(get_active_provider=lambda: object()),
     )
     monkeypatch.setattr(
-        "app.services.update_mode_executor._generate_intents",
-        AsyncMock(return_value=SimpleNamespace(intents=[intent], no_change_reason=None)),
+        "app.services.update_mode_executor._generate_intents_and_state_patch",
+        AsyncMock(return_value=SimpleNamespace(intents=[intent], no_change_reason=None, state_patch=[])),
     )
 
-    executor = UpdateModeExecutor(db_session, store, DummyIndexerClient())
+    executor = UpdateModeExecutor(db_session, store, indexer)
     session = await executor.start(str(seeded["chat"].id), object(), "note")
 
     assert any(w.startswith("document_too_large_for_update_mode:") for w in session.warnings)
-    assert session.candidate_document_ids == [str(seeded["doc_ok_2"].id)]
+    # Oversized документ отброшен
+    assert str(seeded["doc_ok"].id) not in session.candidate_document_ids
+    # Другие разрешённые документы остались
+    assert str(extra_doc.id) in session.candidate_document_ids
 
 
 @pytest.mark.asyncio
@@ -402,8 +451,8 @@ async def test_start_rejects_unknown_document_id_from_llm(db_session: AsyncSessi
         content="## X\nY",
     )
     monkeypatch.setattr(
-        "app.services.update_mode_executor._generate_intents",
-        AsyncMock(return_value=SimpleNamespace(intents=[bad_intent], no_change_reason=None)),
+        "app.services.update_mode_executor._generate_intents_and_state_patch",
+        AsyncMock(return_value=SimpleNamespace(intents=[bad_intent], no_change_reason=None, state_patch=[])),
     )
 
     executor = UpdateModeExecutor(db_session, DummyStore(), DummyIndexerClient())
@@ -428,8 +477,8 @@ async def test_start_no_change_creates_empty_session(db_session: AsyncSession, m
         SimpleNamespace(get_active_provider=lambda: object()),
     )
     monkeypatch.setattr(
-        "app.services.update_mode_executor._generate_intents",
-        AsyncMock(return_value=SimpleNamespace(intents=[], no_change_reason="nothing actionable")),
+        "app.services.update_mode_executor._generate_intents_and_state_patch",
+        AsyncMock(return_value=SimpleNamespace(intents=[], no_change_reason="nothing actionable", state_patch=[])),
     )
 
     executor = UpdateModeExecutor(db_session, store, DummyIndexerClient())

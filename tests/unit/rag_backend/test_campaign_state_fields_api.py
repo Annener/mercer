@@ -270,15 +270,19 @@ def service() -> _FakeService:
 
 @pytest.fixture
 def client(monkeypatch, service: _FakeService):
-    # Подменяем модуль-синглтон сервиса, чтобы все роутеры получили fake-реализацию.
-    from app.services import campaign_state_service as css_module
-    monkeypatch.setattr(css_module, "campaign_state_field_service", service)
+    # Подменяем ссылку на сервис в модуле роутера: endpoint импортирует
+    # `campaign_state_field_service` локально, поэтому патчить надо там,
+    # где его используют, а не только в исходном модуле сервиса.
+    from app.api.settings import campaigns as campaigns_module
+    monkeypatch.setattr(campaigns_module, "campaign_state_field_service", service)
 
     app = FastAPI()
-    app.include_router(router)
+    app.include_router(router, prefix="/api/settings")
+
+    fake_db = FakeSession(campaigns=service._campaigns, fields=service._fields)
 
     async def fake_get_db():
-        yield object()
+        yield fake_db
 
     app.dependency_overrides[get_db] = fake_get_db
     return TestClient(app)

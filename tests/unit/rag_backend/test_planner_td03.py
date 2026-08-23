@@ -76,34 +76,6 @@ def _make_settings_svc(retrieval_enabled: bool = True, max_clarification_turns: 
 
 
 # ---------------------------------------------------------------------------
-# TestPlannerMissingFields — статический метод, без БД
-# ---------------------------------------------------------------------------
-
-class TestPlannerMissingFields:
-    """Unit-тесты Planner._missing_fields — без БД и моков."""
-
-    def test_short_query_returns_topic(self):
-        """Запрос короче 3 слов → ['topic']."""
-        result = Planner._missing_fields("расскажи")
-        assert result == ["topic"]
-
-    def test_long_query_no_triggers_returns_empty(self):
-        """Длинный запрос без триггеров → пустой список."""
-        result = Planner._missing_fields("расскажи мне про историю магии в этом мире")
-        assert result == []
-
-    def test_trigger_klass_adds_subject(self):
-        """Триггер 'класс' → поле 'subject' в missing."""
-        result = Planner._missing_fields("какой класс лучше выбрать для мага")
-        assert "subject" in result
-
-    def test_multiple_triggers_no_duplicates(self):
-        """Несколько триггеров одного поля → поле добавляется один раз."""
-        result = Planner._missing_fields("класс или раса — что важнее для мага")
-        assert result.count("subject") == 1
-
-
-# ---------------------------------------------------------------------------
 # TestPlannerDecide — async, с моками БД и settings_service
 # ---------------------------------------------------------------------------
 

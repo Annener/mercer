@@ -431,6 +431,11 @@ class CampaignStateFieldConfigUpdate(BaseModel):
     description: str | None = Field(default=None, max_length=8 * 1024)
     enabled: bool | None = None
     display_order: int | None = Field(default=None, ge=0)
+    # Sentinel-поля: клиент не должен их посылать. Сервис отклонит запрос с 409.
+    # Помечены как optional, чтобы Pydantic не выкидывал их из тела запроса раньше
+    # времени, и проверка immutability в сервисе могла сработать.
+    key: str | None = Field(default=None, exclude=True)
+    mode: str | None = Field(default=None, exclude=True)
 
 
 class CampaignStateFieldConfigReorderRequest(BaseModel):
@@ -1694,6 +1699,8 @@ class UpdateModeApplyChange(BaseModel):
     anchor: UpdateModeAnchor | None = None
     op_content: str = ""
     description: str = ""
+    # Stable index for multi-op batch ordering. -1 = legacy sentinel.
+    resolve_order: int = -1
 
     @model_validator(mode='after')
     def _validate_sha_policy(self) -> UpdateModeApplyChange:
@@ -1775,6 +1782,23 @@ class UpdateModeApplyRequest(BaseModel):
 
     @model_validator(mode='after')
     def _normalize_and_validate(self) -> UpdateModeApplyRequest:
+        # --- Uniqueness of change_id across all accepted_changes ---
+        if self.accepted_changes:
+            change_ids = [ch.change_id for ch in self.accepted_changes]
+            duplicates = {cid for cid in change_ids if change_ids.count(cid) > 1}
+            if duplicates:
+                raise ValueError(
+                    f"change_id must be unique within accepted_changes; duplicates: {sorted(duplicates)}"
+                )
+            # --- Uniqueness of (vault_id, file_path) across accepted_changes ---
+            pairs = [(ch.vault_id, ch.file_path) for ch in self.accepted_changes]
+            pair_dups = {p for p in pairs if pairs.count(p) > 1}
+            if pair_dups:
+                raise ValueError(
+                    f"(vault_id, file_path) pairs must be unique in accepted_changes; "
+                    f"duplicates: {sorted(pair_dups)}"
+                )
+
         # --- Backward-compat conversion ---
         if self.accepted_changes and not self.file_batches:
             from collections import defaultdict
@@ -1838,6 +1862,14 @@ class UpdateModeApplyRequest(BaseModel):
         pairs = [(b.vault_id, b.file_path) for b in self.file_batches]
         if len(pairs) != len(set(pairs)):
             raise ValueError("(vault_id, file_path) pairs must be unique in file_batches")
+
+        # --- Uniqueness of change_id across file_batches.ops ---
+        op_ids = [op.change_id for b in self.file_batches for op in b.ops]
+        op_dups = {cid for cid in op_ids if op_ids.count(cid) > 1}
+        if op_dups:
+            raise ValueError(
+                f"change_id must be unique across file_batches; duplicates: {sorted(op_dups)}"
+            )
 
         return self
 

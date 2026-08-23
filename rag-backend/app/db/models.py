@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import (
+    JSON,
     Boolean,
     DateTime,
     Float,
@@ -21,6 +22,11 @@ from sqlalchemy.sql import func
 
 class Base(DeclarativeBase):
     pass
+
+
+# Use JSON on SQLite (so in-memory unit tests can `create_all`) and JSONB on
+# PostgreSQL (preserves the binary JSON representation and GIN-index friendliness).
+_JSON = JSON().with_variant(JSONB(), "postgresql")
 
 
 class Domain(Base):
@@ -350,7 +356,7 @@ class CampaignStateValue(Base):
         nullable=False,
     )
     text: Mapped[str] = mapped_column(Text, nullable=False)
-    source_refs: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list, server_default="[]")
+    source_refs: Mapped[list[Any]] = mapped_column(_JSON, nullable=False, default=list, server_default="[]")
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     version: Mapped[CampaignStateVersion] = relationship(back_populates="values")
@@ -379,7 +385,7 @@ class CampaignStateListItem(Base):
     item_key: Mapped[str] = mapped_column(String(128), nullable=False)
     text: Mapped[str] = mapped_column(Text, nullable=False)
     resolved: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
-    source_refs: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list, server_default="[]")
+    source_refs: Mapped[list[Any]] = mapped_column(_JSON, nullable=False, default=list, server_default="[]")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
@@ -401,24 +407,24 @@ class Chat(Base):
     domain_id: Mapped[str] = mapped_column(String(64), ForeignKey("domains.domain_id", ondelete="CASCADE"), nullable=False)
     campaign_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("campaigns.id", ondelete="SET NULL"), nullable=True)
     # A02: pipeline_versions — JSONB dict
-    pipeline_versions: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True, default=None)
+    pipeline_versions: Mapped[dict[str, Any] | None] = mapped_column(_JSON, nullable=True, default=None)
     # A03: locked_pipeline_id
     locked_pipeline_id: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
     # Stage 2: pipeline DAG state fields
     # pipeline_pause_state — snapshot DAG-контекста при паузе на validation-шаге.
     # Структура: {pipeline_id, step_id, resume_token, step_results, query, expires_at}
     # NULL = нет активной паузы.
-    pipeline_pause_state: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True, default=None)
+    pipeline_pause_state: Mapped[dict[str, Any] | None] = mapped_column(_JSON, nullable=True, default=None)
     # pending_pipeline_confirm — данные ожидающего подтверждения запуска пайплайна.
     # Структура: {pipeline_id, pipeline_name, reasoning, confirm_token, query, expires_at}
     # NULL = нет ожидающего подтверждения.
-    pending_pipeline_confirm: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True, default=None)
+    pending_pipeline_confirm: Mapped[dict[str, Any] | None] = mapped_column(_JSON, nullable=True, default=None)
     # --- full document mode (Stage 1) ---
     full_document_mode_enabled: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
     )
     sent_full_document_ids: Mapped[list[Any]] = mapped_column(
-        JSONB, nullable=False, default=list, server_default="[]"
+        _JSON, nullable=False, default=list, server_default="[]"
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
@@ -451,8 +457,8 @@ class ClarificationState(Base):
 
     chat_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("chats.id", ondelete="CASCADE"), primary_key=True)
     stage: Mapped[str] = mapped_column(String(32), nullable=False)
-    missing_fields: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
-    collected: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    missing_fields: Mapped[list[str] | None] = mapped_column(_JSON, nullable=True)
+    collected: Mapped[dict[str, Any] | None] = mapped_column(_JSON, nullable=True)
     turn: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     next_question: Mapped[str | None] = mapped_column(Text, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
@@ -474,7 +480,7 @@ class AuditLog(Base):
     entity_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     # actor and payload added by migration 0010_audit_log_actor_payload
     actor: Mapped[str | None] = mapped_column(String(256), nullable=True)
-    payload: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    payload: Mapped[dict[str, Any] | None] = mapped_column(_JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
@@ -488,8 +494,8 @@ class Pipeline(Base):
     version: Mapped[str] = mapped_column(String(32), nullable=False)
     name: Mapped[str] = mapped_column(String(256), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
-    steps: Mapped[list[Any]] = mapped_column(JSONB, nullable=False)
-    final_composition: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    steps: Mapped[list[Any]] = mapped_column(_JSON, nullable=False)
+    final_composition: Mapped[dict[str, Any]] = mapped_column(_JSON, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 

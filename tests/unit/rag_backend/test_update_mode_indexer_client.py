@@ -254,7 +254,7 @@ async def test_resolve_transport_error_raises_indexer_unavailable() -> None:
             await client.resolve(request)
 
     assert exc_info.value.status_code is None
-    assert "rag-indexer" in exc_info.value.detail
+    assert "transport" in exc_info.value.detail
 
 
 # ---------------------------------------------------------------------------
@@ -406,8 +406,10 @@ async def test_apply_transport_error_raises_indexer_unavailable() -> None:
     mock_http_client = AsyncMock()
     mock_http_client.__aenter__ = AsyncMock(return_value=mock_http_client)
     mock_http_client.__aexit__ = AsyncMock(return_value=None)
+    mock_request = MagicMock()
+    mock_request.url = BASE_URL
     mock_http_client.post = AsyncMock(
-        side_effect=httpx.TimeoutException("Request timed out")
+        side_effect=httpx.TimeoutException("Request timed out", request=mock_request)
     )
 
     with patch("app.services.indexer_client.httpx.AsyncClient", return_value=mock_http_client):
@@ -415,7 +417,7 @@ async def test_apply_transport_error_raises_indexer_unavailable() -> None:
             await client.apply(request)
 
     assert exc_info.value.status_code is None
-    assert "rag-indexer" in exc_info.value.detail
+    assert "timeout" in exc_info.value.detail
 
 
 # ---------------------------------------------------------------------------

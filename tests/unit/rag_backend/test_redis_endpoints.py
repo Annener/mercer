@@ -37,7 +37,7 @@ async def test_get_task_state_running():
     app.state.redis = redis_mock
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        resp = await client.get("/index-tasks/task-1/state")
+        resp = await client.get("/api/v1/index-tasks/task-1/state")
     assert resp.status_code == 200
     data = resp.json()
     assert data["status"] == "running"
@@ -74,7 +74,7 @@ async def test_get_vault_index_state():
     app.state.redis = redis_mock
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        resp = await client.get("/vaults/vault-1/index-state")
+        resp = await client.get("/api/v1/vaults/vault-1/index-state")
     assert resp.status_code == 200
     data = resp.json()
     assert data["files_total"] == 3
@@ -90,7 +90,7 @@ async def test_get_vault_index_state_not_found():
     app.state.redis = redis_mock
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        resp = await client.get("/vaults/ghost-vault/index-state")
+        resp = await client.get("/api/v1/vaults/ghost-vault/index-state")
     assert resp.status_code == 404
 
 

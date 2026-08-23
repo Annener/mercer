@@ -267,6 +267,26 @@ async def pipeline_resume(
             if chunk.get("type") == "token":
                 full_answer += chunk.get("content", "")
 
+        yield "data: [DONE]\n\n"
+
+        executor = PipelineExecutor(db)
+        full_answer = ""
+
+        async for chunk in executor.resume_from_validation(ctx, paused_step_id):
+            chunk_type = chunk.get("type", "")
+
+            if chunk_type == "step_status":
+                yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+                continue
+
+            if chunk_type == "delta":
+                chunk = {**chunk, "type": "token"}
+
+            data = json.dumps(chunk, ensure_ascii=False)
+            yield f"data: {data}\n\n"
+            if chunk.get("type") == "token":
+                full_answer += chunk.get("content", "")
+
         if full_answer:
             pipeline_id = context_snapshot.get("pipeline_id")
             assistant_msg = Message(

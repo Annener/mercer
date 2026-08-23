@@ -125,43 +125,36 @@ async def test_get_domain_pending_files(mock_db):
 
 
 async def test_post_domain_index(mock_db):
-    """POST /domains/{domain_id}/index queues tasks for pending files only."""
+    """POST /domains/{domain_id}/index queues a task per vault of the domain
+    (current implementation delegates to rag-indexer via HTTP, not Redis).
+    """
     result_mock = MagicMock()
     result_mock.fetchall.return_value = [("vault-1",), ("vault-2",)]
     mock_db.execute.return_value = result_mock
 
-    mock_redis = AsyncMock()
-    async def hgetall_side(key):
-        if key == "vault:vault-1:files":
-            return {
-                "a.md": json.dumps({"index_status": "pending"}),
-                "b.md": json.dumps({"index_status": "indexed"}),
-            }
-        if key == "vault:vault-2:files":
-            return {
-                "c.md": json.dumps({"index_status": "pending"}),
-                "__empty__": "1",
-            }
-        return {}
-    mock_redis.hgetall.side_effect = hgetall_side
-    mock_redis.lpush = AsyncMock()
+    # Mock httpx.AsyncClient used by watchdog_settings.trigger_domain_index.
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {"task_id": "test-task"}
+    mock_response.raise_for_status = MagicMock()
+
+    mock_http_client = AsyncMock()
+    mock_http_client.__aenter__ = AsyncMock(return_value=mock_http_client)
+    mock_http_client.__aexit__ = AsyncMock(return_value=None)
+    mock_http_client.post = AsyncMock(return_value=mock_response)
 
     app.dependency_overrides[get_db] = lambda: mock_db
     try:
-        with patch("redis.asyncio.from_url", return_value=mock_redis):
+        with patch("app.api.watchdog_settings.httpx.AsyncClient", return_value=mock_http_client):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
-                app.state.redis = mock_redis
                 r = await c.post("/api/v1/domains/dnd/index")
         assert r.status_code == 200
         data = r.json()
         assert data["queued"] == 2
         assert data["domain_id"] == "dnd"
-        assert mock_redis.lpush.await_count == 2
-        queued_tasks = [
-            json.loads(call.args[1])
-            for call in mock_redis.lpush.call_args_list
-        ]
-        paths = {t["path"] for t in queued_tasks}
-        assert paths == {"a.md", "c.md"}
+        # Verify one POST per vault was sent to rag-indexer.
+        assert mock_http_client.post.await_count == 2
+        posted_vaults = {call.kwargs["json"]["vault_id"] for call in mock_http_client.post.call_args_list}
+        assert posted_vaults == {"vault-1", "vault-2"}
     finally:
         app.dependency_overrides.clear()

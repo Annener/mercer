@@ -181,7 +181,7 @@ class TestParallelDagIntegration:
         def _make_hit(doc_id: str) -> SearchHit:
             return SearchHit(document_id=doc_id, chunk_id="c1", text=f"текст {doc_id}", score=0.9)
 
-        async def _retrieve_side_effect(step, ctx_arg):
+        async def _retrieve_side_effect(step, ctx_arg, provider):
             return [_make_hit(step.step_id)]
 
         with patch("app.services.pipeline_executor.settings_service") as svc, \
@@ -210,7 +210,7 @@ class TestParallelDagIntegration:
 
         from shared_contracts.models import SearchHit
 
-        async def _retrieve_side_effect(step, ctx_arg):
+        async def _retrieve_side_effect(step, ctx_arg, provider):
             if step.step_id == "r1":
                 return []  # нет документов
             return [SearchHit(document_id="doc-1", chunk_id="c1", text="текст", score=0.9)]
