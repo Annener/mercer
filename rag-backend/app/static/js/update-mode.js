@@ -685,7 +685,18 @@ function _buildPanel(chatId, initialSession) {
         applyBtn.type = 'button';
         applyBtn.textContent = 'Применить принятые';
         applyBtn.disabled = !hasAccepted || _applying; // BUG-14
-        applyBtn.addEventListener('click', _doApply);
+        applyBtn.addEventListener('click', () => {
+            Promise.resolve(_doApply()).catch((err) => {
+                console.error('update-mode apply unhandled:', err);
+                if (_applying) {
+                    _applying = false;
+                    state = 'error';
+                    if (panel.isConnected) {
+                        render();
+                    }
+                }
+            });
+        });
 
         footer.appendChild(saveBtn);
         footer.appendChild(applyBtn);
@@ -1200,22 +1211,27 @@ function _buildPanel(chatId, initialSession) {
             // Теперь финальный state ставится всегда; guard остался только для
             // невозможной ветки (панель уже удалена из DOM кем-то другим).
             state = 'result';
-            UpdateModeLifecycle.clearSession(chatId, 'apply_done');
-            if (!panel.isConnected) { return; }
-            render();
+            if (panel.isConnected) {
+                render();
+            }
+            // FIX(BUG-LIFECYCLE): UpdateModeLifecycle был undefined →
+            // ReferenceError ломал success-ветку и оставлял спиннер навсегда.
+            // Чистим сессию fire-and-forget через уже существующий chatAPI,
+            // не блокируя рендер финального состояния.
+            chatAPI.updateModeCancel(chatId).catch(() => { /* non-fatal */ });
         } catch (err) {
             _applying = false;
-            // FIX: сброс _applying перед ранним выходом при ошибке
-            if (!panel.isConnected) { return; }
-            // FIX(BUG-14-failure): при большинстве ошибок apply чистим сессию тоже —
-            // пользователь начнёт новый цикл, а старая сессия ему только мешает.
-            // Исключения: apply_in_progress / apply_already_started — там работает
-            // параллельная сессия и удалять чужую сессию нельзя.
+            // FIX(BUG-LIFECYCLE): сначала чистим сессию fire-and-forget,
+            // затем показываем ошибку — даже если cleanup бросит,
+            // спиннер уже ушёл и пользователь не залип на «Применение изменений…».
             const code = err && err.code;
             const shouldClear = !code || (code !== 'apply_in_progress' && code !== 'apply_already_started');
             if (shouldClear) {
-                UpdateModeLifecycle.clearSession(chatId, 'apply_error');
+                try {
+                    chatAPI.updateModeCancel(chatId).catch(() => { /* non-fatal */ });
+                } catch (_) { /* ignore */ }
             }
+            if (!panel.isConnected) { return; }
             _showError(_umErrorMsg(err));
         }
     }

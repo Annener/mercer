@@ -107,10 +107,14 @@ class IndexerClient:
         """
         url = f"{self._base_url}/internal/update-mode/apply"
         payload = request.model_dump(mode="json")
+        # FIX: логировать file_batches (реально передаваемое поле), а не
+        # accepted_changes (deprecated, всегда пустое) — иначе в логах
+        # n_changes=0 при реальных изменениях.
         logger.info(
-            "indexer_client.apply apply_id=%s chat_id=%s n_changes=%d url=%s",
+            "indexer_client.apply apply_id=%s chat_id=%s n_file_batches=%d n_accepted_changes=%d url=%s",
             request.apply_id,
             request.chat_id,
+            len(request.file_batches),
             len(request.accepted_changes),
             url,
         )
