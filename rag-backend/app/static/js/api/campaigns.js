@@ -210,19 +210,27 @@ export const campaignsMixin = {
      * Применить Initial State proposal (review/approval).
      *
      * POST /api/settings/campaigns/{cid}/state/initial/apply
-     * Body: { proposal_id: string, config_version: number }
+     * Body: { proposal_id: string, config_version: number, proposal_overrides?: CampaignStateInitialProposal }
      * На успех возвращает CampaignStateVersionRead с state_version=1, source_kind='initial'.
+     *
+     * `proposalOverrides` — необязательный proposal с правками пользователя
+     * (отредактированный single_value / list_value.items). На бэкенде мерджится
+     * поверх proposal из Redis по field_key.
      */
-    async applyInitialState(campaignId, proposalId, configVersion) {
+    async applyInitialState(campaignId, proposalId, configVersion, proposalOverrides = null) {
+        const body = {
+            proposal_id: proposalId,
+            config_version: configVersion,
+        };
+        if (proposalOverrides && typeof proposalOverrides === 'object') {
+            body.proposal_overrides = proposalOverrides;
+        }
         const response = await fetch(
             `${this.baseUrl}/api/settings/campaigns/${campaignId}/state/initial/apply`,
             {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    proposal_id: proposalId,
-                    config_version: configVersion,
-                }),
+                body: JSON.stringify(body),
             }
         );
         return this._parseInitialStateResponse(response);

@@ -496,7 +496,11 @@ CampaignStateInitialProposalRead:   # хранится в Redis, TTL 3h
   warnings=[], created_at, expires_at
 
 CampaignStateInitialPreviewRequest:   document_ids (1..50)
-CampaignStateInitialApplyRequest:     proposal_id (1..64), config_version (≥1)
+CampaignStateInitialApplyRequest:
+  proposal_id (1..64), config_version (≥1),
+  proposal_overrides: CampaignStateInitialProposal | None = None
+  # Опциональный proposal с правками пользователя. Мерджится поверх
+  # proposal из Redis по field_key. source_snapshot не затрагивается.
 ```
 
 ---

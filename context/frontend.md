@@ -319,16 +319,42 @@ api/index.js → api/*.js → api.js → pipeline_builder.js → settings.js →
 
 Полноэкранный overlay с тремя фазами:
 
-1. **Select** — выбор Markdown-документов кампании (клиентский фильтр `.md` +
-   фильтр по тегам кампании; бэкенд делает обязательную валидацию). Счётчик
-   токенов с предупреждением, если > 64 000.
+1. **Select** — выбор Markdown-документов кампании. Перед загрузкой
+   документов Wizard собирает ID тегов кампании через
+   `getCampaignTags(campaignId)` + `getCampaignGlobalTags(campaignId)`
+   и передаёт их как `tagIds` в `getSettingsDocuments` —
+   `GET /api/settings/documents?domain_id=...&tag_id=u1&tag_id=u2&tag_id=u3&status=indexed`.
+   Документы фильтруются по тегам кампании (OR-логика), а не по всему домену.
+   - Если у кампании 0 тегов (ни своих, ни подключённых глобальных) —
+     показывается баннер «Initial State недоступен», Wizard не открывается,
+     кнопка «Сформировать начальный контекст» скрыта в карточке кампании
+     (`initial-state.js`).
+   - Под полем поиска отображается подсказка с числом тегов кампании.
+   - Счётчик токенов с предупреждением, если > 64 000.
+   - Изменение чекбокса документа обновляет счётчики и прогресс-бар
+     точечно (через `_updateBudgetView`), без полного перерендера списка —
+     это сохраняет `scrollTop` контейнера `.iswizard__docs` (иначе
+     список «прыгал» в начало при каждом клике).
 2. **Review** — diff по полям (`proposed` / `empty` / `needs_clarification`),
    свёрнутый source snapshot, warnings. В фоне проверяется свежесть
    `Document.md5` против snapshot — если расхождение, показывается баннер
    «Источники изменились».
-3. **Apply** — `POST /state/initial/apply`. Обрабатывает все коды ошибок
-   бэкенда: `initial_already_applied`, `source_snapshot_stale`,
+   - **Inline-edit:**
+     - Single-поля: кнопка «Изменить» открывает textarea, «Сохранить»/«Отменить».
+     - List-поля: у каждого элемента кнопки ✎ (edit) и 🗑 (remove);
+       под списком — кнопка «+ Добавить элемент». `source_refs` остаются
+       зафиксированными от LLM, не редактируются.
+   - Валидация: text ≥ 1, ≤ 8192 (как в `CampaignStateInitialSingleValue.text`
+     и `CampaignStateInitialListItem.text`).
+3. **Apply** — `POST /state/initial/apply` с телом
+   `{ proposal_id, config_version, proposal_overrides? }`.
+   `proposal_overrides` — частичный proposal (по `field_key`),
+   сформированный из текущего состояния `ctx.proposal.proposal` в Wizard.
+   Бэкенд мерджит его поверх proposal, лежащего в Redis. Обрабатывает
+   все коды ошибок бэкенда: `initial_already_applied`, `source_snapshot_stale`,
    `proposal_expired`, `503 generation_provider_unavailable`.
+   - Баннер ошибки с кнопкой `×` (dismiss) работает в любом стейте, где
+     он показан (`select_documents`, `review`, `result`).
 
 При успехе показывается финальное сообщение и карточка кампании заменяет
 кнопку на badge «Initial State применён» через `loadTab('campaigns')`.

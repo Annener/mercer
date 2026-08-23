@@ -3,6 +3,7 @@
 // Состояние:
 //   - если Initial State применён → badge «Initial State применён».
 //   - если нет полей → скрыт.
+//   - если 0 тегов кампании → информационное сообщение (Wizard заблокирован).
 //   - если есть поля, но не применён → кнопка «Сформировать начальный контекст»,
 //     по клику открывается InitialStateWizard (Stage 4).
 
@@ -17,6 +18,17 @@
             .replace(/>/g, '&gt;')
             .replace(/"/g, '&quot;')
             .replace(/'/g, '&#39;');
+    }
+
+    async function _loadCampaignTagCount(campaignId, api) {
+        let own = [];
+        let linked = [];
+        try { own = await api.getCampaignTags(campaignId); } catch (_) { own = []; }
+        try { linked = await api.getCampaignGlobalTags(campaignId); } catch (_) { linked = []; }
+        const ids = new Set();
+        for (const t of (own || [])) ids.add(String(t.id));
+        for (const t of (linked || [])) ids.add(String(t.id));
+        return ids.size;
     }
 
     function build() {
@@ -34,6 +46,7 @@
             api: window.chatAPI,
             fieldsCount: 0,
             hasActiveState: false,
+            tagCount: 0,
             onChanged: null,
             activeVersion: null,
             onApplyClick: null,
@@ -44,6 +57,7 @@
 
         function render() {
             body.innerHTML = '';
+            root.style.display = '';
 
             if (state.hasActiveState) {
                 // Badge + краткая информация.
@@ -64,8 +78,20 @@
                 return;
             }
 
+            if (state.tagCount === 0) {
+                // У кампании нет ни собственных, ни подключённых глобальных тегов —
+                // Wizard открыть нельзя (документы для Initial State не получится подобрать).
+                const warn = document.createElement('div');
+                warn.style.cssText = 'padding:10px 12px;border:1px solid #f5b7b1;border-radius:6px;background:#fdecea;color:#922b21;font-size:12.5px;';
+                warn.innerHTML = `
+                    <div style="font-weight:600;margin-bottom:4px;">Initial State недоступен</div>
+                    <div>У кампании нет тегов (ни собственных, ни подключённых глобальных). Добавьте теги выше — это нужно, чтобы отобрать документы для формирования Initial State.</div>
+                `;
+                body.appendChild(warn);
+                return;
+            }
+
             // Кнопка Initial State.
-            root.style.display = '';
             const button = document.createElement('button');
             button.type = 'button';
             button.className = 'btn btn-primary';
@@ -84,7 +110,7 @@
             const hint = document.createElement('div');
             hint.className = 'field-desc';
             hint.style.marginTop = '6px';
-            hint.textContent = 'Откроется мастер выбора Markdown-документов и подтверждения значений полей.';
+            hint.textContent = `Откроется мастер выбора Markdown-документов и подтверждения значений полей. Документы фильтруются по ${state.tagCount} тегу(ам) кампании.`;
             body.appendChild(hint);
         }
 
@@ -107,6 +133,11 @@
                 } catch (_) {
                     state.activeVersion = null;
                     state.hasActiveState = false;
+                }
+                if (state.api && typeof state.api.getCampaignTags === 'function') {
+                    state.tagCount = await _loadCampaignTagCount(campaignId, state.api);
+                } else {
+                    state.tagCount = 0;
                 }
                 render();
             },

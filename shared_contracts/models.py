@@ -720,9 +720,23 @@ class CampaignStateInitialPreviewRequest(BaseModel):
 
 
 class CampaignStateInitialApplyRequest(BaseModel):
-    """Запрос на применение initial proposal (review/approval)."""
+    """Запрос на применение initial proposal (review/approval).
+
+    `proposal_overrides` — необязательный частичный proposal, который мерджится
+    поверх proposal, хранящегося в Redis, по `field_key`. Позволяет клиенту
+    отредактировать текст single_value и/или list_value.items перед apply.
+
+    Слияние:
+      - Берётся базовый proposal из Redis.
+      - Для каждого поля из overrides.mode/status/single_value/list_value
+        соответствующее поле в базовом proposal заменяется (если field_key
+        есть в базовом proposal).
+      - Если field_key отсутствует в базовом proposal — поле игнорируется.
+      - source_snapshot не затрагивается.
+    """
     proposal_id: str = Field(min_length=1, max_length=64)
     config_version: int = Field(ge=1)
+    proposal_overrides: CampaignStateInitialProposal | None = None
 
 
 # ---------------------------------------------------------------------------

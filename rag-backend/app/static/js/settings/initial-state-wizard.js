@@ -42,6 +42,8 @@
             'Некоторые источники изменились между preview и apply.',
         campaign_not_found:
             'Кампания не найдена.',
+        no_campaign_tags:
+            'У кампании нет тегов. Добавьте собственные или подключите глобальные, иначе Initial State невозможно сформировать.',
     };
 
     function _errMessage(err) {
@@ -148,6 +150,7 @@
             appliedVersion: null,
             error: null,
             highlightDocIds: new Set(),
+            campaignTagIds: [],
         };
 
         const controller = _buildController(ctx);
@@ -178,11 +181,6 @@
             render();
         }
 
-        function setError(err) {
-            ctx.error = _errMessage(err);
-            render();
-        }
-
         function clearError() {
             ctx.error = null;
         }
@@ -198,13 +196,42 @@
             });
         }
 
+        async function _loadCampaignTagIds() {
+            const ids = new Set();
+            // Параллельная загрузка — теги нужны редко (раз при открытии Wizard).
+            const [own, linked] = await Promise.all([
+                ctx.api.getCampaignTags(ctx.campaignId).catch(() => []),
+                ctx.api.getCampaignGlobalTags(ctx.campaignId).catch(() => []),
+            ]);
+            for (const t of (own || [])) ids.add(String(t.id));
+            for (const t of (linked || [])) ids.add(String(t.id));
+            return Array.from(ids);
+        }
+
         async function start() {
             setState('loading_documents');
+            // Сначала — теги кампании; если их нет, Wizard не сможет отобрать документы.
+            let tagIds = [];
+            try {
+                tagIds = await _loadCampaignTagIds();
+            } catch (_) {
+                tagIds = [];
+            }
+            ctx.campaignTagIds = tagIds;
+
+            if (!tagIds.length) {
+                const info = { code: 'no_campaign_tags', text: ERROR_MESSAGES.no_campaign_tags };
+                ctx.error = info;
+                setState('select_documents', { documents: [], filteredDocuments: [] });
+                return;
+            }
+
             let docs = [];
             try {
                 const fetched = await ctx.api.getSettingsDocuments({
                     domainId: ctx.opts.domainId || null,
                     status: 'indexed',
+                    tagIds,
                 });
                 docs = Array.isArray(fetched) ? fetched : [];
             } catch (_) {
@@ -237,24 +264,39 @@
             } catch (err) {
                 const info = _errMessage(err);
                 ctx.error = info;
-                if (info.code === 'no_markdown_documents'
-                    || info.code === 'document_not_markdown'
-                    || info.code === 'document_not_indexed') {
-                    setState('select_documents');
-                } else {
-                    setState('select_documents');
-                }
+                setState('select_documents');
             }
+        }
+
+        function _buildProposalOverrides(proposal) {
+            // Снимаем копию изменяемых полей из proposal.
+            // Бэкенд мерджит overrides по field_key поверх proposal из Redis.
+            const src = proposal && proposal.proposal;
+            if (!src || !Array.isArray(src.fields)) return null;
+            return {
+                fields: src.fields.map((f) => ({
+                    field_key: f.field_key,
+                    mode: f.mode,
+                    status: f.status,
+                    single_value: f.single_value ? { ...f.single_value } : null,
+                    list_value: f.list_value
+                        ? { items: (f.list_value.items || []).map((it) => ({ ...it })) }
+                        : null,
+                })),
+                questions: Array.isArray(src.questions) ? src.questions.slice() : [],
+            };
         }
 
         async function doApply() {
             if (!ctx.proposal) return;
             setState('applying');
+            const overrides = _buildProposalOverrides(ctx.proposal);
             try {
                 const version = await ctx.api.applyInitialState(
                     ctx.campaignId,
                     ctx.proposal.proposal_id,
                     ctx.proposal.config_version,
+                    overrides,
                 );
                 setState('result', { appliedVersion: version });
                 if (typeof ctx.opts.onApplied === 'function') {
@@ -292,7 +334,6 @@
             setStep(ctx.step);
             body.innerHTML = '';
             actions.innerHTML = '';
-            ctx.error = ctx.state === 'error' ? ctx.error : ctx.error;
 
             if (ctx.state === 'loading_documents') return _renderLoading();
             if (ctx.state === 'select_documents') return _renderSelect();
@@ -344,6 +385,7 @@
                 el.type = 'button';
                 el.className = 'iswizard__btn' + (b.variant === 'primary' ? ' iswizard__btn--primary'
                     : b.variant === 'danger' ? ' iswizard__btn--danger' : '');
+                if (b.action) el.dataset.action = b.action;
                 el.textContent = b.label;
                 if (b.disabled) el.disabled = true;
                 el.addEventListener('click', () => b.onClick());
@@ -359,8 +401,14 @@
             };
         }
 
-        function _btnDisabled(label, variant) {
-            return { label, variant: variant || 'secondary', disabled: true, onClick: () => {} };
+        function _btnDisabled(label, action, variant) {
+            return {
+                label,
+                action,
+                variant: variant || 'secondary',
+                disabled: true,
+                onClick: () => _onAction(action),
+            };
         }
 
         function _renderError() {
@@ -369,18 +417,30 @@
                 _btn('Повторить', 'retry', 'secondary'),
                 _btn('Закрыть', 'close', 'secondary'),
             ]);
-            const banner = body.querySelector('[data-action="dismiss-error"]');
-            if (banner) banner.addEventListener('click', () => { ctx.error = null; render(); });
+            _attachErrorDismiss(body);
         }
 
+        // Универсальная отрисовка баннера ошибки с привязкой dismiss-handler.
+        // Используется в любом стейте, где показывается error.
         function _errorBannerHtml(info) {
             if (!info) return '';
             return `
                 <div class="iswizard__error" data-error>
                     <span class="iswizard__error-text">${_escapeHtml(info.text || 'Ошибка')}</span>
-                    <button class="iswizard__btn" type="button" data-action="dismiss-error">×</button>
+                    <button class="iswizard__btn" type="button" data-action="dismiss-error" aria-label="Закрыть ошибку">×</button>
                 </div>
             `;
+        }
+
+        function _attachErrorDismiss(scope) {
+            if (!scope) return;
+            const banner = scope.querySelector('[data-action="dismiss-error"]');
+            if (banner) {
+                banner.addEventListener('click', () => {
+                    ctx.error = null;
+                    render();
+                });
+            }
         }
 
         function _filteredDocs() {
@@ -402,67 +462,78 @@
             return total;
         }
 
+        // Точечное обновление счётчиков выбранных документов и прогресс-бара —
+        // без перерендера всего тела, чтобы сохранить scrollTop контейнера .iswizard__docs.
+        function _updateBudgetView() {
+            const totalSel = ctx.selectedIds.size;
+            const tokens = _selectedTokens();
+            const overBudget = tokens > TOTAL_TOKEN_BUDGET;
+            const pct = Math.min(100, Math.round((tokens / TOTAL_TOKEN_BUDGET) * 100));
+
+            const valueEl = body.querySelector('[data-budget-selected]');
+            if (valueEl) {
+                valueEl.innerHTML = `<strong>${totalSel}</strong> док. / ${_formatTokens(tokens)} ток.`;
+            }
+            const fractionEl = body.querySelector('[data-budget-fraction]');
+            if (fractionEl) {
+                fractionEl.textContent = `${_formatTokens(tokens)} / ${_formatTokens(TOTAL_TOKEN_BUDGET)}`;
+            }
+            const fillEl = body.querySelector('[data-budget-fill]');
+            if (fillEl) {
+                fillEl.style.width = `${pct}%`;
+                fillEl.classList.toggle('iswizard__budget-fill--over', overBudget);
+            }
+            const nextBtn = actions.querySelector('[data-action="preview"]');
+            if (nextBtn) {
+                const canNext = totalSel > 0 && !overBudget && ctx.state !== 'preview_starting';
+                nextBtn.disabled = !canNext;
+            }
+        }
+
         function _renderSelect() {
             const docs = _filteredDocs();
             const totalSel = ctx.selectedIds.size;
             const tokens = _selectedTokens();
             const overBudget = tokens > TOTAL_TOKEN_BUDGET;
             const pct = Math.min(100, Math.round((tokens / TOTAL_TOKEN_BUDGET) * 100));
+            const noTags = ctx.campaignTagIds.length === 0;
 
             const errorHtml = ctx.error ? _errorBannerHtml(ctx.error) : '';
 
+            const tagsHint = noTags
+                ? ''
+                : `<div class="iswizard__hint" style="margin-bottom:8px;color:var(--color-text-muted);font-size:11.5px;">
+                       Показаны только документы, привязанные к тегам кампании (${ctx.campaignTagIds.length} тег${_plural(ctx.campaignTagIds.length)}).
+                   </div>`;
+
             body.innerHTML = `
                 ${errorHtml}
-                <p class="iswizard__hint">Выберите Markdown-документы домена для формирования Initial State. Лимит на документ: ${_formatTokens(PER_DOC_TOKEN_LIMIT)} токенов; общий бюджет: ${_formatTokens(TOTAL_TOKEN_BUDGET)}.</p>
+                <p class="iswizard__hint">Выберите Markdown-документы для формирования Initial State. Лимит на документ: ${_formatTokens(PER_DOC_TOKEN_LIMIT)} токенов; общий бюджет: ${_formatTokens(TOTAL_TOKEN_BUDGET)}.</p>
+                ${tagsHint}
                 <input class="iswizard__search" type="search" placeholder="Поиск по названию или пути…" data-search />
                 <div class="iswizard__docs" data-docs></div>
                 <div class="iswizard__budget">
                     <span class="iswizard__budget-label">Выбрано:</span>
-                    <span class="iswizard__budget-value"><strong>${totalSel}</strong> док. / ${_formatTokens(tokens)} ток.</span>
+                    <span class="iswizard__budget-value" data-budget-selected><strong>${totalSel}</strong> док. / ${_formatTokens(tokens)} ток.</span>
                     <div class="iswizard__budget-bar">
-                        <div class="iswizard__budget-fill${overBudget ? ' iswizard__budget-fill--over' : ''}" style="width:${pct}%"></div>
+                        <div class="iswizard__budget-fill${overBudget ? ' iswizard__budget-fill--over' : ''}" data-budget-fill style="width:${pct}%"></div>
                     </div>
-                    <span class="iswizard__budget-value">${_formatTokens(tokens)} / ${_formatTokens(TOTAL_TOKEN_BUDGET)}</span>
+                    <span class="iswizard__budget-value" data-budget-fraction>${_formatTokens(tokens)} / ${_formatTokens(TOTAL_TOKEN_BUDGET)}</span>
                 </div>
             `;
+            _attachErrorDismiss(body);
 
             const docsEl = body.querySelector('[data-docs]');
-            if (!docs.length) {
-                docsEl.innerHTML = '<div class="iswizard__field-empty-text" style="padding:14px;text-align:center;">Нет подходящих Markdown-документов.</div>';
-            } else {
-                docsEl.innerHTML = docs.map((d) => {
-                    const oversized = _docIsOversized(d);
-                    const checked = ctx.selectedIds.has(String(d.id));
-                    const highlighted = ctx.highlightDocIds && ctx.highlightDocIds.has(String(d.id));
-                    const disabled = oversized;
-                    return `
-                        <label class="iswizard__doc${disabled ? ' iswizard__doc--disabled' : ''}${highlighted ? ' iswizard__doc--highlighted' : ''}" data-doc-id="${_escapeHtml(String(d.id))}">
-                            <input class="iswizard__doc-check" type="checkbox" data-doc-check ${checked ? 'checked' : ''} ${disabled ? 'disabled' : ''} />
-                            <div class="iswizard__doc-body">
-                                <div class="iswizard__doc-title">${_escapeHtml(_docTitle(d))}</div>
-                                <div class="iswizard__doc-path">${_escapeHtml(d.source_path || '')}</div>
-                                ${disabled ? '<div class="iswizard__doc-warning">Документ слишком большой для Initial State (&gt; ' + _formatTokens(PER_DOC_TOKEN_LIMIT) + ' ток.)</div>' : ''}
-                            </div>
-                            <div class="iswizard__doc-meta">${_formatTokens(d.estimated_tokens)} ток.</div>
-                        </label>
-                    `;
-                }).join('');
-
-                docsEl.querySelectorAll('[data-doc-check]').forEach((cb) => {
-                    cb.addEventListener('change', (ev) => {
-                        const wrap = ev.target.closest('[data-doc-id]');
-                        const id = wrap ? wrap.dataset.docId : null;
-                        if (!id) return;
-                        if (ev.target.checked) ctx.selectedIds.add(id);
-                        else ctx.selectedIds.delete(id);
-                        _renderSelect();
-                    });
-                });
-            }
+            _renderDocsList(docsEl, docs);
 
             body.querySelector('[data-search]').addEventListener('input', (ev) => {
                 ctx.search = ev.target.value || '';
-                _renderSelect();
+                // Перерендерим только список, сохранив scrollTop.
+                const el = body.querySelector('[data-docs]');
+                if (!el) return;
+                const savedScroll = el.scrollTop;
+                _renderDocsList(el, _filteredDocs());
+                el.scrollTop = savedScroll;
             });
 
             const canNext = totalSel > 0 && !overBudget && ctx.state !== 'preview_starting';
@@ -470,8 +541,48 @@
                 _btn('Отмена', 'close', 'secondary'),
                 canNext
                     ? _btn('Далее →', 'preview', 'primary')
-                    : _btnDisabled('Далее →', 'primary'),
+                    : _btnDisabled('Далее →', 'preview', 'primary'),
             ]);
+        }
+
+        // Рендерит только содержимое контейнера [data-docs] — без пересоздания
+        // самого контейнера, чтобы сохранить scrollTop.
+        function _renderDocsList(container, docs) {
+            if (!container) return;
+            if (!docs.length) {
+                container.innerHTML = '<div class="iswizard__field-empty-text" style="padding:14px;text-align:center;">Нет подходящих Markdown-документов.</div>';
+                return;
+            }
+            container.innerHTML = docs.map((d) => {
+                const oversized = _docIsOversized(d);
+                const checked = ctx.selectedIds.has(String(d.id));
+                const highlighted = ctx.highlightDocIds && ctx.highlightDocIds.has(String(d.id));
+                const disabled = oversized;
+                return `
+                    <label class="iswizard__doc${disabled ? ' iswizard__doc--disabled' : ''}${highlighted ? ' iswizard__doc--highlighted' : ''}" data-doc-id="${_escapeHtml(String(d.id))}">
+                        <input class="iswizard__doc-check" type="checkbox" data-doc-check ${checked ? 'checked' : ''} ${disabled ? 'disabled' : ''} />
+                        <div class="iswizard__doc-body">
+                            <div class="iswizard__doc-title">${_escapeHtml(_docTitle(d))}</div>
+                            <div class="iswizard__doc-path">${_escapeHtml(d.source_path || '')}</div>
+                            ${disabled ? '<div class="iswizard__doc-warning">Документ слишком большой для Initial State (&gt; ' + _formatTokens(PER_DOC_TOKEN_LIMIT) + ' ток.)</div>' : ''}
+                        </div>
+                        <div class="iswizard__doc-meta">${_formatTokens(d.estimated_tokens)} ток.</div>
+                    </label>
+                `;
+            }).join('');
+
+            container.querySelectorAll('[data-doc-check]').forEach((cb) => {
+                cb.addEventListener('change', (ev) => {
+                    const wrap = ev.target.closest('[data-doc-id]');
+                    const id = wrap ? wrap.dataset.docId : null;
+                    if (!id) return;
+                    if (ev.target.checked) ctx.selectedIds.add(id);
+                    else ctx.selectedIds.delete(id);
+                    // Точечное обновление счётчиков/бара вместо полного перерендера —
+                    // иначе scrollTop контейнера сбрасывается в 0.
+                    _updateBudgetView();
+                });
+            });
         }
 
         function _fieldHtml(field, snapshotById) {
@@ -493,12 +604,17 @@
                     if (!items.length) {
                         valueHtml = '<div class="iswizard__field-empty-text">Список пуст.</div>';
                     } else {
-                        valueHtml = '<div>' + items.map((it) => `
-                            <div class="iswizard__list-item">
-                                <div>${_escapeHtml(it.text || '')}</div>
+                        const itemsHtml = items.map((it, i) => `
+                            <div class="iswizard__list-item" data-list-idx="${i}">
+                                <div class="iswizard__list-item-text" data-list-text>${_escapeHtml(it.text || '')}</div>
                                 ${_sourcesHtmlInline(it.source_refs || [], snapshotById)}
+                                <div class="iswizard__list-item-actions">
+                                    <button class="iswizard__btn" type="button" data-action="edit-list-item" data-list-idx="${i}" title="Редактировать">✎</button>
+                                    <button class="iswizard__btn" type="button" data-action="remove-list-item" data-list-idx="${i}" title="Удалить">🗑</button>
+                                </div>
                             </div>
-                        `).join('') + '</div>';
+                        `).join('');
+                        valueHtml = `<div class="iswizard__list-items" data-list-items>${itemsHtml}</div>`;
                     }
                 }
             } else if (status === 'needs_clarification') {
@@ -511,6 +627,9 @@
             const editBtn = (status === 'proposed' && isSingle)
                 ? `<button class="iswizard__btn" type="button" data-action="edit-field" data-field-key="${_escapeHtml(field.field_key)}">Изменить</button>`
                 : '';
+            const addListBtn = (status === 'proposed' && !isSingle)
+                ? `<button class="iswizard__btn" type="button" data-action="add-list-item">+ Добавить элемент</button>`
+                : '';
 
             return `
                 <div class="iswizard__field" data-field-key="${_escapeHtml(field.field_key)}">
@@ -521,7 +640,10 @@
                     </div>
                     ${valueHtml}
                     ${sourcesHtml}
-                    ${editBtn ? `<div class="iswizard__field-actions">${editBtn}</div>` : ''}
+                    <div class="iswizard__field-actions">
+                        ${editBtn}
+                        ${addListBtn}
+                    </div>
                 </div>
             `;
         }
@@ -565,7 +687,7 @@
 
             body.innerHTML = `
                 ${errorHtml}
-                <p class="iswizard__hint">Проверьте предложенные значения. Можно отредактировать текст single-полей (источники зафиксированы snapshot'ом).</p>
+                <p class="iswizard__hint">Проверьте предложенные значения. Можно отредактировать текст single-полей, добавлять/удалять/редактировать элементы list-полей. Источники зафиксированы snapshot'ом.</p>
                 <div data-fields>${fields.map((f) => _fieldHtml(f, snapshotById)).join('') || '<div class="iswizard__field-empty-text">Модель не вернула полей.</div>'}</div>
                 ${questions.length ? `
                     <div class="iswizard__questions">
@@ -580,6 +702,7 @@
                     </div>
                 ` : ''}
             `;
+            _attachErrorDismiss(body);
 
             // Хук «Изменить» для single-полей.
             body.querySelectorAll('[data-action="edit-field"]').forEach((btn) => {
@@ -587,29 +710,48 @@
                     const key = btn.dataset.fieldKey;
                     const field = fields.find((f) => f.field_key === key);
                     if (!field || !field.single_value) return;
-                    // Поднимаемся к родительскому .iswizard__field, а не к самой кнопке
-                    // (она тоже имеет data-field-key).
                     const wrap = btn.closest('.iswizard__field');
                     if (!wrap) return;
-                    const valueEl = wrap.querySelector('[data-single-value]');
-                    if (!valueEl) return;
-                    const current = field.single_value.text || '';
-                    const ta = document.createElement('textarea');
-                    ta.className = 'iswizard__field-edit-textarea';
-                    ta.value = current;
-                    valueEl.replaceWith(ta);
-                    const actions = wrap.querySelector('.iswizard__field-actions');
-                    if (actions) {
-                        actions.innerHTML = `
-                            <button class="iswizard__btn" type="button" data-action="cancel-edit">Отменить</button>
-                            <button class="iswizard__btn iswizard__btn--primary" type="button" data-action="save-edit">Сохранить</button>
-                        `;
-                        actions.querySelector('[data-action="cancel-edit"]').addEventListener('click', () => render());
-                        actions.querySelector('[data-action="save-edit"]').addEventListener('click', () => {
-                            field.single_value = { ...field.single_value, text: ta.value };
-                            render();
-                        });
+                    _enterSingleEditMode(wrap, field);
+                });
+            });
+
+            // Хуки для list items: edit / remove.
+            body.querySelectorAll('[data-action="edit-list-item"]').forEach((btn) => {
+                btn.addEventListener('click', () => {
+                    const fieldKey = btn.closest('.iswizard__field')?.dataset.fieldKey;
+                    const idx = Number(btn.dataset.listIdx);
+                    if (!Number.isFinite(idx) || !fieldKey) return;
+                    const field = fields.find((f) => f.field_key === fieldKey);
+                    if (!field || !field.list_value || !field.list_value.items[idx]) return;
+                    _enterListItemEditMode(btn.closest('.iswizard__list-item'), field, idx);
+                });
+            });
+
+            body.querySelectorAll('[data-action="remove-list-item"]').forEach((btn) => {
+                btn.addEventListener('click', () => {
+                    const fieldKey = btn.closest('.iswizard__field')?.dataset.fieldKey;
+                    const idx = Number(btn.dataset.listIdx);
+                    if (!Number.isFinite(idx) || !fieldKey) return;
+                    const field = fields.find((f) => f.field_key === fieldKey);
+                    if (!field || !field.list_value) return;
+                    field.list_value.items.splice(idx, 1);
+                    render();
+                });
+            });
+
+            // Хук «+ Добавить элемент».
+            body.querySelectorAll('[data-action="add-list-item"]').forEach((btn) => {
+                btn.addEventListener('click', () => {
+                    const fieldKey = btn.closest('.iswizard__field')?.dataset.fieldKey;
+                    if (!fieldKey) return;
+                    const field = fields.find((f) => f.field_key === fieldKey);
+                    if (!field) return;
+                    if (!field.list_value) {
+                        field.list_value = { items: [] };
                     }
+                    field.list_value.items.push({ text: '', source_refs: [] });
+                    render();
                 });
             });
 
@@ -618,6 +760,71 @@
                 _btn('Отмена', 'close', 'secondary'),
                 _btn('Применить', 'apply', 'primary'),
             ]);
+        }
+
+        function _enterSingleEditMode(wrap, field) {
+            const valueEl = wrap.querySelector('[data-single-value]');
+            if (!valueEl) return;
+            const current = field.single_value.text || '';
+            const ta = document.createElement('textarea');
+            ta.className = 'iswizard__field-edit-textarea';
+            ta.value = current;
+            valueEl.replaceWith(ta);
+            const actions = wrap.querySelector('.iswizard__field-actions');
+            if (actions) {
+                actions.innerHTML = `
+                    <button class="iswizard__btn" type="button" data-action="cancel-edit">Отменить</button>
+                    <button class="iswizard__btn iswizard__btn--primary" type="button" data-action="save-edit">Сохранить</button>
+                `;
+                actions.querySelector('[data-action="cancel-edit"]').addEventListener('click', () => render());
+                actions.querySelector('[data-action="save-edit"]').addEventListener('click', () => {
+                    const newText = (ta.value || '').trim();
+                    if (!newText) {
+                        // Не позволяем сохранить пустое значение — откат к предыдущему.
+                        render();
+                        return;
+                    }
+                    field.single_value = { ...field.single_value, text: newText };
+                    render();
+                });
+            }
+        }
+
+        function _enterListItemEditMode(itemEl, field, idx) {
+            if (!itemEl) return;
+            const items = field.list_value.items;
+            const item = items[idx];
+            if (!item) return;
+            const current = item.text || '';
+            const ta = document.createElement('textarea');
+            ta.className = 'iswizard__field-edit-textarea';
+            ta.value = current;
+
+            const actions = itemEl.querySelector('.iswizard__list-item-actions');
+            const textEl = itemEl.querySelector('[data-list-text]');
+            const metaEl = itemEl.querySelector('.iswizard__list-item-meta');
+
+            if (textEl) textEl.replaceWith(ta);
+
+            if (actions) {
+                actions.innerHTML = `
+                    <button class="iswizard__btn" type="button" data-action="cancel-list-edit">Отменить</button>
+                    <button class="iswizard__btn iswizard__btn--primary" type="button" data-action="save-list-edit">Сохранить</button>
+                `;
+                actions.querySelector('[data-action="cancel-list-edit"]').addEventListener('click', () => render());
+                actions.querySelector('[data-action="save-list-edit"]').addEventListener('click', () => {
+                    const newText = (ta.value || '').trim();
+                    if (!newText) {
+                        render();
+                        return;
+                    }
+                    items[idx] = { ...item, text: newText };
+                    render();
+                });
+            }
+            // meta-блок (источники) временно скрываем во время редактирования,
+            // чтобы не мешал textarea. Восстановится при cancel/save (render()).
+            if (metaEl) metaEl.style.display = 'none';
         }
 
         function _renderResult() {
@@ -666,6 +873,14 @@
                 if (ctx.step === 1) return start();
                 return render();
             }
+        }
+
+        function _plural(n) {
+            const mod10 = n % 10;
+            const mod100 = n % 100;
+            if (mod10 === 1 && mod100 !== 11) return '';
+            if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return 'а';
+            return 'ов';
         }
 
         return { start, render };

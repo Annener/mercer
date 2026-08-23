@@ -909,12 +909,18 @@ class ChatAPI {
         return this.getVaults(domainId);
     }
 
-    async getSettingsDocuments({ vaultId = null, domainId = null, status = null, tagId = null } = {}) {
+    async getSettingsDocuments({ vaultId = null, domainId = null, status = null, tagId = null, tagIds = null } = {}) {
         const params = new URLSearchParams();
         if (vaultId)  params.set('vault_id',  vaultId);
         if (domainId) params.set('domain_id', domainId);
         if (status)   params.set('status',    status);
-        if (tagId)    params.set('tag_id',    tagId);
+        if (tagIds && Array.isArray(tagIds) && tagIds.length) {
+            for (const tid of tagIds) {
+                if (tid) params.append('tag_id', String(tid));
+            }
+        } else if (tagId) {
+            params.set('tag_id', tagId);
+        }
         const qs = params.toString() ? `?${params}` : '';
         const response = await fetch(`${this.baseUrl}/api/settings/documents${qs}`);
         if (!response.ok) throw new Error(`Failed to get documents: ${response.statusText}`);

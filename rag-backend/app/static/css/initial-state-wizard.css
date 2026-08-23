@@ -335,10 +335,32 @@
     border-radius: 0 4px 4px 0;
 }
 
+.iswizard__list-items {
+    margin-top: 4px;
+}
+
+.iswizard__list-item-text {
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
 .iswizard__list-item-meta {
     font-size: 11.5px;
     color: #6b7d8f;
     margin-top: 2px;
+}
+
+.iswizard__list-item-actions {
+    display: flex;
+    gap: 4px;
+    margin-top: 6px;
+    justify-content: flex-end;
+}
+
+.iswizard__list-item-actions .iswizard__btn {
+    padding: 3px 8px;
+    font-size: 13px;
+    line-height: 1.2;
 }
 
 .iswizard__field-actions {
@@ -393,6 +415,20 @@
 }
 
 .iswizard__error-text { flex: 1; }
+
+.iswizard__error .iswizard__btn[data-action="dismiss-error"] {
+    flex-shrink: 0;
+    padding: 2px 8px;
+    font-size: 16px;
+    line-height: 1;
+    color: #922b21;
+    background: transparent;
+    border: 1px solid #f5b7b1;
+}
+.iswizard__error .iswizard__btn[data-action="dismiss-error"]:hover {
+    background: #f5b7b1;
+    color: #641e16;
+}
 
 /* ---- Step 3: result ---- */
 .iswizard__result {

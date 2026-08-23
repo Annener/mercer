@@ -677,13 +677,20 @@ class CampaignStateInitialService:
                 f"proposal expired at {payload.expires_at.isoformat()}"
             )
 
+        # Мерджим client-side overrides поверх proposal из Redis (по field_key).
+        # source_snapshot не затрагивается — снапшот md5 проверяется дальше.
+        effective_proposal = _merge_proposal_overrides(
+            base=payload.proposal,
+            overrides=request.proposal_overrides,
+        )
+
         # Делегируем в value-сервис. Он сам бросит ConfigVersionConflictError,
         # InitialAlreadyAppliedError или SourceSnapshotStaleError.
         try:
             version_read = await campaign_state_value_service.apply_initial(
                 db=db,
                 campaign_id=campaign_id,
-                proposal=payload.proposal,
+                proposal=effective_proposal,
                 source_snapshot=payload.source_snapshot,
                 config_version=request.config_version,
                 created_by=current_user,
@@ -699,6 +706,68 @@ class CampaignStateInitialService:
 
 # Module-level singleton
 campaign_state_initial_service = CampaignStateInitialService()
+
+
+# ---------------------------------------------------------------------------
+# Internal helper: merge client-side overrides into stored proposal
+# ---------------------------------------------------------------------------
+
+
+def _merge_proposal_overrides(
+    base: CampaignStateInitialProposal,
+    overrides: CampaignStateInitialProposal | None,
+) -> CampaignStateInitialProposal:
+    """Мерджит proposal_overrides поверх base по field_key.
+
+    - Если overrides is None — возвращает base (fast path).
+    - Для каждого поля из overrides.field_key, присутствующего в base.fields,
+      заменяет соответствующее поле в base. Неизвестные field_key игнорируются
+      (не пробрасываются в результат).
+    - Прочие поля (questions, fields, source_snapshot) остаются от base.
+    """
+    if overrides is None:
+        return base
+
+    base_fields_by_key = {f.field_key: f for f in base.fields}
+    merged_fields = []
+    for base_field in base.fields:
+        override_field = next(
+            (f for f in overrides.fields if f.field_key == base_field.field_key),
+            None,
+        )
+        if override_field is None:
+            merged_fields.append(base_field)
+            continue
+
+        # Заменяем только изменяемые атрибуты. mode/status приходят всегда,
+        # но оставляем защиту: если override_field.mode/status валидны — берём их.
+        merged_fields.append(
+            base_field.model_copy(
+                update={
+                    "mode": override_field.mode,
+                    "status": override_field.status,
+                    "single_value": override_field.single_value
+                        if override_field.single_value is not None
+                        else base_field.single_value,
+                    "list_value": override_field.list_value
+                        if override_field.list_value is not None
+                        else base_field.list_value,
+                }
+            )
+        )
+
+    # Тихий лог о том, были ли отброшены override-поля.
+    override_keys = {f.field_key for f in overrides.fields}
+    base_keys = set(base_fields_by_key.keys())
+    dropped = override_keys - base_keys
+    if dropped:
+        logger.info(
+            "apply_initial: dropped %d unknown override field(s): %s",
+            len(dropped),
+            sorted(dropped),
+        )
+
+    return base.model_copy(update={"fields": merged_fields})
 
 
 # ---------------------------------------------------------------------------

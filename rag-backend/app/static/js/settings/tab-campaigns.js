@@ -279,7 +279,12 @@ const CampaignsTabMixin = {
                 el.onclick = async () => {
                     const tid = el.dataset.removeCtag;
                     if (!confirm('Удалить тег?')) return;
-                    try { await this.api.deleteTag(tid); localCampTags = localCampTags.filter(t => String(t.id) !== tid); refreshTagsList(); }
+                    try {
+                        await this.api.deleteTag(tid);
+                        localCampTags = localCampTags.filter(t => String(t.id) !== tid);
+                        refreshTagsList();
+                        if (initialStateSection) initialStateSection.refresh(campaignId);
+                    }
                     catch (e) { alert(e.message); }
                 };
             });
@@ -320,6 +325,7 @@ const CampaignsTabMixin = {
                             }
                         }
                         refreshGlobalTagsList();
+                        if (initialStateSection) initialStateSection.refresh(campaignId);
                     } catch (e) { alert(e.message); }
                 };
             });
@@ -335,6 +341,7 @@ const CampaignsTabMixin = {
                 e.target.querySelector(`option[value="${tid}"]`)?.remove();
                 e.target.value = '';
                 refreshGlobalTagsList();
+                if (initialStateSection) initialStateSection.refresh(campaignId);
             } catch (err) { alert(err.message); }
         });
 
@@ -350,6 +357,7 @@ const CampaignsTabMixin = {
                     localCampTags.push(tag);
                     overlay.querySelector('#new-tag-name').value = '';
                     refreshTagsList();
+                    if (initialStateSection) initialStateSection.refresh(campaignId);
                 } catch (e) { alert(e.message); }
             });
 

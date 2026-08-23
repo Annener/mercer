@@ -537,3 +537,130 @@ def test_build_initial_state_rows_skips_disabled_fields():
     values_rows, items_rows = _build_initial_state_rows(proposal, fields_by_key, vid)
     assert values_rows == []
     assert items_rows == []
+
+
+# ---------------------------------------------------------------------------
+# _merge_proposal_overrides — клиентские правки поверх proposal из Redis
+# ---------------------------------------------------------------------------
+
+
+def _make_proposal_with_two_fields() -> CampaignStateInitialProposal:
+    """Базовый proposal: single + list поля."""
+    return CampaignStateInitialProposal(
+        fields=[
+            CampaignStateInitialProposalField(
+                field_key="focus",
+                mode="single",
+                status=CampaignStateInitialFieldStatus(status="proposed"),
+                single_value=CampaignStateInitialSingleValue(text="старый текст"),
+            ),
+            CampaignStateInitialProposalField(
+                field_key="open",
+                mode="list",
+                status=CampaignStateInitialFieldStatus(status="proposed"),
+                list_value=CampaignStateInitialListValue(
+                    items=[
+                        CampaignStateInitialListItem(text="item1"),
+                        CampaignStateInitialListItem(text="item2"),
+                    ]
+                ),
+            ),
+        ]
+    )
+
+
+def test_merge_proposal_overrides_none_returns_base():
+    from app.services.campaign_state_initial_service import _merge_proposal_overrides
+
+    base = _make_proposal_with_two_fields()
+    merged = _merge_proposal_overrides(base, None)
+    assert merged is base
+
+
+def test_merge_proposal_overrides_replaces_single_value():
+    from app.services.campaign_state_initial_service import _merge_proposal_overrides
+
+    base = _make_proposal_with_two_fields()
+    overrides = CampaignStateInitialProposal(
+        fields=[
+            CampaignStateInitialProposalField(
+                field_key="focus",
+                mode="single",
+                status=CampaignStateInitialFieldStatus(status="proposed"),
+                single_value=CampaignStateInitialSingleValue(text="новый текст"),
+            )
+        ]
+    )
+    merged = _merge_proposal_overrides(base, overrides)
+    focus = next(f for f in merged.fields if f.field_key == "focus")
+    assert focus.single_value.text == "новый текст"
+    # Другое поле остаётся неизменным.
+    open_field = next(f for f in merged.fields if f.field_key == "open")
+    assert open_field.list_value.items[0].text == "item1"
+    assert open_field.list_value.items[1].text == "item2"
+
+
+def test_merge_proposal_overrides_replaces_list_items():
+    from app.services.campaign_state_initial_service import _merge_proposal_overrides
+
+    base = _make_proposal_with_two_fields()
+    overrides = CampaignStateInitialProposal(
+        fields=[
+            CampaignStateInitialProposalField(
+                field_key="open",
+                mode="list",
+                status=CampaignStateInitialFieldStatus(status="proposed"),
+                list_value=CampaignStateInitialListValue(
+                    items=[
+                        CampaignStateInitialListItem(text="item1"),
+                        CampaignStateInitialListItem(text="edited"),
+                        CampaignStateInitialListItem(text="added"),
+                    ]
+                ),
+            )
+        ]
+    )
+    merged = _merge_proposal_overrides(base, overrides)
+    open_field = next(f for f in merged.fields if f.field_key == "open")
+    texts = [it.text for it in open_field.list_value.items]
+    assert texts == ["item1", "edited", "added"]
+
+
+def test_merge_proposal_overrides_ignores_unknown_field_keys():
+    from app.services.campaign_state_initial_service import _merge_proposal_overrides
+
+    base = _make_proposal_with_two_fields()
+    overrides = CampaignStateInitialProposal(
+        fields=[
+            CampaignStateInitialProposalField(
+                field_key="nonexistent",
+                mode="single",
+                status=CampaignStateInitialFieldStatus(status="proposed"),
+                single_value=CampaignStateInitialSingleValue(text="evil"),
+            )
+        ]
+    )
+    merged = _merge_proposal_overrides(base, overrides)
+    # Поле "nonexistent" не должно появиться в merged.fields.
+    keys = [f.field_key for f in merged.fields]
+    assert "nonexistent" not in keys
+    assert keys == ["focus", "open"]
+
+
+def test_merge_proposal_overrides_preserves_field_order():
+    from app.services.campaign_state_initial_service import _merge_proposal_overrides
+
+    base = _make_proposal_with_two_fields()
+    overrides = CampaignStateInitialProposal(
+        fields=[
+            CampaignStateInitialProposalField(
+                field_key="open",
+                mode="list",
+                status=CampaignStateInitialFieldStatus(status="proposed"),
+                list_value=CampaignStateInitialListValue(items=[]),
+            )
+        ]
+    )
+    merged = _merge_proposal_overrides(base, overrides)
+    # Порядок полей берётся из base, не из overrides.
+    assert [f.field_key for f in merged.fields] == ["focus", "open"]

@@ -201,12 +201,21 @@ POST   /api/settings/vaults/{vault_id}/toggle                   — bind/unbound
 Префикс `/documents` (внутри settings).
 
 ```
-GET    /api/settings/documents
+GET    /api/settings/documents?domain_id=...&status=...&tag_id=...&tag_id=...
 GET    /api/settings/documents/{document_id}
 PUT    /api/settings/documents/{document_id}/labels             — полная замена тегов документа
 POST   /api/settings/documents/labels/batch                     — batch-замена тегов
 DELETE /api/settings/documents/{document_id}
 ```
+
+Query-параметры `GET /documents`:
+- `domain_id` или `vault_id` (обязателен один из двух).
+- `status` — фильтр по статусу (`indexed`, etc.).
+- `tag_id` — одиночный UUID тега (используется `tab-documents.js`, backward-compat).
+- `tag_id` (повторяющийся) — список UUID тегов, OR-логика. Используется
+  Initial State Wizard для фильтрации документов кампании по всем её тегам
+  (своим + подключённым глобальным). При наличии списка — одиночный `tag_id`
+  игнорируется.
 
 > Раньше `reindex` объявлялся здесь; фактически он находится в `db_management.py` (см. ниже).
 
@@ -297,7 +306,13 @@ POST   /api/settings/campaigns/{campaign_id}/state/initial/apply
 
 - `POST .../state/initial/preview` принимает `{document_ids: string[]}` (1..50, только Markdown-индекс-документы кампании). Возвращает `CampaignStateInitialProposalRead` с `proposal_id`, `source_snapshot`, `proposal.fields`, `warnings`. Proposal сохраняется в Redis с TTL 3 часа.
 - `GET .../state/initial` возвращает текущий proposal или `null`.
-- `POST .../state/initial/apply` принимает `{proposal_id, config_version}`. Создаёт первую `CampaignStateVersion` (`source_kind="initial"`, `state_version=1`, `base_state_version=null`). Возвращает `CampaignStateVersionRead`.
+- `POST .../state/initial/apply` принимает `{proposal_id, config_version, proposal_overrides?}`.
+  Создаёт первую `CampaignStateVersion` (`source_kind="initial"`, `state_version=1`, `base_state_version=null`). Возвращает `CampaignStateVersionRead`.
+  - `proposal_overrides: CampaignStateInitialProposal` — необязательное поле.
+    Позволяет клиенту (Initial State Wizard) отредактировать текст `single_value`
+    и/или `list_value.items` перед apply. Бэкенд мерджит overrides поверх
+    proposal из Redis по `field_key`; неизвестные `field_key` тихо игнорируются.
+    `source_snapshot` остаётся от proposal из Redis (для проверки md5).
 
 Коды ошибок preview: `404 campaign_not_found`, `422 no_markdown_documents / document_not_markdown / document_not_indexed`, `503 generation_provider_unavailable / invalid_generation_output`.
 
