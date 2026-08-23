@@ -205,10 +205,22 @@ CampaignUpdate:           name?, description?, system_prompt?
 ChatRecord(ORMModel):
   id, title,
   vault_id (deprecated back-compat), domain_id, campaign_id, locked_pipeline_id,
-  full_document_mode_enabled, sent_full_document_ids, created_at, updated_at
+  full_document_mode_enabled, sent_full_document_ids,
+  metadata (dict, JSONB — validation_alias="metadata_json"),     # 0011: inline scene-state
+  context_update_mode (bool, default False),                     # 0011: master switch для propose_context_update tool
+  created_at, updated_at
+
+# 0011: Chat.metadata — JSONB колонка в БД названа `metadata`, в ORM атрибут — `metadata_json`
+# (алиас через Pydantic validation_alias), чтобы избежать конфликта с `Base.metadata`.
+# В коде используется `chat.metadata_json` напрямую или через property.
+# Структура: {"scene_state": {<произвольный dict>}}
+
+# 0011: Chat.context_update_mode — флаг, при True agent loop регистрирует
+# PROPOSE_CONTEXT_UPDATE_TOOL. Управляется через UpdateChatRequest (PATCH /api/chats/{id}).
 
 CreateChatRequest:    domain_id?, vault_id? (deprecated), campaign_id?
 CreateChatResponse:   chat_id, title
+UpdateChatRequest:    campaign_id?, full_document_mode_enabled?, context_update_mode?  # 0011
 SendMessageRequest:   content, stream=True
 ClarificationResponse:  message_id, role="assistant", content, clarification_id?, stage?
 ClarificationAnswer:    clarification_id, answers: dict[str, str]
@@ -394,12 +406,14 @@ UpdateModeSessionResponse: chat_id, campaign_id, domain_id, vault_ids, expires_a
 UpdateModeReviewRequest:
   accepted_change_ids=[], rejected_change_ids=[],
   state_patch_decisions?: UpdateModeStatePatchDecisions
+  field_change_decisions?: UpdateModeStateFieldChangeDecisions      # 0011 (Sprint 3)
   # model_validator: нет пересечений accepted/rejected;
-  #                  не пустой (хотя бы одно поле)
+  #                  не пустой (хотя бы одно поле — file, state или field)
 
 ApplyUpdateModeRequest:    apply_id?
 ApplyUpdateModeResponse:   apply_id, results,
-                           state_patch_result?: UpdateModeStatePatchApplyResult
+                           state_patch_result?: UpdateModeStatePatchApplyResult,
+                           field_changes_result?: UpdateModeStateFieldChangeApplyResult  # 0011 (Sprint 3)
 
 CancelUpdateModeResponse:  status="cancelled"
 
@@ -409,6 +423,7 @@ UpdateModeSession (Redis contract):     # ключ update_mode:{chat_id}, TTL 3h
   created_at, expires_at,
   apply_id?, apply_started_at?, apply_state ("review"|"in_progress"|"completed"),
   state_field_snapshot=[], state_patch_operations=[],
+  state_field_change_operations=[UpdateModeStateFieldChangeEntry],    # 0011 (Sprint 3)
   apply_result?
 ```
 
@@ -602,7 +617,7 @@ CampaignStateStaleStatus:      # вычисляется на лету, не пе
 
 ---
 
-## LLM tool-call contracts (Stage 8: conditional / cyclic RAG)
+## LLM tool-call contracts (Stage 8: conditional / cyclic RAG + Sprint 1/3)
 
 ```python
 LLMToolCallFunction:   name, arguments    # raw JSON от модели
@@ -629,6 +644,78 @@ SearchKnowledgeResult:   queries_used, hits, scope, evidence_tokens, note?
 AgentLoopResult:         # финал agent loop
   content, rounds=[AgentRoundResult],
   tool_calls_made=0, policy=ASSISTIVE
+```
+
+### Tool definitions (Sprint 1 + Sprint 3)
+
+`AgentLoop` регистрирует 2-3 tool definitions. Все три — `LLMToolDefinition(type="function", function=LLMToolDefinitionFunction(...))`.
+
+| Tool | Когда активен | Параметры |
+|---|---|---|
+| `search_knowledge` (Stage 8.4) | всегда | `queries: list[str] ≥1`, `reason: str` |
+| `update_scene_state` (Sprint 1) | всегда | `patch: dict`, `reason: str` |
+| `propose_context_update` (Sprint 3) | только если `chat.context_update_mode=True` | `field_changes: list[ContextFieldChange]?`, `state_patch: list[CampaignStatePatchOperation]?`, `file_changes: list[UpdateModeIntent]?`, `confidence: float ∈ [0,1]` (обязателен), `reason: str` (обязателен), `source_message_ids: list[str]?`, `review_summary: str?` |
+
+### Sprint 3 — Model-proposed context updates (новые DTO)
+
+```python
+ContextFieldChangeOperation(str, Enum):    CREATE_FIELD | UPDATE_FIELD
+# delete_field намеренно отсутствует в Sprint 3 (пользователь удаляет руками через UI).
+
+ContextFieldChange:        # одна schema-операция в proposal
+  operation: ContextFieldChangeOperation,
+  key: str                            # regex ^[a-z][a-z0-9_]*$, ≤64 chars
+  label: str                          # 1..256 chars
+  description: str = ""               # ≤8KB
+  mode: CampaignStateFieldMode
+  enabled: bool = True
+  display_order: int = 1000           # по умолчанию новые поля в конце
+
+ContextUpdateProposal:      # трёхсекционный proposal (model-driven)
+  field_changes: list[ContextFieldChange] = []
+  state_patch: list[CampaignStatePatchOperation] = []
+  file_changes: list[UpdateModeIntent] = []
+  confidence: float ∈ [0,1]
+  reason: str
+  source_message_ids: list[str] = []
+  review_summary: str = ""
+  # Cross-section: state_patch может ссылаться на field_key,
+  # который создаётся в field_changes этого же proposal.
+  # На стороне executor это валидируется через
+  # _filter_state_patch_by_pending_field_changes.
+
+# Минимальный confidence для принятия proposal: 0.5 (константа
+# PROPOSAL_MIN_CONFIDENCE в agent_loop.py). Ниже — proposal отбрасывается
+# host-side без UI review.
+```
+
+### Sprint 3 — Update Mode schema-change DTO
+
+```python
+UpdateModeStateFieldChangeEntry:     # per-op entry в session.state_field_change_operations
+  op_index: int ≥0
+  operation: ContextFieldChangeOperation
+  key: str
+  proposed_label, proposed_description, proposed_mode, proposed_enabled,
+  proposed_display_order: ... | None
+  previous_label, previous_description, previous_enabled,
+  previous_display_order: ... | None
+  edited_label, edited_description, edited_display_order: ... | None
+  status: "pending" | "accepted" | "rejected"
+
+UpdateModeStateFieldChangeDecisions:    # /review request body
+  accepted_op_indexes: list[int] = []
+  rejected_op_indexes: list[int] = []
+  # Inline-edit НЕ поддерживается для schema в Sprint 3 (label/description
+  # change можно отредактировать через UI перед apply).
+
+UpdateModeStateFieldChangeApplyResult:    # /apply response (Stage A)
+  applied_op_indexes: list[int] = []
+  failed_op_indexes: list[int] = []
+  failed_reasons: dict[str, str] = {}
+  new_config_version: int = 0
+  # had_failures: True если любая операция упала — apply отменяет
+  # (audit log: update_mode.apply_aborted_schema, HTTP 422).
 ```
 
 ---
@@ -664,6 +751,15 @@ WSTaskCompleteMessage:       type="task_complete", task_id, files_total, files_i
 AuditLogRead(ORMModel):   id, action, entity_type?, entity_id?,
                          actor?, payload (JSONB)?, created_at
 # actor + payload добавлены в миграции 0006_audit_log_actor_payload
+
+# Известные `action` значения:
+# - "chat.agent_loop"           — каждый tool-loop turn (Sprint 8.4)
+# - "update_mode.apply"         — успешный apply (с file/state_patch результатами)
+# - "update_mode.apply_schema"  — Sprint 3: schema-операции (Stage A) применены
+# - "update_mode.apply_aborted_schema"  # Sprint 3: schema fail → apply отменён
+# - "update_mode.reject_state_patch"    — отдельно логируются отклонённые state ops
+# - "campaign_state_field_cascade_purged" — Stage 1: каскадная очистка при удалении поля
+# - "campaign_state_patch_applied"       — Stage 2: применение state_patch
 ```
 
 ---

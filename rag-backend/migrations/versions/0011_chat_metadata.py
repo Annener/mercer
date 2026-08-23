@@ -8,7 +8,7 @@
   tool and may emit proposal cards for user review. Defaults to False to
   preserve existing behaviour.
 
-Revision ID: 0011_chat_scene_state_and_context_update_mode
+Revision ID: 0011_chat_metadata
 Revises: 0010_message_sources
 Create Date: 2026-08-23
 """
@@ -17,7 +17,7 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0011_chat_scene_state_and_context_update_mode"
+revision = "0011_chat_metadata"
 down_revision = "0010_message_sources"
 branch_labels = None
 depends_on = None

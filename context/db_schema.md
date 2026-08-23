@@ -17,6 +17,9 @@
 | `0007_campaign_state_field_config` | `0006_audit_log_actor_payload` | Таблица `campaign_state_field_configs` (Stage 1) + триггер `updated_at` |
 | `0008_campaign_state_versions` | `0007_campaign_state_field_config` | `Campaign.config_version`; таблицы `campaign_state_versions`, `campaign_state_values`, `campaign_state_list_items` (Stage 2) |
 | `0009_retrieval_tool_settings` | `0008_campaign_state_versions` | Сид `platform_settings.retrieval.*` — пять ключей для agent loop (Stage 8.2) |
+| `0010_message_sources` | `0009_retrieval_tool_settings` | `Message.sources` (JSONB) — persistent source citations для assistant messages |
+| `0011_chat_metadata` | `0010_message_sources` | `Chat.metadata` (JSONB) — inline scene-state; `Chat.context_update_mode` (BOOL) — флаг model-proposed context updates |
+| `0012_grounded_knobs` | `0011_chat_metadata` | Bump `retrieval.top_k` (10 → 20) и `retrieval.evidence_token_budget` (4000 → 6000) для grounded agent-assistant |
 
 > Имя файла миграции и `revision` могут расходиться (например, `0004_fix_sent_full_document_ids_jsonb.py` использует revision `0004_fulldoc_jsonb_fix`). Источник истины — `revision = "..."` внутри файла.
 
@@ -103,7 +106,8 @@ Chat (1) ──► (N) PipelineDecision
 | `retrieval.policy` | retrieval | str | 0009 |
 | `retrieval.max_rounds_chat` | retrieval | int | 0009 |
 | `retrieval.max_rounds_assistive` | retrieval | int | 0009 |
-| `retrieval.evidence_token_budget` | retrieval | int | 0009 |
+| `retrieval.evidence_token_budget` | retrieval | int | 0009 (bumped 4000 → 6000 в 0012 для grounded agent-assistant) |
+| `retrieval.top_k` | retrieval | int | 0001 (bumped 10 → 20 в 0012 для grounded agent-assistant) |
 
 > `retrieval.policy` хранится как строка `"grounded" | "assistive"` и преобразуется в `RetrievalPolicy` enum в `app/services/retrieval_tool_settings.py`.
 
@@ -237,6 +241,8 @@ Chat (1) ──► (N) PipelineDecision
   - структура: `{pipeline_id, pipeline_name, reasoning, confirm_token, query, expires_at}`
 - `full_document_mode_enabled` (Bool, default false) — 0003
 - `sent_full_document_ids` (JSONB list, default `[]`) — 0003 (тип JSONB закреплён 0004)
+- `metadata` (JSONB, default `{}`) — 0011. Inline scene-state память чата, мутируется через `update_scene_state` tool. Структура: `{"scene_state": {...}}`. Доступ через `chat.metadata_json` в ORM (алиас для колонки `metadata`).
+- `context_update_mode` (Bool, default false) — 0011. Master switch для `propose_context_update` tool. Когда true, agent loop может генерировать proposal-ы на обновление Campaign State / vault files, которые пользователь подтверждает в UI.
 - `created_at`, `updated_at`
 
 ### `messages`

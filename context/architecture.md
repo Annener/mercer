@@ -55,6 +55,11 @@ Mercer — мультидоменная RAG-платформа для работ
 - **Campaign Update Mode**: orchestrирует retrieval → LLM edit intents + state_patch → review session; управляет через `api/update_mode.py`
 - **Campaign State**: CRUD полей через `api/settings/campaigns.py`, apply patch, Initial State flow, debug effective-context endpoint
 - **Conditional RAG в чате**: tool-call path в `plain_stream` через `AgentLoop.run_stream` + `SearchKnowledgeService`
+- **Agent-assistant mode** (Sprint 1-3):
+  - **Inline scene-state** — `update_scene_state` tool пишет в `chat.metadata` (JSONB) и сцена рендерится в system_prompt через `compose_scene_block`.
+  - **Prefill RAG** (Sprint 2) — при `policy==grounded` и наличии кампании один retrieval выполняется ДО AgentLoop и evidence инжектится прямо в system_prompt. Дополнительно — cross-language query expansion (EN→RU) через `QueryRewriter.build_search_queries`.
+  - **Tool_choice=required** (Sprint 1) — при grounded + round 0 модель обязана вызвать хотя бы один tool.
+  - **Propose context update** (Sprint 3) — `propose_context_update` tool (опционален, включается флагом `chat.context_update_mode`) создаёт Update Mode session через `UpdateModeExecutor.start_from_proposal` для последующего review пользователем.
 
 ### rag-indexer
 - **Роль**: асинхронный воркер индексации документов; единственный filesystem/git writer
@@ -99,7 +104,7 @@ Mercer — мультидоменная RAG-платформа для работ
 - Хранит: домены, вольты, документы, чаты, сообщения, пайплайны, модели, audit log,
   конфигурацию полей Campaign State, версии state, audit-trail patch operations
 - Миграции: **Alembic** (`rag-backend/migrations/`), запускаются при старте через `run_migrations()` в `rag-backend/app/db/migrations.py`
-- Текущий head миграций: `0009_retrieval_tool_settings`
+- Текущий head миграций: `0012_grounded_knobs` (Sprint 2)
 - Полная схема и список миграций: `context/db_schema.md`
 
 ### Redis
@@ -292,26 +297,44 @@ Campaign State — компактное версионируемое состо�
 ```
 chat turn
     │
-    ├─ provider.generate_stream_with_tools(tool_choice='auto')
-    │     ↓ tool_calls = [{name=search_knowledge, args={queries,reason}}, ...]
-    ├─ SearchKnowledgeService.search(...)
-    │     ├─ dedupe queries
-    │     ├─ resolve scope (campaign > domain > empty > no_vault)
-    │     ├─ retrieve_multi_vault(...) × N queries in parallel
-    │     ├─ rerank + truncate to evidence_token_budget
-    │     └─ return SearchKnowledgeResult
-    ├─ host appends role=tool messages (tool_call_id → result)
+    ├─ Stage 1 (Sprint 2): Prefill RAG ── [policy==grounded && campaign_id]
+    │     ├─ query_rewriter.build_search_queries(orig) → [orig, ru_translate?]
+    │     ├─ retrieve_multi_vault(q, scope=campaign_tags) × N queries
+    │     ├─ merge + dedup by chunk_id, rerank, truncate to evidence_token_budget
+    │     └─ format_context(hits) в system_prompt (до AgentLoop)
     │
-    ├─ next round (< max_rounds): tool_choice='auto'
-    │     или final round: tool_choice='none' → text answer
-    │
-    └─ AuditLog chat.agent_loop (rounds, tool_calls_made, policy)
+    ├─ AgentLoop.run_stream(...)  (Stage 2: tool cycle)
+    │     ├─ round 0:
+    │     │   └─ tool_choice:
+    │     │       ├─ grounded, round 0 → 'required' (Sprint 1: модель ОБЯЗАНА вызвать tool)
+    │     │       ├─ final round → 'none'
+    │     │       └─ otherwise → 'auto'
+    │     ├─ provider.generate_stream_with_tools(...)
+    │     │     ↓ tool_calls = [
+    │     │         {name=search_knowledge, args={queries,reason}},
+    │     │         {name=update_scene_state, args={patch,reason}},
+    │     │         {name=propose_context_update, args={...}}  // Sprint 3, opt-in
+    │     │       ]
+    │     ├─ host dispatches each tool:
+    │     │   ├─ search_knowledge  → SearchKnowledgeService
+    │     │   ├─ update_scene_state → patch merge в chat.metadata['scene_state']
+    │     │   └─ propose_context_update → UpdateModeExecutor.start_from_proposal()
+    │     │       (создаёт Update Mode session в Redis, пользователь review-ит через UI)
+    │     ├─ host appends role=tool messages (tool_call_id → result)
+    │     │
+    │     ├─ next round (< max_rounds): tool_choice='auto' (или 'required' если grounded и !final)
+    │     │     или final round: tool_choice='none' → text answer
+    │     │
+    │     └─ AuditLog chat.agent_loop (rounds, tool_calls_made, policy)
 ```
 
 ### Поведение
 
-- Обычный чат-турн НЕ запускает retrieval автоматически. Модель решает сама, нужно ли
-  вызвать `search_knowledge`.
+- **Prefill RAG (Sprint 2)**: при `policy==grounded` и наличии кампании один retrieval выполняется ДО AgentLoop и evidence инжектится прямо в `system_prompt`. Модель видит контекст сразу, без необходимости вызывать `search_knowledge`. Cross-language query expansion (EN→RU) выполняется через `QueryRewriter.build_search_queries`.
+- **tool_choice=required (Sprint 1)**: при `policy==grounded` и `round_idx==0` модель **обязана** вызвать хотя бы один tool. На финальном раунде — `tool_choice='none'` (модель пишет текст).
+- **Inline scene-state (Sprint 1)**: `update_scene_state` tool мерджит patch в `chat.metadata['scene_state']`. Память между turn-ами, без review.
+- **Propose context update (Sprint 3)**: включается только если `Chat.context_update_mode=True` (PATCH `/api/chats/{id}`). Модель вызывает `propose_context_update` tool → host создаёт Update Mode session через `UpdateModeExecutor.start_from_proposal()` → пользователь видит карточку с 3 секциями (schema / state / files) и принимает/отклоняет через UI.
+- Обычный чат-турн НЕ запускает retrieval автоматически (кроме prefill). Модель решает сама, нужно ли вызвать `search_knowledge` поверх.
 - Scope фиксируется хостом: модель не может расширить или сузить его.
 - Если `campaign_id` задан и у кампании ноль тегов → `scope='empty'` (НЕ fallback на домен).
 - Если нет enabled-vault → `scope='no_vault'`.
@@ -322,8 +345,8 @@ chat turn
 
 | Policy | Семантика |
 |---|---|
-| `grounded` (default) | Модель обязана искать evidence для кампанийских фактов/лора/именованных сущностей/истории |
-| `assistive` | Модель сама решает, нужен ли поиск |
+| `grounded` (default) | Модель обязана искать evidence для кампанийских фактов/лора/именованных сущностей/истории. Prefill RAG + tool_choice=required в round 0. |
+| `assistive` | Модель сама решает, нужен ли поиск. Prefill не выполняется. |
 
 Round cap per turn:
 
@@ -332,19 +355,68 @@ Round cap per turn:
 | `grounded` | `retrieval.max_rounds_chat` (default 2) |
 | `assistive` | `retrieval.max_rounds_assistive` (default 1) |
 
-Token budget evidence per round: `retrieval.evidence_token_budget` (default 4000).
+Token budget evidence per round: `retrieval.evidence_token_budget` (default **6000** в 0012).
+Top-K per query: `retrieval.top_k` (default **20** в 0012).
 
 ### Дедупликация и bounded latency
 
 - Одинаковый нормализованный query → пустой tool_result с `note='duplicate_query'` (модель увидит dead-end).
 - Если `max_rounds==0` — единственный финальный вызов без tool.
 - Если хиты не меняются между раундами — host может прервать loop раньше (early-exit логика в `AgentLoop`).
+- При prefill: queries с одинаковой нормализованной формой дедуплицируются; чанки, пришедшие из обоих запросов, оставляем с наивысшим score.
 
 ### Observability
 
 На каждом чат-турне с tool-циклом пишется `AuditLog action='chat.agent_loop'` с `payload`:
 `rounds` (per-round `queries`, `tool_name`, `hits_count`, `evidence_tokens`, `scope`),
 `tool_calls_made`, `policy`.
+
+Дополнительные диагностические логи:
+- `RETRIEVE_STAGES` (Sprint 2) — per-call `vector_hits`, `text_hits`, `vector_top_cosine` (до RRF-merge). Помогает диагностировать кросс-языковые случаи: при EN→RU `text_hits=0` (BM25 не находит пересечения).
+- `RERANK_HITS done: ... rerank_top_score=...` (Sprint 2) — score реранкера; низкий → вероятно нет релевантного материала.
+- `prefill_rag` SSE event — `queries_used` и `has_evidence`, чтобы UI мог показать пользователю, что evidence был найден / не найден.
+
+## Agent tools (Sprint 1 + Sprint 3)
+
+`AgentLoop` регистрирует до трёх tool definitions одновременно. Каждый tool исполняется host-side; модель **не может** расширить scope (для `search_knowledge`) или выполнить запись напрямую — только через явный вызов.
+
+| Tool | Sprint | Always-on? | Назначение |
+|---|---|---|---|
+| `search_knowledge(queries, reason)` | Stage 8.4 | Да | Гибридный поиск по RAG-базе. Host контролирует scope (campaign > domain > empty > no_vault) и evidence budget. |
+| `update_scene_state(patch, reason)` | Sprint 1 | Да | Inline-память активной сцены. Patch мерджится в `chat.metadata['scene_state']`. Без review, без audit. Только `chat_id` обязателен. |
+| `propose_context_update(field_changes?, state_patch?, file_changes?, confidence, reason, source_message_ids?, review_summary?)` | Sprint 3 | Только если `Chat.context_update_mode=True` | Создаёт Update Mode session через `UpdateModeExecutor.start_from_proposal()`. Минимальный confidence: 0.5. Пользователь подтверждает через UI. |
+
+### Когда какой tool активен
+
+- `search_knowledge` + `update_scene_state`: всегда (в agent-loop пути `plain_stream`).
+- `propose_context_update`: только при `chat.context_update_mode == True` AND `campaign_id is not None` AND `redis is not None`.
+
+### Inline scene-state (Sprint 1)
+
+- Хранится в `chats.metadata` (JSONB) под ключом `scene_state`.
+- Рендерится в `system_prompt` через `compose_scene_block(scene_state)`.
+- Host выполняет merge в `db` через `_execute_update_scene_state` (host-controlled).
+- Лимит: 4KB JSON в prompt (если больше — обрезается с WARNING-меткой).
+
+### Prefill RAG (Sprint 2)
+
+- В `plain_stream` перед AgentLoop выполняется `_prefill_rag()` если `policy == grounded` и `campaign_id` есть.
+- Скоупит retrieval по campaign tags, dedup по `chunk_id`, реранкит, обрезает по `evidence_token_budget`.
+- Cross-language: `QueryRewriter.build_search_queries` добавляет RU-вариант запроса если оригинал не на кириллице.
+- Результат: блок `format_context(hits)` подмешивается в `system_prompt` ДО `_TOOL_USE_RULES`.
+- Модель получает `[1] ... [2] ...` префиксы по `document_id` (не глобально).
+
+### Model-proposed context updates (Sprint 3)
+
+- Включается флагом `Chat.context_update_mode` (PATCH `/api/chats/{id}`).
+- Модель вызывает `propose_context_update` tool с одной или несколькими секциями:
+  - `field_changes` — create_field / update_field (Sprint 3, schema-операции)
+  - `state_patch` — replace_single / add_list_item / ... (Stage 5, value-операции)
+  - `file_changes` — EditIntent для `.md` файлов (Sprint 3)
+- Host валидирует (regex key, snapshot, mode immutability) и создаёт Update Mode session в Redis.
+- Пользователь видит карточку с 3 секциями и принимает/отклоняет.
+- Apply: атомарно, в порядке schema → state → files. Если schema fail — откат всего.
+- Подробности: `context/campaign-update-mode.md` (Sprint 3 раздел).
 
 ## Campaign Update Mode — краткое описание
 

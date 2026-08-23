@@ -12,7 +12,7 @@ with the OLD values, so re-running it on a fresh DB (which uses the
 DEFAULTS in settings_service) is a no-op.
 
 Revision ID: 0012_grounded_knobs
-Revises: 0011_chat_scene_state_and_context_update_mode
+Revises: 0011_chat_metadata
 Create Date: 2026-08-23
 """
 from __future__ import annotations
@@ -21,7 +21,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "0012_grounded_knobs"
-down_revision = "0011_chat_scene_state_and_context_update_mode"
+down_revision = "0011_chat_metadata"
 branch_labels = None
 depends_on = None
 
