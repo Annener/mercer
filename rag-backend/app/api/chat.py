@@ -91,12 +91,15 @@ class UpdateChatRequest(BaseModel):
     """
     Частичное обновление метаданных существующего чата (partial PATCH semantics).
 
-    Оба поля опциональны и обновляются независимо друг от друга:
+    Все поля опциональны и обновляются независимо друг от друга:
     - campaign_id: передать строку UUID для установки кампании, null — для сброса.
       Поле обновляется ТОЛЬКО если явно присутствует в теле запроса (model_fields_set).
       Если поле не передано — campaign_id чата не изменяется.
     - full_document_mode_enabled: true/false для управления Full Document Mode.
       Если поле не передано — флаг чата не изменяется.
+    - context_update_mode: true/false для управления model-proposed context
+      updates (Sprint 1 agent-assistant). Если поле не передано — флаг
+      не изменяется.
 
     Примеры:
       { "full_document_mode_enabled": true }              — только тоглер, campaign_id не трогается
@@ -107,6 +110,7 @@ class UpdateChatRequest(BaseModel):
 
     campaign_id: str | None = None
     full_document_mode_enabled: bool | None = None
+    context_update_mode: bool | None = None
 
 
 class RenameChatRequest(BaseModel):
@@ -311,6 +315,14 @@ async def update_chat(
         logger.info(
             "full_document_mode_enabled=%s for chat_id=%s",
             req.full_document_mode_enabled,
+            chat_id,
+        )
+
+    if req.context_update_mode is not None:
+        chat.context_update_mode = req.context_update_mode
+        logger.info(
+            "context_update_mode=%s for chat_id=%s",
+            req.context_update_mode,
             chat_id,
         )
 
@@ -781,7 +793,8 @@ async def send_message_stream(
         )
 
         system_prompt = await _compose_full_system_prompt(
-            context.campaign_id, domain_id, db
+            context.campaign_id, domain_id, db,
+            scene_state=_chat.metadata_json.get("scene_state"),
         )
 
         # Stage 8.5: load retrieval tool settings and decide whether the
@@ -791,6 +804,39 @@ async def send_message_stream(
 
         tool_settings = await load_retrieval_tool_settings(db)
         use_tool = tool_settings.tool_enabled and bool(_provider)
+
+        # ── 2b. Prefill RAG (Sprint 2) ──────────────────────────────────────────
+        # When policy==GROUNDED and we have a campaign, run a single retrieval
+        # up-front and inject the evidence into system_prompt. The model
+        # therefore starts the turn with concrete campaign context already
+        # visible, instead of having to call search_knowledge manually.
+        if (
+            tool_settings.policy.value == "grounded"
+            and context.campaign_id
+            and vault_ids
+        ):
+            yield _step("Загружаю базу знаний для контекста…")
+            prefill_queries, rag_block = await _prefill_rag(
+                original_query=context.original_query or req.content,
+                vault_ids=vault_ids,
+                domain_id=domain_id,
+                campaign_id=context.campaign_id,
+                db=db,
+                provider=_provider,
+            )
+            if rag_block:
+                system_prompt = (
+                    f"{system_prompt}\n\n{rag_block}"
+                    if system_prompt
+                    else rag_block
+                )
+                hits_count = rag_block.count("\n\n[") + (1 if rag_block.strip() else 0)
+                yield _step(
+                    f"Найдено фрагментов в базе знаний: {hits_count}"
+                )
+            else:
+                yield _step("В базе знаний по запросу ничего не найдено")
+            yield f"data: {json.dumps({'type': 'prefill_rag', 'queries_used': prefill_queries, 'has_evidence': bool(rag_block)}, ensure_ascii=False)}\n\n"
 
         if use_tool:
             # ── 3-tool. Conditional/cyclic RAG via AgentLoop ────────────────
@@ -809,6 +855,9 @@ async def send_message_stream(
             # Stage 8.6: append the tool-use rules (§12.1) to the system
             # prompt. The legacy path keeps the bare system_prompt.
             tool_system_prompt = append_tool_use_rules(system_prompt)
+            # Redis is needed if model-proposed context updates are enabled
+            # (so we can persist the proposal as an Update Mode session).
+            _redis = request.app.state.redis if _chat.context_update_mode else None
             try:
                 async for event in loop.run_stream(
                     provider=_provider,
@@ -817,11 +866,14 @@ async def send_message_stream(
                     user_message=context.original_query or req.content,
                     domain_id=domain_id,
                     campaign_id=context.campaign_id,
+                    chat_id=_chat.id and str(_chat.id),
                     vault_ids=vault_ids,
                     max_rounds=tool_settings.max_rounds,
                     evidence_token_budget=tool_settings.evidence_token_budget,
                     policy=tool_settings.policy,
                     db=db,
+                    context_update_mode_enabled=bool(_chat.context_update_mode),
+                    redis=_redis,
                 ):
                     if event.type == "round_start":
                         yield _step(
@@ -829,15 +881,68 @@ async def send_message_stream(
                             f"({event.payload.get('policy', 'assistive')})"
                         )
                     elif event.type == "tool_call":
+                        tool_name = event.payload.get("tool")
                         queries = event.payload.get("queries") or []
+                        patch = event.payload.get("patch") or {}
                         reason = event.payload.get("reason") or ""
-                        yield _step(
-                            "Ищу в базе знаний: "
-                            + ", ".join(queries[:3])
-                            + ("…" if len(queries) > 3 else "")
-                        )
-                        yield f"data: {json.dumps({'type': 'tool_call', 'round': event.round, 'tool': event.payload.get('tool'), 'queries': queries, 'reason': reason}, ensure_ascii=False)}\n\n"
+                        if tool_name == "update_scene_state":
+                            applied_summary = ", ".join(
+                                f"{k}={v!r}" for k, v in list(patch.items())[:3]
+                            )
+                            yield _step(
+                                "Обновляю контекст сцены: "
+                                + (applied_summary or "(пусто)")
+                            )
+                            yield f"data: {json.dumps({'type': 'tool_call', 'round': event.round, 'tool': tool_name, 'patch': patch, 'reason': reason}, ensure_ascii=False)}\n\n"
+                        elif tool_name == "propose_context_update":
+                            field_changes_count = event.payload.get("field_changes_count", 0)
+                            state_patch_count = event.payload.get("state_patch_count", 0)
+                            file_changes_count = event.payload.get("file_changes_count", 0)
+                            confidence = event.payload.get("confidence", 0.0)
+                            yield _step(
+                                f"Предлагаю обновление контекста: "
+                                f"поля={field_changes_count} значения={state_patch_count} "
+                                f"файлы={file_changes_count} (conf={confidence:.0%})"
+                            )
+                            yield f"data: {json.dumps({'type': 'tool_call', 'round': event.round, 'tool': tool_name, 'field_changes_count': field_changes_count, 'state_patch_count': state_patch_count, 'file_changes_count': file_changes_count, 'confidence': confidence, 'reason': reason}, ensure_ascii=False)}\n\n"
+                        else:
+                            yield _step(
+                                "Ищу в базе знаний: "
+                                + ", ".join(queries[:3])
+                                + ("…" if len(queries) > 3 else "")
+                            )
+                            yield f"data: {json.dumps({'type': 'tool_call', 'round': event.round, 'tool': tool_name, 'queries': queries, 'reason': reason}, ensure_ascii=False)}\n\n"
                     elif event.type == "tool_result":
+                        tool_name = event.payload.get("tool")
+                        if tool_name == "update_scene_state":
+                            status = event.payload.get("status", "ok")
+                            applied = event.payload.get("applied_keys") or []
+                            removed = event.payload.get("removed_keys") or []
+                            note = event.payload.get("note")
+                            yield _step(
+                                f"Контекст сцены: {status}; "
+                                f"применено={len(applied)} удалено={len(removed)}"
+                            )
+                            yield f"data: {json.dumps({'type': 'tool_result', 'round': event.round, 'tool': tool_name, 'status': status, 'applied_keys': applied, 'removed_keys': removed, 'note': note}, ensure_ascii=False)}\n\n"
+                            continue
+                        if tool_name == "propose_context_update":
+                            status = event.payload.get("status", "ok")
+                            session_id = event.payload.get("session_id")
+                            field_changes_count = event.payload.get("field_changes_count", 0)
+                            state_patch_count = event.payload.get("state_patch_count", 0)
+                            file_changes_count = event.payload.get("file_changes_count", 0)
+                            note = event.payload.get("note")
+                            yield _step(
+                                f"Предложение: {status} — "
+                                f"поля={field_changes_count} значения={state_patch_count} "
+                                f"файлы={file_changes_count}"
+                            )
+                            yield f"data: {json.dumps({'type': 'tool_result', 'round': event.round, 'tool': tool_name, 'status': status, 'session_id': session_id, 'field_changes_count': field_changes_count, 'state_patch_count': state_patch_count, 'file_changes_count': file_changes_count, 'note': note}, ensure_ascii=False)}\n\n"
+                            # Sprint 3: dedicated event so the UI can pop a
+                            # review card when the proposal is created.
+                            if status == "ok" and session_id:
+                                yield f"data: {json.dumps({'type': 'context_update_proposal', 'session_id': session_id, 'field_changes_count': field_changes_count, 'state_patch_count': state_patch_count, 'file_changes_count': file_changes_count, 'note': note}, ensure_ascii=False)}\n\n"
+                            continue
                         hits_count = event.payload.get("hits_count", 0)
                         scope = event.payload.get("scope", "domain")
                         note = event.payload.get("note")
@@ -1123,8 +1228,116 @@ async def _compose_full_system_prompt(
     campaign_id: str | None,
     domain_id: str | None,
     db: AsyncSession,
+    scene_state: dict[str, Any] | None = None,
 ) -> str:
-    return await compose_full_system_prompt(campaign_id, domain_id, db)
+    return await compose_full_system_prompt(
+        campaign_id, domain_id, db, scene_state=scene_state
+    )
+
+
+async def _prefill_rag(
+    *,
+    original_query: str,
+    vault_ids: list[str],
+    domain_id: str | None,
+    campaign_id: str | None,
+    db: AsyncSession,
+    provider: Any | None = None,
+) -> tuple[list[str], str]:
+    """Sprint 2: prefill retrieval for grounded mode.
+
+    Returns `(queries_used, rag_block_or_empty)`. When the campaign has tags
+    we scope the search to the campaign's allowed documents; otherwise we
+    search the full domain. We dedupe hits by `chunk_id` and clip to the
+    `retrieval.evidence_token_budget` budget.
+
+    Never raises — if anything goes wrong, we return ([], "") so the
+    chat turn can continue with a bare system_prompt.
+    """
+    if not vault_ids or not domain_id or not original_query.strip():
+        return [], ""
+
+    # Build queries (original + RU translation if needed).
+    from app.services.query_rewriter import query_rewriter as _qr
+    prefill_queries = await _qr.build_search_queries(
+        original_query, provider=provider
+    )
+    if not prefill_queries:
+        return [], ""
+
+    # Read knobs with safe defaults (6000/20) if platform_settings missing.
+    try:
+        prefill_top_k = int(
+            await settings_service.get("retrieval.top_k", db)
+        )
+    except Exception:
+        prefill_top_k = 20
+    try:
+        prefill_budget = int(
+            await settings_service.get("retrieval.evidence_token_budget", db)
+        )
+    except Exception:
+        prefill_budget = 6000
+
+    # Scope to campaign tags.
+    doc_ids: list[str] | None = None
+    if campaign_id:
+        try:
+            allowed = await get_allowed_tag_ids(domain_id, campaign_id, db)
+            if allowed:
+                doc_ids = await get_document_ids_by_tags(
+                    list(allowed), domain_id, db
+                )
+                if not doc_ids:
+                    doc_ids = None  # fallback: full domain
+        except Exception:
+            logger.exception("prefill_rag: failed to resolve campaign tag scope")
+            doc_ids = None
+
+    # Per-query retrieval + dedup.
+    try:
+        per_query_hits: list[SearchHit] = []
+        for q in prefill_queries:
+            hits = await retrieve_multi_vault(
+                q,
+                vault_ids,
+                document_ids=doc_ids,
+                top_k=prefill_top_k,
+                strategy="hybrid",
+                config=None,
+                db=db,
+                skip_rerank=True,
+            )
+            per_query_hits.extend(hits)
+        dedup: dict[str, SearchHit] = {}
+        for h in per_query_hits:
+            if h.chunk_id not in dedup or h.score > dedup[h.chunk_id].score:
+                dedup[h.chunk_id] = h
+        merged = sorted(
+            dedup.values(), key=lambda x: x.score, reverse=True
+        )[:prefill_top_k]
+    except Exception:
+        logger.exception("prefill_rag: retrieval failed, continuing without prefill")
+        return prefill_queries, ""
+
+    if not merged:
+        return prefill_queries, ""
+
+    # Truncate to evidence_token_budget.
+    from app.services.campaign_state_compiler import default_token_counter
+    kept: list[SearchHit] = []
+    running = 0
+    for h in merged:
+        cost = default_token_counter(h.text)
+        if running + cost > prefill_budget and kept:
+            break
+        kept.append(h)
+        running += cost
+
+    if not kept:
+        return prefill_queries, ""
+
+    return prefill_queries, format_context(kept)
 
 
 async def _fallback_retrieve(

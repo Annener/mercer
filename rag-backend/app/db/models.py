@@ -581,6 +581,24 @@ class Chat(Base):
     sent_full_document_ids: Mapped[list[Any]] = mapped_column(
         _JSON, nullable=False, default=list, server_default="[]"
     )
+    # --- inline scene-state memory (agent-assistant mode) ---
+    # Arbitrary JSON managed by the agent loop via the `update_scene_state` tool.
+    # Default `{}` so reads of missing keys are safe.
+    # NOTE: ORM attribute is `metadata_json` because `metadata` is reserved on
+    # the DeclarativeBase class. The DB column is still named `metadata`.
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(
+        "metadata",
+        _JSON,
+        nullable=False,
+        default=dict,
+        server_default="{}",
+    )
+    # --- model-proposed context updates (master switch) ---
+    # When True, the agent loop may emit `propose_context_update` tool calls
+    # that surface proposal cards in the UI for user review.
+    context_update_mode: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

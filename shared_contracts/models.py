@@ -12,7 +12,7 @@ _log = _logging.getLogger(__name__)
 
 
 class ORMModel(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
     @model_validator(mode="before")
     @classmethod
@@ -22,6 +22,10 @@ class ORMModel(BaseModel):
         ВАЖНО: намеренно пропускаем list-поля (релатионшипы типа tags, chats и т.п.).
         getattr на lazy SQLAlchemy relationship в async-контексте вызывает MissingGreenlet.
         List-поля заполняются явно снаружи (в роуте или хелпере) — не через from_attributes.
+
+        Поддерживает Pydantic `validation_alias`: если у поля есть alias
+        (например, ChatRecord.metadata с alias='metadata_json'), сначала
+        пробуем `getattr(data, alias, MISSING)`, потом fallback на Pydantic-имя.
         """
         if not hasattr(data, "__dict__") and not hasattr(data, "__mapper__"):
             return data
@@ -31,13 +35,25 @@ class ORMModel(BaseModel):
             origin = getattr(annotation, "__origin__", None)
             if origin is list:
                 continue
-            val = getattr(data, field_name, None)
+            alias = getattr(field_info, "validation_alias", None)
+            candidates: list[str] = []
+            if isinstance(alias, str):
+                candidates.append(alias)
+            candidates.append(field_name)
+            val: Any = None
+            found = False
+            for name in candidates:
+                v = getattr(data, name, None)
+                if v is not None:
+                    val = v
+                    found = True
+                    break
             if isinstance(val, _uuid.UUID):
                 result[field_name] = str(val)
-            elif val is not None:
+            elif found:
                 result[field_name] = val
             else:
-                result[field_name] = val
+                result[field_name] = None
         return result
 
 
@@ -1161,6 +1177,16 @@ class ChatRecord(ORMModel):
     )
     full_document_mode_enabled: bool = False
     sent_full_document_ids: list[str] = Field(default_factory=list)
+    # --- agent-assistant (Sprint 1) ---
+    # `metadata_json` is the SQLAlchemy attribute name (avoids `Base.metadata`
+    # clash). Wire `validation_alias` so `from_attributes=True` still picks up
+    # the column correctly. `populate_by_name` keeps dict-style construction
+    # flexible for tests.
+    metadata: dict[str, Any] = Field(
+        default_factory=dict,
+        validation_alias="metadata_json",
+    )
+    context_update_mode: bool = False
     created_at: datetime
     updated_at: datetime
 
@@ -2090,6 +2116,10 @@ class UpdateModeReviewRequest(BaseModel):
     # Stage 5: optional state-patch decisions. None для back-compat со старыми клиентами.
     state_patch_decisions: UpdateModeStatePatchDecisions | None = None
 
+    # Sprint 3: optional schema-change decisions. None если в proposal-е
+    # нет field_change_operations или клиент ещё на старой версии API.
+    field_change_decisions: UpdateModeStateFieldChangeDecisions | None = None
+
     @model_validator(mode="after")
     def _validate_no_overlap(self) -> UpdateModeReviewRequest:
         accepted = set(self.accepted_change_ids)
@@ -2099,10 +2129,15 @@ class UpdateModeReviewRequest(BaseModel):
             raise ValueError(
                 f"change_ids cannot be both accepted and rejected: {overlap}"
             )
-        if not accepted and not rejected and self.state_patch_decisions is None:
+        if (
+            not accepted
+            and not rejected
+            and self.state_patch_decisions is None
+            and self.field_change_decisions is None
+        ):
             raise ValueError(
                 "review request must contain at least one accepted or rejected change_id, "
-                "or a non-empty state_patch_decisions"
+                "a non-empty state_patch_decisions, or field_change_decisions"
             )
         return self
 
@@ -2117,6 +2152,9 @@ class ApplyUpdateModeResponse(BaseModel):
     # Stage 5: state patch apply result. None если нет state field snapshot
     # или все state-patch ops отклонены.
     state_patch_result: UpdateModeStatePatchApplyResult | None = None
+    # Sprint 3: schema-change apply result. None если нет schema операций
+    # или все field_change ops отклонены.
+    field_changes_result: UpdateModeStateFieldChangeApplyResult | None = None
 
 
 class CancelUpdateModeResponse(BaseModel):
@@ -2246,4 +2284,159 @@ class UpdateModeSession(BaseModel):
     state_patch_operations: list[UpdateModeStatePatchEntry] = Field(
         default_factory=list
     )
-    apply_result: UpdateModeApplyResponse | None = None
+    # Sprint 3: schema-level changes (create_field / update_field). Same
+    # review + apply flow as state-patch but operates on the field config
+    # (CampaignStateFieldConfig), not on field values.
+    state_field_change_operations: list["UpdateModeStateFieldChangeEntry"] = Field(
+        default_factory=list
+    )
+
+
+# ---------------------------------------------------------------------------
+# Sprint 3 — Model-proposed context updates
+# ---------------------------------------------------------------------------
+
+
+class ContextFieldChangeOperation(str, Enum):
+    """Тип schema-операции, которую модель предлагает в proposal-е."""
+
+    CREATE_FIELD = "create_field"
+    UPDATE_FIELD = "update_field"
+    # delete_field is intentionally absent in Sprint 3 (per spec).
+    # The user can delete fields manually via the existing settings UI.
+
+
+class ContextFieldChange(BaseModel):
+    """Одна schema-операция Campaign State, сгенерированная моделью.
+
+    Идемпотентно сериализуется в JSON для `propose_context_update` tool.
+    `display_order` опционален (default = 1000, чтобы новые поля
+    появлялись в конце).
+    """
+
+    operation: ContextFieldChangeOperation
+    key: str = Field(
+        min_length=1,
+        max_length=64,
+        pattern=r"^[a-z][a-z0-9_]*$",
+        description=(
+            "Stable technical identifier. Lowercase + digits + underscore, "
+            "starts with a letter. Immutable after creation."
+        ),
+    )
+    label: str = Field(min_length=1, max_length=256)
+    description: str = Field(default="", max_length=8 * 1024)
+    mode: CampaignStateFieldMode
+    enabled: bool = True
+    display_order: int = Field(default=1000, ge=0)
+
+
+class ContextUpdateProposal(BaseModel):
+    """Предложение модели на атомарное обновление контекста кампании.
+
+    Состоит из трёх независимых секций:
+    - field_changes: schema-операции (create_field / update_field)
+    - state_patch: операции над значениями (replace_single, add_list_item, …)
+    - file_changes: операции над .md файлами в vault (EditIntent)
+
+    Все три секции — часть ОДНОГО proposal-а. Apply идёт в строгом порядке:
+    schema → state_patch → file_changes, и любая ошибка в schema отменяет всё.
+
+    `source_message_ids` — список ID сообщений пользователя, на основе
+    которых модель сформировала proposal. Используется для audit trail.
+    """
+
+    field_changes: list[ContextFieldChange] = Field(default_factory=list)
+    state_patch: list["CampaignStatePatchOperation"] = Field(default_factory=list)
+    file_changes: list["UpdateModeIntent"] = Field(default_factory=list)
+
+    confidence: float = Field(ge=0.0, le=1.0, default=0.5)
+    reason: str = Field(default="", max_length=1024)
+    source_message_ids: list[str] = Field(default_factory=list)
+    review_summary: str = Field(default="", max_length=1024)
+
+    @model_validator(mode="after")
+    def _validate_non_empty_section_alignment(self) -> ContextUpdateProposal:
+        """Cross-section sanity: если есть state_patch с field_key, на который
+        ссылается field_changes с create_field — это OK, иначе валидация
+        на стороне apply. Здесь только лёгкие sanity-проверки."""
+        # Проверяем что key в create_field не конфликтует сам с собой
+        # (несколько create_field с одним key).
+        seen_create_keys: set[str] = set()
+        for fc in self.field_changes:
+            if fc.operation == ContextFieldChangeOperation.CREATE_FIELD:
+                if fc.key in seen_create_keys:
+                    raise ValueError(
+                        f"duplicate create_field for key={fc.key!r}"
+                    )
+                seen_create_keys.add(fc.key)
+        return self
+
+
+class UpdateModeStateFieldChangeEntry(BaseModel):
+    """Снимок schema-операции в proposal-е Update Mode.
+
+    Аналог UpdateModeStatePatchEntry, но для операций над конфигурацией
+    полей (create_field / update_field), а не над значениями.
+    """
+
+    op_index: int = Field(ge=0)
+    operation: ContextFieldChangeOperation
+    # For create_field: описание нового поля. For update_field: текущее
+    # значение label/description/enabled/display_order + новые.
+    key: str = Field(min_length=1, max_length=64)
+    proposed_label: str | None = None
+    proposed_description: str | None = None
+    proposed_mode: CampaignStateFieldMode | None = None
+    proposed_enabled: bool | None = None
+    proposed_display_order: int | None = None
+    previous_label: str | None = None
+    previous_description: str | None = None
+    previous_enabled: bool | None = None
+    previous_display_order: int | None = None
+    edited_label: str | None = None
+    edited_description: str | None = None
+    edited_display_order: int | None = None
+    status: Literal["pending", "accepted", "rejected"] = "pending"
+
+
+class UpdateModeStateFieldChangeDecisions(BaseModel):
+    """Решения пользователя по schema-операциям в PATCH /review.
+
+    Аналог UpdateModeStatePatchDecisions, но без text-edits (для schema
+    изменения label/description не нужен inline-edit, достаточно решения
+    accept/reject).
+    """
+
+    accepted_op_indexes: list[int] = Field(default_factory=list)
+    rejected_op_indexes: list[int] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_no_overlap(self) -> UpdateModeStateFieldChangeDecisions:
+        accepted = set(self.accepted_op_indexes)
+        rejected = set(self.rejected_op_indexes)
+        overlap = accepted & rejected
+        if overlap:
+            raise ValueError(
+                f"field_change op_indexes cannot be both accepted and rejected: {sorted(overlap)}"
+            )
+        return self
+
+
+class UpdateModeStateFieldChangeApplyResult(BaseModel):
+    """Результат применения schema-операций внутри POST /apply.
+
+    Аналог UpdateModeStatePatchApplyResult для schema. Если любая
+    операция провалилась, флаг `had_failures=True` и весь apply
+    откатывается (config_version возвращается к pre-apply значению).
+    """
+
+    applied_op_indexes: list[int] = Field(default_factory=list)
+    failed_op_indexes: list[int] = Field(default_factory=list)
+    failed_reasons: dict[str, str] = Field(default_factory=dict)
+    new_config_version: int = 0
+
+
+# Resolve forward references for the model_validate() machinery.
+ContextUpdateProposal.model_rebuild()
+UpdateModeSession.model_rebuild()

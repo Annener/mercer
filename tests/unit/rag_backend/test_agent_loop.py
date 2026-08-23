@@ -426,3 +426,193 @@ def test_search_knowledge_tool_definition_is_valid_openai_function():
     assert SEARCH_KNOWLEDGE_TOOL.function.parameters["type"] == "object"
     assert "queries" in SEARCH_KNOWLEDGE_TOOL.function.parameters["properties"]
     assert "queries" in SEARCH_KNOWLEDGE_TOOL.function.parameters["required"]
+
+
+# ---------------------------------------------------------------------------
+# Sprint 1: tool_choice='required' when grounded + update_scene_state tool
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_grounded_round_0_sends_tool_choice_required():
+    """When policy==GROUNDED and we're on round 0, the provider must see
+    tool_choice='required' — the model is forced to call at least one tool
+    before it can produce a text answer (§12.1).
+
+    We capture the tool_choice passed on every call and assert on round 0.
+    """
+    received_tool_choices: list[Any] = []
+
+    class CapturingProvider:
+        async def generate_stream_with_tools(
+            self,
+            messages,
+            tools=None,
+            tool_choice=None,
+        ):
+            received_tool_choices.append(tool_choice)
+            yield _content_chunk("fallback answer")
+
+    loop = AgentLoop()
+    events = await _collect(loop.run_stream(
+        provider=CapturingProvider(),
+        **{**_BASE_KWARGS, "policy": RetrievalPolicy.GROUNDED, "max_rounds": 2},
+    ))
+
+    # First call: required. Second call (round 1 — still grounded but not round 0): auto.
+    assert received_tool_choices[0] is not None
+    assert getattr(received_tool_choices[0], "mode", received_tool_choices[0]) == "required"
+    # Second call should fall back to 'auto' (not final round yet).
+    assert len(received_tool_choices) >= 1
+
+
+@pytest.mark.asyncio
+async def test_assistive_round_0_sends_tool_choice_auto():
+    """When policy==ASSISTIVE, the provider sees tool_choice='auto' on round 0.
+    The model may or may not call a tool — that's the whole point of assistive.
+    """
+    received_tool_choices: list[Any] = []
+
+    class CapturingProvider:
+        async def generate_stream_with_tools(
+            self,
+            messages,
+            tools=None,
+            tool_choice=None,
+        ):
+            received_tool_choices.append(tool_choice)
+            yield _content_chunk("OK")
+
+    loop = AgentLoop()
+    await _collect(loop.run_stream(
+        provider=CapturingProvider(),
+        **{**_BASE_KWARGS, "policy": RetrievalPolicy.ASSISTIVE, "max_rounds": 2},
+    ))
+
+    assert received_tool_choices[0] is not None
+    assert getattr(received_tool_choices[0], "mode", received_tool_choices[0]) == "auto"
+
+
+def test_update_scene_state_tool_definition_is_valid_openai_function():
+    """The new tool definition must conform to the same OpenAI schema as
+    search_knowledge — `type: function`, `name`, `description`, `parameters`.
+    """
+    from app.services.agent_loop import UPDATE_SCENE_STATE_TOOL
+    assert UPDATE_SCENE_STATE_TOOL.type == "function"
+    assert UPDATE_SCENE_STATE_TOOL.function.name == "update_scene_state"
+    assert UPDATE_SCENE_STATE_TOOL.function.parameters["type"] == "object"
+    assert "patch" in UPDATE_SCENE_STATE_TOOL.function.parameters["properties"]
+    assert "patch" in UPDATE_SCENE_STATE_TOOL.function.parameters["required"]
+
+
+def test_extract_scene_state_patch_handles_non_dict_and_truncates():
+    """_extract_scene_state_patch must:
+      - tolerate missing / non-dict patch (treat as empty)
+      - truncate to _SCENE_STATE_PATCH_MAX_KEYS keys
+      - preserve null values (explicit delete marker)
+    """
+    from app.services.agent_loop import (
+        _extract_scene_state_patch,
+        _SCENE_STATE_PATCH_MAX_KEYS,
+    )
+    fake_call = type("C", (), {})()
+    fake_call.function = type("F", (), {})()
+    fake_call.function.arguments = json.dumps({})
+
+    patch, reason = _extract_scene_state_patch(fake_call)
+    assert patch == {}
+    assert reason == ""
+
+    # non-dict → empty
+    fake_call.function.arguments = json.dumps({"patch": "not a dict"})
+    patch, _ = _extract_scene_state_patch(fake_call)
+    assert patch == {}
+
+    # truncate
+    too_many = {f"k{i}": i for i in range(_SCENE_STATE_PATCH_MAX_KEYS + 5)}
+    fake_call.function.arguments = json.dumps({"patch": too_many, "reason": "x"})
+    patch, reason = _extract_scene_state_patch(fake_call)
+    assert len(patch) == _SCENE_STATE_PATCH_MAX_KEYS
+    assert reason == "x"
+
+    # null preserved
+    fake_call.function.arguments = json.dumps({"patch": {"a": None, "b": 1}})
+    patch, _ = _extract_scene_state_patch(fake_call)
+    assert patch == {"a": None, "b": 1}
+
+
+@pytest.mark.asyncio
+async def test_update_scene_state_tool_call_merges_into_chat_metadata():
+    """Round 0: model calls update_scene_state with a patch. Host merges
+    patch into Chat.metadata_json['scene_state'] and persists.
+    """
+    from app.db.models import Chat, Base
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    Session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+    async with Session() as db:
+        chat = Chat(title="t", domain_id="dnd", metadata_json={"scene_state": {"existing": "v"}})
+        db.add(chat)
+        await db.commit()
+        chat_id = str(chat.id)
+
+        provider = ScriptedProvider([
+            _tool_call_chunks(
+                "call_scene", "update_scene_state",
+                json.dumps({"patch": {"location": "cave", "existing": None}, "reason": "set"}),
+            ),
+            [_content_chunk("OK")],
+        ])
+
+        loop = AgentLoop()
+        events = await _collect(loop.run_stream(
+            provider=provider,
+            **{**_BASE_KWARGS, "chat_id": chat_id, "db": db, "max_rounds": 2},
+        ))
+
+        # Reload chat from DB and inspect metadata.
+        await db.refresh(chat)
+        scene = chat.metadata_json.get("scene_state", {})
+        assert scene.get("location") == "cave"
+        assert "existing" not in scene  # None → removed
+
+        types = [e.type for e in events]
+        assert "tool_call" in types
+        assert "tool_result" in types
+        tool_result = next(e for e in events if e.type == "tool_result")
+        assert tool_result.payload["tool"] == "update_scene_state"
+        assert tool_result.payload["status"] == "ok"
+        assert "location" in tool_result.payload["applied_keys"]
+        assert "existing" in tool_result.payload["removed_keys"]
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_update_scene_state_without_chat_id_returns_error():
+    """If chat_id is None, the host-side execution returns an error result
+    instead of crashing. The model sees the error in tool_result.
+    """
+    provider = ScriptedProvider([
+        _tool_call_chunks(
+            "call_scene", "update_scene_state",
+            json.dumps({"patch": {"location": "cave"}}),
+        ),
+        [_content_chunk("OK")],
+    ])
+    loop = AgentLoop()
+    events = await _collect(loop.run_stream(
+        provider=provider,
+        # chat_id is omitted on purpose.
+        **{k: v for k, v in _BASE_KWARGS.items() if k != "chat_id"},
+    ))
+    types = [e.type for e in events]
+    assert "tool_result" in types
+    tool_result = next(e for e in events if e.type == "tool_result")
+    assert tool_result.payload["tool"] == "update_scene_state"
+    assert tool_result.payload["status"] == "error"

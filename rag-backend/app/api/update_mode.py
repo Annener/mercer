@@ -36,6 +36,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Campaign
@@ -66,10 +67,12 @@ from app.services.update_mode_executor import (
 from app.services.update_mode_store import (
     ApplyConflictError,
     CannotAcceptFailedChangeError,
+    FieldChangeReviewConflictError,
     ReviewConflictError,
     SessionExpiredError,
     StateOpReviewConflictError,
     UnknownChangeIdError,
+    UnknownFieldChangeOpIndexError,
     UnknownStateOpIndexError,
     update_mode_store,
 )
@@ -90,6 +93,7 @@ from shared_contracts.models import (
     UpdateModeReviewRequest,
     UpdateModeSession,
     UpdateModeSessionResponse,
+    UpdateModeStateFieldChangeApplyResult,
     UpdateModeStatePatchApplyResult,
 )
 
@@ -411,6 +415,12 @@ async def review_changes(
             e.op_index: e.text for e in body.state_patch_decisions.edited
         }
 
+    accepted_field: set[int] = set()
+    rejected_field: set[int] = set()
+    if body.field_change_decisions is not None:
+        accepted_field = set(body.field_change_decisions.accepted_op_indexes)
+        rejected_field = set(body.field_change_decisions.rejected_op_indexes)
+
     try:
         session = await update_mode_store.update_review(
             redis,
@@ -420,6 +430,8 @@ async def review_changes(
             accepted_state_op_indexes=accepted_state,
             rejected_state_op_indexes=rejected_state,
             edited_state_ops=edited_state,
+            accepted_field_op_indexes=accepted_field,
+            rejected_field_op_indexes=rejected_field,
         )
     except SessionExpiredError as exc:
         raise HTTPException(status_code=410, detail=str(exc))
@@ -432,6 +444,10 @@ async def review_changes(
     except UnknownStateOpIndexError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     except StateOpReviewConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except UnknownFieldChangeOpIndexError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except FieldChangeReviewConflictError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
 
     return _session_to_response(session)
@@ -489,14 +505,62 @@ async def apply_changes(
     ]
     has_state_changes = bool(accepted_state_entries) or bool(rejected_state_entries)
 
-    if not has_file_changes and not has_state_changes:
+    # Sprint 3: schema-change decisions.
+    accepted_field_entries = [
+        e for e in session.state_field_change_operations if e.status == "accepted"
+    ]
+    rejected_field_entries = [
+        e for e in session.state_field_change_operations if e.status == "rejected"
+    ]
+    has_field_changes = bool(accepted_field_entries) or bool(rejected_field_entries)
+
+    if not has_file_changes and not has_state_changes and not has_field_changes:
         raise HTTPException(
             status_code=422,
             detail=(
                 "No accepted changes to apply. Use PATCH /review to accept "
-                "changes or state_patch_decisions first."
+                "changes, state_patch_decisions, or field_change_decisions first."
             ),
         )
+
+    # ----- Stage A: apply accepted schema (create_field / update_field) -----
+    # Schema must succeed BEFORE state_patch, because state_patch may
+    # reference fields that are being created in the same proposal.
+    # If schema fails, we abort the entire apply (no state_patch, no files).
+    field_changes_result: UpdateModeStateFieldChangeApplyResult | None = None
+    if accepted_field_entries:
+        field_changes_result = await _apply_schema_changes(
+            db=db,
+            campaign_id_str=session.campaign_id,
+            accepted_field_entries=accepted_field_entries,
+        )
+        if field_changes_result and field_changes_result.failed_op_indexes:
+            # Schema apply failed — abort.
+            await _write_audit_log(
+                db=db,
+                action="update_mode.apply_aborted_schema",
+                entity_type="campaign",
+                entity_id=session.campaign_id,
+                actor=f"chat:{chat_id}",
+                payload={
+                    "apply_id": session.apply_id or "",
+                    "failed_field_op_indexes": field_changes_result.failed_op_indexes,
+                    "failed_reasons": field_changes_result.failed_reasons,
+                    "rolled_back": True,
+                },
+            )
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "schema_apply_failed",
+                    "failed_op_indexes": field_changes_result.failed_op_indexes,
+                    "failed_reasons": field_changes_result.failed_reasons,
+                    "message": (
+                        "Schema changes failed; state and file apply aborted. "
+                        "Re-review and try again."
+                    ),
+                },
+            )
 
     apply_resp = None
     if file_batches:
@@ -555,6 +619,19 @@ async def apply_changes(
                 else None
             ),
         },
+        "field_changes": {
+            "accepted_op_indexes": [e.op_index for e in accepted_field_entries],
+            "rejected_op_indexes": [e.op_index for e in rejected_field_entries],
+            "applied_op_indexes": (
+                field_changes_result.applied_op_indexes if field_changes_result else []
+            ),
+            "failed_op_indexes": (
+                field_changes_result.failed_op_indexes if field_changes_result else []
+            ),
+            "new_config_version": (
+                field_changes_result.new_config_version if field_changes_result else 0
+            ),
+        },
     }
     if apply_resp is not None:
         audit_payload["vault_results"] = [
@@ -602,6 +679,7 @@ async def apply_changes(
         apply_id=(apply_resp.apply_id if apply_resp else (session.apply_id or "")),
         results=(apply_resp.results if apply_resp is not None else []),
         state_patch_result=state_patch_result,
+        field_changes_result=field_changes_result,
     )
 
 
@@ -685,6 +763,188 @@ async def _apply_state_patch(
         applied_op_indexes=applied_indexes,
         failed_op_indexes=[],
         failed_reasons={},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Sprint 3: _apply_schema_changes (Stage A of apply)
+# ---------------------------------------------------------------------------
+
+
+async def _apply_schema_changes(
+    *,
+    db: AsyncSession,
+    campaign_id_str: str,
+    accepted_field_entries: list,
+) -> UpdateModeStateFieldChangeApplyResult | None:
+    """Apply accepted schema operations (create_field / update_field).
+
+    Atomic: if ANY operation fails, all previously-applied schema changes
+    in this batch are rolled back. The host treats this as Stage A — if
+    we fail, the rest of the apply (state_patch + files) is aborted.
+
+    Returns an UpdateModeStateFieldChangeApplyResult. On full failure
+    (had_failures=True) the caller should raise 422 and NOT proceed to
+    state_patch / file apply.
+
+    Audit log: writes one `update_mode.apply_schema` entry summarising
+    applied + failed ops and the new config_version.
+    """
+    from sqlalchemy import insert
+    import uuid as _uuid
+
+    from app.db.models import (
+        AuditLog,
+        Campaign,
+        CampaignStateFieldConfig,
+    )
+    from app.services.campaign_state_service import (
+        CampaignStateFieldError,
+        campaign_state_field_service,
+    )
+    from shared_contracts.models import (
+        CampaignStateFieldConfigCreate,
+        CampaignStateFieldConfigUpdate,
+        ContextFieldChangeOperation,
+    )
+
+    if not accepted_field_entries:
+        return None
+
+    campaign_uuid = uuid.UUID(campaign_id_str)
+
+    # Apply in deterministic order: create_field first, then update_field.
+    # Within each group, original op_index order is preserved.
+    creates = [e for e in accepted_field_entries if e.operation == ContextFieldChangeOperation.CREATE_FIELD]
+    updates = [e for e in accepted_field_entries if e.operation == ContextFieldChangeOperation.UPDATE_FIELD]
+    ordered = creates + updates
+
+    applied_indexes: list[int] = []
+    failed_indexes: list[int] = []
+    failed_reasons: dict[str, str] = {}
+    # Track created fields for rollback on partial failure.
+    created_field_ids: list[str] = []
+    # Track field_id lookup for update_field rollback (in case a later
+    # update_field fails — we won't roll those back unless create_field
+    # after them also failed, since update_field doesn't add a new
+    # resource the rest of apply depends on).
+    pre_update_field_ids: dict[str, str] = {}  # op_index -> field_id
+
+    had_failure = False
+    for entry in ordered:
+        try:
+            if entry.operation == ContextFieldChangeOperation.CREATE_FIELD:
+                payload = CampaignStateFieldConfigCreate(
+                    key=entry.key,
+                    label=entry.proposed_label or entry.key,
+                    description=entry.proposed_description or "",
+                    mode=entry.proposed_mode or "single",  # type: ignore[arg-type]
+                    enabled=(
+                        entry.proposed_enabled
+                        if entry.proposed_enabled is not None
+                        else True
+                    ),
+                    display_order=(
+                        entry.proposed_display_order
+                        if entry.proposed_display_order is not None
+                        else 1000
+                    ),
+                )
+                created = await campaign_state_field_service.create_field(
+                    db, campaign_uuid, payload
+                )
+                created_field_ids.append(str(created.id))
+                applied_indexes.append(entry.op_index)
+            elif entry.operation == ContextFieldChangeOperation.UPDATE_FIELD:
+                # Look up field_id by key.
+                stmt = select(CampaignStateFieldConfig).where(
+                    CampaignStateFieldConfig.campaign_id == campaign_uuid,
+                    CampaignStateFieldConfig.key == entry.key,
+                )
+                row = (await db.execute(stmt)).scalar_one_or_none()
+                if row is None:
+                    raise CampaignStateFieldError(
+                        "field_not_found",
+                        f"field {entry.key!r} not found",
+                    )
+                pre_update_field_ids[str(entry.op_index)] = str(row.id)
+                # Build partial update payload.
+                update_kwargs: dict[str, Any] = {}
+                if entry.proposed_label is not None:
+                    update_kwargs["label"] = entry.proposed_label
+                if entry.proposed_description is not None:
+                    update_kwargs["description"] = entry.proposed_description
+                if entry.proposed_enabled is not None:
+                    update_kwargs["enabled"] = entry.proposed_enabled
+                if entry.proposed_display_order is not None:
+                    update_kwargs["display_order"] = entry.proposed_display_order
+                if not update_kwargs:
+                    # Nothing to update — record as applied (no-op).
+                    applied_indexes.append(entry.op_index)
+                else:
+                    payload = CampaignStateFieldConfigUpdate(**update_kwargs)
+                    await campaign_state_field_service.update_field(
+                        db, campaign_uuid, _uuid.UUID(str(row.id)), payload
+                    )
+                    applied_indexes.append(entry.op_index)
+        except CampaignStateFieldError as exc:
+            had_failure = True
+            failed_indexes.append(entry.op_index)
+            failed_reasons[str(entry.op_index)] = exc.code
+        except Exception as exc:  # noqa: BLE001
+            had_failure = True
+            failed_indexes.append(entry.op_index)
+            failed_reasons[str(entry.op_index)] = str(exc)
+
+    # If we created any fields and a later op failed, roll back the
+    # created fields. The host treats this as full failure.
+    if had_failure and created_field_ids:
+        for fid in created_field_ids:
+            try:
+                await campaign_state_field_service.delete_field(
+                    db, campaign_uuid, _uuid.UUID(fid)
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "update_mode _apply_schema_changes: rollback of created "
+                    "field %s failed: %s",
+                    fid,
+                    exc,
+                )
+
+    # Reload campaign to get final config_version (post any partial success).
+    final_campaign = await db.get(Campaign, campaign_uuid)
+    new_config_version = final_campaign.config_version if final_campaign else 0
+
+    # Audit log.
+    try:
+        db.add(
+            AuditLog(
+                action="update_mode.apply_schema",
+                entity_type="campaign",
+                entity_id=campaign_id_str,
+                actor="update_mode",
+                payload={
+                    "applied_op_indexes": applied_indexes,
+                    "failed_op_indexes": failed_indexes,
+                    "failed_reasons": failed_reasons,
+                    "new_config_version": new_config_version,
+                    "rolled_back": had_failure and bool(created_field_ids),
+                },
+            )
+        )
+        await db.commit()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "update_mode _apply_schema_changes: audit log write failed: %s",
+            exc,
+        )
+
+    return UpdateModeStateFieldChangeApplyResult(
+        applied_op_indexes=applied_indexes,
+        failed_op_indexes=failed_indexes,
+        failed_reasons=failed_reasons,
+        new_config_version=new_config_version,
     )
 
 

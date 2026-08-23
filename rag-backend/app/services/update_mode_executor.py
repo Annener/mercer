@@ -23,6 +23,7 @@ import asyncio
 import logging
 import math
 import os
+import re
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -699,6 +700,173 @@ def build_state_patch_entries(
     return entries
 
 
+# ---------------------------------------------------------------------------
+# Sprint 3: schema-change validation + entry builder
+# ---------------------------------------------------------------------------
+
+
+_FIELD_KEY_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+
+
+def _validate_field_changes(
+    field_changes: list,
+    state_field_snapshot: list[CampaignStateFieldSnapshot],
+    warnings: list[str],
+) -> list:
+    """Drop schema operations that violate invariants relative to the snapshot.
+
+    Allowed operations (Sprint 3):
+      - create_field: key must match regex, must not already exist in snapshot,
+        label/description/display_order in valid range.
+      - update_field: key must already exist in snapshot, mode is immutable
+        (we drop update_field ops that try to change mode).
+
+    Returns the cleaned list. Dropped ops append a warning.
+    """
+    from shared_contracts.models import (
+        ContextFieldChange,
+        ContextFieldChangeOperation,
+    )
+
+    if not field_changes:
+        return []
+
+    snapshot_by_key: dict[str, CampaignStateFieldSnapshot] = {
+        f.key: f for f in state_field_snapshot
+    }
+    cleaned: list[ContextFieldChange] = []
+    seen_create_keys: set[str] = set()
+
+    for fc in field_changes:
+        if not isinstance(fc, ContextFieldChange):
+            warnings.append(
+                f"field_change_dropped:not_a_context_field_change:{type(fc).__name__}"
+            )
+            continue
+
+        if not _FIELD_KEY_RE.match(fc.key):
+            warnings.append(
+                f"field_change_dropped:invalid_key:{fc.key!r}"
+            )
+            continue
+
+        if fc.operation == ContextFieldChangeOperation.CREATE_FIELD:
+            if fc.key in snapshot_by_key:
+                warnings.append(
+                    f"field_change_dropped:key_exists:{fc.key}"
+                )
+                continue
+            if fc.key in seen_create_keys:
+                warnings.append(
+                    f"field_change_dropped:duplicate_create:{fc.key}"
+                )
+                continue
+            seen_create_keys.add(fc.key)
+        elif fc.operation == ContextFieldChangeOperation.UPDATE_FIELD:
+            if fc.key not in snapshot_by_key:
+                warnings.append(
+                    f"field_change_dropped:key_not_found:{fc.key}"
+                )
+                continue
+            # mode is immutable per Stage 1 spec.
+            existing = snapshot_by_key[fc.key]
+            if fc.mode != existing.mode:
+                warnings.append(
+                    f"field_change_dropped:mode_immutable:{fc.key}:{fc.mode}:{existing.mode}"
+                )
+                continue
+        else:
+            warnings.append(
+                f"field_change_dropped:unknown_operation:{fc.operation}"
+            )
+            continue
+
+        cleaned.append(fc)
+
+    if len(cleaned) != len(field_changes):
+        logger.info(
+            "update_mode: field_changes filtered from %d to %d ops",
+            len(field_changes), len(cleaned),
+        )
+    return cleaned
+
+
+def build_field_change_entries(
+    validated_field_changes: list,
+    state_field_snapshot: list[CampaignStateFieldSnapshot],
+) -> list:
+    """Build UpdateModeStateFieldChangeEntry list for Redis session.
+
+    For each create_field: previous_label/description/enabled/display_order
+    are None (no previous state). For each update_field: previous values
+    are filled from the snapshot.
+    """
+    from shared_contracts.models import (
+        UpdateModeStateFieldChangeEntry,
+    )
+
+    snapshot_by_key: dict[str, CampaignStateFieldSnapshot] = {
+        f.key: f for f in state_field_snapshot
+    }
+    entries: list[UpdateModeStateFieldChangeEntry] = []
+    for idx, fc in enumerate(validated_field_changes):
+        existing = snapshot_by_key.get(fc.key)
+        entries.append(
+            UpdateModeStateFieldChangeEntry(
+                op_index=idx,
+                operation=fc.operation,
+                key=fc.key,
+                proposed_label=fc.label,
+                proposed_description=fc.description,
+                proposed_mode=fc.mode,
+                proposed_enabled=fc.enabled,
+                proposed_display_order=fc.display_order,
+                previous_label=existing.label if existing else None,
+                previous_description=existing.description if existing else None,
+                # NOTE: CampaignStateFieldSnapshot has no `enabled` column, so we
+                # don't surface previous_enabled here. UI shows current
+                # `proposed_enabled` only.
+                previous_enabled=None,
+                previous_display_order=existing.display_order if existing else None,
+                edited_label=None,
+                edited_description=None,
+                edited_display_order=None,
+                status="pending",
+            )
+        )
+    return entries
+
+
+# Cross-validate that state_patch ops reference fields that either exist in
+# the snapshot OR are being created in this same proposal. Ops that reference
+# an unknown key get dropped with a warning.
+def _filter_state_patch_by_pending_field_changes(
+    state_patch_ops,
+    state_field_snapshot: list[CampaignStateFieldSnapshot],
+    validated_field_changes: list,
+    warnings: list[str],
+):
+    from shared_contracts.models import ContextFieldChangeOperation
+
+    existing_keys = {f.key for f in state_field_snapshot}
+    pending_create_keys = {
+        fc.key
+        for fc in validated_field_changes
+        if fc.operation == ContextFieldChangeOperation.CREATE_FIELD
+    }
+    available = existing_keys | pending_create_keys
+
+    cleaned = []
+    for op in state_patch_ops:
+        if op.field_key in available:
+            cleaned.append(op)
+        else:
+            warnings.append(
+                f"state_patch_dropped:field_key_not_in_proposal:{op.field_key}"
+            )
+    return cleaned
+
+
 async def _load_state_field_snapshot(
     db: AsyncSession,
     campaign_id: uuid.UUID,
@@ -1244,3 +1412,238 @@ class UpdateModeExecutor:
                 session.chat_id, exc,
             )
             raise UpdateModeReviewStoreUnavailableError(str(exc)) from exc
+
+    # ------------------------------------------------------------------
+    # Sprint 3: start_from_proposal — model-driven entry point
+    # ------------------------------------------------------------------
+
+    async def start_from_proposal(
+        self,
+        chat_id: str,
+        redis: Any,
+        proposal,  # ContextUpdateProposal
+    ) -> UpdateModeSession:
+        """Run the same flow as `start()`, but skip LLM generation — the
+        proposal is already structured. Used by the `propose_context_update`
+        agent tool.
+
+        Steps:
+          1. Guard: existing session?
+          2. Load chat + campaign + domain invariant + tags + vaults
+          3. Resolve allowed doc_ids for context-relevance check (if any
+             file_changes are present, we run indexer resolve)
+          4. Load state_field_snapshot
+          5. Validate field_changes, state_patch, file_changes
+          6. Run indexer resolve (only if there are file_changes; otherwise
+             skip and leave changes=[])
+          7. Build UpdateModeSession and store in Redis
+        """
+        logger.info(
+            "update_mode start_from_proposal: BEGIN chat=%s "
+            "field_changes=%d state_patch=%d file_changes=%d",
+            chat_id,
+            len(proposal.field_changes),
+            len(proposal.state_patch),
+            len(proposal.file_changes),
+        )
+
+        # 1. Guard
+        existing = await self.store.get(redis, chat_id)
+        if existing is not None:
+            raise UpdateModeSessionAlreadyActiveError(chat_id)
+
+        # 2. Chat / campaign / domain invariant
+        try:
+            chat_uuid = uuid.UUID(chat_id)
+        except ValueError:
+            raise UpdateModeChatNotFoundError(chat_id)
+        chat = await self.db.get(Chat, chat_uuid)
+        if chat is None:
+            raise UpdateModeChatNotFoundError(chat_id)
+        if chat.campaign_id is None:
+            raise UpdateModeCampaignRequiredError(chat_id)
+        campaign = await self.db.get(Campaign, chat.campaign_id)
+        if campaign is None:
+            raise UpdateModeCampaignNotFoundError(str(chat.campaign_id))
+        if campaign.domain_id != chat.domain_id:
+            raise UpdateModeCampaignDomainMismatchError(
+                f"campaign.domain_id={campaign.domain_id!r} != chat.domain_id={chat.domain_id!r}"
+            )
+
+        domain_id: str = chat.domain_id
+        campaign_uuid: uuid.UUID = chat.campaign_id  # type: ignore[assignment]
+
+        # 3. Campaign tags (guard: at least one tag)
+        tag_ids = await _get_campaign_tag_ids(self.db, campaign_uuid, domain_id)
+        if not tag_ids:
+            raise UpdateModeCampaignTagsRequiredError(str(campaign_uuid))
+
+        # 4. Enabled vaults
+        vault_result = await self.db.execute(
+            select(Vault)
+            .where(
+                Vault.domain_id == domain_id,
+                Vault.enabled.is_(True),
+            )
+            .order_by(Vault.vault_id.asc())
+        )
+        vaults = vault_result.scalars().all()
+        if not vaults:
+            raise UpdateModeNoEnabledVaultsError(domain_id)
+        vault_ids: list[str] = [v.vault_id for v in vaults]
+
+        warnings: list[str] = []
+
+        # 5. State field snapshot (for both state_patch and field_changes validation)
+        state_field_snapshot = await _load_state_field_snapshot(
+            self.db, campaign_uuid
+        )
+        current_state = None
+        if state_field_snapshot:
+            from app.services.campaign_state_value_service import (
+                campaign_state_value_service,
+            )
+            current_state = await campaign_state_value_service.get_active_state(
+                self.db, campaign_uuid
+            )
+
+        # 6. Validate field_changes against snapshot
+        validated_field_changes = _validate_field_changes(
+            proposal.field_changes,
+            state_field_snapshot,
+            warnings,
+        )
+
+        # 7. Validate state_patch — first filter against the snapshot plus
+        # pending field_changes (so state_patch can reference a key that is
+        # being created in the same proposal).
+        validated_state_patch = _validate_state_patch_against_snapshot(
+            proposal.state_patch,
+            state_field_snapshot,
+            current_state,
+            warnings,
+        )
+        validated_state_patch = _filter_state_patch_by_pending_field_changes(
+            validated_state_patch,
+            state_field_snapshot,
+            validated_field_changes,
+            warnings,
+        )
+
+        # 8. Validate file_changes (basic — they may have anchor errors,
+        # which indexer resolve will surface as resolution_failed entries)
+        validated_intents: list[UpdateModeIntent] = []
+        for fc in proposal.file_changes[:10]:  # MVP cap: 10 changes
+            if isinstance(fc, UpdateModeIntent):
+                validated_intents.append(fc)
+            else:
+                # Pydantic should have caught this at the tool boundary.
+                logger.warning(
+                    "start_from_proposal: dropped non-UpdateModeIntent file_change: %r",
+                    fc,
+                )
+
+        # 9. Build session entries
+        state_patch_entries = build_state_patch_entries(
+            validated_state_patch,
+            state_field_snapshot,
+            current_state,
+        )
+        field_change_entries = build_field_change_entries(
+            validated_field_changes,
+            state_field_snapshot,
+        )
+
+        # 10. File changes — resolve through indexer if any intents present
+        resolved_changes: list[ResolvedUpdateModeChange] = []
+        if validated_intents:
+            # Build doc→vault map (needed for indexer resolve).
+            allowed_doc_ids = await get_campaign_markdown_document_ids(
+                self.db,
+                campaign_id=campaign_uuid,
+                vault_ids=vault_ids,
+            )
+            if not allowed_doc_ids:
+                warnings.append(
+                    "no_change:campaign has no indexed markdown documents; "
+                    "file_changes will be dropped"
+                )
+            else:
+                doc_rows = await self.db.execute(
+                    select(Document.id, Document.vault_id)
+                    .where(Document.id.in_([uuid.UUID(d) for d in allowed_doc_ids]))
+                )
+                doc_vault_map: dict[str, str] = {
+                    str(row.id): row.vault_id for row in doc_rows
+                }
+                vault_ids_set = set(vault_ids)
+
+                # Cross-validate intents against campaign scope (same logic as
+                # _validate_intents_domain in the legacy path).
+                try:
+                    _validate_intents_domain(
+                        validated_intents,
+                        set(allowed_doc_ids),
+                        vault_ids_set,
+                        doc_vault_map,
+                    )
+                except Exception as exc:
+                    warnings.append(
+                        f"file_change_validation_failed:{exc}"
+                    )
+                    validated_intents = []
+
+                if validated_intents:
+                    default_vault_id = _select_default_vault(
+                        chat_vault_id=chat.vault_id,
+                        vault_ids=vault_ids,
+                        context_docs=None,
+                    )
+                    resolve_req = UpdateModeResolveRequest(
+                        chat_id=chat_id,
+                        campaign_id=str(campaign.id),
+                        domain_id=domain_id,
+                        vault_ids=vault_ids,
+                        intents=validated_intents,
+                        default_vault_id=default_vault_id,
+                        candidate_document_ids=allowed_doc_ids,
+                    )
+                    try:
+                        resolve_resp = await self.indexer_client.resolve(resolve_req)
+                    except IndexerUnavailableError as exc:
+                        raise UpdateModeIndexerUnavailableError(exc.detail) from exc
+                    except Exception as exc:
+                        raise UpdateModeIndexerInvalidResponseError(str(exc)) from exc
+                    resolved_changes = resolve_resp.changes
+
+        # 11. Build and store session
+        now = datetime.now(timezone.utc)
+        session_expires_at = now + timedelta(seconds=SESSION_TTL_SECONDS)
+        session = UpdateModeSession(
+            session_id=str(uuid.uuid4()),
+            chat_id=chat_id,
+            campaign_id=str(campaign.id),
+            domain_id=domain_id,
+            vault_ids=vault_ids,
+            default_vault_id=vault_ids[0] if vault_ids else "",
+            candidate_document_ids=[],
+            note=(proposal.reason or "(no reason provided)"),
+            warnings=warnings,
+            changes=resolved_changes,
+            state_field_snapshot=state_field_snapshot,
+            state_patch_operations=state_patch_entries,
+            state_field_change_operations=field_change_entries,
+            created_at=now,
+            expires_at=session_expires_at,
+        )
+        await self._store_session(redis, session)
+
+        logger.info(
+            "update_mode start_from_proposal: DONE chat=%s session_id=%s "
+            "field_change_ops=%d state_patch_ops=%d file_changes=%d",
+            chat_id, session.session_id,
+            len(field_change_entries),
+            len(state_patch_entries),
+            len(resolved_changes),
+        )
+        return session

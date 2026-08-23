@@ -358,7 +358,33 @@ async def retrieve(
             else:
                 raw_hits = vector_hits
         else:
+            text_hits = []
             raw_hits = vector_hits
+
+        # Sprint 2: per-stage diagnostics so we can see how many hits each
+        # branch returned BEFORE the RRF merge. Helps debug why EN→RU
+        # queries collapse to "0 text_hits" (BM25 has no English→Russian
+        # token overlap) and whether vector_hits are reasonable.
+        vector_top_cosine: float | None = None
+        if vector_hits:
+            top = max(vector_hits, key=lambda h: h.score)
+            # Some providers (bge-m3) ship cosine in metadata; fall back to score.
+            if isinstance(top.metadata, dict) and "cosine" in top.metadata:
+                try:
+                    vector_top_cosine = float(top.metadata["cosine"])
+                except (TypeError, ValueError):
+                    vector_top_cosine = None
+            if vector_top_cosine is None:
+                vector_top_cosine = float(top.score)
+        logger.info(
+            "RETRIEVE_STAGES vault='%s' strategy=%s vector_hits=%d text_hits=%d "
+            "vector_top_cosine=%.4f",
+            vault_id,
+            strategy,
+            len(vector_hits),
+            len(text_hits),
+            vector_top_cosine if vector_top_cosine is not None else 0.0,
+        )
 
         logger.info(
             "RETRIEVE raw_hits=%d filter_expr=%s sample_doc_ids=%s",
@@ -838,5 +864,12 @@ async def rerank_hits(
 
     scored.sort(key=lambda x: x[0], reverse=True)
     reranked = [hit for _, hit in scored]
-    logger.info("RERANK_HITS done: reranked %d hits via model='%s'\n", len(reranked), model.model_id)
+    # Sprint 2: log the top rerank score so we can see at a glance whether
+    # the reranker actually has signal (a low top score means either the
+    # query is off-topic or the corpus doesn't have it).
+    rerank_top_score = scored[0][0] if scored else 0.0
+    logger.info(
+        "RERANK_HITS done: reranked %d hits via model='%s' rerank_top_score=%.4f",
+        len(reranked), model.model_id, rerank_top_score,
+    )
     return reranked

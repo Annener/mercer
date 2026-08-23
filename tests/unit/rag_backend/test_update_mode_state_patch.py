@@ -686,12 +686,15 @@ def test_patch_review_accepts_state_patch_decisions(client, monkeypatch) -> None
 
     async def fake_update_review(
         redis, chat_id, accepted_change_ids, rejected_change_ids,
-        *, accepted_state_op_indexes=None, rejected_state_op_indexes=None,
-        edited_state_ops=None,
+        **kwargs,
     ):
-        captured_kwargs["accepted_state_op_indexes"] = accepted_state_op_indexes
-        captured_kwargs["rejected_state_op_indexes"] = rejected_state_op_indexes
-        captured_kwargs["edited_state_ops"] = edited_state_ops
+        captured_kwargs["accepted_state_op_indexes"] = kwargs.get(
+            "accepted_state_op_indexes"
+        )
+        captured_kwargs["rejected_state_op_indexes"] = kwargs.get(
+            "rejected_state_op_indexes"
+        )
+        captured_kwargs["edited_state_ops"] = kwargs.get("edited_state_ops")
         return accepted_session
 
     monkeypatch.setattr(
@@ -732,10 +735,9 @@ def test_patch_review_edited_text_forwarded(client, monkeypatch) -> None:
 
     async def fake_update_review(
         redis, chat_id, accepted_change_ids, rejected_change_ids,
-        *, accepted_state_op_indexes=None, rejected_state_op_indexes=None,
-        edited_state_ops=None,
+        **kwargs,
     ):
-        captured["edited_state_ops"] = edited_state_ops
+        captured["edited_state_ops"] = kwargs.get("edited_state_ops")
         return accepted_session
 
     monkeypatch.setattr(
@@ -767,10 +769,11 @@ def test_patch_review_state_only_no_file_changes(client, monkeypatch) -> None:
 
     async def fake_update_review(
         redis, chat_id, accepted_change_ids, rejected_change_ids,
-        *, accepted_state_op_indexes=None, rejected_state_op_indexes=None,
-        edited_state_ops=None,
+        **kwargs,
     ):
-        captured["accepted_state_op_indexes"] = accepted_state_op_indexes
+        captured["accepted_state_op_indexes"] = kwargs.get(
+            "accepted_state_op_indexes"
+        )
         return accepted_session
 
     monkeypatch.setattr(
@@ -793,8 +796,7 @@ def test_patch_review_state_only_no_file_changes(client, monkeypatch) -> None:
 def test_patch_review_propagates_unknown_state_op_422(client, monkeypatch) -> None:
     async def fake_update_review(
         redis, chat_id, accepted_change_ids, rejected_change_ids,
-        *, accepted_state_op_indexes=None, rejected_state_op_indexes=None,
-        edited_state_ops=None,
+        **kwargs,
     ):
         raise UnknownStateOpIndexError(99)
 
@@ -817,8 +819,7 @@ def test_patch_review_propagates_unknown_state_op_422(client, monkeypatch) -> No
 def test_patch_review_propagates_state_op_conflict_409(client, monkeypatch) -> None:
     async def fake_update_review(
         redis, chat_id, accepted_change_ids, rejected_change_ids,
-        *, accepted_state_op_indexes=None, rejected_state_op_indexes=None,
-        edited_state_ops=None,
+        **kwargs,
     ):
         raise StateOpReviewConflictError(7)
 

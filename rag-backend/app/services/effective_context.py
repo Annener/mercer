@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from typing import Any
@@ -105,15 +106,64 @@ async def compose_full_system_prompt(
     campaign_id: str | None,
     domain_id: str | None,
     db: AsyncSession,
+    scene_state: dict[str, Any] | None = None,
 ) -> str:
-    """Собрать `system_prompt + Campaign State block` через filter(None).
+    """Собрать `system_prompt + Campaign State block + Scene State block` через filter(None).
+
+    `scene_state` (если задан) рендерится отдельным блоком между campaign_state
+    и финальным system_prompt — модель видит активный контекст сцены
+    (location, active_npcs, current_act и т.п.) и помнит его между turn-ами.
 
     Не подставляет RAG-context — это делает вызывающий код после retrieval.
     """
     system_prompt = await _resolve_system_prompt_text(campaign_id, domain_id, db)
     state_text, _ = await _resolve_campaign_state_block_safe(campaign_id, db)
-    parts = [p for p in (system_prompt, state_text) if p]
+    scene_text = compose_scene_block(scene_state)
+    parts = [p for p in (system_prompt, state_text, scene_text) if p]
     return "\n\n".join(parts)
+
+
+# Максимальный размер scene_state JSON (символов). Защищает prompt от раздувания,
+# если модель начнёт писать большие значения (например, длинные истории NPC).
+_SCENE_STATE_MAX_CHARS = 4 * 1024
+
+
+def compose_scene_block(scene_state: dict[str, Any] | None) -> str:
+    """Рендерит блок «Текущая сцена» для system_prompt.
+
+    - Пустой / None / не-dict → пустая строка (блок пропускается).
+    - Слишком большой JSON (>_SCENE_STATE_MAX_CHARS) → обрезается с WARNING-меткой.
+      Полный текст при этом всё равно доступен модели через `chat.metadata.scene_state`
+      в read-only (host-controlled) режиме — мы просто не пихаем его целиком в prompt.
+
+    Структура выходного текста (plain text, не JSON-строка, чтобы модель
+    читала естественно):
+
+        ## Текущая сцена
+        - location: Забытые Королевства, подземелье
+        - active_npcs:
+          - Бехолдер
+          - Культисты Теней
+        - current_act: Глава 3 — Падение
+    """
+    if not scene_state:
+        return ""
+    if not isinstance(scene_state, dict):
+        return ""
+    try:
+        rendered = json.dumps(scene_state, ensure_ascii=False, indent=2)
+    except (TypeError, ValueError):
+        logger.warning(
+            "compose_scene_block: scene_state is not JSON-serialisable, skipping"
+        )
+        return ""
+    if len(rendered) > _SCENE_STATE_MAX_CHARS:
+        rendered = rendered[:_SCENE_STATE_MAX_CHARS] + "\n…(truncated)"
+        logger.warning(
+            "compose_scene_block: scene_state exceeded %d chars, truncated for prompt",
+            _SCENE_STATE_MAX_CHARS,
+        )
+    return f"## Текущая сцена\n{rendered}"
 
 
 # Stage 8.6: правила использования `search_knowledge` tool. Согласно §12.1
@@ -147,6 +197,32 @@ _TOOL_USE_RULES = """\
 - Если `search_knowledge` вернул пустой результат или `note='no evidence found'` — НЕ выдумывай кампанийский лор. Явно скажи пользователю, что в локальной базе знаний этих сведений нет.
 - Не повторяй тот же запрос дважды за один turn: host отклонит дубликат.
 - Не выдумывай ссылки на источники: модель не имеет доступа к URL — только к тексту чанков, которые вернул `search_knowledge`.
+
+## Дополнительные инструменты (Sprint 3)
+
+### `update_scene_state(patch, reason)`
+Краткоживущая память активной сцены: локация, NPC рядом, текущая фаза.
+Patch мерджится в `chat.scene_state`. НЕ для долгосрочных фактов — для этого
+используй `propose_context_update`.
+
+### `propose_context_update(field_changes?, state_patch?, file_changes?, confidence, reason, source_message_ids?, review_summary?)`
+Создаёт **предложение** изменения контекста кампании. ПРЕДЛОЖЕНИЕ, а не
+прямая запись — пользователь увидит карточку ревью и должен явно
+принять или отклонить. **Не** применяй предложения, если:
+- факт уже есть в текущем state или в system_prompt (нет смысла дублировать);
+- ты не уверен в интерпретации (низкая `confidence`);
+- это разовая реплика в диалоге, а не долгосрочный факт.
+
+Предлагать **минимальный** патч, не переписывать документы целиком.
+Параметр `confidence` ∈ [0, 1]: < 0.5 = не предлагать, 0.5–0.7 = сомнительно,
+> 0.7 = уверенно. Помни: создание поля — серьёзное архитектурное решение;
+не предлагай `create_field` для каждого нового слова пользователя.
+
+## Контекст сцены
+
+`chat.scene_state` (если заполнен) уже виден тебе в system_prompt как блок
+«Текущая сцена». Это твоя краткосрочная память между turn-ами — читай её
+в начале каждого turn-а, чтобы не задавать одни и те же вопросы дважды.
 """
 
 
@@ -165,14 +241,17 @@ async def compose_full_system_prompt_with_state(
     campaign_id: str | None,
     domain_id: str | None,
     db: AsyncSession,
+    scene_state: dict[str, Any] | None = None,
 ) -> tuple[str, CampaignStateCompiledBlock | None]:
     """Вернуть (system_prompt_text, state_block).
 
-    Возвращает уже склеенный `system_prompt + state` и сам block для debug.
+    Возвращает уже склеенный `system_prompt + state + scene_state` и сам
+    state_block для debug. `scene_state` рендерится после campaign_state.
     """
     system_prompt = await _resolve_system_prompt_text(campaign_id, domain_id, db)
     state_text, block = await _resolve_campaign_state_block_safe(campaign_id, db)
-    parts = [p for p in (system_prompt, state_text) if p]
+    scene_text = compose_scene_block(scene_state)
+    parts = [p for p in (system_prompt, state_text, scene_text) if p]
     return "\n\n".join(parts), block
 
 

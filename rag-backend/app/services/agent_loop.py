@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.services.search_knowledge_service import search_knowledge_service
+from app.services.update_mode_store import update_mode_store
 from app.services.source_utils import (
     MAX_SOURCES_PER_TOOL_RESULT,
     hits_to_sources,
@@ -95,6 +96,142 @@ SEARCH_KNOWLEDGE_TOOL = LLMToolDefinition(
                 },
             },
             "required": ["queries"],
+        },
+    ),
+)
+
+
+UPDATE_SCENE_STATE_TOOL = LLMToolDefinition(
+    type="function",
+    function=LLMToolDefinitionFunction(
+        name="update_scene_state",
+        description=(
+            "Update the chat's inline scene-state memory with a small JSON "
+            "patch. Use this to persist short-lived context that should "
+            "survive between turns but is NOT a permanent campaign fact "
+            "(e.g. current location, NPCs in the room, active sub-plot, "
+            "user's last query). The patch is merged into the existing "
+            "scene-state; pass `null` to clear a key. Do NOT use this for "
+            "long-term facts, lore, rules, or campaign state — for those, "
+            "use `propose_context_update` (when available) or ask the user "
+            "to run the dedicated Update Mode flow."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "patch": {
+                    "type": "object",
+                    "description": (
+                        "JSON object whose keys are merged into the chat's "
+                        "scene-state. Pass `{\"key\": null}` to delete a key, "
+                        "or `{\"key\": \"value\"}` to set/overwrite it."
+                    ),
+                    "additionalProperties": True,
+                },
+                "reason": {
+                    "type": "string",
+                    "description": (
+                        "Short free-text justification of why this scene-state "
+                        "update is needed. Helps the user understand the "
+                        "model's reasoning."
+                    ),
+                },
+            },
+            "required": ["patch"],
+        },
+    ),
+)
+
+
+# Sprint 3: tool that the model uses to propose a context update.
+# The proposal is host-validated and stored as a Review session in Redis
+# — the user must explicitly accept/reject via the existing Update Mode UI
+# before anything is applied.
+PROPOSE_CONTEXT_UPDATE_TOOL = LLMToolDefinition(
+    type="function",
+    function=LLMToolDefinitionFunction(
+        name="propose_context_update",
+        description=(
+            "Propose a context update for the current campaign. Use this "
+            "when the user has expressed a long-term fact, decision, rule, "
+            "NPC, location, or other durable piece of information that "
+            "should persist across chat turns. The proposal is shown to "
+            "the user for review; nothing is applied without their explicit "
+            "approval. The proposal can include: (1) new Campaign State "
+            "fields (create_field), (2) changes to existing fields "
+            "(update_field — label/description only; mode is immutable), "
+            "(3) values for state fields (state_patch), (4) edits to .md "
+            "files in the vault (file_changes). All four sections are "
+            "optional; submit only the ones that apply. Pass `confidence` "
+            "in [0, 1] reflecting how certain you are the proposed change "
+            "is justified by the conversation."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "field_changes": {
+                    "type": "array",
+                    "description": (
+                        "Schema operations (create_field / update_field). "
+                        "Each item: {operation, key, label, description, "
+                        "mode, enabled, display_order}."
+                    ),
+                    "items": {"type": "object"},
+                },
+                "state_patch": {
+                    "type": "array",
+                    "description": (
+                        "Value operations on existing state fields. Each "
+                        "item: {type: replace_single|clear_single|"
+                        "add_list_item|update_list_item|"
+                        "resolve_list_item|remove_list_item, field_key, "
+                        "item_key?, text?, reason, source_refs?}."
+                    ),
+                    "items": {"type": "object"},
+                },
+                "file_changes": {
+                    "type": "array",
+                    "description": (
+                        "File edits to .md documents. Each item is a "
+                        "UpdateModeIntent with {change_id, action, "
+                        "description, document_id?, parent_document_id?, "
+                        "operation, anchor?, suggested_filename?, content}."
+                    ),
+                    "items": {"type": "object"},
+                },
+                "confidence": {
+                    "type": "number",
+                    "description": (
+                        "0..1 — your confidence that the proposed change "
+                        "is justified. 0.5+ is recommended; below 0.5 the "
+                        "host will reject."
+                    ),
+                    "minimum": 0.0,
+                    "maximum": 1.0,
+                },
+                "reason": {
+                    "type": "string",
+                    "description": (
+                        "Short free-text explanation of why this update is "
+                        "proposed. Surfaced in the UI."
+                    ),
+                },
+                "source_message_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "IDs of user messages that justify the proposal. "
+                        "Used for audit trail."
+                    ),
+                },
+                "review_summary": {
+                    "type": "string",
+                    "description": (
+                        "One-line summary shown in the review card."
+                    ),
+                },
+            },
+            "required": ["confidence", "reason"],
         },
     ),
 )
@@ -200,6 +337,358 @@ async def _execute_search_knowledge(
 
 
 # ---------------------------------------------------------------------------
+# update_scene_state — host-controlled chat-scoped memory tool
+# ---------------------------------------------------------------------------
+
+
+# Максимум ключей в одном patch — защищает от спама и раздувания metadata.
+_SCENE_STATE_PATCH_MAX_KEYS = 16
+
+
+def _extract_scene_state_patch(call: LLMToolCall) -> tuple[dict[str, Any], str]:
+    """Pull patch + reason out of an update_scene_state tool call.
+
+    Patch нормализуется:
+    - не dict → пустой dict
+    - больше _SCENE_STATE_PATCH_MAX_KEYS ключей → отбрасывается хвост
+      (модель может это увидеть в tool_result и скорректировать)
+
+    `null`-значения сохраняются как явный маркер удаления ключа.
+    """
+    args = _parse_tool_arguments(call.function.arguments)
+    raw_patch = args.get("patch")
+    if not isinstance(raw_patch, dict):
+        raw_patch = {}
+    patch: dict[str, Any] = {}
+    for i, (k, v) in enumerate(raw_patch.items()):
+        if not isinstance(k, str) or not k:
+            continue
+        if i >= _SCENE_STATE_PATCH_MAX_KEYS:
+            logger.warning(
+                "agent_loop: scene_state patch truncated to %d keys (model sent %d)",
+                _SCENE_STATE_PATCH_MAX_KEYS,
+                len(raw_patch),
+            )
+            break
+        patch[k] = v
+    reason = args.get("reason", "")
+    if not isinstance(reason, str):
+        reason = ""
+    return patch, reason
+
+
+_SCENE_STATE_OK_STATUS = "ok"
+_SCENE_STATE_ERROR_STATUS = "error"
+
+
+async def _execute_update_scene_state(
+    *,
+    chat_id: str | None,
+    patch: dict[str, Any],
+    db: Any,
+) -> dict[str, Any]:
+    """Merge patch into Chat.metadata['scene_state']. Persist via db.commit().
+
+    Returns a dict shaped like a SearchKnowledgeResult-style envelope so the
+    rest of the loop can reuse `_format_tool_result_text`-style plumbing.
+    Keys:
+      - status: 'ok' | 'error'
+      - note:  free-text for the model
+      - scene_state: the post-merge dict (only on success)
+      - applied_keys: list of keys that were changed
+      - removed_keys: list of keys that were deleted (value was None)
+    """
+    if not chat_id:
+        return {
+            "status": _SCENE_STATE_ERROR_STATUS,
+            "note": "chat_id is required for update_scene_state",
+            "scene_state": {},
+            "applied_keys": [],
+            "removed_keys": [],
+        }
+    if not patch:
+        return {
+            "status": _SCENE_STATE_OK_STATUS,
+            "note": "patch was empty; no changes applied",
+            "scene_state": {},
+            "applied_keys": [],
+            "removed_keys": [],
+        }
+
+    try:
+        import uuid as _uuid
+
+        from app.db.models import Chat
+
+        chat = await db.get(Chat, _uuid.UUID(chat_id))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "agent_loop: failed to load chat_id=%s for scene_state update: %s",
+            chat_id,
+            exc,
+        )
+        return {
+            "status": _SCENE_STATE_ERROR_STATUS,
+            "note": f"failed to load chat: {exc}",
+            "scene_state": {},
+            "applied_keys": [],
+            "removed_keys": [],
+        }
+    if chat is None:
+        return {
+            "status": _SCENE_STATE_ERROR_STATUS,
+            "note": f"chat {chat_id} not found",
+            "scene_state": {},
+            "applied_keys": [],
+            "removed_keys": [],
+        }
+
+    current: dict[str, Any] = dict(chat.metadata_json or {})
+    # scene_state is the only sub-namespace managed by update_scene_state.
+    # Other top-level keys (e.g. future fields) are not touched here.
+    scene: dict[str, Any] = dict(current.get("scene_state") or {})
+    applied: list[str] = []
+    removed: list[str] = []
+    for key, value in patch.items():
+        if value is None:
+            if key in scene:
+                scene.pop(key)
+                removed.append(key)
+        else:
+            scene[key] = value
+            applied.append(key)
+    current["scene_state"] = scene
+    chat.metadata_json = current
+
+    try:
+        await db.commit()
+        await db.refresh(chat)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "agent_loop: failed to commit scene_state update chat_id=%s: %s",
+            chat_id,
+            exc,
+        )
+        await db.rollback()
+        return {
+            "status": _SCENE_STATE_ERROR_STATUS,
+            "note": f"failed to persist scene_state: {exc}",
+            "scene_state": {},
+            "applied_keys": [],
+            "removed_keys": [],
+        }
+
+    logger.info(
+        "agent_loop: scene_state updated chat_id=%s applied=%s removed=%s",
+        chat_id,
+        applied,
+        removed,
+    )
+    return {
+        "status": _SCENE_STATE_OK_STATUS,
+        "note": (
+            f"applied {len(applied)} key(s), removed {len(removed)} key(s)"
+            if applied or removed
+            else "no-op (patch was a no-op after merge)"
+        ),
+        "scene_state": current,
+        "applied_keys": applied,
+        "removed_keys": removed,
+    }
+
+
+# ---------------------------------------------------------------------------
+# propose_context_update — model-driven campaign context updates
+# ---------------------------------------------------------------------------
+
+
+# Min confidence below which we drop the proposal entirely (UI never sees it).
+PROPOSAL_MIN_CONFIDENCE = 0.5
+
+
+def _extract_proposal(call: LLMToolCall):
+    """Pull proposal fields out of a propose_context_update tool call.
+
+    Returns (proposal_or_None, reason_str, error_str_or_None). On any
+    structural error we return (None, "", "...") so the host can return a
+    tool_result to the model and continue.
+    """
+    args = _parse_tool_arguments(call.function.arguments)
+    if not isinstance(args, dict):
+        return None, "", "tool arguments must be a JSON object"
+
+    field_changes = args.get("field_changes") or []
+    state_patch = args.get("state_patch") or []
+    file_changes = args.get("file_changes") or []
+
+    if not isinstance(field_changes, list):
+        return None, "", "field_changes must be a list"
+    if not isinstance(state_patch, list):
+        return None, "", "state_patch must be a list"
+    if not isinstance(file_changes, list):
+        return None, "", "file_changes must be a list"
+
+    confidence = args.get("confidence", 0.0)
+    if not isinstance(confidence, (int, float)):
+        return None, "", "confidence must be a number"
+    confidence = float(confidence)
+
+    reason = args.get("reason", "")
+    if not isinstance(reason, str):
+        reason = ""
+    review_summary = args.get("review_summary", "")
+    if not isinstance(review_summary, str):
+        review_summary = ""
+    source_message_ids = args.get("source_message_ids", [])
+    if not isinstance(source_message_ids, list):
+        source_message_ids = []
+
+    return {
+        "field_changes": field_changes,
+        "state_patch": state_patch,
+        "file_changes": file_changes,
+        "confidence": confidence,
+        "reason": reason,
+        "review_summary": review_summary,
+        "source_message_ids": [
+            str(x) for x in source_message_ids if isinstance(x, (str, int))
+        ],
+    }, reason, None
+
+
+async def _execute_propose_context_update(
+    *,
+    chat_id: str | None,
+    campaign_id: str | None,
+    db: Any,
+    redis: Any | None,
+    proposal_dict: dict[str, Any],
+) -> dict[str, Any]:
+    """Validate proposal + create Update Mode session via start_from_proposal.
+
+    Never raises. Returns a dict shaped like other tool_results.
+    """
+    if not chat_id:
+        return {
+            "status": "error",
+            "note": "chat_id is required for propose_context_update",
+        }
+    if not campaign_id:
+        return {
+            "status": "error",
+            "note": "campaign_id is required for propose_context_update",
+        }
+    if redis is None:
+        return {
+            "status": "error",
+            "note": "redis is not available; cannot store proposal",
+        }
+    if proposal_dict["confidence"] < PROPOSAL_MIN_CONFIDENCE:
+        return {
+            "status": "rejected",
+            "note": (
+                f"confidence {proposal_dict['confidence']:.2f} is below the "
+                f"minimum {PROPOSAL_MIN_CONFIDENCE}; not surfaced to the user"
+            ),
+        }
+
+    # Validate + build the typed proposal.
+    from shared_contracts.models import (
+        ContextFieldChange,
+        ContextUpdateProposal,
+    )
+    try:
+        proposal = ContextUpdateProposal(
+            field_changes=[
+                ContextFieldChange.model_validate(fc)
+                for fc in proposal_dict["field_changes"]
+            ],
+            state_patch=proposal_dict["state_patch"],
+            file_changes=proposal_dict["file_changes"],
+            confidence=proposal_dict["confidence"],
+            reason=proposal_dict["reason"],
+            source_message_ids=proposal_dict["source_message_ids"],
+            review_summary=proposal_dict["review_summary"],
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "agent_loop: propose_context_update invalid proposal: %s", exc
+        )
+        return {
+            "status": "error",
+            "note": f"proposal validation failed: {exc}",
+        }
+
+    # Empty proposal — nothing to do.
+    if (
+        not proposal.field_changes
+        and not proposal.state_patch
+        and not proposal.file_changes
+    ):
+        return {
+            "status": "skipped",
+            "note": "proposal was empty; nothing to review",
+        }
+
+    # Create session via executor.start_from_proposal.
+    from app.services.update_mode_executor import (
+        UpdateModeExecutor,
+        UpdateModeSessionAlreadyActiveError,
+    )
+
+    # We need an indexer_client for the executor. If we don't have one
+    # wired in, we still proceed — file_changes won't resolve but the
+    # session will be created with state+schema ops.
+    from app.services.indexer_client import (
+        IndexerClient,
+        indexer_client,
+    )
+
+    executor = UpdateModeExecutor(
+        db=db,
+        store=update_mode_store,  # imported below at module level
+        indexer_client=indexer_client,
+    )
+
+    try:
+        session = await executor.start_from_proposal(
+            chat_id=chat_id, redis=redis, proposal=proposal
+        )
+    except UpdateModeSessionAlreadyActiveError:
+        return {
+            "status": "blocked",
+            "note": (
+                "an Update Mode session is already active for this chat; "
+                "the user must finish or cancel it before a new proposal "
+                "can be created"
+            ),
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "agent_loop: propose_context_update start_from_proposal failed: %s",
+            exc,
+        )
+        return {
+            "status": "error",
+            "note": f"failed to create proposal session: {exc}",
+        }
+
+    return {
+        "status": "ok",
+        "session_id": session.session_id,
+        "expires_at": session.expires_at.isoformat() if session.expires_at else None,
+        "field_changes_count": len(proposal.field_changes),
+        "state_patch_count": len(proposal.state_patch),
+        "file_changes_count": len(session.changes),
+        "note": (
+            f"proposal created with {len(proposal.field_changes)} field_change(s), "
+            f"{len(proposal.state_patch)} state_patch op(s), "
+            f"{len(session.changes)} file_change(s); awaiting user review"
+        ),
+    }
+
+
+# ---------------------------------------------------------------------------
 # AgentLoop
 # ---------------------------------------------------------------------------
 
@@ -220,17 +709,29 @@ class AgentLoop:
         user_message: str,
         domain_id: str | None,
         campaign_id: str | None,
+        chat_id: str | None = None,
         vault_ids: list[str],
         max_rounds: int,
         evidence_token_budget: int,
         policy: RetrievalPolicy,
         db: Any,
+        context_update_mode_enabled: bool = False,
+        redis: Any | None = None,
     ) -> AsyncIterator[AgentEvent]:
         """Drive the LLM ↔ tool cycle and yield AgentEvents.
 
         The last emitted event is always of type 'final' (or 'error' if the
         provider failed). Content tokens are emitted in 'token' events.
         Tool invocations are surfaced as 'tool_call' + 'tool_result' pairs.
+
+        `chat_id` is required when the agent exposes tools that mutate chat
+        state (e.g. `update_scene_state`). When `None`, scene-state tools are
+        still registered but host execution will return a structured error.
+
+        `context_update_mode_enabled` (Sprint 3) controls whether the
+        `propose_context_update` tool is registered. Requires a campaign_id
+        (proposals without an active campaign don't make sense) AND a
+        `redis` client (the proposal is stored in Redis as a Review session).
         """
         if max_rounds <= 0:
             # Defensive: a misconfigured policy with zero rounds should not
@@ -243,7 +744,16 @@ class AgentLoop:
             )
             max_rounds = 1
 
-        tools: list[LLMToolDefinition] = [SEARCH_KNOWLEDGE_TOOL]
+        tools: list[LLMToolDefinition] = [
+            SEARCH_KNOWLEDGE_TOOL,
+            UPDATE_SCENE_STATE_TOOL,
+        ]
+        if (
+            context_update_mode_enabled
+            and campaign_id
+            and redis is not None
+        ):
+            tools.append(PROPOSE_CONTEXT_UPDATE_TOOL)
         # Normalised queries we've already executed this turn — used to
         # detect duplicates and short-circuit wasted retrieval.
         seen_queries_norm: set[str] = set()
@@ -262,11 +772,17 @@ class AgentLoop:
 
         for round_idx in range(max_rounds):
             is_final_round = round_idx == max_rounds - 1
-            tool_choice = (
-                LLMToolChoice(mode="none")
-                if is_final_round
-                else LLMToolChoice(mode="auto")
-            )
+            if is_final_round:
+                # Final round — модель обязана дать текстовый ответ.
+                tool_choice = LLMToolChoice(mode="none")
+            elif policy == RetrievalPolicy.GROUNDED and round_idx == 0:
+                # Grounded mode, round 0 — модель ОБЯЗАНА вызвать хотя бы один
+                # tool перед тем, как писать ответ (см. §12.1 спецификации).
+                # Дальнейшие раунды остаются auto: модель может добрать
+                # evidence или начать отвечать.
+                tool_choice = LLMToolChoice(mode="required")
+            else:
+                tool_choice = LLMToolChoice(mode="auto")
 
             yield AgentEvent(
                 type="round_start",
@@ -492,6 +1008,181 @@ class AgentLoop:
                             role="tool",
                             tool_call_id=call.id,
                             content=tool_text,
+                        ).model_dump(exclude_none=True)
+                    )
+                elif call.function.name == UPDATE_SCENE_STATE_TOOL.function.name:
+                    patch, reason = _extract_scene_state_patch(call)
+                    yield AgentEvent(
+                        type="tool_call",
+                        round=round_idx,
+                        payload={
+                            "tool": call.function.name,
+                            "patch": patch,
+                            "reason": reason,
+                        },
+                    )
+
+                    scene_result = await _execute_update_scene_state(
+                        chat_id=chat_id,
+                        patch=patch,
+                        db=db,
+                    )
+
+                    tool_calls_made += 1
+                    rounds_meta.append(
+                        AgentRoundResult(
+                            round=round_idx,
+                            queries=[],
+                            tool_name=call.function.name,
+                            reason=reason or None,
+                            hits_count=0,
+                            evidence_tokens=0,
+                            scope="domain",
+                            skipped_reason=(
+                                None
+                                if scene_result["status"] == _SCENE_STATE_OK_STATUS
+                                else scene_result.get("note")
+                            ),
+                        )
+                    )
+
+                    yield AgentEvent(
+                        type="tool_result",
+                        round=round_idx,
+                        payload={
+                            "tool": call.function.name,
+                            "status": scene_result["status"],
+                            "applied_keys": scene_result["applied_keys"],
+                            "removed_keys": scene_result["removed_keys"],
+                            "note": scene_result["note"],
+                        },
+                    )
+
+                    messages.append(
+                        LLMToolMessage(
+                            role="tool",
+                            tool_call_id=call.id,
+                            content=json.dumps(
+                                {
+                                    "status": scene_result["status"],
+                                    "applied_keys": scene_result["applied_keys"],
+                                    "removed_keys": scene_result["removed_keys"],
+                                    "note": scene_result["note"],
+                                },
+                                ensure_ascii=False,
+                            ),
+                        ).model_dump(exclude_none=True)
+                    )
+                elif call.function.name == PROPOSE_CONTEXT_UPDATE_TOOL.function.name:
+                    proposal_dict, reason, parse_err = _extract_proposal(call)
+                    if parse_err is not None or proposal_dict is None:
+                        tool_result_payload = {
+                            "tool": call.function.name,
+                            "status": "error",
+                            "note": parse_err or "invalid proposal",
+                        }
+                        yield AgentEvent(
+                            type="tool_call",
+                            round=round_idx,
+                            payload={
+                                "tool": call.function.name,
+                                "reason": reason,
+                            },
+                        )
+                        yield AgentEvent(
+                            type="tool_result",
+                            round=round_idx,
+                            payload=tool_result_payload,
+                        )
+                        messages.append(
+                            LLMToolMessage(
+                                role="tool",
+                                tool_call_id=call.id,
+                                content=json.dumps(
+                                    tool_result_payload, ensure_ascii=False
+                                ),
+                            ).model_dump(exclude_none=True)
+                        )
+                        tool_calls_made += 1
+                        rounds_meta.append(
+                            AgentRoundResult(
+                                round=round_idx,
+                                queries=[],
+                                tool_name=call.function.name,
+                                reason=reason or None,
+                                hits_count=0,
+                                evidence_tokens=0,
+                                scope="domain",
+                                skipped_reason=parse_err,
+                            )
+                        )
+                        continue
+
+                    yield AgentEvent(
+                        type="tool_call",
+                        round=round_idx,
+                        payload={
+                            "tool": call.function.name,
+                            "confidence": proposal_dict["confidence"],
+                            "field_changes_count": len(proposal_dict["field_changes"]),
+                            "state_patch_count": len(proposal_dict["state_patch"]),
+                            "file_changes_count": len(proposal_dict["file_changes"]),
+                            "reason": reason,
+                        },
+                    )
+
+                    propose_result = await _execute_propose_context_update(
+                        chat_id=chat_id,
+                        campaign_id=campaign_id,
+                        db=db,
+                        redis=redis,
+                        proposal_dict=proposal_dict,
+                    )
+
+                    tool_calls_made += 1
+                    rounds_meta.append(
+                        AgentRoundResult(
+                            round=round_idx,
+                            queries=[],
+                            tool_name=call.function.name,
+                            reason=reason or None,
+                            hits_count=0,
+                            evidence_tokens=0,
+                            scope="domain",
+                            skipped_reason=(
+                                None
+                                if propose_result["status"] == "ok"
+                                else propose_result.get("note")
+                            ),
+                        )
+                    )
+
+                    yield AgentEvent(
+                        type="tool_result",
+                        round=round_idx,
+                        payload={
+                            "tool": call.function.name,
+                            "status": propose_result["status"],
+                            "session_id": propose_result.get("session_id"),
+                            "field_changes_count": propose_result.get("field_changes_count"),
+                            "state_patch_count": propose_result.get("state_patch_count"),
+                            "file_changes_count": propose_result.get("file_changes_count"),
+                            "note": propose_result["note"],
+                        },
+                    )
+
+                    messages.append(
+                        LLMToolMessage(
+                            role="tool",
+                            tool_call_id=call.id,
+                            content=json.dumps(
+                                {
+                                    "status": propose_result["status"],
+                                    "session_id": propose_result.get("session_id"),
+                                    "note": propose_result["note"],
+                                },
+                                ensure_ascii=False,
+                            ),
                         ).model_dump(exclude_none=True)
                     )
                 else:

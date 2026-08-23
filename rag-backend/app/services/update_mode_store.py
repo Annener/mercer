@@ -120,6 +120,22 @@ class StateOpReviewConflictError(UpdateModeError):
         )
 
 
+class UnknownFieldChangeOpIndexError(UpdateModeError):
+    def __init__(self, op_index: int) -> None:
+        super().__init__(
+            "unknown_field_change_op_index",
+            f"state_field_change op_index {op_index} not found in session",
+        )
+
+
+class FieldChangeReviewConflictError(UpdateModeError):
+    def __init__(self, op_index: int) -> None:
+        super().__init__(
+            "field_change_review_conflict",
+            f"state_field_change op_index {op_index} is not in pending state",
+        )
+
+
 # ---------------------------------------------------------------------------
 # Shared Lua helper: fix empty arrays before cjson.encode
 # ---------------------------------------------------------------------------
@@ -131,7 +147,9 @@ class StateOpReviewConflictError(UpdateModeError):
 _LUA_FIX_ARRAYS = """
 local function _fix_session_arrays(sess)
     local list_fields = {'warnings', 'vault_ids', 'candidate_document_ids',
-                         'changes', 'state_patch_operations', 'state_field_snapshot'}
+                         'changes', 'state_patch_operations',
+                         'state_field_snapshot',
+                         'state_field_change_operations'}
     for _, f in ipairs(list_fields) do
         if type(sess[f]) == 'table' and next(sess[f]) == nil then
             sess[f] = cjson.empty_array
@@ -164,6 +182,8 @@ end
 # ARGV[4] = json array of accepted state_patch op_indexes (Stage 5)
 # ARGV[5] = json array of rejected state_patch op_indexes (Stage 5)
 # ARGV[6] = json object {op_index: edited_text} for state_patch inline edits
+# ARGV[7] = json array of accepted field_change op_indexes (Sprint 3)
+# ARGV[8] = json array of rejected field_change op_indexes (Sprint 3)
 # Returns: updated session JSON string, or error string prefixed with "ERR:"
 #
 # For state_patch ops that carry a text payload (replace_single / update_list_item
@@ -171,6 +191,10 @@ end
 # edited_text. For ops without text (clear_single / resolve_list_item /
 # remove_list_item), an inline edit is silently ignored (the caller is
 # responsible for keeping state_patch_decisions consistent with op types).
+#
+# Sprint 3: field_change ops have no inline-edit path (label/description
+# changes are exposed via dedicated propose_context_update tool with
+# diff preview; inline-edit can be added later via ARGV[9] if needed).
 _REVIEW_LUA = (
     _LUA_FIX_ARRAYS
     + """
@@ -185,6 +209,8 @@ local ttl = tonumber(ARGV[3])
 local accepted_state = cjson.decode(ARGV[4])
 local rejected_state = cjson.decode(ARGV[5])
 local edited_state = cjson.decode(ARGV[6])
+local accepted_field = cjson.decode(ARGV[7])
+local rejected_field = cjson.decode(ARGV[8])
 
 -- Build lookup for file changes
 local change_map = {}
@@ -248,6 +274,25 @@ for idx_str, new_text in pairs(edited_state) do
     -- remove_list_item) we silently skip the edit. The Python caller already
     -- validates that edited[].op_index targets a text-bearing op; defence in
     -- depth in case of a misuse.
+end
+
+-- Sprint 3: build lookup for field_change operations and apply decisions
+local field_ops = session['state_field_change_operations'] or {}
+local field_op_map = {}
+for _, op in ipairs(field_ops) do
+    field_op_map[tostring(op['op_index'])] = op
+end
+for _, idx in ipairs(accepted_field) do
+    local op = field_op_map[tostring(idx)]
+    if not op then return 'ERR:unknown_field_change_op:' .. tostring(idx) end
+    if op['status'] ~= 'pending' then return 'ERR:field_change_review_conflict:' .. tostring(idx) end
+    op['status'] = 'accepted'
+end
+for _, idx in ipairs(rejected_field) do
+    local op = field_op_map[tostring(idx)]
+    if not op then return 'ERR:unknown_field_change_op:' .. tostring(idx) end
+    if op['status'] ~= 'pending' then return 'ERR:field_change_review_conflict:' .. tostring(idx) end
+    op['status'] = 'rejected'
 end
 
 session = _fix_session_arrays(session)
@@ -348,6 +393,7 @@ _SESSION_LIST_FIELDS = (
     "changes",
     "state_patch_operations",
     "state_field_snapshot",
+    "state_field_change_operations",
 )
 
 
@@ -421,6 +467,8 @@ class UpdateModeStore:
         accepted_state_op_indexes: set[int] | None = None,
         rejected_state_op_indexes: set[int] | None = None,
         edited_state_ops: dict[int, str] | None = None,
+        accepted_field_op_indexes: set[int] | None = None,
+        rejected_field_op_indexes: set[int] | None = None,
     ) -> UpdateModeSession:
         """Atomically accept/reject changes in the session.
 
@@ -432,6 +480,11 @@ class UpdateModeStore:
             op_index targets a text-bearing op; the Lua script silently
             ignores edits for ops without text.
 
+        Sprint 3: schema-change decisions:
+          - accepted_field_op_indexes / rejected_field_op_indexes: per-op
+            accept/reject for state_field_change_operations. No inline-edit
+            path (label/description changes are exposed via propose tool).
+
         Raises:
             SessionExpiredError: key missing.
             UnknownChangeIdError: change_id not in session.
@@ -439,6 +492,8 @@ class UpdateModeStore:
             ReviewConflictError: change not in pending state.
             UnknownStateOpIndexError: state_patch op_index not in session.
             StateOpReviewConflictError: state_patch op not in pending state.
+            UnknownFieldChangeOpIndexError: field_change op_index not in session.
+            FieldChangeReviewConflictError: field_change op not in pending state.
         """
         sha = await self._ensure_review_script(redis)
         result = await redis.evalsha(
@@ -454,6 +509,8 @@ class UpdateModeStore:
                 {str(k): v for k, v in (edited_state_ops or {}).items()},
                 ensure_ascii=False,
             ),
+            json.dumps(sorted(accepted_field_op_indexes or set())),
+            json.dumps(sorted(rejected_field_op_indexes or set())),
         )
         return self._parse_review_result(result, chat_id)
 
@@ -582,6 +639,18 @@ class UpdateModeStore:
                     raise StateOpReviewConflictError(int(idx))
                 except ValueError:
                     raise StateOpReviewConflictError(-1) from None
+            if err.startswith("unknown_field_change_op:"):
+                idx = err.split(":", 1)[1]
+                try:
+                    raise UnknownFieldChangeOpIndexError(int(idx))
+                except ValueError:
+                    raise UnknownFieldChangeOpIndexError(-1) from None
+            if err.startswith("field_change_review_conflict:"):
+                idx = err.split(":", 1)[1]
+                try:
+                    raise FieldChangeReviewConflictError(int(idx))
+                except ValueError:
+                    raise FieldChangeReviewConflictError(-1) from None
             raise UpdateModeError("lua_error", f"Unexpected Lua error: {err}")
         data = _normalize_session_lists(json.loads(result))
         return UpdateModeSession.model_validate(data)
