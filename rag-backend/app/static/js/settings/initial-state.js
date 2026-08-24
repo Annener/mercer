@@ -161,4 +161,3 @@ function build() {
 }
 
 window.InitialStateSection = { build };
-export const InitialStateSection = { build };

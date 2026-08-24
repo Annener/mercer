@@ -1297,4 +1297,3 @@ _renderActions([
 })();
 
 window.InitialStateWizard = InitialStateWizardImpl;
-export { InitialStateWizardImpl as InitialStateWizard };

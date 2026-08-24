@@ -2,9 +2,16 @@
 // Запускаются через vitest + jsdom. Покрывают state machine и основные сценарии.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { readFileSync } from 'fs';
+import { resolve, dirname } from 'path';
+import { fileURLToPath } from 'url';
 
-// Загружаем модуль Wizard. IIFE ставит window.InitialStateWizard.
-import '../../js/settings/initial-state-wizard.js';
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// Загружаем модуль Wizard как classic script (через eval в window-контексте).
+// В браузере это <script defer src="..."> — файл ставит window.InitialStateWizard.
+const _src = readFileSync(resolve(__dirname, '../../js/settings/initial-state-wizard.js'), 'utf8');
+window.eval(_src);
 
 // Минимальная заглушка api. Каждый тест настраивает нужные ответы/ошибки.
 function makeApi(overrides = {}) {

@@ -321,5 +321,4 @@ const StateFieldsImpl = (function () {
 })();
 
 window.StateFieldsSection = StateFieldsImpl;
-export { StateFieldsImpl as StateFieldsSection };
 

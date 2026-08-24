@@ -975,5 +975,4 @@ const PipelineBuilder = (() => {
 })();
 
 window.PipelineBuilder = PipelineBuilder;
-export { PipelineBuilder };
 

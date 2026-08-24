@@ -184,5 +184,4 @@ class PendingFilesBanner {
 }
 
 window.PendingFilesBanner = PendingFilesBanner;
-export { PendingFilesBanner };
 

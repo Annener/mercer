@@ -89,4 +89,6 @@ function _escHtml(str) {
         .replace(/"/g, '&quot;');
 }
 
-export { tagBadgeHtml, _textColor, _escHtml };
+window.tagBadgeHtml = tagBadgeHtml;
+window._textColor = _textColor;
+window._escHtml = _escHtml;

@@ -130,4 +130,3 @@ const DomainRail = {
 };
 
 window.DomainRail = DomainRail;
-export { DomainRail };

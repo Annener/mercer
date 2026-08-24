@@ -1250,5 +1250,4 @@ function _buildPanel(chatId, initialSession) {
 
 window.createUpdateModePanel = createUpdateModePanel;
 window.restoreUpdateModePanel = restoreUpdateModePanel;
-export { createUpdateModePanel, restoreUpdateModePanel };
 
