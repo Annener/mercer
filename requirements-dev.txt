@@ -1,6 +1,7 @@
 fastapi
 httpx
 numpy
+pdfminer.six
 pydantic>=2.5,<3.0
 pydantic-settings
 pytest>=7.0

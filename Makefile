@@ -94,8 +94,8 @@ _check_python:
 
 .PHONY: help init-env agent-setup agent-install agent-uninstall agent-start agent-stop \
         agent-status agent-logs up down seed setup _check-macos _check_python _venv-create \
-        setup-dev js-install test test-rag-backend test-integration test-all js-test \
-        lint-py lint-js lint lint-fix _py-venv-create
+        setup-dev js-install test test-rag-backend test-rag-indexer test-integration \
+        test-all js-test lint-py lint-js lint lint-fix _py-venv-create
 
 help:
 	@echo ""
@@ -119,6 +119,7 @@ help:
 	@echo "  $(YELLOW)make js-install$(RESET)       Установить npm-зависимости"
 	@echo "  $(YELLOW)make test$(RESET)             Python unit-тесты (быстрые, без БД)"
 	@echo "  $(YELLOW)make test-rag-backend$(RESET) Только unit-тесты rag-backend"
+	@echo "  $(YELLOW)make test-rag-indexer$(RESET)  Только unit-тесты rag-indexer"
 	@echo "  $(YELLOW)make test-integration$(RESET) Интеграционные (требуется Postgres + alembic upgrade)"
 	@echo "  $(YELLOW)make js-test$(RESET)          JS unit-тесты (vitest)"
 	@echo "  $(YELLOW)make test-all$(RESET)         Python unit + JS тесты"
@@ -242,14 +243,21 @@ js-install:
 	@echo "$(GREEN)✓ npm зависимости установлены.$(RESET)"
 
 # Python unit-тесты (быстрые, без БД)
-test: _py-venv-create
-	@echo "$(YELLOW)→ pytest (unit)...$(RESET)"
-	@cd "$(ROOT_DIR)" && $(PY_VENV_PYTHON) -m pytest tests/unit
+# NB: тесты разных компонентов запускаются отдельными процессами pytest,
+# потому что rag-backend и rag-indexer имеют одинаковый namespace ``app.*``
+# и в одном процессе Python не может различать их при импорте.
+test: _py-venv-create test-rag-backend test-rag-indexer
+	@echo "$(GREEN)✓ все unit-тесты прошли.$(RESET)"
 
 # Только unit-тесты rag-backend
 test-rag-backend: _py-venv-create
 	@echo "$(YELLOW)→ pytest rag-backend unit...$(RESET)"
 	@cd "$(ROOT_DIR)" && $(PY_VENV_PYTHON) -m pytest tests/unit/rag_backend
+
+# Только unit-тесты rag-indexer
+test-rag-indexer: _py-venv-create
+	@echo "$(YELLOW)→ pytest rag-indexer unit...$(RESET)"
+	@cd "$(ROOT_DIR)" && $(PY_VENV_PYTHON) -m pytest tests/unit/rag_indexer
 
 # Интеграционные тесты (требуется PostgreSQL + alembic upgrade head)
 test-integration: _py-venv-create
@@ -262,7 +270,7 @@ js-test:
 	@cd "$(STATIC_DIR)" && npm test
 
 # Все тесты: Python + JS
-test-all: test js-test
+test-all: test test-rag-indexer js-test
 	@echo "$(GREEN)✓ все тесты прошли.$(RESET)"
 
 # Python линтинг (ruff)

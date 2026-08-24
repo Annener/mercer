@@ -106,7 +106,7 @@ async def test_source_paths_filters_to_matching_files():
     with (
         patch("indexer_worker.scan_vault", return_value=_make_scanned_files()),
         patch("indexer_worker._process_file", new=fake_process_file),
-        patch("indexer_worker._build_provider", return_value=MagicMock()),
+        patch("indexer_worker.build_provider", return_value=MagicMock()),
         patch("indexer_worker.StorageClient", return_value=MagicMock()),
     ):
         from indexer_worker import run_indexing
@@ -137,7 +137,7 @@ async def test_source_paths_none_processes_all_files():
     with (
         patch("indexer_worker.scan_vault", return_value=_make_scanned_files()),
         patch("indexer_worker._process_file", new=fake_process_file),
-        patch("indexer_worker._build_provider", return_value=MagicMock()),
+        patch("indexer_worker.build_provider", return_value=MagicMock()),
         patch("indexer_worker.StorageClient", return_value=MagicMock()),
     ):
         from indexer_worker import run_indexing
@@ -168,7 +168,7 @@ async def test_source_paths_empty_match_marks_task_done():
     with (
         patch("indexer_worker.scan_vault", return_value=_make_scanned_files()),
         patch("indexer_worker._process_file", new=fake_process_file),
-        patch("indexer_worker._build_provider", return_value=MagicMock()),
+        patch("indexer_worker.build_provider", return_value=MagicMock()),
         patch("indexer_worker.StorageClient", return_value=MagicMock()),
     ):
         from indexer_worker import run_indexing
@@ -200,7 +200,7 @@ async def test_source_paths_leading_slash_normalised():
     with (
         patch("indexer_worker.scan_vault", return_value=_make_scanned_files()),
         patch("indexer_worker._process_file", new=fake_process_file),
-        patch("indexer_worker._build_provider", return_value=MagicMock()),
+        patch("indexer_worker.build_provider", return_value=MagicMock()),
         patch("indexer_worker.StorageClient", return_value=MagicMock()),
     ):
         from indexer_worker import run_indexing

@@ -139,7 +139,7 @@ async def test_process_file_calls_upsert_with_chunks() -> None:
 
     parsed_md = {"text": TWO_TOPIC_TEXT, "metadata": {}}
 
-    with patch("indexer_worker._parse_file_with_progress", new=AsyncMock(return_value=parsed_md)):
+    with patch("indexer_worker.parse_file_with_progress", new=AsyncMock(return_value=parsed_md)):
         chunks_count, doc_id = await _process_file(
             task_id="task-1",
             vault_id="vault-1",
@@ -181,7 +181,7 @@ async def test_process_file_word_start_populated() -> None:
     vault = _make_vault(threshold=0.01)
     parsed_md = {"text": TWO_TOPIC_TEXT, "metadata": {}}
 
-    with patch("indexer_worker._parse_file_with_progress", new=AsyncMock(return_value=parsed_md)):
+    with patch("indexer_worker.parse_file_with_progress", new=AsyncMock(return_value=parsed_md)):
         await _process_file(
             task_id="task-1",
             vault_id="vault-1",
@@ -221,7 +221,7 @@ async def test_process_file_empty_text_no_upsert() -> None:
     vault = _make_vault()
     parsed_md = {"text": "   ", "metadata": {}}
 
-    with patch("indexer_worker._parse_file_with_progress", new=AsyncMock(return_value=parsed_md)):
+    with patch("indexer_worker.parse_file_with_progress", new=AsyncMock(return_value=parsed_md)):
         chunks_count, _ = await _process_file(
             task_id="task-1",
             vault_id="vault-1",
@@ -271,7 +271,7 @@ async def test_preprocess_called_before_chunking() -> None:
         return text  # пропускаем без изменений
 
     with (
-        patch("indexer_worker._parse_file_with_progress", new=AsyncMock(return_value=parsed_md)),
+        patch("indexer_worker.parse_file_with_progress", new=AsyncMock(return_value=parsed_md)),
         patch("indexer_worker.preprocess", side_effect=_spy_preprocess),
     ):
         await _process_file(
@@ -320,7 +320,7 @@ async def test_semantic_threshold_from_vault() -> None:
     doc = _make_doc()
     parsed_md = {"text": TWO_TOPIC_TEXT, "metadata": {}}
 
-    with patch("indexer_worker._parse_file_with_progress", new=AsyncMock(return_value=parsed_md)):
+    with patch("indexer_worker.parse_file_with_progress", new=AsyncMock(return_value=parsed_md)):
         chunks_low, _ = await _process_file(
             task_id="task-1",
             vault_id="vault-1",
@@ -340,7 +340,7 @@ async def test_semantic_threshold_from_vault() -> None:
     db_client2 = _make_db_client()
     doc2 = _make_doc()
 
-    with patch("indexer_worker._parse_file_with_progress", new=AsyncMock(return_value=parsed_md)):
+    with patch("indexer_worker.parse_file_with_progress", new=AsyncMock(return_value=parsed_md)):
         chunks_high, _ = await _process_file(
             task_id="task-2",
             vault_id="vault-1",

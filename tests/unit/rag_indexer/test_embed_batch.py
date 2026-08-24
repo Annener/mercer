@@ -3,14 +3,14 @@
 All HTTP calls are mocked — no real network requests are made.
 
 Key assertions:
-- Ollama:  N texts → N parallel asyncio tasks (not sequential)
+- Ollama:  embed_batch выполняет запросы последовательно (см. ollama_provider.py —
+          «Ollama однопоточна по inference, параллельные запросы не ускоряют обработку»)
 - OpenAI:  N texts → exactly 1 HTTP request (native batch)
 - Both:    response order matches input order
 - Both:    empty input → empty result (no HTTP call)
 """
 from __future__ import annotations
 
-import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -36,7 +36,7 @@ VECS = [_make_vec(i, DIM) for i in range(len(TEXTS))]
 # ---------------------------------------------------------------------------
 
 class TestOllamaEmbedBatch:
-    """embed_batch for Ollama sends N parallel requests (one per text)."""
+    """embed_batch for Ollama: выполняет запросы последовательно (см. docstring выше)."""
 
     def _make_provider(self) -> OllamaEmbeddingProvider:
         return OllamaEmbeddingProvider(
@@ -66,34 +66,6 @@ class TestOllamaEmbedBatch:
             result = await provider.embed_batch(TEXTS)
 
         assert result == VECS
-
-    @pytest.mark.asyncio
-    async def test_parallel_not_sequential(self) -> None:
-        """All N tasks are launched via asyncio.gather — not awaited one-by-one."""
-        provider = self._make_provider()
-        # Track concurrent "in-flight" requests
-        peak: list[int] = [0]
-        active = 0
-
-        async def fake_post(url: str, json: dict, **kwargs) -> MagicMock:
-            nonlocal active
-            active += 1
-            peak[0] = max(peak[0], active)
-            await asyncio.sleep(0)  # yield so others can start
-            active -= 1
-            text = json["prompt"]
-            idx = TEXTS.index(text)
-            return self._make_response(VECS[idx])
-
-        with patch("httpx.AsyncClient.post", new=AsyncMock(side_effect=fake_post)):
-            await provider.embed_batch(TEXTS)
-
-        # With asyncio.gather all tasks are scheduled before any completes —
-        # peak concurrent should equal len(TEXTS) (or at least > 1).
-        assert peak[0] > 1, (
-            f"Expected parallel execution (peak > 1), got peak={peak[0]}. "
-            "embed_batch must use asyncio.gather, not sequential awaits."
-        )
 
     @pytest.mark.asyncio
     async def test_empty_input_returns_empty_no_http(self) -> None:

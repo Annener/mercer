@@ -1,33 +1,32 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
 import os
-import uuid
 from datetime import datetime, timezone
 from typing import Any
 
 from app.db_client import IndexerDBClient
+from chunking_pipeline import (
+    assign_page_numbers_and_headers,
+    build_chunk_records,
+    parse_file_with_progress,
+)
 from embedding.base_provider import EmbeddingProvider
-from embedding.ollama_provider import OllamaEmbeddingProvider
-from embedding.openai_provider import OpenAICompatibleProvider
+from embedding_pipeline import embed_chunks
 from parser.chunking.embedding_enricher import (
     build_embedding_text,
     extract_markdown_headers,
 )
-from parser.parsing.md_parser import parse_markdown
-from parser.parsing.pdf_parser import parse_pdf
 from parser.preprocessing.pdf_page_merger import (
     merge_pdf_pages,
-    page_number_for_offset,
-    resolve_headers_at_offset,
     strip_page_markers,
 )
 from parser.preprocessing.preprocessor import preprocess
 from parser.scanning.vault_scanner import scan_vault
 from parser.semantic_chunker import SemanticChunker
 from parser.state.redis_state_manager import RedisStateManager
+from provider_factory import build_embedding_model_config, build_provider
 from storage.storage_client import StorageClient
 
 from config import EmbeddingModelConfig
@@ -39,7 +38,8 @@ from shared_contracts.models import (
 
 logger = logging.getLogger(__name__)
 
-STORAGE_API_URL = os.getenv("STORAGE_API_URL", "http://db-api-server:8080")
+DEFAULT_VAULT_ROOT = "/data/vaults"
+DEFAULT_STORAGE_API_URL = "http://db-api-server:8080"
 
 _AVG_WORD_LEN_CHARS = 6
 CHUNK_PROGRESS_REPORT_INTERVAL = 10
@@ -49,10 +49,6 @@ CHECK_CANCEL_INTERVAL = 10  # проверять отмену каждые N ч�
 # Размер батча для batch-оптимизированных провайдеров (openai_compatible, sidecar).
 # Для Ollama остаётся поперечное выполнение (N запросов с semaphore).
 _BATCH_EMBED_SIZE = int(os.getenv("EMBED_BATCH_SIZE", "64"))
-
-
-async def run() -> None:
-    raise NotImplementedError("Use run_indexing(task_id, vault_id, force_reindex) from the API service.")
 
 
 async def run_indexing(
@@ -98,12 +94,12 @@ async def run_indexing(
             logger.exception("Indexing task aborted: failed to decrypt embedding key: vault_id=%s", vault_id)
             return
 
-        embedding_model = _embedding_model_config(embedding_model_data)
-        provider = _build_provider(embedding_model, api_key)
-        storage_client = StorageClient(STORAGE_API_URL)
+        embedding_model = build_embedding_model_config(embedding_model_data)
+        provider = build_provider(embedding_model, api_key)
+        storage_client = StorageClient(os.getenv("STORAGE_API_URL", DEFAULT_STORAGE_API_URL))
         await db_client.update_vault_binding_status(vault_id, "indexing")
 
-        vault_path = f"/data/vaults/{vault_id}"
+        vault_path = f"{os.getenv('VAULT_DATA_ROOT', DEFAULT_VAULT_ROOT)}/{vault_id}"
         parser_settings = {
             "sidecar_url": settings["pdf_sidecar.url"],
             "timeout_seconds": float(settings["pdf_sidecar.timeout_seconds"]),
@@ -323,7 +319,7 @@ async def _process_file(
 
     await state_manager.update_file_stage(task_id, relative_path, stage="parsing")
 
-    parsed = await _parse_file_with_progress(
+    parsed = await parse_file_with_progress(
         absolute_path,
         str(file_info.get("extension", "")),
         task_id=task_id,
@@ -393,7 +389,7 @@ async def _process_file(
         relative_path, len(raw_chunks), semantic_threshold,
     )
 
-    chunks: list[ChunkRecord] = _build_chunk_records(
+    chunks: list[ChunkRecord] = build_chunk_records(
         raw_chunks=raw_chunks,
         document_id=pg_document_id,
         vault_id=vault_id,
@@ -424,7 +420,7 @@ async def _process_file(
         return 0, pg_document_id
 
     if is_pdf:
-        _assign_page_numbers_and_headers(chunks, page_offsets, placed_headings)
+        assign_page_numbers_and_headers(chunks, page_offsets, placed_headings)
 
     for chunk in chunks:
         source_path = chunk.metadata.get("source_path", relative_path)
@@ -449,7 +445,7 @@ async def _process_file(
         chunks_total=len(chunks), chunks_done=0,
     )
 
-    vectors = await _embed_chunks(
+    vectors = await embed_chunks(
         chunks, embedding_model, provider,
         task_id=task_id, file_path=relative_path,
         state_manager=state_manager,
@@ -511,253 +507,3 @@ async def _process_file(
     )
     return len(chunks), pg_document_id
 
-
-def _build_chunk_records(
-    raw_chunks: list[str],
-    document_id: str,
-    vault_id: str,
-    base_metadata: dict[str, Any],
-) -> list[ChunkRecord]:
-    records: list[ChunkRecord] = []
-    global_word_offset = 0
-
-    for raw_text in raw_chunks:
-        if not raw_text.strip():
-            continue
-        word_count = len(raw_text.split())
-        chunk_metadata = dict(base_metadata)
-        chunk_metadata["word_start"] = global_word_offset
-        chunk_metadata["word_end"] = global_word_offset + word_count
-        records.append(
-            ChunkRecord(
-                chunk_id=f"chk_{uuid.uuid4().hex[:12]}",
-                document_id=document_id,
-                vault_id=vault_id,
-                text=raw_text,
-                vector=None,
-                metadata=chunk_metadata,
-                summary=None,
-            )
-        )
-        global_word_offset += word_count
-
-    return records
-
-
-def _assign_page_numbers_and_headers(
-    chunks: list[Any],
-    page_offsets: list[tuple[int, int]],
-    placed_headings: list[dict[str, Any]],
-) -> None:
-    for chunk in chunks:
-        word_start = int(chunk.metadata.get("word_start", 0))
-        estimated_char_offset = word_start * _AVG_WORD_LEN_CHARS
-        page_number = page_number_for_offset(page_offsets, estimated_char_offset)
-        if page_number is not None:
-            chunk.metadata["page_number"] = page_number
-        headers = resolve_headers_at_offset(placed_headings, estimated_char_offset)
-        if headers:
-            chunk.metadata["headers"] = headers
-
-
-def _parse_file(path: str, extension: str, parser_settings: dict[str, Any]) -> dict[str, Any]:
-    if extension == ".md":
-        return parse_markdown(path)
-    if extension == ".pdf":
-        return parse_pdf(
-            path,
-            sidecar_url=str(parser_settings["sidecar_url"]),
-            timeout_seconds=float(parser_settings.get("timeout_seconds", 180.0)),
-            fallback_to_pdfminer=bool(parser_settings.get("fallback_to_pdfminer", True)),
-        )
-    raise ValueError(f"Unsupported file extension: {extension}")
-
-
-async def _parse_file_with_progress(
-    absolute_path: str,
-    extension: str,
-    task_id: str,
-    relative_path: str,
-    state_manager: RedisStateManager,
-    parser_settings: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    parse_task = asyncio.ensure_future(
-        asyncio.to_thread(_parse_file, absolute_path, extension, parser_settings or {})
-    )
-    if extension == ".pdf":
-        while not parse_task.done():
-            try:
-                await asyncio.wait_for(
-                    asyncio.shield(parse_task), timeout=_PARSING_HEARTBEAT_INTERVAL
-                )
-            except TimeoutError:
-                if await state_manager.is_cancelled(task_id):
-                    parse_task.cancel()
-                    raise asyncio.CancelledError
-            except asyncio.CancelledError:
-                parse_task.cancel()
-                raise
-            except Exception:  # noqa: BLE001  # exit parse-wait loop on any failure
-                break
-    return await parse_task
-
-
-def _uses_batch_api(provider: EmbeddingProvider) -> bool:
-    """
-    Возвращает True для провайдеров с нативным батч-эндпоинтом (OpenAI-compatible, sidecar).
-    Для таких провайдеров _embed_chunks использует embed_batch() —
-    весь батч за один HTTP-запрос. Ollama остаётся почанково.
-    """
-    return isinstance(provider, OpenAICompatibleProvider)
-
-
-async def _embed_chunks(
-    chunks: list[Any],
-    embedding_model: EmbeddingModelConfig,
-    provider: EmbeddingProvider,
-    task_id: str | None = None,
-    file_path: str | None = None,
-    state_manager: RedisStateManager | None = None,
-) -> list[list[float]]:
-    logger.info(
-        "Embedding start: file=%s total_chunks=%d model=%s",
-        file_path or "?", len(chunks), embedding_model.model_id,
-    )
-    embed_start_time = asyncio.get_event_loop().time()
-
-    embedding_texts = [
-        chunk.metadata.get("embedding_text", chunk.text)
-        for chunk in chunks
-    ]
-
-    if _uses_batch_api(provider):
-        # --- Батч-путь: один HTTP-запрос на батч (openai_compatible / sidecar) ---
-        vectors: list[list[float]] = []
-        total = len(embedding_texts)
-        for batch_start in range(0, total, _BATCH_EMBED_SIZE):
-            if (
-                state_manager is not None
-                and task_id is not None
-                and await state_manager.is_cancelled(task_id)
-            ):
-                raise asyncio.CancelledError
-
-            batch = embedding_texts[batch_start: batch_start + _BATCH_EMBED_SIZE]
-            batch_vectors = await provider.embed_batch(batch)
-
-            for i, vector in enumerate(batch_vectors):
-                if not vector:
-                    chunk_idx = batch_start + i
-                    logger.error(
-                        "Embedding provider returned empty vector: file=%s chunk_index=%d model=%s",
-                        file_path or "?", chunk_idx, embedding_model.model_id,
-                    )
-                    raise ValueError(
-                        f"Embedding provider returned empty vector for chunk {chunk_idx} "
-                        f"(file={file_path!r}, model={embedding_model.model_id!r}). "
-                        "Check model availability, dimension settings, and provider logs."
-                    )
-            vectors.extend(batch_vectors)
-
-            done = min(batch_start + _BATCH_EMBED_SIZE, total)
-            elapsed = asyncio.get_event_loop().time() - embed_start_time
-            rate = done / elapsed if elapsed > 0 else 0
-            eta = (total - done) / rate if rate > 0 else 0
-            logger.info(
-                "Embedding progress (batch): file=%s %d/%d chunks (%.1f c/s, ETA ~%.0fs)",
-                file_path or "?", done, total, rate, eta,
-            )
-    else:
-        # --- Почанковый путь: Ollama — N параллельных HTTP-запросов с semaphore ---
-        vectors = []
-        for index, embedding_text in enumerate(embedding_texts):
-            if (
-                state_manager is not None
-                and task_id is not None
-                and index % CHECK_CANCEL_INTERVAL == 0
-                and await state_manager.is_cancelled(task_id)
-            ):
-                raise asyncio.CancelledError
-
-            result = await provider.embed([embedding_text])
-            vector = result[0] if result else []
-            if not vector:
-                logger.error(
-                    "Embedding provider returned empty vector: file=%s chunk_index=%d model=%s",
-                    file_path or "?", index, embedding_model.model_id,
-                )
-                raise ValueError(
-                    f"Embedding provider returned empty vector for chunk {index} "
-                    f"(file={file_path!r}, model={embedding_model.model_id!r}). "
-                    "Check model availability, dimension settings, and provider logs."
-                )
-            vectors.append(vector)
-
-            processed_count = index + 1
-            if processed_count % CHUNK_PROGRESS_REPORT_INTERVAL == 0 or processed_count == len(chunks):
-                elapsed = asyncio.get_event_loop().time() - embed_start_time
-                rate = processed_count / elapsed if elapsed > 0 else 0
-                eta = (len(chunks) - processed_count) / rate if rate > 0 else 0
-                logger.info(
-                    "Embedding progress: file=%s %d/%d chunks (%.1f c/s, ETA ~%.0fs)",
-                    file_path or "?", processed_count, len(chunks), rate, eta,
-                )
-
-    logger.info(
-        "Embedding complete: file=%s %d chunks embedded in %.1fs",
-        file_path or "?", len(chunks),
-        asyncio.get_event_loop().time() - embed_start_time,
-    )
-    return vectors
-
-
-def _embedding_model_config(model: dict[str, Any]) -> EmbeddingModelConfig:
-    return EmbeddingModelConfig(
-        model_id=model["model_id"],
-        provider=model["provider"],
-        model_name=model["model_name"],
-        base_url=model["base_url"],
-        dimensions=int(model["dimensions"]),
-        enabled=bool(model.get("enabled", True)),
-        timeout_seconds=int(model.get("timeout_seconds", 30)),
-        max_retries=int(model.get("max_retries", 3)),
-    )
-
-
-def _build_provider(embedding_model: EmbeddingModelConfig, api_key: str = "") -> EmbeddingProvider:
-    """
-    Фабрика провайдера эмбеддинга.
-
-    Поддерживаемые значения provider:
-      - "ollama"            — Ollama POST /api/embeddings (один текст за запрос)
-      - "openai_compatible" — OpenAI-совместимый POST /embeddings (нативный батч)
-      - "sidecar"           — pdf-sidecar POST /embeddings (OpenAI-совместимый,
-                              нативный батч через sentence-transformers).
-                              api_key не требуется — sidecar работает без аутентификации.
-    """
-    if embedding_model.provider == "ollama":
-        return OllamaEmbeddingProvider(
-            base_url=embedding_model.base_url,
-            model_name=embedding_model.model_name,
-            dimensions=embedding_model.dimensions,
-            timeout=embedding_model.timeout_seconds,
-            max_retries=embedding_model.max_retries,
-        )
-    if embedding_model.provider in ("openai_compatible", "sidecar"):
-        return OpenAICompatibleProvider(
-            base_url=embedding_model.base_url,
-            model_name=embedding_model.model_name,
-            dimensions=embedding_model.dimensions,
-            api_key=api_key,
-            timeout=embedding_model.timeout_seconds,
-            max_retries=embedding_model.max_retries,
-        )
-    raise ValueError(f"Unsupported embedding provider: {embedding_model.provider}")
-
-
-def _document_id(vault_id: str, relative_path: str) -> str:
-    digest = hashlib.sha256(f"{vault_id}:{relative_path}".encode()).hexdigest()[:16]
-    return f"doc{digest}"
-
-
-document_id = _document_id
