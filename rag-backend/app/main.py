@@ -88,6 +88,16 @@ STATIC_DIR = Path(__file__).parent / "static"
 if STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
+    @app.middleware("http")
+    async def static_cache_headers(request, call_next):
+        response = await call_next(request)
+        path = request.url.path
+        if path.startswith("/static/dist/assets/"):
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        elif path.startswith("/static/dist/"):
+            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        return response
+
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok", "service": "rag-backend"}

@@ -218,7 +218,11 @@ async def _save_partial_answer(
         await asyncio.shield(db.commit())
         await _maybe_set_title(chat, title_query, db)
         await asyncio.shield(db.commit())
-    except Exception:
+    except BaseException:
+        # ВАЖНО: ловим BaseException (включая CancelledError, KeyboardInterrupt),
+        # потому что при disconnect клиента во время стрима текущий task отменён,
+        # и `await db.commit()` бросает CancelledError. Если пробрасывать дальше —
+        # SQLAlchemy pool cleanup получает необработанное исключение в do_terminate.
         logger.exception(
             "Failed to persist partial assistant answer chat_id=%s", chat.id
         )
@@ -334,11 +338,30 @@ async def update_chat(
 @router.get("/list", response_model=ChatListResponse)
 async def list_chats(
     domain_id: str | None = Query(default=None, description="Фильтр по домену"),
+    campaign_id: str | None = Query(
+        default=None,
+        description=(
+            "Фильтр по кампании. "
+            "Специальное значение '__none__' — только чаты без campaign_id (общий режим). "
+            "UUID — только чаты в указанной кампании."
+        ),
+    ),
     db: AsyncSession = Depends(get_db),
 ) -> ChatListResponse:
     stmt = select(Chat).order_by(Chat.updated_at.desc())
     if domain_id is not None:
         stmt = stmt.where(Chat.domain_id == domain_id)
+    if campaign_id is not None:
+        if campaign_id == "__none__":
+            stmt = stmt.where(Chat.campaign_id.is_(None))
+        else:
+            try:
+                stmt = stmt.where(Chat.campaign_id == uuid.UUID(campaign_id))
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Invalid campaign_id: {campaign_id}",
+                ) from exc
     result = await db.execute(stmt)
     chats = result.scalars().all()
 
@@ -1003,20 +1026,35 @@ async def send_message_stream(
             except asyncio.CancelledError:
                 cancelled = True
             finally:
-                await _reset_clarif_fsm()
-                # Дедуплицируем перед сохранением.
-                deduped = dedup_sources(all_sources)
-                persisted_sources: list[dict[str, Any]] = [
-                    s.model_dump(mode="json", exclude_none=True)
-                    for s in sources_to_message_sources(deduped)
-                ]
-                await _save_partial_answer(
-                    db,
-                    _chat,
-                    full_answer,
-                    title_query=context.original_query or req.content,
-                    sources=persisted_sources,
-                )
+                # При отмене (клиент нажал «Стоп» / disconnect) cleanup БД
+                # выполняется в отменённом task scope — wrap в shield+except,
+                # чтобы исключения не пробивались до SQLAlchemy pool cleanup.
+                try:
+                    await asyncio.shield(_reset_clarif_fsm())
+                except (asyncio.CancelledError, Exception):
+                    pass
+                if not cancelled and full_answer:
+                    # Сохраняем partial answer только если НЕ было отмены.
+                    # При cancel клиент сам решит, отправлять ли заново.
+                    deduped = dedup_sources(all_sources)
+                    persisted_sources: list[dict[str, Any]] = [
+                        s.model_dump(mode="json", exclude_none=True)
+                        for s in sources_to_message_sources(deduped)
+                    ]
+                    try:
+                        await asyncio.shield(
+                            _save_partial_answer(
+                                db,
+                                _chat,
+                                full_answer,
+                                title_query=context.original_query or req.content,
+                                sources=persisted_sources,
+                            )
+                        )
+                    except (asyncio.CancelledError, Exception):
+                        logger.exception(
+                            "Failed to persist partial answer after stream (use_tool)"
+                        )
                 was_cancelled = cancelled
 
             if was_cancelled:
@@ -1127,14 +1165,28 @@ async def send_message_stream(
         except asyncio.CancelledError:
             cancelled = True
         finally:
-            await _reset_clarif_fsm()
-            await _save_partial_answer(
-                db,
-                _chat,
-                full_answer,
-                title_query=context.original_query or req.content,
-                sources=legacy_message_sources,
-            )
+            # При отмене (клиент нажал «Стоп» / disconnect) cleanup БД
+            # выполняется в отменённом task scope — wrap в shield+except,
+            # чтобы исключения не пробивались до SQLAlchemy pool cleanup.
+            try:
+                await asyncio.shield(_reset_clarif_fsm())
+            except (asyncio.CancelledError, Exception):
+                pass
+            if not cancelled and full_answer:
+                try:
+                    await asyncio.shield(
+                        _save_partial_answer(
+                            db,
+                            _chat,
+                            full_answer,
+                            title_query=context.original_query or req.content,
+                            sources=legacy_message_sources,
+                        )
+                    )
+                except (asyncio.CancelledError, Exception):
+                    logger.exception(
+                        "Failed to persist partial answer after stream (legacy)"
+                    )
             was_cancelled = cancelled
 
         if was_cancelled:
@@ -1191,7 +1243,11 @@ def _build_confirm_payload(
 
 
 async def _get_chat_or_404(chat_id: str, db: AsyncSession) -> Chat:
-    chat = await db.get(Chat, uuid.UUID(chat_id))
+    try:
+        uuid_obj = uuid.UUID(chat_id)
+    except (ValueError, AttributeError, TypeError):
+        raise HTTPException(404, f"Invalid chat_id format: {chat_id}")
+    chat = await db.get(Chat, uuid_obj)
     if not chat:
         raise HTTPException(404, "Chat not found")
     return chat

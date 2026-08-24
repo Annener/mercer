@@ -100,9 +100,13 @@ obj.messages  # MissingGreenlet!
 
 ## Фронтенд
 
-- Ванильный JavaScript SPA (без фреймворков — не Vue, не React)
-- Раздаётся FastAPI напрямую из `rag-backend/app/static/`
-- Сборка не нужна — все файлы подключаются через `<script src>` в `index.html`
+- React 18 + TypeScript (strict) + Vite 5 + Tailwind 3
+- Состояние: Zustand (клиентское) + TanStack Query (server state)
+- HTTP-клиент: единый `MercerAPI` класс (`src/api/client.ts`)
+- Темы: CSS-переменные + `data-theme` атрибут на `<html>`
+- Сборка: `npm run build` → `app/static/dist/`, раздаётся FastAPI из `app/static/`
+- Dev: `npm run dev` (Vite на :5173, проксирует API на FastAPI :8000)
+- Тесты: Vitest + @testing-library/react
 - Подробная документация: `context/frontend.md`
 
 ## Тесты

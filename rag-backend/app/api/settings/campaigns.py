@@ -3,11 +3,11 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from sqlalchemy import delete, insert, select
+from sqlalchemy import delete, exists, insert, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.settings.schemas import CampaignTagCreateRequest
-from app.db.models import Campaign, Tag, campaign_tags
+from app.db.models import Campaign, CampaignStateVersion, Tag, campaign_tags
 from app.db.session import get_db
 from app.services.campaign_state_initial_service import (
     CampaignStateInitialError,
@@ -68,8 +68,15 @@ async def list_campaigns(
         tags_by_campaign.setdefault(t.campaign_id, []).append(
             TagRead.model_validate(t, from_attributes=True)
         )
+    # Stage 6: batch EXISTS для has_initial_state — избегаем N+1
+    initial_rows = await db.execute(
+        select(CampaignStateVersion.campaign_id)
+        .where(CampaignStateVersion.campaign_id.in_(ids))
+        .distinct()
+    )
+    has_initial_ids: set[uuid.UUID] = {row[0] for row in initial_rows.all()}
     return [
-        _campaign_read(c, tags_by_campaign.get(c.id, []))
+        _campaign_read(c, tags_by_campaign.get(c.id, []), c.id in has_initial_ids)
         for c in campaigns
     ]
 
@@ -659,10 +666,20 @@ async def _campaign_with_tags(campaign: Campaign, db: AsyncSession) -> CampaignR
     stmt = select(Tag).where(Tag.campaign_id == campaign.id)
     result = await db.execute(stmt)
     tags = [TagRead.model_validate(t, from_attributes=True) for t in result.scalars().all()]
-    return _campaign_read(campaign, tags)
+    has_initial = await db.scalar(
+        select(
+            exists().where(CampaignStateVersion.campaign_id == campaign.id)
+        )
+    )
+    return _campaign_read(campaign, tags, bool(has_initial))
 
 
-def _campaign_read(campaign: Campaign, tags: list[TagRead]) -> CampaignRead:
+def _campaign_read(
+    campaign: Campaign,
+    tags: list[TagRead],
+    has_initial_state: bool = False,
+) -> CampaignRead:
     data = CampaignRead.model_validate(campaign, from_attributes=True)
     data.tags = tags
+    data.has_initial_state = has_initial_state
     return data

@@ -10,6 +10,10 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 _log = _logging.getLogger(__name__)
 
+# Sentinel для «атрибут не найден на ORM-объекте» — чтобы не отличать от
+# случая, когда атрибут есть, но равен None.
+MISSING = object()
+
 
 class ORMModel(BaseModel):
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
@@ -26,6 +30,10 @@ class ORMModel(BaseModel):
         Поддерживает Pydantic `validation_alias`: если у поля есть alias
         (например, ChatRecord.metadata с alias='metadata_json'), сначала
         пробуем `getattr(data, alias, MISSING)`, потом fallback на Pydantic-имя.
+
+        Если атрибут отсутствует на ORM-объекте (например, вычисляемое поле вроде
+        `has_initial_state`) — поле пропускается, и Pydantic применяет default.
+        Раньше здесь ставился `None`, что ломало bool/int/etc. поля с required type.
         """
         if not hasattr(data, "__dict__") and not hasattr(data, "__mapper__"):
             return data
@@ -40,20 +48,19 @@ class ORMModel(BaseModel):
             if isinstance(alias, str):
                 candidates.append(alias)
             candidates.append(field_name)
-            val: Any = None
-            found = False
+            val: Any = MISSING
             for name in candidates:
-                v = getattr(data, name, None)
-                if v is not None:
+                v = getattr(data, name, MISSING)
+                if v is not MISSING:
                     val = v
-                    found = True
                     break
+            if val is MISSING:
+                # ORM-объект не содержит атрибута — оставляем default из схемы.
+                continue
             if isinstance(val, _uuid.UUID):
                 result[field_name] = str(val)
-            elif found:
-                result[field_name] = val
             else:
-                result[field_name] = None
+                result[field_name] = val
         return result
 
 
@@ -389,6 +396,9 @@ class CampaignRead(ORMModel):
     last_session_at: datetime | None = None
     created_at: datetime | None = None
     tags: list[TagRead] = []
+    # Stage 6: true если у кампании есть хотя бы одна active state version
+    # (т.е. был применён Initial State).
+    has_initial_state: bool = False
 
 
 class CampaignCreate(BaseModel):
@@ -401,7 +411,8 @@ class CampaignCreate(BaseModel):
 
 
 class CampaignUpdate(BaseModel):
-    name: str | None = None
+    # все поля optional — partial update; min_length на name чтобы нельзя было случайно обнулить
+    name: str | None = Field(default=None, min_length=1, max_length=256)
     description: str | None = None
     system_prompt: str | None = None
 

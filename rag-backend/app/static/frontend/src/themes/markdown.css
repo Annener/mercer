@@ -1,0 +1,254 @@
+/* === Markdown content styling === */
+/* Применяется к <Markdown> компоненту в assistant-bubble, user-bubble, ValidationCard и др. */
+
+.markdown {
+  line-height: 1.6;
+  word-wrap: break-word;
+  font-size: 0.95rem;
+}
+
+/* Базовый ритм между блочными элементами */
+.markdown > * + * {
+  margin-top: 0.75em;
+}
+
+/* Параграфы */
+.markdown p {
+  margin: 0;
+}
+
+/* Headings */
+.markdown h1,
+.markdown h2,
+.markdown h3,
+.markdown h4,
+.markdown h5,
+.markdown h6 {
+  margin: 1.2em 0 0.4em 0;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--color-text);
+}
+
+.markdown > :first-child {
+  margin-top: 0;
+}
+
+.markdown h1 {
+  font-size: 1.4em;
+  border-bottom: 1px solid var(--color-border);
+  padding-bottom: 0.2em;
+}
+.markdown h2 {
+  font-size: 1.25em;
+  border-bottom: 1px solid var(--color-border);
+  padding-bottom: 0.2em;
+}
+.markdown h3 {
+  font-size: 1.1em;
+}
+.markdown h4 {
+  font-size: 1em;
+}
+.markdown h5,
+.markdown h6 {
+  font-size: 0.95em;
+}
+
+/* Lists */
+.markdown ul,
+.markdown ol {
+  margin: 0;
+  padding-left: 1.6em;
+}
+
+.markdown li {
+  margin: 0.25em 0;
+}
+
+.markdown li > ul,
+.markdown li > ol {
+  margin: 0.2em 0;
+}
+
+/* Inline code */
+.markdown code:not(.hljs) {
+  background-color: var(--color-surface-2);
+  color: var(--color-text);
+  padding: 0.15em 0.4em;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+  border: 1px solid var(--color-border);
+}
+
+/* Code blocks */
+.markdown pre.code-block {
+  background-color: var(--color-surface-2);
+  border-radius: 6px;
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  position: relative;
+}
+
+.markdown pre.code-block .code-lang {
+  position: absolute;
+  top: 0;
+  right: 0;
+  padding: 2px 10px;
+  font-size: 11px;
+  color: var(--color-text-muted);
+  background-color: var(--color-surface);
+  border-bottom-left-radius: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-family: var(--font-sans);
+}
+
+.markdown pre.code-block code {
+  display: block;
+  padding: 14px 16px;
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+  line-height: 1.5;
+  background: transparent !important;
+  color: var(--color-text);
+}
+
+/* Blockquotes */
+.markdown blockquote {
+  margin: 0;
+  padding: 0.5em 1em;
+  border-left: 4px solid var(--color-primary);
+  background-color: color-mix(in srgb, var(--color-primary) 8%, transparent);
+  color: var(--color-text-muted);
+  border-radius: 0 4px 4px 0;
+}
+
+.markdown blockquote p:last-child {
+  margin-bottom: 0;
+}
+
+/* Tables */
+.markdown table {
+  border-collapse: collapse;
+  margin: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  display: block;
+  font-size: 0.92em;
+}
+
+.markdown th,
+.markdown td {
+  border: 1px solid var(--color-border);
+  padding: 6px 10px;
+  text-align: left;
+}
+
+.markdown th {
+  background-color: var(--color-surface-2);
+  font-weight: 600;
+}
+
+/* Links */
+.markdown a {
+  color: var(--color-primary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.markdown a:hover {
+  text-decoration: none;
+}
+
+/* Horizontal rule */
+.markdown hr {
+  border: none;
+  border-top: 1px solid var(--color-border);
+  margin: 1em 0;
+}
+
+/* Images */
+.markdown img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 6px;
+}
+
+/* Strong / em (на всякий случай) */
+.markdown strong {
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.markdown em {
+  font-style: italic;
+}
+
+/* Inverse variant — для user-bubble (тёмный/синий фон, светлый текст) */
+.markdown-inverse {
+  color: white;
+}
+
+.markdown-inverse code:not(.hljs) {
+  background-color: rgba(255, 255, 255, 0.15);
+  color: white;
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.markdown-inverse pre.code-block {
+  background-color: rgba(0, 0, 0, 0.25);
+  border-color: rgba(255, 255, 255, 0.15);
+}
+
+.markdown-inverse pre.code-block code {
+  color: white;
+}
+
+.markdown-inverse pre.code-block .code-lang {
+  background-color: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.markdown-inverse blockquote {
+  border-left-color: rgba(255, 255, 255, 0.5);
+  background-color: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.markdown-inverse th,
+.markdown-inverse td {
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.markdown-inverse th {
+  background-color: rgba(255, 255, 255, 0.08);
+}
+
+.markdown-inverse a {
+  color: white;
+}
+
+.markdown-inverse hr {
+  border-top-color: rgba(255, 255, 255, 0.2);
+}
+
+.markdown-inverse h1,
+.markdown-inverse h2 {
+  border-bottom-color: rgba(255, 255, 255, 0.2);
+  color: white;
+}
+
+.markdown-inverse h3,
+.markdown-inverse h4,
+.markdown-inverse h5,
+.markdown-inverse h6 {
+  color: white;
+}
+
+.markdown-inverse strong {
+  color: white;
+}

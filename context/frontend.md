@@ -2,98 +2,116 @@
 
 ## Общее
 
-Фронтенд — это **ванильный JavaScript SPA** (не Vue-build, не React).
-Нет компонентных фреймворков — чистый JS с DOM-манипуляциями, модульная структура через отдельные файлы.
+Фронтенд — это **React + TypeScript SPA**, собирается через **Vite**, состояние — **Zustand**, HTTP-кэш — **TanStack Query**, UI-стили — **Tailwind** с темами через CSS-переменные.
 
-- Раздаётся FastAPI из `rag-backend/app/static/`
-- Единственный HTML-файл: `index.html` (все страницы внутри одного HTML)
-- Сборка не нужна — файлы подключаются напрямую через `<script src>`
+- Расположен в `rag-backend/app/static/frontend/`
+- Сборка: `npm run build` → `frontend/dist/` → копируется в `app/static/dist/`
+- Раздаётся FastAPI из `rag-backend/app/static/` (mount `/static`)
+- `app/static/index.html` подключает собранный бандл из `/static/dist/assets/...`
 
 ## Структура файлов
 
 ```
 rag-backend/app/static/
-├── index.html                  # Единственный HTML, вся разметка страниц
-├── css/
-│   ├── base.css                # Глобальные переменные, reset, типографика
-│   ├── sidebar.css             # Боковая панель: домен, кампания, список чатов
-│   ├── chat-area.css           # Основная область чата: сообщения, инпут
-│   ├── markdown.css            # Стили рендеринга Markdown в сообщениях
-│   ├── settings.css            # Страница настроек: табы, карточки, формы
-│   ├── models.css              # Карточки моделей (generation, embedding, rerank)
-│   ├── db-management.css       # Модальное окно поиска по хранилищу
-│   └── pipeline-cards.css      # Карточки/плитки pipeline_builder
-└── js/
-    ├── api.js                  # Главный HTTP-клиент — обратная совместимость; агрегатор
-    ├── api/                    # Модули HTTP-клиента по доменам (используются index.html)
-    │   ├── index.js            # Сборка window.MercerAPI из модулей
-    │   ├── chat.js             # Чаты, сообщения, стриминг, pipeline-статус
-    │   ├── campaigns.js        # CRUD кампаний + Campaign State API
-    │   ├── documents.js        # Документы, reindex
-    │   ├── domains.js          # Домены, промпты, clarification fields
-    │   ├── models.js           # Generation / Embedding / Rerank модели
-    │   ├── pipeline.js         # Pipeline confirm/resume/cancel/status
-    │   ├── search.js           # Поиск по LanceDB (db search)
-    │   ├── settings.js         # PlatformSettings (params)
-    │   ├── sidecar.js          # Управление pdf-sidecar через host-agent
-    │   ├── update-mode.js      # Campaign Update Mode (start/session/review/apply)
-    │   └── vaults.js           # Vaults, bind/unbind
-    ├── chat.js                 # Логика чата: сообщения, стриминг, FSM (45KB)
-    ├── sidebar.js              # Боковая панель: список чатов, домен, кампания (24KB)
-    ├── settings.js             # Орчестратор страницы настроек, переключение табов (21KB)
-    ├── pipeline_builder.js     # DAG-редактор пайплайнов (40KB)
-    ├── pending-banner.js       # Баннер ожидания/паузы пайплайна (7KB)
-    ├── db_management.js        # Модальный поиск по LanceDB (11KB)
-    ├── update-mode.js          # UI обёртка для Campaign Update Mode (review/apply)
-    └── settings/               # Табы страницы настроек
-        ├── tab-domains.js          # Таб Домены (15KB)
-        ├── tab-vaults.js           # Таб Vault'ы (5.8KB)
-        ├── tab-models.js           # Оркестратор подтабов моделей (9.8KB)
-        ├── tab-gen-models.js       # Подтаб Generation (5KB)
-        ├── tab-emb-models.js       # Подтаб Embedding (7.8KB)
-        ├── tab-rerank-models.js    # Подтаб Rerank (14KB)
-        ├── tab-params.js           # Таб Параметры платформы (20KB)
-        ├── tab-pipelines.js        # Таб Pipelines (список) (4.3KB)
-        ├── tab-campaigns.js        # Таб Кампании (16KB) — вызывает InitialState / StateFields
-        ├── tab-documents.js        # Таб Documents (самый большой, 49KB)
-        ├── domain-rail.js          # Шард домен-rail в сайдбаре
-        ├── initial-state.js        # UI Initial State (Stage 3): выбор .md → preview → apply
-        ├── initial-state-wizard.js # Альтернативный wizard Initial State
-        ├── state-fields.js         # UI Field Configuration Campaign State (Stage 1)
-        └── tag-badge.js            # Шард тега (загружать ДО кампаний/документов!)
+├── index.html                  # Подключает собранный бандл из /static/dist/
+├── dist/                       # Билд Vite (генерируется при сборке)
+│   ├── index.html              # Шаблон Vite (НЕ раздаётся — копия для проверки)
+│   └── assets/
+│       ├── index-*.js          # JS-бандл с хешем
+│       └── index-*.css         # CSS-бандл с хешем
+└── frontend/                   # Исходники Vite-проекта
+    ├── package.json            # Зависимости и скрипты
+    ├── tsconfig.json           # strict TS
+    ├── vite.config.ts          # dev-сервер на 5173, base=/static/dist/
+    ├── vitest.config.ts        # test setup
+    ├── tailwind.config.ts      # Tailwind + CSS-vars
+    ├── postcss.config.js
+    ├── eslint.config.js
+    ├── index.html              # Шаблон Vite для dev
+    └── src/
+        ├── main.tsx            # Точка входа React + QueryClientProvider
+        ├── App.tsx             # Переключает ChatPage ↔ SettingsPage
+        ├── api/                # HTTP-клиент (типизированный)
+        │   ├── client.ts       # MercerAPI: все доменные методы
+        │   ├── http.ts         # HttpClient + HttpError
+        │   ├── types.ts        # Все TS-типы (из shared_contracts)
+        │   └── index.ts
+        ├── stores/             # Zustand stores
+        │   ├── themeStore.ts   # light/dark + data-theme
+        │   ├── domainStore.ts  # currentDomain, campaigns
+        │   ├── chatStore.ts    # currentChat, messages, streaming
+        │   └── settingsStore.ts# page: chat|settings, activeSettingsTab
+        ├── hooks/              # Кастомные React-хуки
+        ├── components/
+        │   ├── ui/             # UI-кит (Button, Modal, Tabs, Select, Input, …)
+        │   ├── chat/           # ChatPage, ChatArea, Markdown
+        │   ├── sidebar/        # Sidebar, ChatList, RenameModal
+        │   ├── settings/       # SettingsPage + tabs/*
+        │   │   └── tabs/
+        │   │       ├── DomainsTab.tsx
+        │   │       ├── VaultsTab.tsx
+        │   │       ├── ModelsTab.tsx
+        │   │       ├── ParamsTab.tsx
+        │   │       ├── PipelinesTab.tsx
+        │   │       ├── PipelineBuilder.tsx       # DAG на SVG
+        │   │       ├── CampaignsTab.tsx
+        │   │       ├── DocumentsTab.tsx
+        │   │       ├── useStateFields.ts         # хук для Campaign State fields
+        │   │       ├── InitialStateButton.tsx    # Wizard 3 фазы
+        │   │       ├── EffectiveContextButton.tsx
+        │   │       └── UpdateModeButton.tsx      # Запуск Update Mode из настроек
+        │   ├── wizard/         # UpdateModePanel — review/apply UI
+        │   └── search/         # SearchDbModal — поиск по LanceDB
+        ├── themes/
+        │   ├── tokens.css      # CSS-переменные для light/dark
+        │   └── index.css       # @tailwind + tokens + highlight.js
+        ├── types/              # Общие типы (Theme, Result и т.п.)
+        ├── utils/              # Утилиты (safeStorage)
+        └── test/               # Vitest setup
 ```
 
 ## Разметка страниц (index.html)
 
 ### Главный экран — Чат
 
-Активен по умолчанию. Состоит из `div.app-container`:
+Активен по умолчанию. Реализован через `<ChatPage>` (`src/components/chat/ChatPage.tsx`):
 
 ```
-.app-container
-├── aside.sidebar                       # Боковая панель
-│   ├── .sidebar-header
-│   │   ├── #settings-btn               # Переход на страницу настроек
-│   │   ├── #db-mgmt-btn                # Открывает модал поиска по LanceDB
-│   │   ├── #domain-select              # <select> домена
-│   │   ├── #campaign-selector          # <select> кампании (hidden по умолчанию)
-│   │   └── #new-chat-btn               # Создать чат
-│   └── #chat-list                  # Список чатов (динамически наполняется)
-└── main.chat-main
-    ├── .chat-header / #chat-title
-    ├── #chat-context-bar (.hidden)     # Полоса с названием кампании + pipeline-select
-    │   ├── #context-campaign           # Название кампании
-    │   ├── #pipeline-select            # Выбор pipeline (Авто | фиксированный)
-    │   ├── #lock-pipeline-btn          # Блокировка pipeline для чата
-    │   └── #chat-banner-area           # Слот для pending-banner
-    ├── #messages-container             # Основной скроль сообщений
-    ├── #status-banner (.hidden)        # Статус-баннер (индексация, ошибки)
-    └── #input-area (display:none)      # textarea + кнопка отправки
+<ChatPage>
+├── <Sidebar>
+│   ├── Header
+│   │   ├── Кнопка «Настройки платформы» → useSettingsStore.openSettings()
+│   │   ├── Кнопка «Поиск по хранилищу» → <SearchDbModal open>
+│   │   ├── <DomainSelector>          # useDomainStore.domains
+│   │   ├── <CampaignSelector>        # useDomainStore.campaigns
+│   │   ├── Кнопка «Новая беседа»     # api.createChat()
+│   │   └── Кнопка переключения темы  # useThemeStore.toggleTheme()
+│   └── <ChatList chats={...}>
+│       └── Каждый чат: title + меню (rename/delete)
+└── <ChatArea>
+    ├── header (title + домен)
+    ├── messages (MessageBubble × role)
+    │   └── <UpdateModePanel> если есть активная сессия
+    └── footer (textarea + send/stop button)
 ```
 
 ### Страница настроек
 
-Скрыта по умолчанию (`.hidden`), показывается поверх всего:
+Показывается при `useSettingsStore.page === 'settings'`:
+
+```
+<SettingsPage>
+├── header (← Назад к чату)
+├── <Tabs items=[domains,vaults,models,params,pipelines,campaigns,documents]>
+└── <SettingsContent tab={activeTab}>
+    ├── domains    → <DomainsTab> + <PromptEditor> × 4
+    ├── vaults     → <VaultsTab>
+    ├── models     → <ModelsTab> + подтабы (gen/emb/rerank)
+    ├── params     → <ParamsTab>
+    ├── pipelines  → <PipelinesTab> + <PipelineBuilder> (DAG на SVG)
+    ├── campaigns  → <CampaignsTab> + <InitialStateButton>, <EffectiveContextButton>, <StateFields>
+    └── documents  → <DocumentsTab>
+```
 
 ```
 main#settings-page
@@ -102,83 +120,39 @@ main#settings-page
 └── #settings-content                   # Контент активного таба (динамически заменяется)
 ```
 
-### Модальные окна (3 шт.)
+### Модальные окна (React `<Modal>`)
 
-| ID | Назначение |
+| Компонент | Назначение |
 |---|---|
-| `#rename-modal` | Переименование чата |
-| `#db-mgmt-modal` | Поиск по хранилищу (LanceDB), выбор домена, запрос, лимит |
-| `#chunk-detail-modal` | Детальный просмотр чанка |
+| `<RenameModal>` | Переименование чата |
+| `<SearchDbModal>` | Поиск по хранилищу (LanceDB), выбор домена, запрос, лимит |
+| `<InitialStateWizard>` | Initial State: select → review → result |
+| `<EffectiveContextDialog>` | Debug effective context |
 
-## JS-модули — ответственность и главные объекты
+## Архитектура модулей
 
-### `api.js` + `api/` — HTTP-клиент
+### `src/api/` — HTTP-клиент (типизированный)
 
-Единая точка взаимодействия с backend. `api.js` — агрегатор, подключает все модули из `js/api/`.
-Все другие модули используют только `window.MercerAPI`, не `fetch()` напрямую.
+Единая точка взаимодействия с backend. Класс `MercerAPI extends HttpClient`
+содержит все доменные методы, экспортируется как singleton `api`.
 
-Модули в `js/api/` разбиты по доменам:
+```typescript
+// src/api/client.ts
+export const api = new MercerAPI();
 
-```javascript
-// Главный объект (собирается в api/index.js):
-window.MercerAPI = {
-  // Чаты (api/chat.js)
-  getChats(), createChat(domainId, campaignId?), deleteChat(chatId),
-  renameChat(chatId, title), updateChat(chatId, data),
+await api.listChats(domainId);                  // → Chat[]
+await api.createChat(domainId, campaignId);     // → Chat
+await api.previewInitialState(campaignId, ids); // → InitialProposalReadV2
+await api.updateModeReview(chatId, [...], [...], { accepted_op_indexes: [...] });
+```
 
-  // Сообщения (api/chat.js)
-  getChatHistory(chatId),                                  // алиас для getChat; history endpoint
+Поддерживается через `src/api/types.ts` — все типы доменных сущностей (Chat, Campaign,
+InitialProposal, EffectiveContextRead и т.д.) импортируются из этого файла.
+Стриминг `sendMessage(chatId, content, true, signal)` возвращает `ReadableStream`
+(как и раньше, fetch + ReadableStream).
 
-  // Отправка — стриминг через fetch() + ReadableStream
-  sendMessage(chatId, text, onChunk, onDone, onError),
-
-  // Pipeline (api/pipeline.js)
-  getChatPipelineStatus(chatId),
-  confirmPipeline(chatId, token),
-  resumePipeline(chatId, token, answer),
-  cancelPipeline(chatId),
-
-  // Clarification (api/chat.js) — submitClarification активен;
-  // getClarificationState/updateClarificationState помечены как legacy (бэкенд не предоставляет /clarification endpoint)
-  submitClarification(chatId, clarificationId, answers),
-
-  // Домены (api/domains.js)
-  getDomains(), createDomain(), updateDomain(), deleteDomain(),
-  getDomainPrompts(), updateDomainPrompt(),
-  getClarificationFields(), createClarificationField(), deleteClarificationField(),
-
-  // Vaults (api/vaults.js)
-  getVaults(), createVault(), updateVault(), deleteVault(),
-  toggleVault(vaultId),                                  // bind/unbind через единый toggle
-
-  // Documents (api/documents.js)
-  getDocuments(filters?), deleteDocument(), reindexDocuments(),
-
-  // Модели (api/models.js)
-  getGenerationModels(), createGenModel(), updateGenModel(), deleteGenModel(), activateGenModel(),
-  getEmbeddingModels(), createEmbModel(), updateEmbModel(), deleteEmbModel(),
-  getRerankModels(), createRerankModel(), updateRerankModel(), deleteRerankModel(), activateRerankModel(),
-
-  // Настройки (api/settings.js)
-  getParams(), updateParam(key, value),
-
-  // Pipelines (api/pipeline.js)
-  getPipelines(), createPipeline(), updatePipeline(), deletePipeline(),
-
-  // Кампании (api/campaigns.js)
-  getCampaigns(), createCampaign(), updateCampaign(), deleteCampaign(),
-  // Campaign State (Stage 1) — api/campaigns.js
-  getStateFields(campaignId), createStateField(campaignId, payload),
-  updateStateField(campaignId, fieldId, payload),
-  deleteStateField(campaignId, fieldId), reorderStateFields(campaignId, ids),
-  // Campaign State (Stage 2) — active state + patch
-  getActiveCampaignState(campaignId),
-  // Campaign State (Stage 3) — Initial
-  previewInitialState(campaignId, documentIds), getInitialStateProposal(campaignId),
-  applyInitialState(campaignId, proposalId, configVersion),
-  // Campaign State (Stage 6) — debug
-  getEffectiveContext(campaignId, chatId?),
-  // Campaign State (Stage 7) — stale
+`HttpError` (статус + detail) поддерживает `isCode('source_snapshot_stale')` для
+машинной обработки ошибок Initial State.
   getStateStaleStatus(campaignId),
   // Campaign Update Mode (api/update-mode.js) — отдельный модуль
   startUpdateMode(chatId, note), getUpdateModeSession(chatId),
@@ -223,162 +197,115 @@ window.MercerAPI = {
 
 ---
 
-### `sidebar.js` — боковая панель (24KB)
+### `<Sidebar>` — `src/components/sidebar/Sidebar.tsx`
 
 **Ответственность:**
-- Загрузка доменов в `#domain-select`
-- Загрузка кампаний при выборе домена (показать/скрыть `#campaign-selector`)
-- Рендеринг списка чатов `#chat-list`
-- Контекстное меню (правая кнопка): переименовать, удалить чат
-- При смене домена — обновление списка чатов + настройка контекстной полосы
-- Глобальные: `window.currentDomainId`, `window.currentCampaignId`
+- Отображает домен/кампанию через `useDomainStore`
+- Загружает чаты через `useQuery(['chats', domainId])` (TanStack Query)
+- Список чатов через `<ChatList>` с inline-меню (rename/delete)
+- Кнопка переключения темы через `useThemeStore`
+- Открывает `<SearchDbModal>` и `<RenameModal>`
 
----
-
-### `settings.js` — оркестратор настроек (21KB)
+### `<ChatArea>` — `src/components/chat/ChatArea.tsx`
 
 **Ответственность:**
-- Переключение между страницей чата и страницей настроек
-- Рендеринг содержимого таба в `#settings-content`
-- Делегирует каждому `tab-*.js`-модулю: `renderTab(tabName)`
-- Хранит текущий активный таб: `window.activeSettingsTab`
+- Отображает ленту сообщений из `useChatStore`
+- Стриминг через `api.sendMessage()` + ручной `ReadableStream`-reader
+- Inline `<UpdateModePanel>` если есть активная Update Mode сессия
+- Кнопка Stop во время стрима через `AbortController`
 
-**Порядок загрузки `<script>` в `index.html` критичен!**
-Таб-модули зависят от `api.js` и `settings.js`, поэтому загружаются в таком порядке:
-```
-api/index.js → api/*.js → api.js → pipeline_builder.js → settings.js → tab-*.js
-→ tag-badge.js → initial-state.js → state-fields.js → tab-campaigns.js
-→ tab-documents.js → pending-banner.js → chat.js → sidebar.js
-→ db_management.js → update-mode.js
-```
+### `<SettingsPage>` — `src/components/settings/SettingsPage.tsx`
 
-`initial-state.js` и `state-fields.js` должны быть загружены **ДО**
-`tab-campaigns.js` (последний вызывает `window.InitialState.open()` и
-`window.StateFields.*` из обработчиков кнопок в карточке кампании).
+**Ответственность:**
+- Переключает табы через `useSettingsStore`
+- Рендерит активный таб через `<SettingsContent>` (switch по `activeSettingsTab`)
+
+**Никакого порядка загрузки скриптов нет** — это преимущество Vite/ESM.
+Импорты TS резолвятся автоматически, дерево зависимостей строится по факту
+использования. Никаких `tag-badge.js ДО tab-campaigns.js`.
 
 ---
 
-### `pipeline_builder.js` — DAG-редактор (40KB)
+### `<PipelineBuilder>` — `src/components/settings/tabs/PipelineBuilder.tsx`
 
-Визуальный редактор пайплайнов. Используется во вкладке "Pipelines" страницы настроек.
+Визуальный редактор пайплайнов на чистом SVG (без сторонних библиотек).
+Используется во вкладке "Pipelines" страницы настроек.
 
-- Рендерит шаги пайплайна как drag-карточки (CSS-грид/стрелки)
-- Отредактировать шаг: тип (`retrieval`, `validation`), параметры, `depends_on`
-- Добавить/удалить шаг, изменить `final_composition`
-- Сериализует пайплайн в JSON и отправляет через `api.js`
-- Использует `pipeline-cards.css`
-
----
-
-### `pending-banner.js` — баннер пайплайна (7KB)
-
-Отображается в `#chat-banner-area` внутри контекст-бара.
-
-- Регулярно поллит `GET /api/pipeline/{chat_id}/status`
-- Если `pending_pipeline_confirm` != null — показывает баннер с кнопками «Подтвердить» / «Отменить»
-- Если `pipeline_pause_state` != null — показывает баннер с полем ввода и кнопкой «Продолжить»
-- Вызывает `api.confirmPipeline()` / `api.resumePipeline()` / `api.cancelPipeline()`
+- Шаги пайплайна как `<rect>` + `<text>` с автолейаутом по уровням (topological sort)
+- Связи через `<path>` с маркером `arrowhead`
+- Inspector справа: редактирование name, depends_on (multi-checkbox)
+- Добавление/удаление шагов, изменение `final_composition`
+- Сохранение через `api.updatePipeline()`
 
 ---
 
-### `db_management.js` — поиск по LanceDB (11KB)
+### `<UpdateModePanel>` — `src/components/wizard/UpdateModePanel.tsx`
 
-- Вязан на модальное окно `#db-mgmt-modal`
-- Заполняет `#search-domain-select` из доменов
-- `searchDb(domainId, query, limit)` → отображает `#search-results` карточками чанков
-- Клик на чанк → открывает `#chunk-detail-modal` с полным текстом + метаданными
+Review/apply UI для Campaign Update Mode. Встраивается inline в `<ChatArea>`.
+
+- Опрос `api.updateModeGetSession()` каждые 5 секунд
+- Список файловых изменений: unified diff + принять/отклонить
+- Список state-ops: human-readable summary + принять/отклонить
+- Inline-редактор для replace_single / update_list_item / add_list_item (TODO)
+- Сохранить выбор → `api.updateModeReview()`
+- Применить → `api.updateModeApply()`
+
+---
+
+### `<SearchDbModal>` — `src/components/search/SearchDbModal.tsx`
+
+Поиск по LanceDB. Открывается из сайдбара. Использует `api.textSearchByDomain(domainId, query, limit)`.
 
 ---
 
 ## Вкладки страницы настроек
 
-| Таб (`data-tab`) | Файл | Содержание |
+| Таб | Файл | Содержание |
 |---|---|---|
-| `domains` | `tab-domains.js` | CRUD доменов, редактор промптов (4 типа), ClarificationFields |
-| `vaults` | `tab-vaults.js` | CRUD ваултов, toggle embedding-модели |
-| `models` | `tab-models.js` + подтабы | Подтабы: Generation / Embedding / Rerank |
-| `params` | `tab-params.js` | Редактирование PlatformSetting (сгруппированные по group_name) |
-| `pipelines` | `tab-pipelines.js` + `pipeline_builder.js` | Список + DAG-редактор |
-| `campaigns` | `tab-campaigns.js` + `initial-state.js` + `state-fields.js` | CRUD кампаний, привязка тегов, **Campaign State UI**: конфигурация полей, Initial State wizard, версии и patch-операции, Effective Context debug, stale indicator |
-| `documents` | `tab-documents.js` | Просмотр документов, фильтры, статусы, reindex |
+| `domains` | `tabs/DomainsTab.tsx` | CRUD доменов, редактор промптов (4 типа), ClarificationFields |
+| `vaults` | `tabs/VaultsTab.tsx` | CRUD ваултов, toggle embedding-модели |
+| `models` | `tabs/ModelsTab.tsx` | Подтабы: Generation / Embedding / Rerank |
+| `params` | `tabs/ParamsTab.tsx` | Редактирование PlatformSetting |
+| `pipelines` | `tabs/PipelinesTab.tsx` + `tabs/PipelineBuilder.tsx` | Список + DAG-редактор на SVG |
+| `campaigns` | `tabs/CampaignsTab.tsx` + подмодули | CRUD кампаний, **Campaign State UI**: State Fields, Initial State wizard, Effective Context debug |
+| `documents` | `tabs/DocumentsTab.tsx` | Просмотр документов, фильтры, статусы, reindex |
 
 ### Campaign State UI
 
-Карточка кампании в `tab-campaigns.js` интегрирует несколько модулей:
+Карточка кампании в `<CampaignsTab>` интегрирует:
 
-#### Поля Campaign State (Stage 1) — `state-fields.js`
+#### Поля Campaign State (Stage 1) — `useStateFields` хук
 
 - CRUD по `state-fields`: добавление/редактирование/удаление полей, режим `single | list`,
   порядок (`display_order`), флаг `enabled`.
-- Кнопка reorder открывает drag-and-drop интерфейс.
-- Удаление поля требует подтверждения (cascade-purge: «Удаление очистит значение
-  в активной версии state»).
-- Бейдж «конфигурация обновлена» появляется, если `config_version` изменился.
+- Удаление поля требует подтверждения.
+- Inline-редактор в `<StateFieldsSection>`.
 
-#### Initial State (Stage 3) — `initial-state.js` / `initial-state-wizard.js`
+#### Initial State (Stage 3) — `<InitialStateButton>` + `<InitialStateWizard>`
 
-Полноэкранный overlay с тремя фазами:
+Modal с тремя фазами:
 
-1. **Select** — выбор Markdown-документов кампании. Перед загрузкой
-   документов Wizard собирает ID тегов кампании через
-   `getCampaignTags(campaignId)` + `getCampaignGlobalTags(campaignId)`
-   и передаёт их как `tagIds` в `getSettingsDocuments` —
-   `GET /api/settings/documents?domain_id=...&tag_id=u1&tag_id=u2&tag_id=u3&status=indexed`.
-   Документы фильтруются по тегам кампании (OR-логика), а не по всему домену.
-   - Если у кампании 0 тегов (ни своих, ни подключённых глобальных) —
-     показывается баннер «Initial State недоступен», Wizard не открывается,
-     кнопка «Сформировать начальный контекст» скрыта в карточке кампании
-     (`initial-state.js`).
-   - Под полем поиска отображается подсказка с числом тегов кампании.
+1. **Select** — выбор Markdown-документов кампании по тегам
+   (`api.getCampaignTags` + `api.getCampaignGlobalTags` → `api.getSettingsDocuments({ tagIds })`).
+   - Если у кампании 0 тегов — показывается баннер «Initial State недоступен».
    - Счётчик токенов с предупреждением, если > 64 000.
-   - Изменение чекбокса документа обновляет счётчики и прогресс-бар
-     точечно (через `_updateBudgetView`), без полного перерендера списка —
-     это сохраняет `scrollTop` контейнера `.iswizard__docs` (иначе
-     список «прыгал» в начало при каждом клике).
-2. **Review** — diff по полям (`proposed` / `empty` / `needs_clarification`),
-   свёрнутый source snapshot, warnings. В фоне проверяется свежесть
-   `Document.md5` против snapshot — если расхождение, показывается баннер
-   «Источники изменились».
-   - **Inline-edit:**
-     - Single-поля: кнопка «Изменить» открывает textarea, «Сохранить»/«Отменить».
-     - List-поля: у каждого элемента кнопки ✎ (edit) и 🗑 (remove);
-       под списком — кнопка «+ Добавить элемент». `source_refs` остаются
-       зафиксированными от LLM, не редактируются.
-   - Валидация: text ≥ 1, ≤ 8192 (как в `CampaignStateInitialSingleValue.text`
-     и `CampaignStateInitialListItem.text`).
-3. **Apply** — `POST /state/initial/apply` с телом
-   `{ proposal_id, config_version, proposal_overrides? }`.
-   `proposal_overrides` — частичный proposal (по `field_key`),
-   сформированный из текущего состояния `ctx.proposal.proposal` в Wizard.
-   Бэкенд мерджит его поверх proposal, лежащего в Redis. Обрабатывает
-   все коды ошибок бэкенда: `initial_already_applied`, `source_snapshot_stale`,
-   `proposal_expired`, `503 generation_provider_unavailable`.
-   - Баннер ошибки с кнопкой `×` (dismiss) работает в любом стейте, где
-     он показан (`select_documents`, `review`, `result`).
+2. **Review** — список полей со значениями (`proposed` / `empty` / `needs_clarification`),
+   отрендеренными через `<Markdown>`.
+3. **Result** — финальное сообщение об успехе.
 
-При успехе показывается финальное сообщение и карточка кампании заменяет
-кнопку на badge «Initial State применён» через `loadTab('campaigns')`.
+#### Effective Context debug (Stage 6) — `<EffectiveContextButton>`
 
-#### Patch и версии (Stage 2)
-
-- Список `state/versions` с метаданными (`state_version`, `config_version`,
-  `source_kind`, `created_at`, `created_by`).
-- Inline-редактор патча через `state/patch` с поддержкой частичного apply.
-
-#### Effective Context debug (Stage 6)
-
-Кнопка «Debug effective context» открывает оверлей с результатом
-`GET /api/settings/campaigns/{id}/effective-context?chat_id=...`: блоки
-`system_prompt`, `campaign_state`, `rag_context`, `history`, `user_message`,
-метрики `total_tokens`, `budget`, `truncated_fields`. Не выполняет retrieval
-и не вызывает LLM.
+Кнопка «Debug effective context» открывает `<EffectiveContextDialog>` с результатом
+`api.getEffectiveContext(campaignId)`: блоки с метриками `total_tokens`, `budget`, `truncated_fields`.
 
 #### Stale indicator (Stage 7)
 
-Бейдж «В источниках появились обновления» появляется, если
-`GET /api/settings/campaigns/{id}/state/stale-status` возвращает
-`potentially_stale=true`. По клику открывается Action «Обновить контекст»,
-который переключает на chat этой кампании и предлагает запустить Campaign Update Mode.
+TODO: бейдж «В источниках появились обновления» по `api.getStateStaleStatus(campaignId)`.
+
+#### Update Mode — `<UpdateModeButton>` (запуск из настроек)
+
+Кнопка в карточке кампании: пользователь вводит `note`, запускается
+`api.updateModeStart(chatId, note)`. UI review/apply — внутри `<UpdateModePanel>` в чате.
 
 ### Update Mode UI — `update-mode.js`
 
@@ -414,37 +341,92 @@ UI review-сессии в `js/update-mode.js` показывает:
 
 ### Conditional / cyclic RAG индикатор
 
-Чат отображает badge «поиск» во время tool-цикла: пока host выполняет
+TODO: бейдж «поиск» во время tool-цикла — пока host выполняет
 `search_knowledge`, в сообщении ассистента показывается анимация и
-`queries_used`. По завершении рендерится финальный ответ, а в debug-панели
-(`/effective-context`) видны блоки `rag_context` (если был retrieval).
+`queries_used`. Текущая версия обрабатывает только `token` и `progress`-события.
 
-## CDN-зависимости
+## Зависимости (npm)
 
-| Библиотека | Версия | Назначение |
+| Пакет | Версия | Назначение |
 |---|---|---|
-| `marked` | 12.0.0 | Парсер Markdown → HTML |
-| `DOMPurify` | 3.1.0 | Санитация HTML (XSS-защита) |
-| `highlight.js` | 11.9.0 | Подсветка кода (python, js, bash, json, yaml, sql) |
+| `react` | 18.3 | UI-фреймворк |
+| `react-dom` | 18.3 | React renderer для DOM |
+| `zustand` | 4.5 | Глобальное состояние (замена `window.*`) |
+| `@tanstack/react-query` | 5.51 | HTTP-кэш + mutations |
+| `marked` | 12.0 | Парсер Markdown → HTML |
+| `dompurify` | 3.1 | Санитация HTML (XSS-защита) |
+| `highlight.js` | 11.9 | Подсветка кода (python, js, bash, json, yaml, sql) |
+| `tailwindcss` | 3.4 | Утилитарные CSS-классы |
+| `vite` | 5.3 | Сборщик + dev-сервер |
+| `typescript` | 5.5 | Типизация |
+| `vitest` | 2.0 | Unit-тесты |
+| `@testing-library/react` | 16.0 | Тесты компонентов |
 
-## Глобальные переменные `window.*`
+## Stores (замена `window.*`)
 
-| Переменная | Тип | Источник |
+| Store | Источник | Заменяет |
 |---|---|---|
-| `window.MercerAPI` | Object | `api.js` + `api/*.js` — весь HTTP-клиент |
-| `window.currentChatId` | string/null | `chat.js` |
-| `window.currentDomainId` | string | `sidebar.js` |
-| `window.currentCampaignId` | string/null | `sidebar.js` |
-| `window.activeSettingsTab` | string | `settings.js` |
+| `useThemeStore` | `stores/themeStore.ts` | `data-theme` атрибут на `<html>` |
+| `useDomainStore` | `stores/domainStore.ts` | `window.currentDomainId` / `window.currentCampaignId` |
+| `useChatStore` | `stores/chatStore.ts` | `window.chatManager.currentChat` / `currentChatId` |
+| `useSettingsStore` | `stores/settingsStore.ts` | `window.activeSettingsTab` + переключение страниц |
 
 ## Особенности архитектуры
 
-1. **Нет роутера** — переключение страниц = toggle `.hidden` на DOM-элементах.
-2. **Нет стейта** — данные хранятся в `window.*` и передаются через них между модулями.
-3. **Тематическое разделение** — CSS и JS по зонам приложения; API-слой разбит на отдельные файлы в `js/api/`.
-4. **Стриминг** — `fetch()` + `ReadableStream`, не `EventSource`. Ответ читается постепенно.
-5. **Сборка не нужна** — добавление нового JS/CSS = подключить в `index.html` + обязательно соблюдать порядок загрузки.
-6. **`tag-badge.js`** должен быть загружен ДО `tab-campaigns.js` и `tab-documents.js` — они импортируют его функции.
-7. **`initial-state.js`** должен быть загружен ДО `tab-campaigns.js` — последний вызывает `window.InitialState.open()` из обработчика кнопки в карточке кампании.
-8. **`state-fields.js`** должен быть загружен ДО `tab-campaigns.js` — последний вызывает `window.StateFields.*` для управления полями.
-9. **`api/update-mode.js`** — модульный mixin для Update Mode review/apply; загружается через `api/index.js` и собирается в `window.MercerAPI`. Старая синхронная версия в `api.js` оставлена для back-compat, но `index.html` подключает только модульный агрегатор.
+1. **Нет react-router** — переключение страниц/табов через `useSettingsStore` (Zustand).
+2. **TypeScript strict** — ошибки типов ловятся на этапе компиляции.
+3. **TanStack Query** для всего server-state — `useQuery` для чтения, `useMutation` для записи,
+   автоматическая инвалидация через `queryClient.invalidateQueries`.
+4. **Zustand** для клиентского состояния (theme, current selections, streaming state).
+5. **Tailwind + CSS variables + data-theme** — темизация через CSS-переменные, переключение light/dark.
+6. **Стриминг** — `fetch()` + `ReadableStream`, не `EventSource` (как и раньше).
+7. **Сборка обязательна** — `npm run build` → `frontend/dist/` → копируется в `app/static/dist/`.
+   Никакого порядка загрузки скриптов — Vite/ESM резолвит дерево зависимостей сам.
+8. **Никаких `tag-badge.js ДО tab-campaigns.js`** — все импорты через `import`/`export`.
+
+## Разработка
+
+### Dev-сервер
+
+```bash
+cd rag-backend/app/static/frontend
+npm install
+npm run dev
+```
+
+Vite стартует на `http://localhost:5173`. Проксирование `/api`, `/config`, `/chat`,
+`/api/v1` идёт на `http://localhost:8000` (FastAPI должен быть запущен).
+
+### Production-сборка
+
+```bash
+npm run build
+# → dist/index.html + dist/assets/index-*.{js,css}
+# Vite собирает с base=/static/dist/ для встраивания в FastAPI
+```
+
+При запуске `Dockerfile.rag-backend` стадия `frontend-builder` запускает `npm run build`,
+а результат копируется в `/app/app/static/dist/`. Финальный `index.html` (в
+`app/static/index.html`) подключает `/static/dist/assets/index-*.js`.
+
+### Тесты
+
+```bash
+npm test          # однократный прогон
+npm run test:watch
+npm run lint      # ESLint
+npm run typecheck # tsc --noEmit
+```
+
+## Что ещё TODO
+
+Список известных пробелов в текущей миграции:
+
+- Inline-редактор текста для replace_single / update_list_item в `<UpdateModePanel>`
+- Бейдж `stale` indicator для Campaign State (Stage 7)
+- Full Document Mode панель (выбор документов при full_document_selection_required)
+- Pipeline inline-карточки (pipeline_confirm_required / validation_required)
+- Conditional / cyclic RAG индикатор (tool_call / tool_result в ChatArea)
+- Pending Banner (поллинг pending_pipeline_confirm / pipeline_pause_state)
+- Pipeline Builder: drag-to-reorder, drag-to-connect вместо чекбоксов
+- Полная Storybook / chromatic snapshot для регрессий UI

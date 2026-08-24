@@ -87,6 +87,10 @@ class VaultCreateRequest(BaseModel):
     display_name: str | None = None
     embedding_model_id: str | None = None
     create_folder: bool = False
+    # Chunking defaults — единый UX с VaultUpdateRequest
+    chunk_size: int | None = Field(default=1600, gt=0)
+    overlap: int | None = Field(default=0, ge=0)
+    entity_aware_mode: bool | None = False
     # Git identity — per-vault override for git commits made by the indexer
     git_author_name: str | None = Field(default=None, max_length=256)
     git_author_email: str | None = Field(default=None, max_length=320)

@@ -51,7 +51,7 @@ Mercer — мультидоменная RAG-платформа для работ
 - Проксирует запросы к rag-indexer через внутренний HTTP
 - Проксирует запросы управления pdf-sidecar к host-agent через `api/settings/sidecar.py`
 - Хранит состояние в PostgreSQL, сессии чатов, Update Mode review-сессии и Initial State proposals в Redis
-- Раздаёт SPA-фронтенд из `app/static/` (ванильный JS, без фреймворков)
+- Раздаёт SPA-фронтенд из `app/static/` (React 18 + TS, билд Vite в `app/static/dist/`)
 - **Campaign Update Mode**: orchestrирует retrieval → LLM edit intents + state_patch → review session; управляет через `api/update_mode.py`
 - **Campaign State**: CRUD полей через `api/settings/campaigns.py`, apply patch, Initial State flow, debug effective-context endpoint
 - **Conditional RAG в чате**: tool-call path в `plain_stream` через `AgentLoop.run_stream` + `SearchKnowledgeService`

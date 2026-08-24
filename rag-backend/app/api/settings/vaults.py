@@ -73,6 +73,11 @@ async def create_vault(req: VaultCreateRequest, db: AsyncSession = Depends(get_d
     vault = Vault(
         vault_id=req.vault_id, domain_id=req.domain_id, display_name=req.display_name,
         embedding_model_id=req.embedding_model_id, binding_status="unbound", chunk_count=0,
+        chunk_size=req.chunk_size or 1600,
+        overlap=req.overlap or 0,
+        entity_aware_mode=req.entity_aware_mode or False,
+        git_author_name=req.git_author_name,
+        git_author_email=req.git_author_email,
     )
     db.add(vault)
     await db.commit()

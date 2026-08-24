@@ -88,6 +88,15 @@ class SettingsService:
         await self.load_settings(db)
         return dict(self._settings_cache)
 
+    async def get_all_with_meta(self, db: AsyncSession) -> list[PlatformSetting]:
+        """Возвращает все PlatformSetting с метаданными (label, hint, group_name, value_type).
+
+        Используется фронтендом (вкладка «Параметры») — нужны человеко-читаемые
+        названия и описания, а не только значения.
+        """
+        result = await db.execute(select(PlatformSetting))
+        return list(result.scalars().all())
+
     async def set(self, key: str, value: Any, db: AsyncSession) -> None:
         setting = await db.get(PlatformSetting, key)
         if setting is None:

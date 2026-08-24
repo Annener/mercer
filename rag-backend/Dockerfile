@@ -1,3 +1,13 @@
+FROM node:20-alpine AS frontend-builder
+
+WORKDIR /app/frontend
+
+COPY rag-backend/app/static/frontend/package.json rag-backend/app/static/frontend/package-lock.json* ./
+RUN npm ci --no-audit --no-fund || npm install --no-audit --no-fund
+
+COPY rag-backend/app/static/frontend/ ./
+RUN npm run build
+
 FROM python:3.13-slim AS builder
 
 ENV PYTHONDONTWRITEBYTECODE=1
@@ -31,6 +41,10 @@ COPY rag-backend/app /app/app
 COPY rag-backend/alembic.ini /app/alembic.ini
 COPY rag-backend/migrations /app/migrations
 COPY rag-backend/tools /app/tools
+
+# Frontend static bundle (React + Vite build output)
+COPY --from=frontend-builder /app/frontend/dist /app/app/static/dist
+COPY --from=frontend-builder /app/frontend/dist/index.html /app/app/static/index.html
 
 RUN find /usr/local/lib/python3.13/site-packages -type d \( -name __pycache__ -o -name tests \) -prune -exec rm -rf {} + \
     && find /usr/local/lib/python3.13/site-packages -type f -name "*.pyc" -delete \
