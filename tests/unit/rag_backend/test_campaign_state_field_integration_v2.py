@@ -191,6 +191,7 @@ class _FakeFieldService:
         from shared_contracts.models import CampaignStateFieldConfigRead
         return CampaignStateFieldConfigRead(
             id=str(f.id),
+            field_id=str(f.id),
             campaign_id=str(f.campaign_id),
             key=f.key,
             label=f.label,

@@ -168,6 +168,7 @@ async def _bump_config_version(db: AsyncSession, campaign: Campaign) -> None:
 def _to_read_dto(row: CampaignStateFieldConfig) -> CampaignStateFieldConfigRead:
     return CampaignStateFieldConfigRead(
         id=str(row.id),
+        field_id=str(row.id),  # алиас для совместимости со старыми клиентами
         campaign_id=str(row.campaign_id),
         key=row.key,
         label=row.label,
@@ -221,7 +222,20 @@ class CampaignStateFieldService:
         db: AsyncSession,
         campaign_id: uuid.UUID,
         payload: CampaignStateFieldConfigCreate,
+        *,
+        commit: bool = True,
     ) -> CampaignStateFieldConfigRead:
+        """Создать поле Campaign State.
+
+        Параметр commit:
+          - commit=True (по умолчанию) — сразу коммитит изменения (для standalone
+            CRUD-эндпоинта).
+          - commit=False — только добавляет в db.session и бампит config_version,
+            НЕ делает commit. Это нужно для batch-операций (например, apply
+            Initial State с suggested_fields), где все изменения должны
+            зафиксироваться одной транзакцией — иначе при ошибке на
+            последующих шагах поля останутся «осиротевшими» в БД.
+        """
         campaign = await _lock_campaign_for_config_change(db, campaign_id)
         _validate_field_key(payload.key)
         _validate_mode(payload.mode)
@@ -238,6 +252,22 @@ class CampaignStateFieldService:
         )
         db.add(row)
         await _bump_config_version(db, campaign)
+        if not commit:
+            # Flush, чтобы row.id заполнился (нужен для downstream-логики),
+            # но commit остаётся на ответственности вызывающего.
+            try:
+                await db.flush()
+            except IntegrityError as exc:
+                await db.rollback()
+                raise FieldKeyDuplicateError(
+                    f"field with key {payload.key!r} already exists for this campaign"
+                ) from exc
+            logger.info(
+                "campaign_state_field.create (no-commit): campaign=%s key=%s "
+                "id=%s config_version=%d",
+                campaign_id, payload.key, row.id, campaign.config_version,
+            )
+            return _to_read_dto(row)
         try:
             await db.commit()
         except IntegrityError as exc:

@@ -204,6 +204,7 @@ async def _load_fields(
 def _field_read(f: CampaignStateFieldConfig) -> CampaignStateFieldConfigRead:
     return CampaignStateFieldConfigRead(
         id=str(f.id),
+        field_id=str(f.id),  # алиас для совместимости со старыми клиентами
         campaign_id=str(f.campaign_id),
         key=f.key,
         label=f.label,
@@ -722,21 +723,26 @@ class CampaignStateValueService:
             )
         )
 
-        # Вставляем новые значения.
+        # Вставляем новые значения. Per-row INSERT (вместо multi-row)
+        # чтобы быть совместимым со схемой, где PK — только version_id
+        # (одна колонка). Multi-row INSERT с одним version_id и разными
+        # field_id падает на второй строке с UniqueViolation.
         if new_values_text:
-            await db.execute(
-                insert(CampaignStateValue).values(
-                    [
-                        {
-                            "version_id": new_version_id,
-                            "field_id": fid,
-                            "text": text,
-                            "source_refs": refs,
-                        }
-                        for fid, (text, refs) in new_values_text.items()
-                    ]
-                )
+            value_rows = [
+                {
+                    "version_id": new_version_id,
+                    "field_id": fid,
+                    "text": text,
+                    "source_refs": refs,
+                }
+                for fid, (text, refs) in new_values_text.items()
+            ]
+            logger.info(
+                "patch: inserting %d values (campaign=%s version_id=%s, per-row)",
+                len(value_rows), campaign_id, new_version_id,
             )
+            for row in value_rows:
+                await db.execute(insert(CampaignStateValue).values([row]))
 
         # Вставляем новые list-items.
         item_rows: list[dict[str, Any]] = []
@@ -753,9 +759,12 @@ class CampaignStateValueService:
                     }
                 )
         if item_rows:
-            await db.execute(
-                insert(CampaignStateListItem).values(item_rows)
+            logger.info(
+                "patch: inserting %d list_items (campaign=%s version_id=%s, per-row)",
+                len(item_rows), campaign_id, new_version_id,
             )
+            for row in item_rows:
+                await db.execute(insert(CampaignStateListItem).values([row]))
 
         # Audit log.
         from app.db.models import AuditLog  # local import to avoid circular
@@ -892,9 +901,53 @@ class CampaignStateValueService:
         )
 
         if values_rows:
-            await db.execute(insert(CampaignStateValue).values(values_rows))
+            # Defensive dedup по (version_id, field_id): даже если upstream-слой
+            # (нормализация LLM, _unify_proposal_for_apply) пропустил дубликат,
+            # мы тут его срежем — иначе INSERT упадёт с UniqueViolation.
+            # Приоритет — последнее вхождение.
+            deduped_values: dict[tuple[uuid.UUID, uuid.UUID], dict[str, Any]] = {}
+            for row in values_rows:
+                key = (row["version_id"], row["field_id"])
+                deduped_values[key] = row
+            values_rows_final = list(deduped_values.values())
+            if len(values_rows_final) < len(values_rows):
+                logger.warning(
+                    "apply_initial: deduped values_rows from %d to %d (campaign=%s version_id=%s)",
+                    len(values_rows), len(values_rows_final),
+                    campaign_id, new_version_id,
+                )
+            # Per-row INSERT (вместо multi-row) чтобы быть совместимым
+            # со схемой, где PK на campaign_state_values — только version_id
+            # (single column). Multi-row INSERT с одним version_id и
+            # разными field_id падает на 2-й строке с UniqueViolation.
+            logger.info(
+                "apply_initial: inserting %d values (campaign=%s version_id=%s, per-row)",
+                len(values_rows_final), campaign_id, new_version_id,
+            )
+            for row in values_rows_final:
+                await db.execute(insert(CampaignStateValue).values([row]))
         if items_rows:
-            await db.execute(insert(CampaignStateListItem).values(items_rows))
+            # Аналогичная защита для list-items: dedup по (version_id, field_id, item_key).
+            seen_keys: set[tuple[uuid.UUID, uuid.UUID, str]] = set()
+            deduped_items: list[dict[str, Any]] = []
+            for row in items_rows:
+                k = (row["version_id"], row["field_id"], row["item_key"])
+                if k in seen_keys:
+                    continue
+                seen_keys.add(k)
+                deduped_items.append(row)
+            if len(deduped_items) < len(items_rows):
+                logger.warning(
+                    "apply_initial: deduped items_rows from %d to %d (campaign=%s version_id=%s)",
+                    len(items_rows), len(deduped_items),
+                    campaign_id, new_version_id,
+                )
+            logger.info(
+                "apply_initial: inserting %d list_items (campaign=%s version_id=%s, per-row)",
+                len(deduped_items), campaign_id, new_version_id,
+            )
+            for row in deduped_items:
+                await db.execute(insert(CampaignStateListItem).values([row]))
 
         # Audit log.
         from app.db.models import AuditLog  # local import to avoid circular

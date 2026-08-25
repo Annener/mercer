@@ -1,16 +1,25 @@
 import { useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
-import { Button, Card, EmptyState, Modal, Checkbox, Badge } from '@/components/ui';
-import { api } from '@/api/client';
-import { Markdown } from '@/components/chat/Markdown';
-import { basename } from '@/utils/path';
-import type { CampaignId, Document, DocumentId, InitialProposalField } from '@/api/types';
+import { Button, EmptyState, Modal } from '@/components/ui';
+import type { CampaignId, CampaignStateVersion, DomainId } from '@/api/types';
+import { WizardStepper, type WizardStep } from './initialState/WizardStepper';
+import { WizardErrorBanner } from './initialState/WizardErrorBanner';
+import { SelectDocumentsStep } from './initialState/SelectDocumentsStep';
+import { ReviewStep } from './initialState/ReviewStep';
+import { ResultStep } from './initialState/ResultStep';
+import { useInitialStateController } from './initialState/useInitialStateController';
+import { ERROR_MESSAGES } from './initialState/constants';
 
 interface InitialStateButtonProps {
   campaignId: CampaignId;
+  domainId?: DomainId | null;
+  onApplied?: (version: CampaignStateVersion | null) => void;
 }
 
-export function InitialStateButton({ campaignId }: InitialStateButtonProps) {
+export function InitialStateButton({
+  campaignId,
+  domainId,
+  onApplied,
+}: InitialStateButtonProps) {
   const [open, setOpen] = useState(false);
 
   return (
@@ -18,223 +27,122 @@ export function InitialStateButton({ campaignId }: InitialStateButtonProps) {
       <Button size="sm" onClick={() => setOpen(true)}>
         Сформировать начальный контекст
       </Button>
-      {open && <InitialStateWizard campaignId={campaignId} onClose={() => setOpen(false)} />}
+      {open && (
+        <InitialStateWizard
+          campaignId={campaignId}
+          domainId={domainId ?? undefined}
+          onClose={() => setOpen(false)}
+          onApplied={onApplied}
+        />
+      )}
     </>
   );
 }
 
-type Phase = 'select' | 'review' | 'result';
+interface InitialStateWizardProps {
+  campaignId: CampaignId;
+  domainId?: DomainId;
+  onClose: () => void;
+  onApplied?: (version: CampaignStateVersion | null) => void;
+}
 
 function InitialStateWizard({
   campaignId,
+  domainId,
   onClose,
-}: {
-  campaignId: CampaignId;
-  onClose: () => void;
-}) {
-  const [phase, setPhase] = useState<Phase>('select');
-  const [selectedIds, setSelectedIds] = useState<DocumentId[]>([]);
-  const [proposal, setProposal] = useState<{
-    proposal_id: string;
-    config_version: number;
-    fields: InitialProposalField[];
-  } | null>(null);
-
-  // Tags → список документов
-  const tagsQuery = useQuery({
-    queryKey: ['campaign-tags', campaignId],
-    queryFn: async () => {
-      const own = await api.getCampaignTags(campaignId);
-      const global = await api.getCampaignGlobalTags(campaignId);
-      return [...own, ...global];
-    },
+  onApplied,
+}: InitialStateWizardProps) {
+  const ctrl = useInitialStateController({
+    campaignId,
+    domainId,
+    onApplied,
   });
 
-  const tagIds = tagsQuery.data?.map((t) => t.id) ?? [];
-  const hasNoTags = tagsQuery.data && tagsQuery.data.length === 0;
+  const step = stateToStep(ctrl.state);
 
-  const documentsQuery = useQuery({
-    queryKey: ['documents', 'by-tags', tagIds],
-    queryFn: () =>
-      api.getSettingsDocuments({ tagIds, status: 'indexed' }),
-    enabled: tagIds.length > 0,
-  });
-
-  const previewMutation = useQuery({
-    queryKey: ['initial-preview', campaignId, selectedIds],
-    queryFn: () =>
-      api.previewInitialState(campaignId, selectedIds, { propose_fields: true }),
-    enabled: false,
-  });
-
-  const applyMutation = useQuery({
-    queryKey: ['initial-apply', campaignId, proposal?.proposal_id],
-    queryFn: () =>
-      proposal
-        ? api.applyInitialState(campaignId, proposal.proposal_id, proposal.config_version)
-        : Promise.resolve(null),
-    enabled: false,
-  });
+  function handleClose() {
+    if (
+      (ctrl.state === 'preview_starting' || ctrl.state === 'applying') &&
+      !confirm(
+        'Прервать формирование Initial State? Прогресс будет потерян.',
+      )
+    ) {
+      return;
+    }
+    onClose();
+  }
 
   return (
-    <Modal open onClose={onClose} title="Initial State — формирование контекста" size="lg">
-      <div className="p-4">
-        {hasNoTags ? (
+    <Modal open onClose={handleClose} title="Initial State — формирование контекста" size="lg">
+      <div className="flex flex-col gap-4">
+        <WizardStepper currentStep={step} />
+
+        {ctrl.state === 'loading_documents' ? (
+          <LoadingBlock text="Загрузка документов…" />
+        ) : ctrl.hasNoTags && ctrl.state === 'select_documents' ? (
           <EmptyState
             title="Initial State недоступен"
-            description="У кампании нет ни собственных, ни глобальных тегов. Прикрепите теги, чтобы формировать начальный контекст из индексированных документов."
+            description={ERROR_MESSAGES.no_campaign_tags}
           />
-        ) : phase === 'select' ? (
-          <SelectPhase
-            documents={documentsQuery.data ?? []}
-            selectedIds={selectedIds}
-            onToggle={(id) => {
-              setSelectedIds((prev) =>
-                prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
-              );
+        ) : ctrl.state === 'preview_starting' ? (
+          <LoadingBlock text="Генерация Initial State…" />
+        ) : ctrl.state === 'applying' ? (
+          <LoadingBlock text="Применение Initial State…" />
+        ) : ctrl.state === 'select_documents' ? (
+          <>
+            <WizardErrorBanner
+              error={ctrl.error}
+              onDismiss={() => ctrl.setError(null)}
+            />
+            <SelectDocumentsStep
+              documents={ctrl.documents}
+              documentsLoading={ctrl.documentsLoading}
+              documentsError={ctrl.documentsError}
+              selectedIds={ctrl.selectedIds}
+              onToggle={ctrl.toggleSelect}
+              onNext={() => {
+                void ctrl.doPreview();
+              }}
+              loading={ctrl.loadingPreview}
+              hintTagCount={ctrl.tagIds.length}
+            />
+          </>
+        ) : ctrl.state === 'review' && ctrl.proposal ? (
+          <ReviewStep
+            proposal={ctrl.proposal.proposal}
+            sourceSnapshot={ctrl.proposal.source_snapshot}
+            suggestedFields={ctrl.suggestedFields}
+            warnings={ctrl.proposal.warnings}
+            onBack={ctrl.doBackToSelect}
+            onApply={() => {
+              void ctrl.doApply();
             }}
-            onNext={async () => {
-              const result = await previewMutation.refetch();
-              if (result.data) {
-                setProposal({
-                  proposal_id: result.data.proposal_id,
-                  config_version: result.data.config_version,
-                  fields: result.data.proposal.fields,
-                });
-                setPhase('review');
-              }
-            }}
-            loading={previewMutation.isFetching}
+            onSuggestedFieldChange={ctrl.patchSuggestedField}
+            onToggleSuggestedFieldAccept={ctrl.toggleSuggestedFieldAccept}
+            error={ctrl.error}
+            onDismissError={() => ctrl.setError(null)}
+            loading={ctrl.loadingApply}
           />
-        ) : phase === 'review' && proposal ? (
-          <ReviewPhase
-            fields={proposal.fields}
-            onBack={() => setPhase('select')}
-            onApply={async () => {
-              const result = await applyMutation.refetch();
-              if (result.data) {
-                setPhase('result');
-              }
-            }}
-            loading={applyMutation.isFetching}
-          />
-        ) : phase === 'result' ? (
-          <ResultPhase onClose={onClose} />
+        ) : ctrl.state === 'result' ? (
+          <ResultStep version={ctrl.appliedVersion} onClose={onClose} />
         ) : null}
       </div>
     </Modal>
   );
 }
 
-function SelectPhase({
-  documents,
-  selectedIds,
-  onToggle,
-  onNext,
-  loading,
-}: {
-  documents: Document[];
-  selectedIds: DocumentId[];
-  onToggle: (id: DocumentId) => void;
-  onNext: () => void;
-  loading: boolean;
-}) {
-  const totalTokens = selectedIds.length * 1000; // Примерная оценка, реальная — с бэкенда
-  const budget = 64000;
-
+function LoadingBlock({ text }: { text: string }) {
   return (
-    <div className="space-y-3">
-      <p className="text-sm text-text-muted">
-        Выберите документы для формирования начального контекста кампании.
-      </p>
-      <div className="rounded border border-border bg-surface-2 p-2 text-xs">
-        Прогресс: {selectedIds.length} выбрано · ~{totalTokens.toLocaleString()} токенов
-        {totalTokens > budget && <Badge variant="warning" className="ml-2">Превышение бюджета</Badge>}
-      </div>
-      <div className="max-h-96 space-y-1 overflow-y-auto rounded border border-border p-2">
-        {documents.length === 0 ? (
-          <p className="text-center text-sm text-text-muted">Нет документов</p>
-        ) : (
-          documents.map((d) => {
-            const id = d.id ?? d.document_id;
-            if (!id) return null;
-            const name = d.title || basename(d.source_path ?? d.path);
-            return (
-              <label key={id} className="flex cursor-pointer items-center gap-2 rounded p-1 hover:bg-surface">
-                <Checkbox
-                  checked={selectedIds.includes(id)}
-                  onChange={() => onToggle(id)}
-                />
-                <span className="text-sm">{name}</span>
-              </label>
-            );
-          })
-        )}
-      </div>
-      <div className="flex justify-end gap-2">
-        <Button onClick={onNext} disabled={selectedIds.length === 0 || loading}>
-          {loading ? 'Загрузка…' : 'Сформировать proposal →'}
-        </Button>
-      </div>
+    <div className="flex items-center justify-center gap-2 py-8 text-sm text-text-muted">
+      <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-text-muted border-t-transparent" />
+      <span>{text}</span>
     </div>
   );
 }
 
-function ReviewPhase({
-  fields,
-  onBack,
-  onApply,
-  loading,
-}: {
-  fields: InitialProposalField[];
-  onBack: () => void;
-  onApply: () => void;
-  loading: boolean;
-}) {
-  return (
-    <div className="space-y-3">
-      <p className="text-sm text-text-muted">
-        Проверьте предложенные значения. Можно редактировать перед применением.
-      </p>
-      <div className="max-h-96 space-y-2 overflow-y-auto">
-        {fields.map((f) => (
-          <Card key={f.field_key} title={`${f.field_key} (${f.status})`}>
-            {f.single_value ? (
-              <Markdown content={f.single_value.text} />
-            ) : f.list_value ? (
-              <ul className="list-inside list-disc">
-                {f.list_value.items.map((item, i) => (
-                  <li key={i}>
-                    <Markdown content={item.text} />
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p className="text-xs italic text-text-muted">пусто</p>
-            )}
-          </Card>
-        ))}
-      </div>
-      <div className="flex justify-between gap-2">
-        <Button variant="ghost" onClick={onBack}>
-          ← Назад
-        </Button>
-        <Button onClick={onApply} disabled={loading}>
-          {loading ? 'Применение…' : 'Применить'}
-        </Button>
-      </div>
-    </div>
-  );
-}
-
-function ResultPhase({ onClose }: { onClose: () => void }) {
-  return (
-    <div className="space-y-3 text-center">
-      <h3 className="text-lg font-semibold text-success">Initial State применён</h3>
-      <p className="text-sm text-text-muted">
-        Кампания теперь использует начальный контекст.
-      </p>
-      <Button onClick={onClose}>Закрыть</Button>
-    </div>
-  );
+function stateToStep(state: ReturnType<typeof useInitialStateController>['state']): WizardStep {
+  if (state === 'select_documents' || state === 'loading_documents') return 1;
+  if (state === 'review' || state === 'preview_starting' || state === 'applying') return 2;
+  if (state === 'result') return 3;
+  return 1;
 }

@@ -239,6 +239,7 @@ from app.services.campaign_state_service import (
 def _to_read(row: CampaignStateFieldConfig) -> CampaignStateFieldConfigRead:
     return CampaignStateFieldConfigRead(
         id=str(row.id),
+        field_id=str(row.id),
         campaign_id=str(row.campaign_id),
         key=row.key,
         label=row.label,
@@ -309,6 +310,12 @@ def test_create_list_update_delete_reorder(client, service):
     assert f1["key"] == "current_focus"
     assert f1["mode"] == "single"
     assert f1["enabled"] is True
+    # Регресс-тест: в ответе должны быть ОБА — id и field_id (алиас).
+    # Старые клиенты (фронт) читают f.field_id; без алиаса они получают undefined,
+    # кнопки (toggleEnabled, remove) молча игнорируются — поле не удаляется.
+    assert f1.get("field_id") == f1["id"], (
+        "field_id alias missing: клиент не сможет удалить/обновить поле"
+    )
 
     # Create #2
     r = client.post(
@@ -435,4 +442,38 @@ def test_campaign_not_found_returns_404(client):
     missing = str(uuid.uuid4())
     r = client.get(f"/api/settings/campaigns/{missing}/state-fields")
     assert r.status_code == 404
-    assert r.json()["detail"] == "campaign_not_found"
+
+
+# ---------------------------------------------------------------------------
+# Регресс-тесты на 400 для невалидного UUID (баг #2)
+# ---------------------------------------------------------------------------
+
+
+def test_delete_field_with_invalid_field_id_returns_400(client, service):
+    """DELETE с невалидным field_id → 400 (раньше падало 500 на uuid.UUID())."""
+    cid = str(uuid.uuid4())
+    service.register_campaign(cid)
+    bad_ids = [
+        "not-a-uuid",
+        "12345",
+        "abc-def",
+        "00000000-0000-0000-0000-zzzzzzzzzzzz",
+    ]
+    for bad in bad_ids:
+        r = client.delete(
+            f"/api/settings/campaigns/{cid}/state-fields/{bad}",
+        )
+        assert r.status_code == 400, (
+            f"expected 400 for bad field_id={bad!r}, got {r.status_code}: {r.text}"
+        )
+        assert r.json()["detail"] == "invalid_field_id"
+
+
+def test_delete_field_with_invalid_campaign_id_returns_400(client):
+    """DELETE с невалидным campaign_id → 400 (а не 500)."""
+    bad = "not-a-uuid"
+    r = client.delete(
+        f"/api/settings/campaigns/{bad}/state-fields/{uuid.uuid4()}",
+    )
+    assert r.status_code == 400
+    assert r.json()["detail"] == "invalid_campaign_id"

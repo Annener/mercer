@@ -165,7 +165,11 @@ function GenerationModelsBody() {
     queryFn: () => api.getGenerationModels(),
   });
 
-  const invalidate = () => void queryClient.invalidateQueries({ queryKey: ['models', 'generation'] });
+  const invalidate = () => {
+    void queryClient.invalidateQueries({ queryKey: ['models', 'generation'] });
+    void queryClient.invalidateQueries({ queryKey: ['model-health'] });
+    void queryClient.invalidateQueries({ queryKey: ['platform-status'] });
+  };
 
   if (modelsQuery.isLoading) {
     return <p className="text-sm text-text-muted">Загрузка…</p>;
@@ -414,7 +418,11 @@ interface CreateGenerationModelInlineProps {
 
 function CreateGenerationModelInline({ onCreated, onClose }: CreateGenerationModelInlineProps) {
   const queryClient = useQueryClient();
-  const invalidate = () => void queryClient.invalidateQueries({ queryKey: ['models', 'generation'] });
+  const invalidate = () => {
+    void queryClient.invalidateQueries({ queryKey: ['models', 'generation'] });
+    void queryClient.invalidateQueries({ queryKey: ['model-health'] });
+    void queryClient.invalidateQueries({ queryKey: ['platform-status'] });
+  };
   return (
     <CreateGenerationModelModal
       open
@@ -556,6 +564,8 @@ function EmbeddingModelsBody() {
   const invalidate = () => {
     void queryClient.invalidateQueries({ queryKey: ['models', 'embedding'] });
     void queryClient.invalidateQueries({ queryKey: ['settings-vaults'] });
+    void queryClient.invalidateQueries({ queryKey: ['model-health'] });
+    void queryClient.invalidateQueries({ queryKey: ['platform-status'] });
   };
 
   const linkedCounts = new Map<string, number>();
@@ -819,6 +829,8 @@ function CreateEmbeddingModelInline({ onCreated, onClose }: CreateEmbeddingModel
   const invalidate = () => {
     void queryClient.invalidateQueries({ queryKey: ['models', 'embedding'] });
     void queryClient.invalidateQueries({ queryKey: ['settings-vaults'] });
+    void queryClient.invalidateQueries({ queryKey: ['model-health'] });
+    void queryClient.invalidateQueries({ queryKey: ['platform-status'] });
   };
   return (
     <CreateEmbeddingModelModal
@@ -970,7 +982,11 @@ function RerankModelsBody() {
     queryFn: () => api.getRerankModels(),
   });
 
-  const invalidate = () => void queryClient.invalidateQueries({ queryKey: ['models', 'rerank'] });
+  const invalidate = () => {
+    void queryClient.invalidateQueries({ queryKey: ['models', 'rerank'] });
+    void queryClient.invalidateQueries({ queryKey: ['model-health'] });
+    void queryClient.invalidateQueries({ queryKey: ['platform-status'] });
+  };
 
   if (modelsQuery.isLoading) {
     return <p className="text-sm text-text-muted">Загрузка…</p>;
@@ -1210,7 +1226,11 @@ interface CreateRerankModelInlineProps {
 
 function CreateRerankModelInline({ onCreated, onClose }: CreateRerankModelInlineProps) {
   const queryClient = useQueryClient();
-  const invalidate = () => void queryClient.invalidateQueries({ queryKey: ['models', 'rerank'] });
+  const invalidate = () => {
+    void queryClient.invalidateQueries({ queryKey: ['models', 'rerank'] });
+    void queryClient.invalidateQueries({ queryKey: ['model-health'] });
+    void queryClient.invalidateQueries({ queryKey: ['platform-status'] });
+  };
   return (
     <CreateRerankModelModal
       open

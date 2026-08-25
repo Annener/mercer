@@ -428,9 +428,15 @@ class CampaignStateFieldConfigRead(ORMModel):
     """Конфигурация поля Campaign State (метаданные).
 
     Актуальные значения state хранятся в отдельной таблице (Stage 2).
+
+    Поле `field_id` — алиас к `id`. Нужно для обратной совместимости со
+    старыми клиентами (фронт читает `field_id` из API, бэкенд исторически
+    сериализовал только `id`). Сервис всегда проставляет оба значения
+    одинаковыми.
     """
 
     id: str
+    field_id: str | None = None
     campaign_id: str
     key: str
     label: str

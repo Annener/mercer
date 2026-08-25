@@ -318,8 +318,16 @@ async def delete_campaign_state_field(
 ) -> None:
     """Удалить поле Campaign State. История state не сохраняется (Stage 2 не существует)."""
     try:
+        campaign_uuid = uuid.UUID(campaign_id)
+    except (ValueError, AttributeError) as exc:
+        raise HTTPException(status_code=400, detail="invalid_campaign_id") from exc
+    try:
+        field_uuid = uuid.UUID(field_id)
+    except (ValueError, AttributeError) as exc:
+        raise HTTPException(status_code=400, detail="invalid_field_id") from exc
+    try:
         await campaign_state_field_service.delete_field(
-            db, uuid.UUID(campaign_id), uuid.UUID(field_id)
+            db, campaign_uuid, field_uuid
         )
     except CampaignStateFieldError as exc:
         raise HTTPException(status_code=exc.http_status, detail=exc.code) from exc

@@ -458,7 +458,14 @@ class CampaignStateVersion(Base):
 
 
 class CampaignStateValue(Base):
-    """Значение single-поля в конкретной версии state."""
+    """Значение single-поля в конкретной версии state.
+
+    PK — composite (version_id, field_id): одна строка = одно значение
+    одного поля в одной версии. Исторически PK был только на version_id
+    (single column), что ломало multi-row INSERT в apply_initial при
+    наличии нескольких single-полей (Key (version_id) already exists).
+    Миграция 0013 исправляет схему.
+    """
 
     __tablename__ = "campaign_state_values"
 
@@ -470,6 +477,7 @@ class CampaignStateValue(Base):
     field_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("campaign_state_field_configs.id", ondelete="RESTRICT"),
+        primary_key=True,
         nullable=False,
     )
     text: Mapped[str] = mapped_column(Text, nullable=False)

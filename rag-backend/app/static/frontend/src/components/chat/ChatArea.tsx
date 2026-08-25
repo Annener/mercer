@@ -5,6 +5,7 @@ import { useChatStore, useDomainStore, useThemeStore } from '@/stores';
 import { api } from '@/api/client';
 import { Markdown } from './Markdown';
 import { ChatContextBar } from './ChatContextBar';
+import { ModelHealthIndicator } from '@/components/system';
 import { UpdateModePanel } from '@/components/wizard/UpdateModePanel';
 import {
   PipelineConfirmCard,
@@ -469,6 +470,12 @@ export function ChatArea() {
               Домен: <span className="font-mono">{currentDomainId}</span>
             </p>
           )}
+        </div>
+        <div className="flex shrink-0 items-center gap-1.5">
+          <ModelHealthIndicator kind="generation" />
+          <ModelHealthIndicator kind="embedding" />
+          <ModelHealthIndicator kind="rerank" />
+          <ModelHealthIndicator kind="sidecar" />
         </div>
         <button
           type="button"

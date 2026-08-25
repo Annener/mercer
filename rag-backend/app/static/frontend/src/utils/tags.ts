@@ -37,3 +37,20 @@ export function globalTagsOnly(v: TagRead[] | TagsGrouped): TagRead[] {
   const flat = isTagsGrouped(v) ? v.global_tags : v.filter((t) => t.campaign_id == null);
   return flat;
 }
+
+export interface CampaignLike {
+  id: string;
+  display_name?: string | null;
+  name?: string | null;
+}
+
+/** Человекочитаемая подпись тега: для кампанийных добавляет префикс «Кампания X • ». */
+export function tagDisplayName(
+  tag: TagRead,
+  campaignsById?: ReadonlyMap<string, CampaignLike>,
+): string {
+  if (!tag.campaign_id) return tag.name;
+  const c = campaignsById?.get(tag.campaign_id);
+  const campaignLabel = c?.display_name || c?.name || 'Кампания';
+  return `${campaignLabel} • ${tag.name}`;
+}

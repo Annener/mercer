@@ -315,20 +315,23 @@ export interface CampaignStatePatchResponse {
 
 export interface InitialProposalSingleValue {
   text: string;
-  source_refs?: Array<{ document_id: DocumentId }>;
+  source_refs?: string[];
 }
 
 export interface InitialProposalListItem {
   text: string;
-  source_refs?: Array<{ document_id: DocumentId }>;
+  source_refs?: string[];
 }
+
+export type InitialFieldStatus = 'proposed' | 'empty' | 'needs_clarification';
 
 export interface InitialProposalField {
   field_key: string;
-  status: 'proposed' | 'empty' | 'needs_clarification';
-  single_value?: InitialProposalSingleValue;
-  list_value?: { items: InitialProposalListItem[] };
-  warnings?: string[];
+  mode: StateFieldMode;
+  status: InitialFieldStatus;
+  clarification_question?: string | null;
+  single_value?: InitialProposalSingleValue | null;
+  list_value?: { items: InitialProposalListItem[] } | null;
 }
 
 export interface InitialProposalSuggestion {
@@ -336,24 +339,38 @@ export interface InitialProposalSuggestion {
   label: string;
   description?: string;
   mode: StateFieldMode;
+  initial_status: InitialFieldStatus;
+  clarification_question?: string | null;
+  single_value?: InitialProposalSingleValue | null;
+  list_value?: { items: InitialProposalListItem[] } | null;
+}
+
+export interface DocumentSnapshot {
+  document_id: DocumentId;
+  vault_id: VaultId;
+  source_path: string;
+  title?: string | null;
+  content_sha: string;
+  estimated_tokens: number;
 }
 
 export interface InitialProposal {
   fields: InitialProposalField[];
-  source_snapshot_id: string;
-  suggested_fields?: InitialProposalSuggestion[];
+  suggested_fields: InitialProposalSuggestion[];
+  questions: string[];
 }
 
 export interface InitialProposalRead {
   proposal_id: string;
   config_version: number;
+  source_snapshot: DocumentSnapshot[];
   proposal: InitialProposal;
+  warnings: string[];
   created_at: string;
+  expires_at: string;
 }
 
-export interface InitialProposalReadV2 extends InitialProposalRead {
-  proposal: InitialProposal & { suggested_fields: InitialProposalSuggestion[] };
-}
+export type InitialProposalReadV2 = InitialProposalRead;
 
 export interface PreviewInitialStateRequest {
   document_ids: DocumentId[];
@@ -506,6 +523,25 @@ export interface ModelCheckResult {
   latency_ms?: number;
   error?: string | null;
   dimensions?: number | null;
+}
+
+// === Platform status / model availability ===
+
+export interface PlatformStatus {
+  has_active_generation_model: boolean;
+  has_active_embedding_model: boolean;
+  pdf_sidecar_available: boolean;
+  has_vaults: boolean;
+}
+
+export type ModelAvailabilityStatus = 'ok' | 'warn' | 'fail' | 'unchecked';
+
+export interface ModelHealthState {
+  status: ModelAvailabilityStatus;
+  latency_ms?: number | null;
+  error?: string | null;
+  dimensions?: number | null;
+  checked_at?: string | null;
 }
 
 // === Documents ===

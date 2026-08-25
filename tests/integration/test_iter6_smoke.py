@@ -143,7 +143,7 @@ class TestDeterminism:
     def test_same_input_same_output(self):
         """Чистая функция: один вход → один выход."""
         cfg = CampaignStateFieldConfigRead(
-            id="f1", campaign_id=str(uuid.uuid4()), key="focus", label="Фокус",
+            id="f1", field_id="f1", campaign_id=str(uuid.uuid4()), key="focus", label="Фокус",
             description="", mode="single", enabled=True, display_order=0,
             created_at=datetime(2026, 1, 1, tzinfo=UTC), updated_at=datetime(2026, 1, 1, tzinfo=UTC),
         )
@@ -180,7 +180,7 @@ class TestDeterminism:
 class TestSoftStop:
     def test_field_excluded_when_budget_exceeded(self):
         cfg = CampaignStateFieldConfigRead(
-            id="big", campaign_id=str(uuid.uuid4()), key="big", label="Большое",
+            id="big", field_id="big", campaign_id=str(uuid.uuid4()), key="big", label="Большое",
             description="", mode="single", enabled=True, display_order=0,
             created_at=datetime(2026, 1, 1, tzinfo=UTC), updated_at=datetime(2026, 1, 1, tzinfo=UTC),
         )

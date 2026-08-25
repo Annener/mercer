@@ -46,6 +46,7 @@ def _cfg(
 ) -> CampaignStateFieldConfigRead:
     return CampaignStateFieldConfigRead(
         id=f"f-{key}",
+        field_id=f"f-{key}",
         campaign_id="00000000-0000-0000-0000-000000000001",
         key=key,
         label=label,

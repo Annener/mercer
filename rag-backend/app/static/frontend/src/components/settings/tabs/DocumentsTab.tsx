@@ -14,8 +14,9 @@ import { api, HttpError } from '@/api/client';
 import { useDomainStore, useSettingsStore } from '@/stores';
 import { basename } from '@/utils/path';
 import { contrastTextColor } from '@/utils/textColor';
-import { globalTagsOnly } from '@/utils/tags';
+import { flattenTags, globalTagsOnly, tagDisplayName } from '@/utils/tags';
 import type {
+  Campaign,
   Document,
   DomainId,
   TagId,
@@ -92,6 +93,25 @@ export function DocumentsTab() {
   const globalTags = useMemo(
     () => (tagsQuery.data ? globalTagsOnly(tagsQuery.data) : []),
     [tagsQuery.data],
+  );
+  const selectableTags = useMemo(
+    () => (tagsQuery.data ? flattenTags(tagsQuery.data) : []),
+    [tagsQuery.data],
+  );
+
+  const campaignsQuery = useQuery({
+    queryKey: ['campaigns', domainId],
+    queryFn: () => api.getCampaigns(domainId),
+    enabled: !!domainId,
+  });
+  const campaignsList = useMemo<Campaign[]>(() => {
+    const d = campaignsQuery.data;
+    if (Array.isArray(d)) return d;
+    return (d as { campaigns?: Campaign[] } | undefined)?.campaigns ?? [];
+  }, [campaignsQuery.data]);
+  const campaignsById = useMemo(
+    () => new Map(campaignsList.map((c) => [String(c.id), c])),
+    [campaignsList],
   );
 
   // Filtered docs by search query (client-side, after server-side filters).
@@ -187,7 +207,10 @@ export function DocumentsTab() {
             onChange={(e) => setFilterTagId((e.target.value as TagId) || '')}
             options={[
               { value: '', label: 'Все теги' },
-              ...globalTags.map((t) => ({ value: t.id, label: t.name })),
+              ...selectableTags.map((t) => ({
+                value: t.id,
+                label: tagDisplayName(t, campaignsById),
+              })),
             ]}
           />
         </SelectWrapper>
@@ -229,6 +252,8 @@ export function DocumentsTab() {
         <DocumentModal
           doc={openDoc}
           domainId={domainId}
+          selectableTags={selectableTags}
+          campaignsById={campaignsById}
           onClose={() => setOpenDoc(null)}
         />
       )}
@@ -237,7 +262,8 @@ export function DocumentsTab() {
         <DirectoryModal
           dirName={openDir.name}
           dirNode={openDir.node}
-          globalTags={globalTags}
+          domainTags={selectableTags}
+          campaignsById={campaignsById}
           onClose={() => setOpenDir(null)}
         />
       )}
@@ -607,24 +633,18 @@ function useParentKey(): string | null {
 function DocumentModal({
   doc,
   domainId,
+  selectableTags,
+  campaignsById,
   onClose,
 }: {
   doc: Document;
   domainId: DomainId;
+  selectableTags: TagRead[];
+  campaignsById: ReadonlyMap<string, Campaign>;
   onClose: () => void;
 }) {
   const queryClient = useQueryClient();
   const fileName = basename(doc.source_path ?? doc.path ?? doc.id ?? doc.document_id ?? '');
-
-  const tagsQuery = useQuery({
-    queryKey: ['tags', domainId],
-    queryFn: () => api.getTags(domainId),
-    enabled: !!domainId,
-  });
-  const allTags = useMemo(
-    () => (tagsQuery.data ? globalTagsOnly(tagsQuery.data) : []),
-    [tagsQuery.data],
-  );
 
   const initialIds = useMemo(
     () => new Set((doc.tags ?? []).map((t) => String(t.id))),
@@ -651,6 +671,7 @@ function DocumentModal({
     onSuccess: async () => {
       setError(null);
       void queryClient.invalidateQueries({ queryKey: ['documents'] });
+      void queryClient.invalidateQueries({ queryKey: ['tags', domainId] });
       onClose();
     },
     onError: (e) => setError(e instanceof HttpError ? e.message : 'Не удалось сохранить теги'),
@@ -693,18 +714,17 @@ function DocumentModal({
 
         <div className="docs-modal-section">
           <div className="docs-modal-section-title">Теги</div>
-          {tagsQuery.isLoading ? (
-            <div className="docs-modal-tags-list">Загрузка…</div>
-          ) : allTags.length === 0 ? (
+          {selectableTags.length === 0 ? (
             <div className="docs-modal-tags-list" style={{ color: 'var(--color-text-muted, #6b7280)' }}>
               Тегов нет. Создайте тег в панели справа.
             </div>
           ) : (
             <div className="docs-modal-tags-list">
-              {allTags.map((t) => (
+              {selectableTags.map((t) => (
                 <TagToggleBadge
                   key={t.id}
                   tag={t}
+                  label={tagDisplayName(t, campaignsById)}
                   on={selected.has(String(t.id))}
                   onToggle={() => toggleTag(String(t.id))}
                 />
@@ -773,12 +793,14 @@ function DocumentModal({
 function DirectoryModal({
   dirName,
   dirNode,
-  globalTags,
+  domainTags,
+  campaignsById,
   onClose,
 }: {
   dirName: string;
   dirNode: DirNode;
-  globalTags: TagRead[];
+  domainTags: TagRead[];
+  campaignsById: ReadonlyMap<string, Campaign>;
   onClose: () => void;
 }) {
   const queryClient = useQueryClient();
@@ -799,8 +821,8 @@ function DirectoryModal({
   // Tags present on at least one file in the directory.
   const presentTags = useMemo(
     () =>
-      globalTags.filter((t) => (tagDocCounts[String(t.id)] ?? 0) > 0),
-    [globalTags, tagDocCounts],
+      domainTags.filter((t) => (tagDocCounts[String(t.id)] ?? 0) > 0),
+    [domainTags, tagDocCounts],
   );
 
   const [statusAssign, setStatusAssign] = useState<{ kind: 'loading' | 'ok' | 'error'; text: string } | null>(null);
@@ -839,6 +861,7 @@ function DirectoryModal({
       setStatus({ kind: 'ok', text: '✅ Готово' });
       setTimeout(() => setStatus(null), 2000);
       void queryClient.invalidateQueries({ queryKey: ['documents'] });
+      void queryClient.invalidateQueries({ queryKey: ['tags'] });
     },
     onError: (err: Error, vars: { tagId: string; mode: 'assign' | 'remove' }) => {
       const setStatus = vars.mode === 'assign' ? setStatusAssign : setStatusRemove;
@@ -851,19 +874,20 @@ function DirectoryModal({
       <div style={{ padding: 16, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 18 }}>
         <div className="docs-modal-section">
           <div className="docs-modal-section-title">Назначить тег на все файлы</div>
-          {globalTags.length === 0 ? (
+          {domainTags.length === 0 ? (
             <div className="docs-modal-tags-list" style={{ color: 'var(--color-text-muted, #6b7280)' }}>
               Нет тегов в домене
             </div>
           ) : (
             <div className="docs-dir-tag-list">
-              {globalTags.map((t) => {
+              {domainTags.map((t) => {
                 const tid = String(t.id);
                 const allHave = tagDocCounts[tid] === allDocs.length;
                 return (
                   <TagToggleBadge
                     key={`assign-${tid}`}
                     tag={t}
+                    label={tagDisplayName(t, campaignsById)}
                     on={allHave}
                     onToggle={() => applyMutation.mutate({ tagId: tid, mode: 'assign' })}
                     disabled={allHave || applyMutation.isPending}
@@ -891,6 +915,7 @@ function DirectoryModal({
                   <TagToggleBadge
                     key={`remove-${tid}`}
                     tag={t}
+                    label={tagDisplayName(t, campaignsById)}
                     on={true}
                     onToggle={() => applyMutation.mutate({ tagId: tid, mode: 'remove' })}
                     disabled={applyMutation.isPending}
@@ -1158,11 +1183,13 @@ function TagBadge({ tag }: { tag: TagRead }) {
 
 function TagToggleBadge({
   tag,
+  label,
   on,
   onToggle,
   disabled,
 }: {
   tag: TagRead;
+  label?: string;
   on: boolean;
   onToggle: () => void;
   disabled?: boolean;
@@ -1175,8 +1202,9 @@ function TagToggleBadge({
       style={on ? tagStyle(color) : undefined}
       onClick={onToggle}
       disabled={disabled}
+      title={label ?? tag.name}
     >
-      {tag.name}
+      {label ?? tag.name}
     </button>
   );
 }

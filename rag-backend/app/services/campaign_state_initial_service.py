@@ -26,9 +26,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
+import time
 import uuid
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -166,6 +169,29 @@ _INITIAL_SOURCE_REF_RE = re.compile(
 )
 
 _MAX_SOURCE_REFS_PER_VALUE = 32
+
+
+# ---------------------------------------------------------------------------
+# Logging helpers
+# ---------------------------------------------------------------------------
+
+
+def _warnings_summary(warnings: list[str]) -> str:
+    """Группирует одинаковые префиксы warnings (':' — разделитель категории).
+
+    Пример:
+        ["source_ref_unknown_document:a:doc1",
+         "source_ref_unknown_document:b:doc2",
+         "missing_size_metadata:x"]
+      → "source_ref_unknown_document: x2; missing_size_metadata: x1"
+    """
+    if not warnings:
+        return "none"
+    counter: Counter[str] = Counter()
+    for w in warnings:
+        prefix = w.split(":", 1)[0] if ":" in w else w
+        counter[prefix] += 1
+    return "; ".join(f"{k}: x{v}" for k, v in counter.most_common())
 
 
 # ---------------------------------------------------------------------------
@@ -455,6 +481,11 @@ def _normalize_existing_fields(
     CampaignStateInitialProposalField.
     """
     kept: list[dict[str, Any]] = []
+    # Дедупликация по field_key: LLM иногда возвращает одно поле несколько раз
+    # в `fields[]`. Если оставить дубликаты, downstream INSERT в
+    # `campaign_state_values` упадёт с duplicate key. Берём первое
+    # валидно-нормализованное вхождение.
+    seen_keys: set[str] = set()
     for rf in raw_fields:
         if not isinstance(rf, dict):
             warnings.append("invalid_field_entry:non_dict")
@@ -470,6 +501,10 @@ def _normalize_existing_fields(
         if not field.enabled:
             warnings.append(f"disabled_field_skipped:{key}")
             continue
+        if key in seen_keys:
+            warnings.append(f"duplicate_field_key_in_proposal:{key}")
+            continue
+        seen_keys.add(key)
         if rf.get("mode") != field.mode:
             warnings.append(f"mode_mismatch:{key}")
             continue
@@ -791,6 +826,19 @@ async def _call_provider_with_repair(
 class CampaignStateInitialService:
     """Оркестратор Initial Campaign State."""
 
+    @staticmethod
+    def _status_value(status: Any) -> str:
+        """Нормализует status в строку для логов.
+
+        Поддерживает как Pydantic-модель (CampaignStateInitialFieldStatus),
+        так и dict/None (для устойчивости к плохим данным от LLM).
+        """
+        if status is None:
+            return "<none>"
+        if isinstance(status, dict):
+            return str(status.get("status", "<missing>"))
+        return str(getattr(status, "status", status))
+
     async def assert_campaign_exists(
         self,
         db: AsyncSession,
@@ -836,13 +884,28 @@ class CampaignStateInitialService:
         Любые suggested_fields[] от LLM при propose_fields=False будут отброшены
         с warning 'suggested_fields_ignored:propose_fields_false'.
         """
+        logger.info(
+            "start_preview: enter campaign=%s requested_doc_ids=%d "
+            "propose_fields=%s max_suggested_fields=%d current_user=%s",
+            campaign_id, len(document_ids), propose_fields, max_suggested_fields,
+            current_user,
+        )
         await self.assert_campaign_exists(db, campaign_id)
         fields = await self._load_fields(db, campaign_id)
         enabled_fields = [f for f in fields if f.enabled]
+        logger.info(
+            "start_preview: campaign=%s total_fields=%d enabled_fields=%d",
+            campaign_id, len(fields), len(enabled_fields),
+        )
 
         # Если нет ни одного enabled-поля И клиент не просил propose_fields —
         # возвращаем 422 с подсказкой.
         if not enabled_fields and not propose_fields:
+            logger.info(
+                "start_preview: reject (no enabled fields, propose_fields=false) "
+                "campaign=%s",
+                campaign_id,
+            )
             raise NoFieldsConfiguredNoProposeError(
                 "campaign has no enabled state fields and propose_fields=false"
             )
@@ -858,10 +921,18 @@ class CampaignStateInitialService:
         if len(docs) != len(set(doc_uuids)):
             found_ids = {str(d.id) for d in docs}
             missing = [str(d) for d in doc_uuids if str(d) not in found_ids]
+            logger.info(
+                "start_preview: campaign=%s missing_documents=%s",
+                campaign_id, missing,
+            )
             raise DocumentNotFoundError(f"missing documents: {missing}")
 
         _validate_documents_indexed(docs)
         _validate_documents_md(docs)
+        logger.info(
+            "start_preview: campaign=%s loaded %d docs (all md+indexed)",
+            campaign_id, len(docs),
+        )
 
         warnings: list[str] = []
         # Применяем фильтры по размеру и бюджету в порядке, запрошенном клиентом.
@@ -877,7 +948,16 @@ class CampaignStateInitialService:
 
         # 2) total budget 64k
         budgeted_docs: list[Document] = _apply_total_budget(filtered_docs, warnings)
+        logger.info(
+            "start_preview: campaign=%s after_filters=%d/%d warnings=%s",
+            campaign_id, len(budgeted_docs), len(ordered_docs),
+            _warnings_summary(warnings),
+        )
         if not budgeted_docs:
+            logger.info(
+                "start_preview: campaign=%s no docs after budget filtering",
+                campaign_id,
+            )
             raise NoMarkdownDocumentsError(
                 "no documents remain after token budget filtering"
             )
@@ -894,8 +974,14 @@ class CampaignStateInitialService:
             )
             for d in budgeted_docs
         ]
+        total_snapshot_tokens = sum(s.estimated_tokens for s in snapshots)
+        logger.info(
+            "start_preview: campaign=%s snapshot_docs=%d total_estimated_tokens=%d",
+            campaign_id, len(snapshots), total_snapshot_tokens,
+        )
 
         # Параллельный fetch полных текстов.
+        fetch_t0 = time.monotonic()
         fetch_results: list[str | BaseException | None] = await asyncio.gather(
             *[
                 reconstruct_full_text(
@@ -907,6 +993,7 @@ class CampaignStateInitialService:
             ],
             return_exceptions=True,
         )
+        fetch_elapsed = time.monotonic() - fetch_t0
         docs_text: dict[str, str] = {}
         for d, result in zip(budgeted_docs, fetch_results):
             if isinstance(result, BaseException):
@@ -921,6 +1008,13 @@ class CampaignStateInitialService:
                 continue
             docs_text[str(d.id)] = result
 
+        logger.info(
+            "start_preview: campaign=%s reconstruct elapsed=%.2fs "
+            "recovered=%d/%d total_chars=%d warnings=%s",
+            campaign_id, fetch_elapsed, len(docs_text), len(budgeted_docs),
+            sum(len(t) for t in docs_text.values()),
+            _warnings_summary(warnings),
+        )
         if not docs_text:
             raise NoMarkdownDocumentsError(
                 "no documents with successful full-text reconstruction"
@@ -929,7 +1023,23 @@ class CampaignStateInitialService:
         # LLM call.
         provider = settings_service.get_active_provider()
         if provider is None:
+            logger.warning(
+                "start_preview: campaign=%s no active provider configured",
+                campaign_id,
+            )
             raise GenerationProviderUnavailableError("no active provider configured")
+        logger.info(
+            "start_preview: campaign=%s provider=%s prompt_chars=%d "
+            "user_message_chars=%d",
+            campaign_id,
+            getattr(provider, "name", None) or type(provider).__name__,
+            len(_build_system_prompt(
+                enabled_fields,
+                propose_fields=propose_fields,
+                max_suggested_fields=max_suggested_fields,
+            )),
+            len(_build_user_message(snapshots, docs_text)),
+        )
 
         system_prompt = _build_system_prompt(
             enabled_fields,
@@ -943,6 +1053,12 @@ class CampaignStateInitialService:
         snapshot_doc_ids = {s.document_id for s in snapshots}
 
         raw = await _call_provider_with_repair_raw(provider, system_prompt, user_message)
+        logger.info(
+            "start_preview: campaign=%s llm_response_chars=%d raw_keys=%s",
+            campaign_id,
+            len(json.dumps(raw, ensure_ascii=False)),
+            sorted(raw.keys()) if isinstance(raw, dict) else "not-a-dict",
+        )
         proposal = _normalize_proposal_v2(
             raw,
             {f.key: f for f in enabled_fields},
@@ -950,6 +1066,19 @@ class CampaignStateInitialService:
             warnings,
             propose_fields=propose_fields,
             max_suggested_fields=max_suggested_fields,
+        )
+        status_breakdown = Counter(
+            self._status_value(f.status) for f in proposal.fields
+        )
+        sf_status_breakdown = Counter(
+            self._status_value(sf.initial_status) for sf in proposal.suggested_fields
+        )
+        logger.info(
+            "start_preview: campaign=%s normalize result: "
+            "fields_status=%s suggested_status=%s",
+            campaign_id,
+            dict(status_breakdown) or "{}",
+            dict(sf_status_breakdown) or "{}",
         )
 
         now = datetime.now(timezone.utc)
@@ -965,11 +1094,20 @@ class CampaignStateInitialService:
         )
         await campaign_state_initial_store.create(redis, payload)
         logger.info(
-            "campaign_state_initial.start_preview: campaign=%s sources=%d "
-            "propose_fields=%s fields=%d suggested=%d warnings=%d",
+            "campaign_state_initial.start_preview: DONE campaign=%s sources=%d "
+            "propose_fields=%s fields=%d suggested=%d total_warnings=%d "
+            "warnings_breakdown=[%s] proposal_id=%s expires_at=%s",
             campaign_id, len(snapshots), propose_fields,
             len(proposal.fields), len(proposal.suggested_fields), len(warnings),
+            _warnings_summary(warnings),
+            payload.proposal_id,
+            payload.expires_at.isoformat(),
         )
+        if warnings:
+            logger.debug(
+                "campaign_state_initial.start_preview: full warnings=%s",
+                warnings,
+            )
         return payload
 
     async def get_proposal(
@@ -1046,6 +1184,10 @@ class CampaignStateInitialService:
                 )
 
         # ---- 1. Создаём принятые suggested_fields перед apply_initial ----
+        # ВАЖНО: используем commit=False, чтобы все изменения (поля + state version
+        # + values + audit log) зафиксировались ОДНОЙ транзакцией в apply_initial.
+        # Раньше каждое create_field делало отдельный commit — это оставляло
+        # "осиротевшие" поля в БД при ошибке на последующих шагах.
         new_fields_by_key: dict[str, CampaignStateFieldConfig] = {}
         if accepted_sf:
             existing_keys = await _load_existing_field_keys(db, campaign_id)
@@ -1071,6 +1213,7 @@ class CampaignStateInitialService:
                                 ),
                             ),
                         ),
+                        commit=False,
                     )
                 except CampaignStateFieldError as exc:
                     # Если кто-то создал поле параллельно между нашими
@@ -1081,18 +1224,23 @@ class CampaignStateInitialService:
                         f"failed to create suggested field {sf.key!r}: {exc}"
                     ) from exc
 
-                created_row = await db.get(CampaignStateFieldConfig, created_read.id)
+                # create_field(commit=False) уже сделал flush, row.id заполнен,
+                # и row уже в identity map db.session.
+                created_row = await db.get(
+                    CampaignStateFieldConfig, created_read.id
+                )
                 if created_row is None:
                     raise SuggestedFieldCreationError(
                         f"failed to load created field {sf.key!r}"
                     )
                 new_fields_by_key[sf.key] = created_row
 
-            # Читаем свежую config_version (после всех инкрементов).
-            campaign = await db.get(Campaign, campaign_id)
-            if campaign is None:
-                raise CampaignNotFoundError(str(campaign_id))
-            current_config_version = campaign.config_version
+            # Берём свежую config_version прямым SELECT — после бампов
+            # в create_field объект Campaign в identity map может быть stale.
+            version_after_bump = await db.execute(
+                select(Campaign.config_version).where(Campaign.id == campaign_id)
+            )
+            current_config_version = int(version_after_bump.scalar_one())
         else:
             current_config_version = request.config_version
 
@@ -1109,57 +1257,57 @@ class CampaignStateInitialService:
             overrides=request.proposal_overrides,
         )
 
-        # ---- 4. Делегируем в value-сервис ----
-        # NOTE: при CampaignStateValueError Redis-ключ сохраняется (пользователь может
-        # исправить и повторить), а уже созданные поля остаются в БД — это намеренно
-        # (предложенные ИИ поля видимы пользователю через /state-fields).
-        version_read = await campaign_state_value_service.apply_initial(
-            db=db,
-            campaign_id=campaign_id,
-            proposal=effective_proposal,
-            source_snapshot=payload.source_snapshot,
-            config_version=current_config_version,
-            created_by=current_user,
-        )
-
-# ---- 5. Audit log (если были suggested) ----
+        # ---- 4. Audit log для proposed_fields ДО apply_initial ----
+        # Audit log пишется в той же транзакции, что и поля+values,
+        # чтобы при rollback всё откатилось атомарно.
         if suggested_total:
-            try:
-                from app.db.models import AuditLog
+            from app.db.models import AuditLog
 
-                total_after = await _load_enabled_fields_count(db, campaign_id)
-                existing_after = max(0, total_after - len(new_fields_by_key))
-                await db.execute(
-                    insert(AuditLog).values(
-                        id=str(uuid.uuid4()),
-                        action="campaign_state_initial_propose_fields_applied",
-                        entity_type="campaign",
-                        entity_id=str(campaign_id),
-                        actor=current_user,
-                        payload={
-                            "existing_fields_count": existing_after,
-                            "suggested_fields_total": suggested_total,
-                            "suggested_fields_accepted": len(new_fields_by_key),
-                            "suggested_fields_rejected": (
-                                suggested_total - len(new_fields_by_key)
-                            ),
-                            "total_fields_after_apply": total_after,
-                        },
-                    )
+            total_after = await _load_enabled_fields_count(db, campaign_id)
+            existing_after = max(0, total_after - len(new_fields_by_key))
+            await db.execute(
+                insert(AuditLog).values(
+                    id=str(uuid.uuid4()),
+                    action="campaign_state_initial_propose_fields_applied",
+                    entity_type="campaign",
+                    entity_id=str(campaign_id),
+                    actor=current_user,
+                    payload={
+                        "existing_fields_count": existing_after,
+                        "suggested_fields_total": suggested_total,
+                        "suggested_fields_accepted": len(new_fields_by_key),
+                        "suggested_fields_rejected": (
+                            suggested_total - len(new_fields_by_key)
+                        ),
+                        "total_fields_after_apply": total_after,
+                    },
                 )
-                await db.commit()
+            )
+
+        # ---- 5. Делегируем в value-сервис ----
+        # apply_initial делает свой commit (там есть AuditLog для
+        # campaign_state_initial_applied). Поскольку create_field
+        # выше был с commit=False, всё это — ОДНА транзакция.
+        # При исключении в apply_initial откатятся и поля, и audit log.
+        try:
+            version_read = await campaign_state_value_service.apply_initial(
+                db=db,
+                campaign_id=campaign_id,
+                proposal=effective_proposal,
+                source_snapshot=payload.source_snapshot,
+                config_version=current_config_version,
+                created_by=current_user,
+            )
+        except Exception:
+            # Откатываем всю транзакцию: созданные поля, audit log, и
+            # возможные частичные вставки в campaign_state_values.
+            try:
+                await db.rollback()
             except Exception:
                 logger.warning(
-                    "audit_log for propose_fields apply failed (continuing)",
-                    exc_info=True,
+                    "rollback after apply_initial failed", exc_info=True,
                 )
-                try:
-                    await db.rollback()
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning(
-                        "rollback after audit_log failure also failed: %s",
-                        exc,
-                    )
+            raise
 
         # Успех — удаляем proposal.
         await campaign_state_initial_store.delete(redis, str(campaign_id))
@@ -1240,17 +1388,22 @@ def _unify_proposal_for_apply(
     Возвращает CampaignStateInitialProposal (V1).
     """
     unified: list[dict[str, Any]] = []
+    # Дедупликация по field_key: accepted suggested_fields могут
+    # пересекаться с existing fields по key (если LLM вернул одно поле
+    # и в `fields[]`, и в `suggested_fields[]`). Берём suggested
+    # с приоритетом (он содержит свежее значение).
+    seen_keys: set[str] = set()
 
-    # 1. Existing fields as-is.
-    for pf in proposal_v2.fields:
-        unified.append(pf.model_dump(mode="json"))
-
-    # 2. Accepted suggested_fields → синтетические CampaignStateInitialProposalField.
+    # 1. Accepted suggested_fields → синтетические CampaignStateInitialProposalField.
+    #    Приоритет — suggested, так как они могли быть отредактированы на UI.
     sf_by_key = {sf.key: sf for sf in accepted_sf}
     for key in new_fields_by_key:
         sf = sf_by_key.get(key)
         if sf is None:
             continue
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
         # Берём отредактированные label/description/key/mode из new_fields_by_key
         # не нужно — они одинаковы у CampaignStateFieldConfig и CampaignStateSuggestedFieldConfig.
         status_block: dict[str, Any] = {"status": sf.initial_status}
@@ -1275,6 +1428,14 @@ def _unify_proposal_for_apply(
                     ]
                 }
         unified.append(entry)
+
+    # 2. Existing fields, не пересекающиеся с accepted suggested (по field_key).
+    for pf in proposal_v2.fields:
+        if pf.field_key in seen_keys:
+            # Suggested с таким же ключом уже добавлен; existing-вариант отбрасываем.
+            continue
+        seen_keys.add(pf.field_key)
+        unified.append(pf.model_dump(mode="json"))
 
     # 3. ignored: rejected_sf_keys — отбрасываем полностью.
 
@@ -1369,17 +1530,34 @@ async def _call_provider_with_repair_raw(
 
     first_err_str: str | None = None
 
+    t0 = time.monotonic()
     try:
+        logger.info(
+            "llm_call: provider=%s attempt=1 sending messages=%d "
+            "system_chars=%d user_chars=%d",
+            getattr(provider, "name", None) or type(provider).__name__,
+            len(messages),
+            len(system_prompt),
+            len(user_message),
+        )
         data = await provider.generate_json(messages)
+        elapsed = time.monotonic() - t0
         if not isinstance(data, dict):
             raise TypeError(f"LLM output is not a JSON object: {type(data).__name__}")  # noqa: TRY301
         if "fields" not in data:
             raise ValueError("LLM output is missing required 'fields' key")  # noqa: TRY301
+        logger.info(
+            "llm_call: attempt=1 OK in %.2fs, response_chars=%d, top_keys=%s",
+            elapsed,
+            len(json.dumps(data, ensure_ascii=False)),
+            sorted(data.keys())[:10],
+        )
         return data
     except (ValidationError, ValueError, TypeError) as first_err:
+        elapsed = time.monotonic() - t0
         logger.warning(
-            "initial_state: first attempt failed (%s: %s), trying repair",
-            type(first_err).__name__, first_err,
+            "llm_call: attempt=1 FAILED in %.2fs (%s: %s), trying repair",
+            elapsed, type(first_err).__name__, first_err,
         )
         first_err_str = str(first_err)
 
@@ -1394,16 +1572,32 @@ async def _call_provider_with_repair_raw(
         {"role": "user", "content": user_message + "\n\n" + repair_suffix},
     ]
 
+    t1 = time.monotonic()
     try:
+        logger.info(
+            "llm_call: provider=%s attempt=2 (repair) sending messages=%d",
+            getattr(provider, "name", None) or type(provider).__name__,
+            len(repair_messages),
+        )
         data2 = await provider.generate_json(repair_messages)
+        elapsed = time.monotonic() - t1
         if not isinstance(data2, dict):
             raise TypeError(f"LLM output is not a JSON object after repair: {type(data2).__name__}")  # noqa: TRY301
         if "fields" not in data2:
             raise ValueError("LLM output is missing required 'fields' key after repair")  # noqa: TRY301
+        logger.info(
+            "llm_call: attempt=2 (repair) OK in %.2fs, response_chars=%d, "
+            "top_keys=%s",
+            elapsed,
+            len(json.dumps(data2, ensure_ascii=False)),
+            sorted(data2.keys())[:10],
+        )
         return data2
     except (ValidationError, ValueError, TypeError) as second_err:
+        elapsed = time.monotonic() - t1
         logger.exception(
-            "initial_state: repair attempt also failed",
+            "llm_call: attempt=2 (repair) FAILED in %.2fs",
+            elapsed,
         )
         raise InvalidGenerationOutputError(
             f"LLM returned invalid output after repair attempt: {second_err}"

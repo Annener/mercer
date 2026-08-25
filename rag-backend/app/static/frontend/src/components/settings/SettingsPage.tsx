@@ -2,6 +2,7 @@ import { type ReactNode } from 'react';
 import { Button, DomainRail, Tabs } from '@/components/ui';
 import { useSettingsStore, type SettingsTab } from '@/stores';
 import { useDomainStore } from '@/stores';
+import { ModelHealthIndicator } from '@/components/system';
 import { DomainsTab } from './tabs/DomainsTab';
 import { VaultsTab } from './tabs/VaultsTab';
 import { ModelsTab } from './tabs/ModelsTab';
@@ -36,9 +37,15 @@ export function SettingsPage() {
     <main className="flex h-full flex-col bg-bg">
       <header className="flex items-center justify-between border-b border-border bg-surface px-4 py-3">
         <h2 className="text-lg font-semibold">Настройки платформы</h2>
-        <Button variant="ghost" onClick={openChat}>
-          ← Назад к чату
-        </Button>
+        <div className="flex shrink-0 items-center gap-2">
+          <ModelHealthIndicator kind="generation" />
+          <ModelHealthIndicator kind="embedding" />
+          <ModelHealthIndicator kind="rerank" />
+          <ModelHealthIndicator kind="sidecar" />
+          <Button variant="ghost" onClick={openChat}>
+            ← Назад к чату
+          </Button>
+        </div>
       </header>
 
       <div className="px-4 pt-3">

@@ -429,7 +429,7 @@ function EditCampaignModal({ open, campaign, onClose, onSaved }: EditCampaignMod
         {!campaign.has_initial_state && (
           <div className="flex items-center justify-between">
             <h4 className="text-sm font-semibold">Начальный контекст</h4>
-            <InitialStateButton campaignId={campaign.id} />
+            <InitialStateButton campaignId={campaign.id} domainId={campaign.domain_id} />
           </div>
         )}
 

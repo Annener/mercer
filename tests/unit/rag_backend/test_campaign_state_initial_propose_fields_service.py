@@ -532,3 +532,102 @@ def test_next_display_order_no_existing():
     assert _next_display_order([], start=-1) == 0
     assert _next_display_order([5], start=-1) == 6
     assert _next_display_order([], start=10) == 11
+
+
+# ---------------------------------------------------------------------------
+# Регресс-тесты: дедупликация (баг #1 — duplicate version_id при INSERT)
+# ---------------------------------------------------------------------------
+
+
+def test_unify_proposal_dedups_existing_overlapping_with_suggested():
+    """Если existing-поля и suggested-поля содержат одинаковый field_key,
+    unified proposal должен содержать только suggested (приоритет).
+    """
+    from app.services.campaign_state_initial_service import _unify_proposal_for_apply
+
+    existing_pf = CampaignStateInitialProposalField(
+        field_key="focus",
+        mode="single",
+        status=CampaignStateInitialFieldStatus(status="proposed"),
+        single_value=CampaignStateInitialSingleValue(text="old"),
+    )
+    sf = CampaignStateSuggestedFieldConfig(
+        key="focus",
+        label="Focus",
+        mode="single",
+        initial_status="proposed",
+        single_value=CampaignStateInitialSingleValue(text="new"),
+    )
+    field_row = _make_field_row("focus")
+    p_v2 = CampaignStateInitialProposalV2(
+        fields=[existing_pf],
+        suggested_fields=[sf],
+        questions=[],
+    )
+    out = _unify_proposal_for_apply(
+        p_v2,
+        {"focus": field_row},
+        [sf],
+    )
+    # Только одна запись, с приоритетом suggested.
+    assert len(out.fields) == 1
+    assert out.fields[0].field_key == "focus"
+    assert out.fields[0].single_value.text == "new"
+
+
+def test_unify_proposal_dedups_duplicates_in_existing_fields():
+    """Если existing-поля содержат дубликаты (LLM иногда так шлёт), unified proposal
+    должен их дедуплицировать. Иначе downstream INSERT в
+    `campaign_state_values` падает с UniqueViolation.
+    """
+    from app.services.campaign_state_initial_service import _unify_proposal_for_apply
+
+    p_v2 = CampaignStateInitialProposalV2(
+        fields=[
+            CampaignStateInitialProposalField(
+                field_key="focus",
+                mode="single",
+                status=CampaignStateInitialFieldStatus(status="proposed"),
+                single_value=CampaignStateInitialSingleValue(text="first"),
+            ),
+            CampaignStateInitialProposalField(
+                field_key="focus",
+                mode="single",
+                status=CampaignStateInitialFieldStatus(status="proposed"),
+                single_value=CampaignStateInitialSingleValue(text="second"),
+            ),
+        ],
+        suggested_fields=[],
+        questions=[],
+    )
+    out = _unify_proposal_for_apply(p_v2, {}, [])
+    assert len(out.fields) == 1
+    assert out.fields[0].field_key == "focus"
+
+
+def test_normalize_proposal_dedups_existing_duplicate_field_keys():
+    """_normalize_existing_fields должен дедуплицировать по field_key."""
+    from app.services.campaign_state_initial_service import _normalize_existing_fields
+
+    focus = _FakeField("focus", "single")
+    fields_by_key = {"focus": focus}
+    snapshot_doc_ids = set()
+    raw = [
+        {
+            "field_key": "focus",
+            "mode": "single",
+            "status": {"status": "proposed"},
+            "single_value": {"text": "first", "source_refs": []},
+        },
+        {
+            "field_key": "focus",
+            "mode": "single",
+            "status": {"status": "proposed"},
+            "single_value": {"text": "second", "source_refs": []},
+        },
+    ]
+    kept = _normalize_existing_fields(
+        raw, fields_by_key, snapshot_doc_ids, warnings := []
+    )
+    assert len(kept) == 1
+    assert any("duplicate_field_key_in_proposal:focus" in w for w in warnings)

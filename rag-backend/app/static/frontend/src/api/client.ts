@@ -481,7 +481,7 @@ export class MercerAPI extends HttpClient {
     campaignId: T.CampaignId,
     proposalId: string,
     configVersion: number,
-    proposalOverrides?: unknown,
+    proposalOverrides?: T.InitialProposal,
     acceptedSuggestedFieldKeys?: string[],
     rejectedSuggestedFieldKeys?: string[],
   ): Promise<T.CampaignStateVersion> {
@@ -767,8 +767,37 @@ export class MercerAPI extends HttpClient {
   // Settings & Params
   // ============================================================
 
-  async getSettingsStatus(): Promise<unknown> {
-    return this.get('/api/settings/status');
+  async getSettingsStatus(): Promise<T.PlatformStatus> {
+    return this.get<T.PlatformStatus>('/api/settings/status');
+  }
+
+  async getModelHealth(
+    kind: 'generation' | 'embedding' | 'rerank',
+    modelId: string,
+  ): Promise<T.ModelHealthState> {
+    let res: T.ModelCheckResult;
+    try {
+      res =
+        kind === 'generation'
+          ? await this.checkGenerationModel(modelId)
+          : kind === 'embedding'
+          ? await this.checkEmbeddingModel(modelId)
+          : await this.checkRerankModel(modelId);
+    } catch (err) {
+      return {
+        status: 'fail',
+        latency_ms: null,
+        error: err instanceof Error ? err.message : String(err),
+        checked_at: new Date().toISOString(),
+      };
+    }
+    return {
+      status: res.ok ? 'ok' : 'fail',
+      latency_ms: res.latency_ms ?? null,
+      error: res.error ?? null,
+      dimensions: res.dimensions ?? null,
+      checked_at: new Date().toISOString(),
+    };
   }
 
   async getSettingsParams(): Promise<T.PlatformSetting[]> {
