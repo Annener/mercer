@@ -81,11 +81,8 @@ logger = logging.getLogger(__name__)
 
 # Категории которые включаем в результат
 _HEADING_CATEGORIES = {"Title", "Header", "SectionHeader"}
-_TEXT_CATEGORIES = {
-    "NarrativeText", "Text", "ListItem", "Table",
-    "Footer", "EmailAddress", "UncategorizedText", "Formula",
-}
-# Image и FigureCaption — намеренно НЕ включены
+# Image и FigureCaption — намеренно НЕ включены (фильтруются в _parse_batch_worker
+# и _parse_single через явное `category in ("Image", "FigureCaption")`)
 
 # Параметры батчинга
 _MIN_BATCH_SIZE = 8     # минимум страниц в батче (меньше — overhead > выигрыш)
@@ -663,16 +660,18 @@ def _parse_parallel(
                         completed, n_workers, elapsed, speed,
                     )
 
-                    # Прогресс callback — сообщаем о каждой завершённой странице батча
+                    # Прогресс callback — сообщаем о каждой завершённой странице батча.
+                    # Один проход по batch_elements вместо O(n*m) двойного цикла.
                     if progress_callback is not None:
+                        counts: dict[int, int] = defaultdict(int)
+                        tables: set[int] = set()
+                        for el in batch_elements:
+                            counts[el["page_number"]] += 1
+                            if el["category"] == "Table":
+                                tables.add(el["page_number"])
                         for p in range(first_page, last_page + 1):
-                            n_el = sum(1 for e in batch_elements if e["page_number"] == p)
-                            has_tbl = any(
-                                e["category"] == "Table" and e["page_number"] == p
-                                for e in batch_elements
-                            )
                             with contextlib.suppress(Exception):
-                                progress_callback(p, total_pages, n_el, has_tbl)
+                                progress_callback(p, total_pages, counts.get(p, 0), p in tables)
 
                 except Exception:
                     # Ошибка одного батча не должна убивать весь парсинг.

@@ -40,6 +40,7 @@ import logging
 import logging.config
 import os
 import tempfile
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -206,8 +207,6 @@ async def parse_pdf_stream(file: UploadFile = File(...)) -> StreamingResponse:
     filename = file.filename
 
     async def _generate():
-        import time
-
         with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
             tmp.write(pdf_bytes)
             tmp_path = tmp.name
@@ -276,13 +275,12 @@ async def parse_pdf_stream(file: UploadFile = File(...)) -> StreamingResponse:
 
         result = result_holder[0]
 
-        def _preprocess_pages(pages: list[dict]) -> list[dict]:
-            for page in pages:
-                source_hint = f"{filename}:page_{page.get('page_number', '?')}"
-                page["text"] = preprocess(page["text"], source_hint)
-            return pages
-
-        result["pages"] = await asyncio.to_thread(_preprocess_pages, result.get("pages", []))
+        # preprocess() — CPU-bound на коротких строках (страничный текст),
+        # overhead от asyncio.to_thread() больше, чем выигрыш.
+        # Идентичное поведение с /parse handler (строки 179-181).
+        for page in result.get("pages", []):
+            source_hint = f"{filename}:page_{page.get('page_number', '?')}"
+            page["text"] = preprocess(page["text"], source_hint)
 
         logger.info(
             "Parsed (stream) %s → %d pages, %d headings",
