@@ -41,7 +41,7 @@ YELLOW := \033[0;33m
 RESET  := \033[0m
 
 # --- Dev tooling ---
-STATIC_DIR     := $(ROOT_DIR)/rag-backend/app/static
+STATIC_DIR     := $(ROOT_DIR)/rag-backend/app/static/frontend
 PY_VENV_DIR    := $(ROOT_DIR)/.venv
 PY_VENV_PYTHON := $(PY_VENV_DIR)/bin/python
 
@@ -94,7 +94,7 @@ _check_python:
 
 .PHONY: help init-env agent-setup agent-install agent-uninstall agent-start agent-stop \
         agent-status agent-logs up down seed setup _check-macos _check_python _venv-create \
-        setup-dev js-install test test-rag-backend test-rag-indexer test-integration \
+        setup-dev js-install test test-rag-backend test-rag-indexer test-pdf-sidecar \
         test-all js-test lint-py lint-js lint lint-fix _py-venv-create
 
 help:
@@ -120,6 +120,7 @@ help:
 	@echo "  $(YELLOW)make test$(RESET)             Python unit-тесты (быстрые, без БД)"
 	@echo "  $(YELLOW)make test-rag-backend$(RESET) Только unit-тесты rag-backend"
 	@echo "  $(YELLOW)make test-rag-indexer$(RESET)  Только unit-тесты rag-indexer"
+	@echo "  $(YELLOW)make test-pdf-sidecar$(RESET) Только unit-тесты pdf-sidecar"
 	@echo "  $(YELLOW)make test-integration$(RESET) Интеграционные (требуется Postgres + alembic upgrade)"
 	@echo "  $(YELLOW)make js-test$(RESET)          JS unit-тесты (vitest)"
 	@echo "  $(YELLOW)make test-all$(RESET)         Python unit + JS тесты"
@@ -246,7 +247,10 @@ js-install:
 # NB: тесты разных компонентов запускаются отдельными процессами pytest,
 # потому что rag-backend и rag-indexer имеют одинаковый namespace ``app.*``
 # и в одном процессе Python не может различать их при импорте.
-test: _py-venv-create test-rag-backend test-rag-indexer
+# pdf-sidecar имеет свой модуль app.py верхнего уровня и не конфликтует
+# с rag-backend/rag-indexer namespace — поэтому запускается в любом порядке,
+# но для единообразия оставляем отдельной строкой.
+test: _py-venv-create test-rag-backend test-rag-indexer test-pdf-sidecar
 	@echo "$(GREEN)✓ все unit-тесты прошли.$(RESET)"
 
 # Только unit-тесты rag-backend
@@ -259,6 +263,11 @@ test-rag-indexer: _py-venv-create
 	@echo "$(YELLOW)→ pytest rag-indexer unit...$(RESET)"
 	@cd "$(ROOT_DIR)" && $(PY_VENV_PYTHON) -m pytest tests/unit/rag_indexer
 
+# Только unit-тесты pdf-sidecar
+test-pdf-sidecar: _py-venv-create
+	@echo "$(YELLOW)→ pytest pdf-sidecar unit...$(RESET)"
+	@cd "$(ROOT_DIR)" && $(PY_VENV_PYTHON) -m pytest tests/unit/pdf_sidecar
+
 # Интеграционные тесты (требуется PostgreSQL + alembic upgrade head)
 test-integration: _py-venv-create
 	@echo "$(YELLOW)→ pytest (integration, требуется PostgreSQL)...$(RESET)"
@@ -270,7 +279,7 @@ js-test:
 	@cd "$(STATIC_DIR)" && npm test
 
 # Все тесты: Python + JS
-test-all: test test-rag-indexer js-test
+test-all: test js-test
 	@echo "$(GREEN)✓ все тесты прошли.$(RESET)"
 
 # Python линтинг (ruff)

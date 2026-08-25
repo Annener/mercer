@@ -10,4 +10,5 @@ pytest-alembic
 aiosqlite
 fakeredis[aioredis]
 pyyaml
+python-multipart
 sqlalchemy[asyncio]>=2.0
