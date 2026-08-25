@@ -1,32 +1,19 @@
-"""Shared text-operation utilities for the update-mode subsystem.
+"""Shared text-operation utilities.
 
-This module exposes helpers that are needed by both *text_ops.py* and the
-Token-Map Anchoring layer (token_anchor.py, Фаза 2).  Keeping them here
-avoids importing private symbols across module boundaries.
+CHAR_MAP_MARKER re-exported from shared_contracts.text.markers (canonical
+location). ``build_anchor_pattern`` remains here — it's orthogonal to the
+preprocessing refactor (used only by token_anchor / text_ops internally).
 
-Public API
-----------
-build_anchor_pattern(anchor_value) -> re.Pattern[str]
-    Build a whitespace-tolerant regex for locating *anchor_value* inside
-    a larger text string.
-
-CHAR_MAP_MARKER : str
-    Sentinel string used in build_char_map (шаг 5) to temporarily mark
-    double newlines (\\n\\n) before single-newline→space substitution.
-    Must be a 2-character string whose characters never appear in
-    preprocessed documents.  Uses Unicode Private Use Area (PUA) code points
-    U+E000 and U+E001, which are guaranteed not to survive preprocessor
-    filtering.
+New code should import ``CHAR_MAP_MARKER`` directly from
+``shared_contracts.text.markers``.
 """
 from __future__ import annotations
 
 import re
 
-# Two PUA characters used as a temporary marker in build_char_map step 5.
-# PUA range U+E000–U+F8FF is never present in normal document text and is
-# not included in preprocessor _ALLOWED_RANGES, so it will be caught by
-# _detect_suspicious_chars if it ever leaks into real content.
-CHAR_MAP_MARKER: str = "\uE000\uE001"
+# Re-export для обратной совместимости с token_anchor.py и text_ops.py.
+# Канонический путь: shared_contracts.text.markers.CHAR_MAP_MARKER.
+from shared_contracts.text.markers import CHAR_MAP_MARKER  # noqa: F401
 
 
 def build_anchor_pattern(anchor_value: str) -> re.Pattern[str]:

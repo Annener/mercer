@@ -1,14 +1,15 @@
-"""Unit-тесты для pdf-sidecar/preprocessor.py.
+"""Unit-тесты для shared_contracts/preprocessing.py.
 
-Pure-CPU, без внешних зависимостей — только stdlib (re, unicodedata).
+Источник истины — `shared_contracts.preprocessing` (используется и
+rag-indexer, и pdf-sidecar). Тесты фокусируются на публичном API и
+наблюдаемом поведении, без зависимостей от внутренних деталей реализации
+(приватных констант _ALLOWED_RANGES/_ALLOWED_SINGLE/_is_allowed_char).
 """
 from __future__ import annotations
 
-from preprocessor import (
-    _ALLOWED_RANGES,
-    _ALLOWED_SINGLE,
+from shared_contracts.preprocessing import (
     CHAR_MAP,
-    _is_allowed_char,
+    HEADING_FULL_LINE_RE,
     preprocess,
     reset_suspicious_chars_cache,
 )
@@ -136,36 +137,50 @@ class TestPreprocessMarkdownHeading:
         # Heading отделён \n\n от "paragraph"
         assert "paragraph\n\n# Heading" in result
 
+    def test_step_4b_wraps_markdown_heading_with_blank_lines(self):
+        """Шаг 4b: heading отделён \\n\\n от соседей даже при одиночных \\n во входе.
 
-class TestIsAllowedChar:
-    def test_ascii_printable_allowed(self):
-        for ch in "Hello, World! 0123":
-            assert _is_allowed_char(ch), f"{ch!r} should be allowed"
+        Гарантирует, что Markdown-заголовки не склеиваются с соседними
+        абзацами при одиночных переносах строк (типичный случай для
+        unstructured-парсинга PDF). Без шага 4b heading терял бы
+        семантику разделителя абзаца.
+        """
+        text = "para\n# Heading\nnext"
+        result = preprocess(text)
+        # После preprocess заголовок отделён \n\n от обоих соседей
+        assert "para\n\n# Heading" in result, (
+            f"heading не отделён от 'para': {result!r}"
+        )
+        assert "# Heading\n\nnext" in result, (
+            f"heading не отделён от 'next': {result!r}"
+        )
 
-    def test_cyrillic_allowed(self):
-        assert _is_allowed_char("А")
-        assert _is_allowed_char("я")
+    def test_step_4b_with_multiple_headings(self):
+        """Шаг 4b работает для последовательных headings."""
+        text = "# Heading 1\n## Heading 2\n\nText"
+        result = preprocess(text)
+        assert "# Heading 1" in result
+        assert "## Heading 2" in result
+        assert "Text" in result
 
-    def test_control_chars_not_allowed(self):
-        # \x00 — control char, не в _ALLOWED_SINGLE
-        assert not _is_allowed_char("\x00")
-        # \x07 — BEL
-        assert not _is_allowed_char("\x07")
 
-    def test_allowed_single_chars(self):
-        assert _is_allowed_char("\n")
-        assert _is_allowed_char("\r")
-        assert _is_allowed_char("\t")
+class TestHeadingFullLineRePattern:
+    """HEADING_FULL_LINE_RE — публичный паттерн, используется token_anchor."""
 
-    def test_pua_not_allowed(self):
-        # U+E000 U+E001 — PUA marker, должен быть отфильтрован
-        assert not _is_allowed_char("\uE000")
-        assert not _is_allowed_char("\uE001")
+    def test_matches_h1_to_h6(self):
 
-    def test_allowed_ranges_cover_documented_set(self):
-        # Smoke: размеры списков как в оригинале
-        assert len(_ALLOWED_RANGES) == 8
-        assert {0x000A, 0x000D, 0x0009} == _ALLOWED_SINGLE
+        for level in range(1, 7):
+            text = f"{'#' * level} Heading {level}"
+            assert HEADING_FULL_LINE_RE.search(text) is not None
+
+    def test_does_not_match_without_space_after_hash(self):
+        # "#heading" — это не Markdown-heading
+        assert HEADING_FULL_LINE_RE.search("#not_a_heading") is None
+
+    def test_matches_only_whole_line(self):
+        # Pattern anchors на начало строки
+        text = "text # Inline heading"
+        assert HEADING_FULL_LINE_RE.search(text) is None
 
 
 class TestResetSuspiciousCharsCache:

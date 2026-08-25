@@ -19,16 +19,10 @@ import logging
 import re
 import unicodedata
 
-from parser.preprocessing.preprocessor import CHAR_MAP, preprocess
-
 from app.update_mode.text_ops_utils import CHAR_MAP_MARKER, build_anchor_pattern
+from shared_contracts.preprocessing import CHAR_MAP, HEADING_FULL_LINE_RE, preprocess
 
 log = logging.getLogger(__name__)
-
-# Локальная копия паттерна Markdown-заголовка.
-# Источник истины — preprocessor._HEADING_FULL_LINE_RE; паттерн намеренно
-# дублируется здесь, чтобы не импортировать приватный символ.
-_HEADING_FULL_LINE_RE = re.compile(r"^(#{1,6}\s[^\n]*)", re.MULTILINE)
 
 
 def build_char_map(raw: str, normalized: str) -> list[int] | None:
@@ -198,7 +192,7 @@ def build_char_map(raw: str, normalized: str) -> list[int] | None:
     new_text = ""
     new_offsets = []
     last = 0
-    for m in _HEADING_FULL_LINE_RE.finditer(current_text):
+    for m in HEADING_FULL_LINE_RE.finditer(current_text):
         for i in range(last, m.start()):
             new_text += current_text[i]
             new_offsets.append(current_offsets[i])

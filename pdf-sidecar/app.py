@@ -2,16 +2,15 @@
 pdf-sidecar — FastAPI HTTP-сервер для парсинга PDF через unstructured (hi_res),
 реранжирования через CrossEncoder и эмбеддинга через SentenceTransformer.
 
-/parse         — синхронный, возвращает JSON после полного завершения
-/parse/stream  — NDJSON-поток с прогресс-событиями по страницам и финальным результатом
-/rerank        — реранжирование документов через CrossEncoder (BAAI/bge-reranker-v2-m3)
-/embed         — эмбеддинг текстов через SentenceTransformer (BAAI/bge-m3)
-               Доверен выносу bge-m3 из Ollama в этот сервис для:
-               - батчинг за один forward pass вместо N HTTP-запросов к Ollama
-               - изоляция нагрузки индексации от LLM-запросов пользователей
-               - детерминированные вектора (те же веса, не зависящие от версии Ollama)
-               Ответ совместим с OpenAI /embeddings API:
-               {"data": [{"index": 0, "embedding": [...]}, ...]}
+/parse           — синхронный, возвращает JSON после полного завершения
+/parse/stream    — NDJSON-поток с прогресс-событиями по страницам и финальным результатом
+/rerank          — реранжирование документов через CrossEncoder (BAAI/bge-reranker-v2-m3)
+/embeddings      — эмбеддинг текстов через SentenceTransformer (BAAI/bge-m3),
+                   OpenAI-compatible
+                 Доверен выносу bge-m3 из Ollama в этот сервис для:
+                 - батчинг за один forward pass вместо N HTTP-запросов к Ollama
+                 - изоляция нагрузки индексации от LLM-запросов пользователей
+                 - детерминированные вектора (те же веса, не зависящие от версии Ollama)
 
 FIX v3:
   - Логирование через dictConfig (нет дублей)
@@ -28,9 +27,15 @@ v4.0:
   - Добавлен эндпоинт POST /rerank и прогрев CrossEncoder в lifespan.
 
 v5.0:
-  - Добавлен эндпоинт POST /embed (OpenAI-compatible) и прогрев SentenceTransformer (bge-m3) в lifespan.
+  - Добавлен эндпоинт POST /embeddings (OpenAI-compatible) и прогрев
+    SentenceTransformer (bge-m3) в lifespan.
   - bge-m3 вынесен из Ollama в этот сервис.
   - /health дополнен флагом embedder_loaded.
+
+v5.1:
+  - preprocess() импортируется из shared_contracts.preprocessing
+    (единый источник истины для rag-indexer и pdf-sidecar).
+  - Шаг 4b (heading guard) теперь применяется и в sidecar-выводе.
 """
 from __future__ import annotations
 
@@ -52,10 +57,11 @@ from embedder import load_embedder
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
 from parser import parse_pdf_unstructured, warmup_models
-from preprocessor import preprocess
 from pydantic import BaseModel
 from reranker import is_loaded as reranker_is_loaded
 from reranker import load_reranker, rerank
+
+from shared_contracts.preprocessing import preprocess
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 PORT = int(os.getenv("PDF_SIDECAR_PORT", "8765"))

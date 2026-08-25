@@ -1,14 +1,41 @@
+"""Shared text preprocessing — used by rag-indexer and pdf-sidecar.
+
+Single source of truth for normalize/clean steps applied before chunking.
+``token_anchor.build_char_map()`` imports ``CHAR_MAP`` and
+``HEADING_FULL_LINE_RE`` publicly and replicates the same steps to maintain
+raw→normalized position map (offset tracking).
+
+Public API
+----------
+preprocess(text, source_hint="") -> str
+    Глубокая очистка текста перед эмбеддингом.
+reset_suspicious_chars_cache() -> None
+    Сбрасывает глобальный кэш suspicious-символов (для тестов).
+CHAR_MAP : dict[str, str]
+    Посимвольные замены артефактов PDF-экстракции. Публичный,
+    потому что ``token_anchor.build_char_map`` воспроизводит шаг 2.
+HEADING_FULL_LINE_RE : re.Pattern
+    Markdown-heading regex (шаг 4b). Публичный,
+    потому что ``token_anchor.build_char_map`` воспроизводит шаг 4b.
+
+При изменении шагов ``preprocess`` обязательно синхронизировать ручную
+реализацию в ``rag-indexer/app/update_mode/token_anchor.py:build_char_map``.
+Property-test в ``tests/unit/rag_indexer/test_token_anchor.py`` ловит рассинхрон.
+"""
 from __future__ import annotations
 
 import logging
 import re
 import unicodedata
 
-from app.update_mode.text_ops_utils import CHAR_MAP_MARKER as _NL_MARKER
+from shared_contracts.text.markers import CHAR_MAP_MARKER as _NL_MARKER
 
 logger = logging.getLogger(__name__)
 
-# Карта замен проблемных символов, характерных для PDF-экстракции
+# ---------------------------------------------------------------------------
+# Публичные константы (используются token_anchor.build_char_map)
+# ---------------------------------------------------------------------------
+
 CHAR_MAP: dict[str, str] = {
     "\uFFFD": " ",   # U+FFFD: символ замены (кракозябры/битые кодировки)
     "\u25A1": " ",   # U+25A1: пустой квадрат (артефакт рендера)
@@ -22,11 +49,17 @@ CHAR_MAP: dict[str, str] = {
     "\u2014": "-",   # Em dash → дефис для единообразия
 }
 
+# Паттерн Markdown-заголовка: вся строка целиком (от # до конца строки)
+# Использован [^\n]* чтобы захватить текст заголовка, не переходя на следующую строку
+HEADING_FULL_LINE_RE = re.compile(r"^(#{1,6}\s[^\n]*)", re.MULTILINE)
+
 # ---------------------------------------------------------------------------
-# Глобальный кэш suspicious Unicode-символов (V3.0)
+# Приватные (внутренние детали реализации)
+# ---------------------------------------------------------------------------
+
+# Глобальный кэш suspicious Unicode-символов.
 # Ключ — "U+XXXX", значение — количество встреч (для статистики).
 # Каждое новое значение логируется ОДИН РАЗ за жизнь процесса.
-# ---------------------------------------------------------------------------
 _SUSPICIOUS_CHARS_SEEN: dict[str, int] = {}
 
 # Разрешённые Unicode-диапазоны
@@ -44,9 +77,7 @@ _ALLOWED_RANGES: list[tuple[int, int]] = [
 # Отдельные разрешённые control-символы
 _ALLOWED_SINGLE: set[int] = {0x000A, 0x000D, 0x0009}  # \n, \r, \t
 
-# Паттерн Markdown-заголовка: вся строка целиком (от # до конца строки)
-# Использован [^\n]* чтобы захватить текст заголовка, не переходя на следующую строку
-_HEADING_FULL_LINE_RE = re.compile(r"^(#{1,6}\s[^\n]*)", re.MULTILINE)
+__all__ = ["CHAR_MAP", "HEADING_FULL_LINE_RE", "preprocess", "reset_suspicious_chars_cache"]
 
 
 def _is_allowed_char(char: str) -> bool:
@@ -69,9 +100,7 @@ def _detect_suspicious_chars(text: str, source_hint: str) -> None:
                 _SUSPICIOUS_CHARS_SEEN[cp_hex] = 1
                 logger.warning(
                     "[SUSPICIOUS CHAR] %s %r — впервые встречен в: %s",
-                    cp_hex,
-                    char,
-                    source_hint[:80] if source_hint else "<unknown>",
+                    cp_hex, char, source_hint[:80] if source_hint else "<unknown>",
                 )
             else:
                 _SUSPICIOUS_CHARS_SEEN[cp_hex] += 1
@@ -80,8 +109,9 @@ def _detect_suspicious_chars(text: str, source_hint: str) -> None:
 def preprocess(text: str, source_hint: str = "") -> str:
     """
     Глубокая очистка текста перед эмбеддингом.
+
     В V3.0 вызывается НА КАЖДОМ чанке отдельно (после чанкинга),
-    поэтому source_hint включает идентификатор чанка.
+    поэтому ``source_hint`` включает идентификатор чанка.
 
     Порядок операций критичен: от юникода → к структуре → к пробелам.
     """
@@ -120,7 +150,7 @@ def preprocess(text: str, source_hint: str = "") -> str:
     #
     # Решение: матчим ВСЮ строку-заголовок (от #{1,6}\s до конца строки) и оборачиваем
     # её \n\n с обеих сторон. После этого и шаг 5, и de-dup \n{3,} работают корректно.
-    text = _HEADING_FULL_LINE_RE.sub(r"\n\n\1\n\n", text)
+    text = HEADING_FULL_LINE_RE.sub(r"\n\n\1\n\n", text)
     # Убираем тройные+ \n, которые могли появиться если \n\n уже было
     text = re.sub(r"\n{3,}", "\n\n", text)
 

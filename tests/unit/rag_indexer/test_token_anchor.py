@@ -14,7 +14,8 @@ from app.update_mode.token_anchor import (
     find_anchor_offset,
     resolve_anchor_in_raw,
 )
-from parser.preprocessing.preprocessor import preprocess
+
+from shared_contracts.preprocessing import preprocess
 
 # ---------------------------------------------------------------------------
 # Вспомогательная функция: строим нормализованный текст теми же шагами
@@ -199,3 +200,62 @@ class TestExtractRawFragment:
         end = norm.index("B") + 1
         fragment = extract_raw_fragment(raw, cmap, start, end)
         assert "\u2014" in fragment
+
+
+# ---------------------------------------------------------------------------
+# Property-test: build_char_map(preprocess(raw), raw) invariants
+#
+# Защита от рассинхрона между shared_contracts.preprocessing.preprocess()
+# и ручной реализацией шагов в build_char_map(). При рассинхроне
+# build_char_map возвращает None — что ломает token-anchoring в Update Mode.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        # Базовые случаи
+        "hello world",
+        "Кот — животное",  # em-dash
+        "задача А\nзадача Б",  # newline → space
+        "спо-\nсобность",  # hyphen + \n
+        "выва- ливается",  # hyphen + space (шаг 4a)
+        # Headings (шаг 4b)
+        "# Heading\n\nText",
+        "# Heading\nText",  # heading с одиночным \n
+        "## Subheading\n\n## Another\n\nText",
+        "Text\n# Heading",  # heading в конце
+        "# Heading",  # только heading
+        # Цифровые строки (шаг 3)
+        "Цифры: 42\n\nНовый абзац",
+        "Page 1\n\nBody",
+        # Множественные спецсимволы
+        "a\u00adb" * 10,  # soft hyphens
+        "a\uFFFDb" * 10,  # replacement chars
+        "normal\u00a0text\u00a0here",  # non-breaking spaces
+        # NFC нормализация
+        "Normal text with NFC é",
+        "Normal text with NFD e\u0301",
+        # Edge cases
+        "",
+        "single",
+        "\n\n\n",
+        "   \t\n   ",
+    ],
+)
+def test_build_char_map_invariant(raw):
+    """build_char_map(preprocess(raw), raw) даёт согласованный результат.
+
+    Защищает от рассинхрона между preprocess() и build_char_map().
+    При рассинхроне build_char_map возвращает None — этот тест ловит такое.
+    """
+    norm = preprocess(raw, source_hint="invariant_test")
+    cmap = build_char_map(raw, norm)
+    assert cmap is not None, f"build_char_map returned None for {raw!r}"
+    assert len(cmap) == len(norm), (
+        f"len(cmap)={len(cmap)} != len(norm)={len(norm)} for {raw!r}"
+    )
+    # Монотонная неубываемость char_map
+    for i in range(1, len(cmap)):
+        assert cmap[i] >= cmap[i - 1], (
+            f"Нарушена монотонность: cmap[{i}]={cmap[i]} < cmap[{i-1}]={cmap[i-1]}"
+        )

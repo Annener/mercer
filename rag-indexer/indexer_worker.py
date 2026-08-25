@@ -22,7 +22,6 @@ from parser.preprocessing.pdf_page_merger import (
     merge_pdf_pages,
     strip_page_markers,
 )
-from parser.preprocessing.preprocessor import preprocess
 from parser.scanning.vault_scanner import scan_vault
 from parser.semantic_chunker import SemanticChunker
 from parser.state.redis_state_manager import RedisStateManager
@@ -35,6 +34,7 @@ from shared_contracts.models import (
     UpsertChunk,
     UpsertRequest,
 )
+from shared_contracts.preprocessing import preprocess
 
 logger = logging.getLogger(__name__)
 

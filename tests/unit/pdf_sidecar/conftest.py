@@ -1,8 +1,9 @@
 """pytest config for pdf-sidecar unit tests.
 
 Adds pdf-sidecar/ and repo root to sys.path so that bare imports like
-``from preprocessor import preprocess`` and ``from shared_contracts.preprocessing import preprocess``
-work without PYTHONPATH tweaks.
+``from parser import parse_pdf_unstructured`` and
+``from shared_contracts.preprocessing import preprocess`` work without
+PYTHONPATH tweaks.
 
 NB: pdf-sidecar/ contains ``app.py`` as a top-level module (not a package).
 Neither rag-backend nor rag-indexer reference any pdf-sidecar module, so this
@@ -33,13 +34,19 @@ for p in (SIDECAR, ROOT):
 @pytest.fixture(autouse=True)
 def _restore_pdf_sidecar_modules():
     saved = {}
-    for name in ("reranker", "embedder", "parser", "preprocessor", "app", "agent"):
+    protected = (
+        "reranker", "embedder", "parser", "preprocessor",
+        "shared_contracts", "shared_contracts.preprocessing",
+        "shared_contracts.text", "shared_contracts.text.markers",
+        "app", "agent",
+    )
+    for name in protected:
         if name in sys.modules:
             saved[name] = sys.modules[name]
             del sys.modules[name]
     try:
         yield
     finally:
-        for name in ("reranker", "embedder", "parser", "preprocessor", "app", "agent"):
+        for name in protected:
             sys.modules.pop(name, None)
         sys.modules.update(saved)

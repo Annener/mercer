@@ -153,7 +153,7 @@ echo "[2/8] Upgrading pip…"
 pip install --upgrade pip --quiet
 
 # ---------------------------------------------------------------------------
-# [3/8] requirements.txt
+# [3/8] requirements.txt + shared_contracts
 # ---------------------------------------------------------------------------
 echo "[3/8] Installing requirements.txt…"
 if pip install -r "${SCRIPT_DIR}/requirements.txt"; then
@@ -161,6 +161,20 @@ if pip install -r "${SCRIPT_DIR}/requirements.txt"; then
 else
     STEP_DEPS="ERROR"
     STEP_DEPS_NOTE="ошибка установки"
+fi
+
+# shared_contracts — единый preprocess() для sidecar и rag-indexer.
+# Best-effort: если каталога нет (sidecar скопирован отдельно) — продолжаем.
+SHARED_CONTRACTS_DIR="${SCRIPT_DIR}/../shared_contracts"
+if [[ -d "${SHARED_CONTRACTS_DIR}" && -f "${SHARED_CONTRACTS_DIR}/pyproject.toml" ]]; then
+    echo "[3/8] Installing shared_contracts (editable)..."
+    if pip install -e "${SHARED_CONTRACTS_DIR}" --quiet; then
+        echo "      ✓ shared_contracts: editable install"
+        STEP_DEPS_NOTE="${STEP_DEPS_NOTE} + shared_contracts"
+    else
+        echo "      ⚠ shared_contracts install failed (non-fatal)"
+        STEP_DEPS="WARN"
+ fi
 fi
 
 # ---------------------------------------------------------------------------

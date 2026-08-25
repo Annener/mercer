@@ -34,7 +34,7 @@ def app_client(monkeypatch):
     sys.modules["reranker"] = mock_reranker_mod
     sys.modules["embedder"] = mock_embedder_mod
     sys.modules["parser"] = mock_parser_mod
-    sys.modules["preprocessor"] = mock_preprocessor_mod
+    sys.modules["shared_contracts.preprocessing"] = mock_preprocessor_mod
 
     # Импортируем app.py
     if "app" in sys.modules:
