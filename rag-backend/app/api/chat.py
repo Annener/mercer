@@ -975,7 +975,7 @@ async def send_message_stream(
                         for src in round_sources_raw:
                             try:
                                 all_sources.append(Source.model_validate(src))
-                            except Exception:  # noqa: BLE001  # skip malformed sources
+                            except Exception:  # skip malformed sources
                                 logger.warning(
                                     "agent_loop: invalid source payload, skipping: %r",
                                     src,
@@ -1330,13 +1330,13 @@ async def _prefill_rag(
         prefill_top_k = int(
             await settings_service.get("retrieval.top_k", db)
         )
-    except Exception:  # noqa: BLE001  # use safe default if settings unavailable
+    except Exception:  # use safe default if settings unavailable
         prefill_top_k = 20
     try:
         prefill_budget = int(
             await settings_service.get("retrieval.evidence_token_budget", db)
         )
-    except Exception:  # noqa: BLE001  # use safe default if settings unavailable
+    except Exception:  # use safe default if settings unavailable
         prefill_budget = 6000
 
     # Scope to campaign tags.

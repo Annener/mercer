@@ -9,8 +9,7 @@ Covers the new filter logic added to support campaign-scoped chat lists:
 from __future__ import annotations
 
 import uuid
-from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from app.api.chat import router
