@@ -26,7 +26,7 @@ rag-indexer: pages[], headings[], metadata{}
 ```
 
 Препроцессинг текста (удаление артефактов, нормализация) выполняется
-**внутри sidecar** — `preprocessor.py`. Источник истины — `rag-indexer/parser/preprocessing/preprocessor.py`
+**внутри sidecar** через `shared_contracts.preprocessing.preprocess()`
 (см. также `shared_contracts/`).
 
 ## Системные зависимости (через Homebrew)
@@ -183,12 +183,12 @@ base_url: http://host.docker.internal:8765
 pdf-sidecar/
 ├── app.py            — FastAPI HTTP-сервер (/parse, /parse/stream, /rerank, /embeddings)
 ├── parser.py         — парсер (unstructured → унифицированный формат, parallel batch)
-├── preprocessor.py   — постобработка текста (NFC, hyphenation, char replacements)
 ├── reranker.py       — CrossEncoder BAAI/bge-reranker-v2-m3
 ├── embedder.py       — SentenceTransformer BAAI/bge-m3 (OpenAI-compatible)
 ├── requirements.txt  — Python-зависимости
 ├── install.sh        — скрипт установки venv + deps + прогрев моделей
-├── start.sh          — запуск в фоне (nohup)
+├── start.sh          — запуск в фоне (nohup). Автоматически выставляет
+│                       PYTHONPATH=.. для shared_contracts.
 ├── stop.sh           — остановка
 ├── status.sh         — проверка статуса
 ├── agent/            — host-agent (управление sidecar с хоста через HTTP)

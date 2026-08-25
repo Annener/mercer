@@ -18,6 +18,13 @@ FROM python:3.13-slim
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
+# shared_contracts доступен через PYTHONPATH=/app — корень репо в образе
+# содержит /app/shared_contracts/. Без PYTHONPATH pip install -e shared_contracts
+# не заполняет finder (setuptools 80+ не подхватывает regular package с
+# wildcard import в __init__.py), и `from shared_contracts.preprocessing import
+# preprocess` падает с ModuleNotFoundError.
+ENV PYTHONPATH=/app
+
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         curl \

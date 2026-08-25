@@ -18,6 +18,9 @@ FROM python:3.13-slim
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
+# shared_contracts доступен через PYTHONPATH=/app. См. rag-indexer/Dockerfile.
+ENV PYTHONPATH=/app
+
 RUN apt-get update \
     && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*

@@ -18,11 +18,10 @@
 pdf-sidecar/
 ├── app.py             — FastAPI-сервер (основной файл)
 ├── parser.py          — unstructured hi_res + yolox (парсинг PDF, OCR)
-├── preprocessor.py    — постобработка текста
 ├── reranker.py        — CrossEncoder (BAAI/bge-reranker-v2-m3) через sentence-transformers
 ├── embedder.py        — SentenceTransformer (BAAI/bge-m3), OpenAI-compatible API
 ├── requirements.txt
-├── install.sh         — установка зависимостей + моделей
+├── install.sh         — установка зависимостей + моделей + shared_contracts (editable)
 ├── start.sh / stop.sh / status.sh
 ├── logs/              — sidecar.log
 └── agent/             — host-agent для macOS (launchd)
@@ -30,6 +29,8 @@ pdf-sidecar/
     ├── com.mercer.host-agent.plist.template
     └── requirements.txt
 ```
+
+`preprocess()` импортируется из `shared_contracts.preprocessing` (см. `context/architecture.md` → shared_contracts).
 
 ---
 
@@ -154,8 +155,10 @@ Sortable by `relevance_score` desc. Параметр `batch_size=8` — опти
 ### `parser.py`
 Парсинг через `unstructured` (стратегия `hi_res`, модель layout `yolox`). OCR-режим автоматический. Поддерживает `progress_callback(page_num, total, n_elements, has_table)` для streaming-режима. Прогрев моделей при старте: `warmup_models()`.
 
-### `preprocessor.py`
-Постобработка текста: удаление артефактов парсера, нормализация unicode, убрание лишних переносов.
+### Постобработка текста
+Реализована в `shared_contracts.preprocessing` (см. `context/architecture.md`
+→ shared_contracts). Импортируется в `app.py` как `from shared_contracts.preprocessing
+import preprocess`. Используется и rag-indexer, и pdf-sidecar.
 
 ### `reranker.py`
 `CrossEncoder(BAAI/bge-reranker-v2-m3)` через `sentence-transformers`. Device-автоопределение: CUDA > MPS > CPU. На macOS рекомендуется `RERANKER_FORCE_CPU=1` — MPS даёт тихий CPU-fallback для большинства ops без изменения выходного. `PYTORCH_ENABLE_MPS_FALLBACK=1` выставляется автоматически при `device=mps`.

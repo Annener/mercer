@@ -60,6 +60,11 @@ source "${VENV_DIR}/bin/activate"
 
 cd "${SCRIPT_DIR}"
 
+# shared_contracts импортируется через sys.path при cwd == родительской
+# директории репо, но при `python -m uvicorn` из pdf-sidecar cwd = pdf-sidecar
+# и shared_contracts не находится. Добавляем родителя в PYTHONPATH.
+export PYTHONPATH="${SCRIPT_DIR}/..:${PYTHONPATH:-}"
+
 nohup python -m uvicorn "${APP_MODULE}" \
     --host 0.0.0.0 \
     --port "${PDF_SIDECAR_PORT}" \
