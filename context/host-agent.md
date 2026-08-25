@@ -33,12 +33,19 @@ Browser → Frontend (ванильный JS SPA)
 ## Файловая структура
 
 ```
-host-agent/
-├── agent.py                     — FastAPI-приложение, все эндпоинты
-├── requirements.txt             — fastapi, uvicorn[standard]
-├── mercer-host-agent.service    — systemd unit-файл (опционально)
-└── README.md
+pdf-sidecar/agent/
+├── agent.py                              — FastAPI-приложение, все эндпоинты
+├── requirements.txt                      — fastapi, uvicorn[standard]
+├── com.mercer.host-agent.plist.template  — launchd plist (macOS)
+├── .venv/                                — изолированный venv (создаётся через make agent-setup)
+└── logs/                                 — agent.log, agent.err
 ```
+
+> Исторически `host-agent/` жил в корне репозитория как самостоятельный компонент
+> с systemd-юнитом. С 26 июня 2026 перенесён в `pdf-sidecar/agent/` (commit `3a2e1b0`),
+> чтобы код, управляющий sidecar, физически лежал рядом с ним.
+> Systemd-юнит (`mercer-host-agent.service`) больше не поставляется — на Linux
+> рекомендуется ручной запуск или контейнеризация.
 
 ---
 
@@ -186,14 +193,27 @@ def check_token(x_agent_token: str | None) -> None:
 
 ## Установка и запуск
 
+Через Makefile (рекомендуемый путь):
+
 ```bash
-cd host-agent
+# Полная первичная настройка: venv + launchd plist (macOS) или контейнеризация (Linux)
+make agent-setup
+
+# Управление
+make agent-start
+make agent-stop
+make agent-status
+make agent-logs
+```
+
+Вручную:
+
+```bash
+cd pdf-sidecar/agent
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-```
 
-```bash
 # Без авторизации (только для локальной разработки)
 python agent.py
 
@@ -208,15 +228,11 @@ SIDECAR_DIR=/opt/mercer/pdf-sidecar HOST_AGENT_TOKEN=mysecrettoken python agent.
 
 ---
 
-## Запуск через systemd (опционально)
+## Запуск через launchd (macOS, автоматически при логине)
 
-```bash
-sudo cp mercer-host-agent.service /etc/systemd/system/
-# Отредактировать пути и пользователя в юните
-sudo systemctl daemon-reload
-sudo systemctl enable --now mercer-host-agent
-sudo systemctl status mercer-host-agent
-```
+`com.mercer.host-agent.plist.template` устанавливается в `~/Library/LaunchAgents/`
+через `make agent-setup`. Параметры (путь к venv, к `agent.py`, переменные
+окружения `SIDECAR_DIR`, `HOST_AGENT_TOKEN`) рендерятся из шаблона при установке.
 
 ---
 

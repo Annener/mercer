@@ -26,8 +26,8 @@ rag-indexer: pages[], headings[], metadata{}
 ```
 
 Препроцессинг текста (удаление артефактов, нормализация) выполняется
-**внутри sidecar** — `preprocessor.py` является точной копией
-`rag-indexer/parser/preprocessing/preprocessor.py`.
+**внутри sidecar** — `preprocessor.py`. Источник истины — `rag-indexer/parser/preprocessing/preprocessor.py`
+(см. также `shared_contracts/`).
 
 ## Системные зависимости (через Homebrew)
 
@@ -77,8 +77,16 @@ chmod +x install.sh start.sh stop.sh status.sh
 
 ### `GET /health`
 ```json
-{"status": "ok", "service": "pdf-sidecar"}
+{
+  "status": "ok",
+  "service": "pdf-sidecar",
+  "reranker_loaded": "True",
+  "embedder_loaded": "True"
+}
 ```
+
+`reranker_loaded` / `embedder_loaded` — `"True"` / `"False"` строки (не bool).
+Сервис может отвечать `/health` даже если модели ещё не загружены (lifespan в процессе warmup'а).
 
 ### `POST /parse`
 Content-Type: `multipart/form-data`
@@ -94,13 +102,60 @@ Content-Type: `multipart/form-data`
     "headings": [
         {"text": "Заголовок раздела", "page_number": 1, "y0": 0.0, "font_size": 0.0}
     ],
-    "metadata": {"source": "document.pdf", "parser": "unstructured-hi_res"},
+    "metadata": {"source": "document.pdf", "parser": "unstructured-hi_res/yolox"},
     "page_count": 5
 }
 ```
 
 Поля `y0` и `font_size` в `headings` могут быть `0.0` — они используются
 rag-indexer только для сортировки заголовков внутри страницы.
+
+### `POST /parse/stream`
+Content-Type: `multipart/form-data`. Поле `file` — PDF.
+
+Возвращает NDJSON-поток (`application/x-ndjson`):
+- `{"type":"progress","page":N,"total":M,"elapsed":X,"elements":K,"has_table":bool}` — для каждой страницы
+- `{"type":"result", ...}` — финальный результат (та же структура что у `/parse`)
+- `{"type":"error", "detail":"..."}` — при ошибке парсинга
+
+### `POST /rerank`
+Реранжирование документов через CrossEncoder (`BAAI/bge-reranker-v2-m3`).
+
+Запрос:
+```json
+{"query": "...", "documents": ["doc1", "doc2", "doc3"]}
+```
+
+Ответ (отсортирован по убыванию `relevance_score`):
+```json
+{"results": [{"index": 2, "relevance_score": 0.94}, ...]}
+```
+
+Возвращает `503` если реранкер ещё не загружен.
+
+### `POST /embeddings`
+Эмбеддинг через SentenceTransformer (`BAAI/bge-m3`). **OpenAI-совместимый формат.**
+
+Запрос (строка или список):
+```json
+{"model": "BAAI/bge-m3", "input": "text"}
+{"model": "BAAI/bge-m3", "input": ["text one", "text two"]}
+```
+
+Ответ:
+```json
+{
+  "data": [
+    {"index": 0, "embedding": [0.021, -0.043, ...]},
+    {"index": 1, "embedding": [...]}
+  ],
+  "model": "BAAI/bge-m3"
+}
+```
+
+Векторы L2-нормализованы. Весь список обрабатывается за один forward pass.
+
+Возвращает `503` если embedder ещё не загружен.
 
 ## Конфигурация в rag-indexer
 
@@ -116,25 +171,33 @@ pdf_sidecar:
   fallback_to_pdfminer: true
 ```
 
+Для использования sidecar как embedding-провайдера в настройках модели vault'а:
+```yaml
+provider: openai_compatible  # или "sidecar"
+base_url: http://host.docker.internal:8765
+```
+
 ## Структура файлов
 
 ```
 pdf-sidecar/
-├── app.py            — FastAPI HTTP-сервер
-├── parser.py         — парсер (unstructured → унифицированный формат)
-├── preprocessor.py   — копия preprocessor.py из rag-indexer
+├── app.py            — FastAPI HTTP-сервер (/parse, /parse/stream, /rerank, /embeddings)
+├── parser.py         — парсер (unstructured → унифицированный формат, parallel batch)
+├── preprocessor.py   — постобработка текста (NFC, hyphenation, char replacements)
+├── reranker.py       — CrossEncoder BAAI/bge-reranker-v2-m3
+├── embedder.py       — SentenceTransformer BAAI/bge-m3 (OpenAI-compatible)
 ├── requirements.txt  — Python-зависимости
-├── install.sh        — скрипт установки venv + deps
+├── install.sh        — скрипт установки venv + deps + прогрев моделей
 ├── start.sh          — запуск в фоне (nohup)
 ├── stop.sh           — остановка
 ├── status.sh         — проверка статуса
+├── agent/            — host-agent (управление sidecar с хоста через HTTP)
+│   ├── agent.py
+│   ├── com.mercer.host-agent.plist.template
+│   ├── requirements.txt
+│   ├── .venv/
+│   └── logs/
 ├── README.md         — эта документация
 └── logs/             — логи (создаётся автоматически)
     └── sidecar.log
 ```
-
-## Синхронизация preprocessor.py
-
-`preprocessor.py` — намеренная копия `rag-indexer/parser/preprocessing/preprocessor.py`.
-При изменении оригинала необходимо вручную обновить эту копию.
-В будущем можно вынести в `shared_contracts/` или отдельный пакет.

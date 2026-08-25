@@ -85,15 +85,15 @@ Mercer — мультидоменная RAG-платформа для работ
 - **Порт**: `8765` (переопределяется через `PDF_SIDECAR_PORT`)
 - **Стек**: `unstructured` (hi_res + yolox), `pdfminer`, `pymupdf`
 - **Модели**: CrossEncoder `BAAI/bge-reranker-v2-m3` (reranker), SentenceTransformer `BAAI/bge-m3` (embedder)
-- Эндпоинты: `POST /parse`, `POST /parse/stream`, `POST /rerank`, `POST /embed`, `GET /health`
-- `/embed` совместим с OpenAI `/embeddings` API — бэкенд может использовать sidecar как embedding-провайдер
-- `pdf-sidecar/agent/` — альтернативная копия host-agent для macOS (с launchd plist)
+- Эндпоинты: `POST /parse`, `POST /parse/stream`, `POST /rerank`, `POST /embeddings`, `GET /health`
+- `/embeddings` совместим с OpenAI `/embeddings` API — бэкенд может использовать sidecar как embedding-провайдер
+- `pdf-sidecar/agent/` — host-agent для macOS (с launchd plist)
 - Подробности: `context/pdf-sidecar.md`
 
 ### host-agent
 - **Роль**: HTTP-агент на хосте для управления процессом pdf-sidecar из Docker-контейнера
-- **Расположение**: `host-agent/`
-- **Запуск**: вручную или через systemd (`mercer-host-agent.service`)
+- **Расположение**: `pdf-sidecar/agent/` (внутри pdf-sidecar, изолированный venv)
+- **Запуск**: вручную, через launchd (macOS) или Makefile (`make agent-setup` / `make agent-start`)
 - **Порт**: `9090` (только `127.0.0.1`)
 - Управляет pdf-sidecar через bash-скрипты (`start.sh`, `stop.sh`, `install.sh`)
 - Аутентификация: shared secret через заголовок `X-Agent-Token`
@@ -170,8 +170,7 @@ mercer/
 │   └── storage/
 │       └── lancedb_store.py  # Вся логика LanceDB
 ├── pdf-sidecar/         # PDF-парсер + reranker + embedder (внешний сервис)
-│   └── agent/           # Копия host-agent для macOS (launchd)
-├── host-agent/          # HTTP-агент управления pdf-sidecar (на хосте)
+│   └── agent/           # host-agent (на хосте, вне Docker; launchd на macOS)
 ├── shared_contracts/
 │   └── models.py        # Общие Pydantic-схемы между сервисами
 │                        # (Update Mode + Campaign State + LLM tool-call contracts)

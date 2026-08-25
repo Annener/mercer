@@ -79,7 +79,7 @@ pdf-sidecar/
 ```
 
 ### `POST /parse/stream`
-CTSTREAMING. Возвращает NDJSON-поток (`Content-Type: application/x-ndjson`).
+STREAMING. Возвращает NDJSON-поток (`Content-Type: application/x-ndjson`).
 
 Прогресс-событие для каждой страницы:
 ```json
@@ -111,12 +111,12 @@ CTSTREAMING. Возвращает NDJSON-поток (`Content-Type: application/
 ```
 Sortable by `relevance_score` desc. Параметр `batch_size=8` — оптимизация памяти для MPS/CPU.
 
-### `POST /embed`  *(добавлено в v5.0)*
+### `POST /embeddings`  *(добавлено в v5.0)*
 Эмбеддинг текстов через SentenceTransformer (`BAAI/bge-m3`). **OpenAI-совместимый формат ответа.**
 
 Запрос:
 ```json
-{"texts": ["text one", "text two", "text three"]}
+{"model": "BAAI/bge-m3", "input": ["text one", "text two", "text three"]}
 ```
 Ответ:
 ```json
@@ -125,10 +125,13 @@ Sortable by `relevance_score` desc. Параметр `batch_size=8` — опти
     {"index": 0, "embedding": [0.021, -0.043, ...]},
     {"index": 1, "embedding": [...]},
     {"index": 2, "embedding": [...]}
-  ]
+  ],
+  "model": "BAAI/bge-m3"
 }
 ```
 Векторы L2-нормализованы, совместимы с cosine-similarity. Батчинг: весь список — один forward pass.
+
+Принимает как строку (`{"input": "text"}`), так и список строк (`{"input": ["t1", "t2"]}`) — совместимо с OpenAI `POST /embeddings`.
 
 ---
 
@@ -168,11 +171,13 @@ Sortable by `relevance_score` desc. Параметр `batch_size=8` — опти
 
 | Файл | Назначение |
 |---|---|
-| `agent.py` | Тот же host-agent (`pdf-sidecar/agent/agent.py` = `host-agent/agent.py`), настроен на `SIDECAR_DIR` = родительская директория |
+| `agent.py` | HTTP-агент для управления pdf-sidecar с хоста (`SIDECAR_DIR` = родительская директория этого файла) |
 | `com.mercer.host-agent.plist.template` | Шаблон launchd plist (автозапуск при логине). Инсталлируется в `~/Library/LaunchAgents/` |
 | `requirements.txt` | Зависимости host-agent (FastAPI, uvicorn) |
+| `.venv/` | Изолированный venv (создаётся через `make agent-setup`) |
+| `logs/` | Логи host-agent (`agent.log`, `agent.err`) |
 
-Для Linux используется `host-agent/mercer-host-agent.service` (проект `host-agent/` в корне репозитория).
+Установка/запуск/остановка через Makefile (`make agent-setup`, `make agent-start`, `make agent-stop`, `make agent-status`).
 
 > См. также: `context/host-agent.md`
 
