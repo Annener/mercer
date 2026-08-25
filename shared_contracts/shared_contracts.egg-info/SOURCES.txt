@@ -1,0 +1,8 @@
+pyproject.toml
+shared_contracts.egg-info/PKG-INFO
+shared_contracts.egg-info/SOURCES.txt
+shared_contracts.egg-info/dependency_links.txt
+shared_contracts.egg-info/requires.txt
+shared_contracts.egg-info/top_level.txt
+text/__init__.py
+text/markers.py
