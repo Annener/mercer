@@ -126,6 +126,17 @@ export class MercerAPI extends HttpClient {
     return this.patch(`/chat/${validChatId}`, body);
   }
 
+  async setContextUpdateMode(
+    chatId: T.UUID,
+    enabled: boolean,
+    campaignId: T.CampaignId | null = null,
+  ): Promise<unknown> {
+    const validChatId = requireUUID(chatId, 'chat_id');
+    const body: Record<string, unknown> = { context_update_mode: enabled };
+    if (campaignId !== null) body.campaign_id = campaignId;
+    return this.patch(`/chat/${validChatId}`, body);
+  }
+
   async fullDocConfirm(
     chatId: T.UUID,
     selectedDocumentIds: T.DocumentId[],
@@ -904,6 +915,7 @@ export class MercerAPI extends HttpClient {
     acceptedIds: string[],
     rejectedIds: string[],
     statePatchDecisions: T.UpdateModeReviewRequest['state_patch_decisions'] | null = null,
+    fieldChangeDecisions: T.UpdateModeReviewRequest['field_change_decisions'] | null = null,
   ): Promise<T.UpdateModeSessionResponse> {
     const body: Record<string, unknown> = {
       accepted_change_ids: acceptedIds,
@@ -911,6 +923,9 @@ export class MercerAPI extends HttpClient {
     };
     if (statePatchDecisions !== null) {
       body.state_patch_decisions = statePatchDecisions;
+    }
+    if (fieldChangeDecisions !== null) {
+      body.field_change_decisions = fieldChangeDecisions;
     }
     return this.patch<T.UpdateModeSessionResponse>(
       `/api/chats/${chatId}/update-mode/review`,

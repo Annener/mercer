@@ -13,6 +13,7 @@ import {
 } from '@/components/chat/cards/PipelineCards';
 import { FullDocPanel, type FullDocCandidate } from '@/components/chat/cards/FullDocPanel';
 import { ToolCallCard, type ToolCallInfo, type ToolResultInfo } from '@/components/chat/cards/ToolCallCard';
+import { ProposalCard } from '@/components/chat/cards/ProposalCard';
 import {
   PipelineProgress,
   PipelineBadge,
@@ -25,6 +26,7 @@ type InlineItem =
   | { kind: 'validation'; resumeToken: string; stepName: string; content?: string; options?: string[] }
   | { kind: 'fulldoc'; chatId: string; candidates: FullDocCandidate[] }
   | { kind: 'tool_call'; round: number; info: ToolCallInfo }
+  | { kind: 'proposal'; round: number; summary: string; fieldChangesCount: number; statePatchCount: number; fileChangesCount: number }
   | { kind: 'progress'; step: number; total: number; stepName?: string; doneSteps: number[] }
   | { kind: 'pipeline_badge'; pipelineName?: string; mode?: string }
   | { kind: 'pipeline_status'; type: 'pipeline_resumed' | 'pipeline_cancelled'; preview?: string; stepName?: string };
@@ -40,6 +42,8 @@ export function ChatArea() {
   const isStreaming = useChatStore((s) => s.isStreaming);
   const setStreaming = useChatStore((s) => s.setStreaming);
   const setStreamingContent = useChatStore((s) => s.setStreamingContent);
+  const showUpdateModePanel = useChatStore((s) => s.showUpdateModePanel);
+  const setShowUpdateModePanel = useChatStore((s) => s.setShowUpdateModePanel);
 
   const currentDomainId = useDomainStore((s) => s.currentDomainId);
   const theme = useThemeStore((s) => s.theme);
@@ -61,10 +65,12 @@ export function ChatArea() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const userScrolledUpRef = useRef(false);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [processingText, setProcessingText] = useState<string | null>(null);
   const [inlines, setInlines] = useState<InlineItem[]>([]);
   const [, setTools] = useState<ToolsState>({});
   const [toolsResults, setToolsResults] = useState<ToolsResultsState>({});
+  const [lastProposalRound, setLastProposalRound] = useState<number | null>(null);
   const queryClient = useQueryClient();
 
   // Тип для nested stream, возвращаемого confirm/resume/fulldoc — обрабатываем так же, как внешний стрим
@@ -128,6 +134,17 @@ export function ChatArea() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, streamedText, inlines, processingText]);
 
+  // Auto-grow textarea to fit content up to ~33vh, then scroll inside.
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    const maxHeight = window.innerHeight / 3;
+    const nextHeight = Math.min(el.scrollHeight, maxHeight);
+    el.style.height = `${nextHeight}px`;
+    el.style.overflowY = el.scrollHeight > maxHeight ? 'auto' : 'hidden';
+  }, [input]);
+
   const sendMutation = useMutation({
     mutationFn: async ({ content, signal }: { content: string; signal?: AbortSignal }) => {
       if (!currentChatId) throw new Error('No chat selected');
@@ -136,6 +153,7 @@ export function ChatArea() {
       setInlines([]);
       setTools({});
       setToolsResults({});
+      setLastProposalRound(null);
       const stream = await api.sendMessage(currentChatId, content, streamEnabled, signal);
       if (!(stream instanceof ReadableStream)) {
         return stream;
@@ -242,6 +260,11 @@ export function ChatArea() {
                 break;
               case 'tool_call': {
                 const round = (parsed.round as number) ?? 0;
+                const tool = parsed.tool as string | undefined;
+                if (tool === 'propose_context_update') {
+                  setLastProposalRound(round);
+                  break;
+                }
                 const info: ToolCallInfo = {
                   round,
                   queries: (parsed.queries as string[]) ?? [],
@@ -252,6 +275,29 @@ export function ChatArea() {
                   ...prev.filter((it) => !(it.kind === 'tool_call' && it.round === round)),
                   { kind: 'tool_call', round, info },
                 ]);
+                break;
+              }
+              case 'context_update_proposal': {
+                const fieldChangesCount = (parsed.field_changes_count as number) ?? 0;
+                const statePatchCount = (parsed.state_patch_count as number) ?? 0;
+                const fileChangesCount = (parsed.file_changes_count as number) ?? 0;
+                const round = (parsed.round as number) ?? lastProposalRound ?? 0;
+                // Build a generic summary — never surface the host-side
+                // `note` here (e.g. "proposal created with 0 field_change(s)…").
+                const summary =
+                  statePatchCount > 0
+                    ? `Обновить ${statePatchCount} значений${fieldChangesCount > 0 ? ` и ${fieldChangesCount} полей` : ''}${fileChangesCount > 0 ? `, ${fileChangesCount} файлов` : ''}`
+                    : fieldChangesCount > 0
+                      ? `Добавить ${fieldChangesCount} новых полей`
+                      : fileChangesCount > 0
+                        ? `Изменить ${fileChangesCount} файлов`
+                        : 'Обновить контекст кампании';
+                setInlines((prev) => [
+                  ...prev.filter((it) => !(it.kind === 'proposal' && it.round === round)),
+                  { kind: 'proposal', round, summary, fieldChangesCount, statePatchCount, fileChangesCount },
+                ]);
+                void queryClient.invalidateQueries({ queryKey: ['update-mode', currentChatId] });
+                setProcessingText(null);
                 break;
               }
               case 'tool_result': {
@@ -332,6 +378,19 @@ export function ChatArea() {
       } else {
         appendMessage({ role: 'system', content: `Ошибка: ${msg}` });
       }
+    },
+  });
+
+  const cancelProposalMutation = useMutation({
+    mutationFn: async (round: number) => {
+      if (!currentChatId) throw new Error('No chat selected');
+      await api.updateModeCancel(currentChatId);
+      return round;
+    },
+    onSuccess: (round) => {
+      setInlines((prev) => prev.filter((it) => !(it.kind === 'proposal' && it.round === round)));
+      setShowUpdateModePanel(false);
+      void queryClient.invalidateQueries({ queryKey: ['update-mode', currentChatId] });
     },
   });
 
@@ -540,9 +599,6 @@ export function ChatArea() {
           </div>
         ) : (
           <div className="mx-auto w-full max-w-[90rem] space-y-4">
-            {currentChat?.campaign_id && currentChatId && (
-              <UpdateModePanel chatId={currentChatId} onClose={() => undefined} />
-            )}
             {messages.map((m, i) => (
               <MessageBubble key={i} message={m} />
             ))}
@@ -613,6 +669,25 @@ export function ChatArea() {
                       />
                     </div>
                   );
+                case 'proposal':
+                  return (
+                    <ProposalCard
+                      key={`pr-${item.round}`}
+                      summary={item.summary}
+                      fieldChangesCount={item.fieldChangesCount}
+                      statePatchCount={item.statePatchCount}
+                      fileChangesCount={item.fileChangesCount}
+                      cancelling={cancelProposalMutation.isPending && cancelProposalMutation.variables === item.round}
+                      onView={() => {
+                        setShowUpdateModePanel(true);
+                        requestAnimationFrame(() => {
+                          const el = document.querySelector('[data-update-mode-panel]');
+                          if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        });
+                      }}
+                      onCancel={() => cancelProposalMutation.mutate(item.round)}
+                    />
+                  );
                 case 'pipeline_status':
                   return (
                     <div key={`ps-${idx}`}>
@@ -627,6 +702,14 @@ export function ChatArea() {
                   return null;
               }
             })}
+            {currentChat?.campaign_id && currentChatId && showUpdateModePanel && (
+              <div data-update-mode-panel>
+                <UpdateModePanel
+                  chatId={currentChatId}
+                  onClose={() => setShowUpdateModePanel(false)}
+                />
+              </div>
+            )}
             {processingText && (
               <ProcessingStatus text={processingText} />
             )}
@@ -639,6 +722,7 @@ export function ChatArea() {
         <footer className="border-t border-border bg-surface p-3">
           <div className="mx-auto flex w-full max-w-[90rem] items-end gap-2">
             <textarea
+              ref={textareaRef}
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKey}

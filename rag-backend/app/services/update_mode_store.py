@@ -48,6 +48,8 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     import redis.asyncio as aioredis
 
+from pydantic import ValidationError
+
 from shared_contracts.models import (
     UpdateModeApplyResponse,
     UpdateModeSession,
@@ -397,15 +399,39 @@ _SESSION_LIST_FIELDS = (
 
 
 def _normalize_session_lists(data: dict[str, Any]) -> dict[str, Any]:
-    """Replace empty dicts with empty lists for known list fields.
+    """Defensive repair for session payloads produced by older deploys.
 
-    cjson may have encoded an empty Lua table as {} instead of [].
-    This guard converts them back so Pydantic validation does not fail.
-    Works on sessions produced by old code before the Lua fix was deployed.
+    Handles three failure modes:
+    1. cjson encodes an empty Lua table as `{}` instead of `[]` — replace
+       with `[]` for known list fields.
+    2. Payloads written by older deploys may not contain the full set
+       of fields declared by the current DTO. Insert defaults so
+       Pydantic validation succeeds without dropping the session.
+    3. `state_patch_operations[*].operation.source_refs` may also be
+       encoded as `{}` after a cjson round-trip.
     """
     for field in _SESSION_LIST_FIELDS:
         if isinstance(data.get(field), dict) and not data[field]:
             data[field] = []
+        if field not in data:
+            data[field] = []
+    # Top-level string / scalar fields absent from old payloads.
+    if "note" not in data:
+        data["note"] = ""
+    if "default_vault_id" not in data:
+        data["default_vault_id"] = ""
+    # Nested: state_patch_operations[*].operation.source_refs may also
+    # round-trip through cjson as {}. Same fix applies.
+    for op in data.get("state_patch_operations") or []:
+        if not isinstance(op, dict):
+            continue
+        operation = op.get("operation")
+        if (
+            isinstance(operation, dict)
+            and isinstance(operation.get("source_refs"), dict)
+            and not operation["source_refs"]
+        ):
+            operation["source_refs"] = []
     # Nested: apply_result.results
     apply_result = data.get("apply_result")
     if (
@@ -448,7 +474,19 @@ class UpdateModeStore:
         if raw is None:
             return None
         data = _normalize_session_lists(json.loads(raw))
-        return UpdateModeSession.model_validate(data)
+        try:
+            return UpdateModeSession.model_validate(data)
+        except ValidationError as exc:
+            # Session payload no longer matches the current DTO schema.
+            # Should be rare after `_normalize_session_lists` inserts
+            # defaults for missing optional fields. Log and treat as
+            # expired so the API returns 410 and the user can iterate.
+            logger.warning(
+                "update_mode_store.get: unreadable session for chat_id=%s: %s",
+                chat_id,
+                exc,
+            )
+            return None
 
     async def create(self, redis: aioredis.Redis, session: UpdateModeSession) -> None:
         key = self._key(session.chat_id)
@@ -542,7 +580,18 @@ class UpdateModeStore:
             str(SESSION_TTL_SECONDS),
             datetime.now(timezone.utc).isoformat(),
         )
-        return self._parse_apply_result(result, chat_id, apply_id)
+        try:
+            return self._parse_apply_result(result, chat_id, apply_id)
+        except ValidationError as exc:
+            # Lua round-trip returned a payload that no longer matches
+            # the current schema. `_normalize_session_lists` should make
+            # this rare; treat as expired so the API can answer 410.
+            logger.warning(
+                "begin_apply: unreadable session for chat_id=%s: %s",
+                chat_id,
+                exc,
+            )
+            raise SessionExpiredError(chat_id) from exc
 
     async def complete_apply(
         self,
@@ -581,7 +630,18 @@ class UpdateModeStore:
                 )
                 return None
         data = _normalize_session_lists(json.loads(raw))
-        return UpdateModeSession.model_validate(data)
+        try:
+            return UpdateModeSession.model_validate(data)
+        except ValidationError as exc:
+            # Indexer has already applied the changes at this point; the
+            # cached session is unreadable only. Log and return None so
+            # callers don't propagate a 500.
+            logger.warning(
+                "complete_apply: unreadable session for chat_id=%s: %s",
+                chat_id,
+                exc,
+            )
+            return None
 
     async def delete(self, redis: aioredis.Redis, chat_id: str) -> None:
         await redis.delete(self._key(chat_id))

@@ -14,11 +14,13 @@ interface UpdateModeStartModalProps {
 export function UpdateModeStartModal({ open, onClose, chatId }: UpdateModeStartModalProps) {
   const [note, setNote] = useState('');
   const reloadChat = useChatStore((s) => s.loadChat);
+  const setShowUpdateModePanel = useChatStore((s) => s.setShowUpdateModePanel);
 
   const startMutation = useMutation({
     mutationFn: () => api.updateModeStart(chatId, note),
     onSuccess: async () => {
       await reloadChat(chatId);
+      setShowUpdateModePanel(true);
       onClose();
       setNote('');
     },

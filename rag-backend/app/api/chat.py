@@ -428,10 +428,33 @@ async def rename_chat(
 
 
 @router.delete("/{chat_id}", status_code=204)
-async def delete_chat(chat_id: str, db: AsyncSession = Depends(get_db)) -> None:
+async def delete_chat(
+    chat_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> None:
     chat = await _get_chat_or_404(chat_id, db)
     await db.delete(chat)
     await db.commit()
+
+    # Best-effort cleanup of chat-scoped Redis state. A stale
+    # `update_mode:{chat_id}` would block new proposals for up to its
+    # 3-hour TTL and confuse the next chat created with the same id.
+    redis = request.app.state.redis
+    if redis is not None:
+        try:
+            deleted = await redis.delete(f"update_mode:{chat_id}")
+            logger.info(
+                "delete_chat: cleared %d update_mode Redis key(s) for chat_id=%s",
+                deleted,
+                chat_id,
+            )
+        except Exception as exc:
+            logger.warning(
+                "delete_chat: failed to clear update_mode Redis key for chat_id=%s: %s",
+                chat_id,
+                exc,
+            )
 
 
 @router.post("/{chat_id}/lock_pipeline", response_model=dict)

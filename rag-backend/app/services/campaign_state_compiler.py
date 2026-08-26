@@ -237,11 +237,18 @@ def _render_field(
     cfg: CampaignStateFieldConfigRead,
     fv: CampaignStateFieldValuesRead,
 ) -> str:
-    """Текстовое представление одного поля."""
+    """Текстовое представление одного поля.
+
+    В заголовок добавляется `(key=..., mode=...)`, чтобы модель видела
+    стабильный идентификатор поля и его тип. Это критично для
+    `propose_context_update` tool — модель должна копировать `key`
+    дословно в `field_changes[].key` и `state_patch[].field_key`.
+    """
     label = (cfg.label or cfg.key).strip()
+    header = f"{label} (key={cfg.key}, mode={cfg.mode})"
     if fv.mode == "single":
-        return _render_single(label, fv.single_value)
-    return _render_list(label, fv.items)
+        return _render_single(header, fv.single_value)
+    return _render_list(header, fv.items)
 
 
 def _render_single(label: str, sv: CampaignStateSingleValueRead | None) -> str:

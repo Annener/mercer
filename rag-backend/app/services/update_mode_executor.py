@@ -1461,10 +1461,19 @@ class UpdateModeExecutor:
             len(proposal.file_changes),
         )
 
-        # 1. Guard
+        # 1. Guard: supersede any existing session so the user can iterate
+        # on proposals without manually cancelling the previous one. Old
+        # session_id is replaced by a fresh one created at the end of this
+        # method. The old session remains discoverable in audit logs via
+        # the superseded log line below.
         existing = await self.store.get(redis, chat_id)
         if existing is not None:
-            raise UpdateModeSessionAlreadyActiveError(chat_id)
+            await self.store.delete(redis, chat_id)
+            logger.info(
+                "update_mode start_from_proposal: superseded existing session=%s for chat=%s",
+                existing.session_id,
+                chat_id,
+            )
 
         # 2. Chat / campaign / domain invariant
         try:

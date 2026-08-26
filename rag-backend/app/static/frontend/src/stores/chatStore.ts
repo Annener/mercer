@@ -16,11 +16,13 @@ interface ChatState {
   isStreaming: boolean;
   streamingContent: string;
   error: string | null;
+  showUpdateModePanel: boolean;
 
   loadChat: (chatId: UUID) => Promise<void>;
   appendMessage: (message: ChatMessage) => void;
   setStreamingContent: (content: string) => void;
   setStreaming: (streaming: boolean) => void;
+  setShowUpdateModePanel: (show: boolean) => void;
   reset: () => void;
 }
 
@@ -34,6 +36,7 @@ export const useChatStore = create<ChatState>()(
       isStreaming: false,
       streamingContent: '',
       error: null,
+      showUpdateModePanel: false,
 
       loadChat: async (chatId) => {
         set({ loadingChat: true, error: null });
@@ -60,6 +63,8 @@ export const useChatStore = create<ChatState>()(
 
       setStreaming: (streaming) => set({ isStreaming: streaming }),
 
+      setShowUpdateModePanel: (show) => set({ showUpdateModePanel: show }),
+
       reset: () =>
         set({
           currentChatId: null,
@@ -67,6 +72,7 @@ export const useChatStore = create<ChatState>()(
           messages: [],
           isStreaming: false,
           streamingContent: '',
+          showUpdateModePanel: false,
         }),
     }),
     { name: 'ChatStore' },

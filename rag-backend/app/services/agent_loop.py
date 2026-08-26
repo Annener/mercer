@@ -155,16 +155,36 @@ PROPOSE_CONTEXT_UPDATE_TOOL = LLMToolDefinition(
             "Propose a context update for the current campaign. Use this "
             "when the user has expressed a long-term fact, decision, rule, "
             "NPC, location, or other durable piece of information that "
-            "should persist across chat turns. The proposal is shown to "
-            "the user for review; nothing is applied without their explicit "
-            "approval. The proposal can include: (1) new Campaign State "
-            "fields (create_field), (2) changes to existing fields "
-            "(update_field — label/description only; mode is immutable), "
-            "(3) values for state fields (state_patch), (4) edits to .md "
-            "files in the vault (file_changes). All four sections are "
-            "optional; submit only the ones that apply. Pass `confidence` "
-            "in [0, 1] reflecting how certain you are the proposed change "
-            "is justified by the conversation."
+            "should persist across chat turns. The proposal is shown to the "
+            "user for review; nothing is applied without their explicit "
+            "approval.\n\n"
+            "Existing field keys are listed in the Campaign State block of "
+            "your system prompt (e.g. `current_status (key=current_status, "
+            "mode=single)`). Copy the `key` EXACTLY when referencing an "
+            "existing field in `field_changes[].key` or "
+            "`state_patch[].field_key`. mode is immutable for update_field.\n\n"
+            "The proposal can include up to four sections (submit only the "
+            "ones that apply):\n"
+            "1. field_changes[] — schema operations (create_field / "
+            "update_field). Each item REQUIRED: operation, key, label, "
+            "mode. Optional: description, enabled, display_order.\n"
+            "2. state_patch[] — value operations on existing fields. Each "
+            "item REQUIRED: type, field_key, reason. `type` must be one of: "
+            "replace_single, clear_single, add_list_item, update_list_item, "
+            "resolve_list_item, remove_list_item. `text` is REQUIRED (non-"
+            "empty) for replace_single / update_list_item / add_list_item. "
+            "`item_key` is REQUIRED for update_list_item / "
+            "resolve_list_item / remove_list_item.\n"
+            "3. file_changes[] — edits to .md documents in the vault. Each "
+            "item REQUIRED: action (update|create), operation, "
+            "description. `document_id` required for action=update; "
+            "`parent_document_id` and `suggested_filename` optional for "
+            "action=create.\n"
+            "4. confidence (0..1) — required. Below 0.5 the host rejects "
+            "the entire proposal.\n"
+            "5. reason (string) — required, surfaced in the UI.\n\n"
+            "Without all required fields per item the host rejects the "
+            "entire proposal and nothing is applied."
         ),
         parameters={
             "type": "object",
@@ -172,32 +192,187 @@ PROPOSE_CONTEXT_UPDATE_TOOL = LLMToolDefinition(
                 "field_changes": {
                     "type": "array",
                     "description": (
-                        "Schema operations (create_field / update_field). "
+                        "Schema operations on Campaign State fields. "
                         "Each item: {operation, key, label, description, "
-                        "mode, enabled, display_order}."
+                        "mode, enabled, display_order}. Use only when you "
+                        "want to change the schema (add a new field, or "
+                        "edit label/description/enabled/display_order of "
+                        "an existing field). For setting values in existing "
+                        "fields use state_patch instead."
                     ),
-                    "items": {"type": "object"},
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "operation": {
+                                "type": "string",
+                                "enum": ["create_field", "update_field"],
+                                "description": (
+                                    "create_field adds a new field; "
+                                    "update_field edits an existing field "
+                                    "(mode is IMMUTABLE — drop the proposal "
+                                    "if you need to change mode)."
+                                ),
+                            },
+                            "key": {
+                                "type": "string",
+                                "pattern": r"^[a-z][a-z0-9_]*$",
+                                "maxLength": 64,
+                                "description": (
+                                    "Stable technical identifier: lowercase "
+                                    "+ digits + underscore, starts with a "
+                                    "letter. Immutable after creation."
+                                ),
+                            },
+                            "label": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 256,
+                            },
+                            "description": {
+                                "type": "string",
+                                "maxLength": 8192,
+                            },
+                            "mode": {
+                                "type": "string",
+                                "enum": ["single", "list"],
+                                "description": (
+                                    "Storage shape. 'single' = free-text "
+                                    "value, 'list' = ordered checklist of "
+                                    "items with stable item_keys."
+                                ),
+                            },
+                            "enabled": {
+                                "type": "boolean",
+                                "default": True,
+                            },
+                            "display_order": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "default": 1000,
+                            },
+                        },
+                        "required": ["operation", "key", "label", "mode"],
+                        "additionalProperties": False,
+                    },
                 },
                 "state_patch": {
                     "type": "array",
                     "description": (
-                        "Value operations on existing state fields. Each "
-                        "item: {type: replace_single|clear_single|"
-                        "add_list_item|update_list_item|"
-                        "resolve_list_item|remove_list_item, field_key, "
-                        "item_key?, text?, reason, source_refs?}."
+                        "Value operations on existing Campaign State "
+                        "fields. Each item: {type, field_key, item_key?, "
+                        "text?, reason, source_refs?}. Use to record "
+                        "specific facts into fields created by this "
+                        "proposal or already present in the snapshot."
                     ),
-                    "items": {"type": "object"},
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "type": {
+                                "type": "string",
+                                "enum": [
+                                    "replace_single",
+                                    "clear_single",
+                                    "add_list_item",
+                                    "update_list_item",
+                                    "resolve_list_item",
+                                    "remove_list_item",
+                                ],
+                                "description": (
+                                    "Operation kind. replace_single/"
+                                    "clear_single only on mode=single fields; "
+                                    "add_list_item/update_list_item/"
+                                    "resolve_list_item/remove_list_item "
+                                    "only on mode=list fields."
+                                ),
+                            },
+                            "field_key": {
+                                "type": "string",
+                                "description": (
+                                    "Key of an existing field, or a key "
+                                    "created in this proposal via "
+                                    "field_changes."
+                                ),
+                            },
+                            "item_key": {
+                                "type": "string",
+                                "description": (
+                                    "Required for update_list_item/"
+                                    "resolve_list_item/remove_list_item."
+                                ),
+                            },
+                            "text": {
+                                "type": "string",
+                                "description": (
+                                    "Required (non-empty) for "
+                                    "replace_single/update_list_item/"
+                                    "add_list_item."
+                                ),
+                            },
+                            "reason": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 1024,
+                            },
+                            "source_refs": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                            },
+                        },
+                        "required": ["type", "field_key", "reason"],
+                        "additionalProperties": False,
+                    },
                 },
                 "file_changes": {
                     "type": "array",
                     "description": (
-                        "File edits to .md documents. Each item is a "
-                        "UpdateModeIntent with {change_id, action, "
-                        "description, document_id?, parent_document_id?, "
-                        "operation, anchor?, suggested_filename?, content}."
+                        "Edits to .md documents in the vault. Each item is "
+                        "an UpdateModeIntent. Use only for factual updates "
+                        "to indexed files."
                     ),
-                    "items": {"type": "object"},
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "change_id": {"type": "string"},
+                            "action": {
+                                "type": "string",
+                                "enum": ["update", "create"],
+                            },
+                            "document_id": {
+                                "type": "string",
+                                "description": (
+                                    "Required for action=update. Must be "
+                                    "an indexed .md document ID provided "
+                                    "in the context."
+                                ),
+                            },
+                            "parent_document_id": {
+                                "type": "string",
+                                "description": (
+                                    "For action=create: optional parent "
+                                    "document; new file is created next "
+                                    "to it."
+                                ),
+                            },
+                            "description": {"type": "string"},
+                            "operation": {
+                                "type": "string",
+                                "enum": [
+                                    "append_after_section",
+                                    "append_to_file",
+                                    "replace_unique_text",
+                                    "create_file",
+                                ],
+                            },
+                            "anchor": {"type": "object"},
+                            "suggested_filename": {
+                                "type": "string",
+                                "maxLength": 512,
+                            },
+                            "content": {"type": "string"},
+                        },
+                        "required": ["action", "operation", "description"],
+                        "additionalProperties": False,
+                    },
                 },
                 "confidence": {
                     "type": "number",
@@ -639,7 +814,6 @@ async def _execute_propose_context_update(
     )
     from app.services.update_mode_executor import (
         UpdateModeExecutor,
-        UpdateModeSessionAlreadyActiveError,
     )
 
     executor = UpdateModeExecutor(
@@ -652,15 +826,6 @@ async def _execute_propose_context_update(
         session = await executor.start_from_proposal(
             chat_id=chat_id, redis=redis, proposal=proposal
         )
-    except UpdateModeSessionAlreadyActiveError:
-        return {
-            "status": "blocked",
-            "note": (
-                "an Update Mode session is already active for this chat; "
-                "the user must finish or cancel it before a new proposal "
-                "can be created"
-            ),
-        }
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "agent_loop: propose_context_update start_from_proposal failed: %s",

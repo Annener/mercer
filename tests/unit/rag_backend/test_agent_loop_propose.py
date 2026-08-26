@@ -341,14 +341,21 @@ async def test_execute_propose_success_returns_session_metadata():
 
 
 @pytest.mark.asyncio
-async def test_execute_propose_session_already_active_returns_blocked():
-    from app.services.update_mode_executor import (
-        UpdateModeSessionAlreadyActiveError,
-    )
+async def test_execute_propose_session_already_active_supersedes_and_succeeds():
+    """When a previous Update Mode session is still active, model-driven
+    `propose_context_update` supersedes (not blocks). The host returns
+    the new session as a normal successful proposal.
+    """
+    from datetime import datetime, timezone
+
+    class FakeSession:
+        session_id = "new-sid"
+        expires_at = datetime.now(timezone.utc)
+        changes: list = []
 
     fake_executor = type("E", (), {})()
     async def _start(chat_id, redis, proposal):
-        raise UpdateModeSessionAlreadyActiveError(chat_id)
+        return FakeSession()
     fake_executor.start_from_proposal = _start
 
     with patch(
@@ -371,8 +378,8 @@ async def test_execute_propose_session_already_active_returns_blocked():
                 "review_summary": "",
             },
         )
-    assert res["status"] == "blocked"
-    assert "already active" in res["note"]
+    assert res["status"] == "ok"
+    assert res["session_id"] == "new-sid"
 
 
 # ---------------------------------------------------------------------------

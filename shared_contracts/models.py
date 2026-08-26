@@ -2266,6 +2266,10 @@ class UpdateModeSessionResponse(BaseModel):
     state_patch_operations: list[UpdateModeStatePatchEntry] = Field(
         default_factory=list
     )
+    # Stage 5+: документы vault, на которые ссылается proposal. Используется
+    # UI для кнопки "Актуализировать источники" — запускает цикл актуализации
+    # связанных .md файлов на основе новых значений state и user note.
+    related_document_ids: list[str] = Field(default_factory=list)
 
 
 class UpdateModeReviewRequest(BaseModel):
@@ -2418,18 +2422,29 @@ class UpdateModeStatePatchApplyResult(BaseModel):
 
 
 class UpdateModeSession(BaseModel):
+    """Redis-persisted Update Mode session.
+
+    All non-identifying fields have safe defaults so payloads produced
+    by older deploys (or partial writes) round-trip without breaking the
+    read path. Required core fields: `session_id`, `chat_id`, `campaign_id`,
+    `domain_id`, `created_at`, `expires_at`.
+    """
+
     session_id: str
     chat_id: str
     campaign_id: str
     domain_id: str
 
-    vault_ids: list[str]
-    default_vault_id: str
-    candidate_document_ids: list[str]
+    # Optional with defaults — older payloads may not include these.
+    # `_normalize_session_lists` fills in missing keys on read so a
+    # 3-hour-old session from a previous schema still loads cleanly.
+    vault_ids: list[str] = Field(default_factory=list)
+    default_vault_id: str = ""
+    candidate_document_ids: list[str] = Field(default_factory=list)
 
-    note: str
+    note: str = ""
     warnings: list[str] = Field(default_factory=list)
-    changes: list[ResolvedUpdateModeChange]
+    changes: list[ResolvedUpdateModeChange] = Field(default_factory=list)
 
     created_at: datetime
     expires_at: datetime

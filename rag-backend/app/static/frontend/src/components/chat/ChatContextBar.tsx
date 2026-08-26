@@ -50,11 +50,33 @@ export function ChatContextBar() {
     },
   });
 
+  const contextUpdateMutation = useMutation({
+    mutationFn: async (enabled: boolean) => {
+      if (!currentChatId) throw new Error('No chat selected');
+      return api.setContextUpdateMode(currentChatId, enabled, currentChat?.campaign_id ?? null);
+    },
+    onSuccess: async () => {
+      if (!currentChatId) return;
+      await reloadChat(currentChatId);
+    },
+    onError: () => {
+      setContextUpdateLocal((prev) => !prev);
+    },
+  });
+
   const [fullDocLocal, setFullDocLocal] = useState<boolean>(Boolean(currentChat?.full_document_mode_enabled));
 
   useEffect(() => {
     setFullDocLocal(Boolean(currentChat?.full_document_mode_enabled));
   }, [currentChat?.full_document_mode_enabled]);
+
+  const [contextUpdateLocal, setContextUpdateLocal] = useState<boolean>(
+    Boolean(currentChat?.context_update_mode),
+  );
+
+  useEffect(() => {
+    setContextUpdateLocal(Boolean(currentChat?.context_update_mode));
+  }, [currentChat?.context_update_mode]);
 
   // Не рендерим контекст-бар без активного чата
   if (!currentChatId || !currentChat) return null;
@@ -154,6 +176,35 @@ export function ChatContextBar() {
             Полные документы
           </span>
         </label>
+
+        {/* Context Update Mode toggle */}
+        {hasCampaign && (
+          <>
+            <div className="h-4 w-px bg-border" />
+            <label
+              className="flex cursor-pointer items-center gap-1.5 select-none"
+              title="Разрешить модели предлагать изменения Campaign State и файлов контекста"
+            >
+              <input
+                type="checkbox"
+                checked={contextUpdateLocal}
+                onChange={(e) => {
+                  const v = e.target.checked;
+                  setContextUpdateLocal(v);
+                  contextUpdateMutation.mutate(v);
+                }}
+                disabled={contextUpdateMutation.isPending}
+                className="h-3.5 w-3.5 cursor-pointer accent-primary"
+              />
+              <span className="inline-flex items-center gap-1 text-text">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83" />
+                </svg>
+                Авто-обновление контекста
+              </span>
+            </label>
+          </>
+        )}
 
         <div className="h-4 w-px bg-border" />
 

@@ -4,7 +4,12 @@ import { Button, Card } from '@/components/ui';
 import { api } from '@/api/client';
 import { useChatStore } from '@/stores';
 import { Markdown } from '@/components/chat/Markdown';
-import type { UUID, UpdateModeSessionResponse, UpdateModeStateOp } from '@/api/types';
+import type {
+  UUID,
+  UpdateModeSessionResponse,
+  UpdateModeStateFieldChangeEntry,
+  UpdateModeStatePatchEntry,
+} from '@/api/types';
 
 interface UpdateModePanelProps {
   chatId: UUID;
@@ -23,10 +28,16 @@ export function UpdateModePanel({ chatId, onClose }: UpdateModePanelProps) {
   const [rejectedFileChanges, setRejectedFileChanges] = useState<Set<string>>(new Set());
   const [acceptedOps, setAcceptedOps] = useState<Set<number>>(new Set());
   const [rejectedOps, setRejectedOps] = useState<Set<number>>(new Set());
+  const [acceptedFieldOps, setAcceptedFieldOps] = useState<Set<number>>(new Set());
+  const [rejectedFieldOps, setRejectedFieldOps] = useState<Set<number>>(new Set());
+  const [applied, setApplied] = useState<boolean>(false);
 
-  const reviewMutation = useMutation({
-    mutationFn: () =>
-      api.updateModeReview(
+  const applyMutation = useMutation({
+    mutationFn: async () => {
+      // Persist accept/reject decisions via PATCH /review before applying.
+      // Without this step the backend treats every op as 'pending' and
+      // POST /apply returns 422 "No accepted changes to apply".
+      await api.updateModeReview(
         chatId,
         Array.from(acceptedFileChanges),
         Array.from(rejectedFileChanges),
@@ -35,16 +46,21 @@ export function UpdateModePanel({ chatId, onClose }: UpdateModePanelProps) {
           rejected_op_indexes: Array.from(rejectedOps),
           edited: [],
         },
-      ),
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['update-mode', chatId] }),
-  });
-
-  const applyMutation = useMutation({
-    mutationFn: () => api.updateModeApply(chatId),
+        {
+          accepted_op_indexes: Array.from(acceptedFieldOps),
+          rejected_op_indexes: Array.from(rejectedFieldOps),
+        },
+      );
+      return api.updateModeApply(chatId);
+    },
     onSuccess: () => {
+      setApplied(true);
       void queryClient.invalidateQueries({ queryKey: ['update-mode', chatId] });
       void useChatStore.getState().loadChat(chatId);
-      onClose();
+    },
+    onError: (err) => {
+      void queryClient.invalidateQueries({ queryKey: ['update-mode', chatId] });
+      console.error('Update Mode apply failed:', err);
     },
   });
 
@@ -58,6 +74,13 @@ export function UpdateModePanel({ chatId, onClose }: UpdateModePanelProps) {
   }
 
   const session: UpdateModeSessionResponse = sessionQuery.data;
+  const fileChanges = session.changes ?? [];
+  const stateOps = session.state_patch_operations ?? [];
+  const fieldOps = session.state_field_change_operations ?? [];
+  const warnings = session.warnings ?? [];
+  const relatedDocIds = session.related_document_ids ?? [];
+
+  const note = warnings[0] ?? 'Предложение обновления контекста кампании';
 
   const toggleFile = (id: string, accept: boolean) => {
     if (accept) {
@@ -95,35 +118,47 @@ export function UpdateModePanel({ chatId, onClose }: UpdateModePanelProps) {
     }
   };
 
+  const toggleFieldOp = (idx: number, accept: boolean) => {
+    if (accept) {
+      setAcceptedFieldOps((prev) => new Set(prev).add(idx));
+      setRejectedFieldOps((prev) => {
+        const next = new Set(prev);
+        next.delete(idx);
+        return next;
+      });
+    } else {
+      setRejectedFieldOps((prev) => new Set(prev).add(idx));
+      setAcceptedFieldOps((prev) => {
+        const next = new Set(prev);
+        next.delete(idx);
+        return next;
+      });
+    }
+  };
+
   return (
     <Card>
-      <header className="-m-4 mb-3 flex items-center justify-between border-b border-border p-3">
-        <div>
-          <h3 className="text-base font-semibold">Update Mode — ревью</h3>
-          <p className="text-xs text-text-muted">{session.note}</p>
-        </div>
-        <div className="flex gap-2">
-          <Button size="sm" variant="ghost" onClick={() => cancelMutation.mutate()}>
-            Отменить
-          </Button>
-          <Button size="sm" onClick={() => reviewMutation.mutate()} disabled={reviewMutation.isPending}>
-            Сохранить выбор
-          </Button>
-          <Button size="sm" onClick={() => applyMutation.mutate()} disabled={applyMutation.isPending}>
-            Применить
-          </Button>
-        </div>
+      <header className="-m-4 mb-3 border-b border-border p-3">
+        <h3 className="text-base font-semibold">Update Mode — ревью</h3>
+        <p className="text-xs text-text-muted">{note}</p>
       </header>
 
       <div className="space-y-4">
-        {session.file_changes.length > 0 && (
+        {!applied && fileChanges.length > 0 && (
           <div>
             <h4 className="mb-2 text-sm font-semibold">Файловые изменения</h4>
             <div className="space-y-2">
-              {session.file_changes.map((change) => (
+              {fileChanges.map((change) => (
                 <div key={change.change_id} className="rounded border border-border p-3">
+                  {change.description && (
+                    <p className="mb-2 text-sm font-semibold text-text">
+                      {change.description}
+                    </p>
+                  )}
                   <div className="mb-2 flex items-center justify-between">
-                    <code className="text-xs">{change.file_path}</code>
+                    <code className="text-xs">
+                      {change.file_path ?? '(путь не указан)'}
+                    </code>
                     <div className="flex gap-1">
                       <Button
                         size="sm"
@@ -141,23 +176,35 @@ export function UpdateModePanel({ chatId, onClose }: UpdateModePanelProps) {
                       </Button>
                     </div>
                   </div>
-                  <pre className="overflow-x-auto rounded bg-surface-2 p-2 text-xs">
-                    {change.diff}
-                  </pre>
-                  {change.reasoning && (
-                    <p className="mt-2 text-xs text-text-muted">{change.reasoning}</p>
-                  )}
+                  {change.unified_diff && <DiffView text={change.unified_diff} />}
                 </div>
               ))}
             </div>
           </div>
         )}
 
-        {session.state_ops.length > 0 && (
+        {!applied && fieldOps.length > 0 && (
+          <div>
+            <h4 className="mb-2 text-sm font-semibold">Изменения схемы</h4>
+            <div className="space-y-2">
+              {fieldOps.map((op) => (
+                <SchemaChangeRow
+                  key={op.op_index}
+                  op={op}
+                  accepted={acceptedFieldOps.has(op.op_index)}
+                  rejected={rejectedFieldOps.has(op.op_index)}
+                  onToggle={(accept) => toggleFieldOp(op.op_index, accept)}
+                />
+              ))}
+            </div>
+          </div>
+        )}
+
+        {!applied && stateOps.length > 0 && (
           <div>
             <h4 className="mb-2 text-sm font-semibold">Изменения state</h4>
             <div className="space-y-2">
-              {session.state_ops.map((op) => (
+              {stateOps.map((op) => (
                 <StateOpRow
                   key={op.op_index}
                   op={op}
@@ -169,8 +216,112 @@ export function UpdateModePanel({ chatId, onClose }: UpdateModePanelProps) {
             </div>
           </div>
         )}
+
+        {applied && (
+          <SourcesRefreshBlock
+            relatedDocumentIds={relatedDocIds}
+            applied={applied}
+            onDismiss={onClose}
+          />
+        )}
       </div>
+
+      <footer className="-m-4 mt-3 flex items-center justify-end gap-2 border-t border-border p-3">
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={() => cancelMutation.mutate()}
+          disabled={cancelMutation.isPending}
+        >
+          Отменить
+        </Button>
+        <Button
+          size="sm"
+          onClick={() => applyMutation.mutate()}
+          disabled={
+            applyMutation.isPending ||
+            applied ||
+            (acceptedFileChanges.size === 0 &&
+              rejectedFileChanges.size === 0 &&
+              acceptedOps.size === 0 &&
+              rejectedOps.size === 0 &&
+              acceptedFieldOps.size === 0 &&
+              rejectedFieldOps.size === 0)
+          }
+        >
+          {applyMutation.isPending ? 'Применение…' : 'Применить'}
+        </Button>
+      </footer>
     </Card>
+  );
+}
+
+function DiffView({ text }: { text: string }) {
+  return (
+    <div className="max-h-96 overflow-auto rounded bg-surface-2 p-2 font-mono text-xs">
+      {text.split('\n').map((line, idx) => {
+        let cls = 'text-text';
+        if (line.startsWith('+')) {
+          cls = 'bg-success/10 text-success';
+        } else if (line.startsWith('-')) {
+          cls = 'bg-danger/10 text-danger';
+        } else if (line.startsWith('@@')) {
+          cls = 'text-text-muted';
+        }
+        return (
+          <div
+            key={idx}
+            className={`whitespace-pre-wrap break-words ${cls}`}
+          >
+            {line || ' '}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function SourcesRefreshBlock({
+  relatedDocumentIds,
+  applied,
+  onDismiss,
+}: {
+  relatedDocumentIds: string[];
+  applied: boolean;
+  onDismiss: () => void;
+}) {
+  const message = applied
+    ? 'Изменения применены. Теперь можно актуализировать связанные источники (markdown-файлы), чтобы они отразили новые значения полей.'
+    : 'В этом proposal есть связанные источники. После применения изменений их можно актуализировать одним нажатием.';
+  return (
+    <div
+      data-s-sources-refresh
+      className="rounded border border-accent/30 bg-accent/5 p-3"
+    >
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <div>
+          <h4 className="text-sm font-semibold text-text">Актуализация источников</h4>
+          <p className="mt-1 text-xs text-text-muted">
+            {message}
+          </p>
+          {relatedDocumentIds.length > 0 && (
+            <p className="mt-1 text-xs text-text-muted">
+              Связанных документов: <strong>{relatedDocumentIds.length}</strong>
+            </p>
+          )}
+        </div>
+        <Button size="sm" variant="ghost" onClick={onDismiss}>
+          Закрыть
+        </Button>
+      </div>
+      <Button
+        size="sm"
+        disabled
+        title="Цикл актуализации появится в следующей итерации"
+      >
+        Актуализировать
+      </Button>
+    </div>
   );
 }
 
@@ -180,34 +331,82 @@ function StateOpRow({
   rejected,
   onToggle,
 }: {
-  op: UpdateModeStateOp;
+  op: UpdateModeStatePatchEntry;
   accepted: boolean;
   rejected: boolean;
   onToggle: (accept: boolean) => void;
 }) {
+  const summary = `${op.field_label} (${op.field_key}) — ${op.operation}`;
+  const isDestructive =
+    op.operation === 'clear_single' || op.operation === 'remove_list_item';
   return (
     <div
       className={`rounded border p-3 ${
-        op.is_destructive ? 'border-warning bg-warning/5' : 'border-border'
+        isDestructive ? 'border-warning bg-warning/5' : 'border-border'
       }`}
     >
       <div className="flex items-start justify-between gap-2">
         <div className="flex-1">
-          <p className="text-sm font-medium">{op.summary}</p>
-          {op.from_text && (
+          <p className="text-sm font-medium">{summary}</p>
+          {op.previous_text && (
             <p className="mt-1 text-xs text-text-muted">
               <span className="font-medium">Было:</span>{' '}
-              <Markdown content={op.from_text} className="inline" />
+              <Markdown content={op.previous_text} className="inline" />
             </p>
           )}
-          {op.to_text && (
+          {op.proposed_text && (
             <p className="mt-1 text-xs">
               <span className="font-medium">Станет:</span>{' '}
-              <Markdown content={op.to_text} className="inline" />
+              <Markdown content={op.proposed_text} className="inline" />
             </p>
           )}
-          {op.source_ref && (
-            <p className="mt-1 text-xs text-text-muted">Основание: {op.source_ref}</p>
+        </div>
+        <div className="flex gap-1">
+          <Button size="sm" variant={accepted ? 'primary' : 'ghost'} onClick={() => onToggle(true)}>
+            Принять
+          </Button>
+          <Button size="sm" variant={rejected ? 'danger' : 'ghost'} onClick={() => onToggle(false)}>
+            Отклонить
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SchemaChangeRow({
+  op,
+  accepted,
+  rejected,
+  onToggle,
+}: {
+  op: UpdateModeStateFieldChangeEntry;
+  accepted: boolean;
+  rejected: boolean;
+  onToggle: (accept: boolean) => void;
+}) {
+  const isCreate = op.operation === 'create_field';
+  const summary = isCreate
+    ? `Создать поле: ${op.proposed_label ?? op.key} (${op.key})`
+    : `Обновить поле: ${op.key}`;
+  const proposedDetails: string[] = [];
+  if (op.proposed_label) proposedDetails.push(`label: «${op.proposed_label}»`);
+  if (op.proposed_mode) proposedDetails.push(`mode: ${op.proposed_mode}`);
+  if (op.proposed_description) proposedDetails.push(`description: «${op.proposed_description}»`);
+  return (
+    <div className="rounded border border-border p-3">
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex-1">
+          <p className="text-sm font-medium">{summary}</p>
+          {op.previous_label && (
+            <p className="mt-1 text-xs text-text-muted">
+              <span className="font-medium">Было:</span> «{op.previous_label}»
+            </p>
+          )}
+          {proposedDetails.length > 0 && (
+            <p className="mt-1 text-xs">
+              <span className="font-medium">Станет:</span> {proposedDetails.join(', ')}
+            </p>
           )}
         </div>
         <div className="flex gap-1">

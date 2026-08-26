@@ -660,31 +660,75 @@ export interface WatchdogSettings {
 
 // === Update Mode ===
 
-export interface UpdateModeFileChange {
+export type UpdateModeAction = 'update' | 'create';
+export type UpdateModeChangeStatus =
+  | 'pending'
+  | 'accepted'
+  | 'rejected'
+  | 'resolution_failed';
+
+export interface ResolvedUpdateModeChange {
   change_id: string;
-  file_path: string;
-  diff: string;
-  reasoning?: string;
+  vault_id?: string | null;
+  document_id?: string | null;
+  file_path?: string | null;
+  action: UpdateModeAction;
+  description: string;
+  operation?: string | null;
+  anchor?: unknown;
+  op_content?: string;
+  resolve_order?: number;
+  original_content?: string;
+  proposed_content?: string;
+  unified_diff?: string;
+  expected_sha256?: string | null;
+  status?: UpdateModeChangeStatus;
+  error_code?: string | null;
+  error_message?: string | null;
 }
 
-export interface UpdateModeStateOp {
+export interface UpdateModeStatePatchEntry {
   op_index: number;
   field_key: string;
-  op_type: string;
-  summary: string;
-  from_text?: string;
-  to_text?: string;
-  source_ref?: string;
-  is_destructive?: boolean;
+  field_label: string;
+  mode: 'single' | 'list';
+  operation: string;
+  previous_text?: string | null;
+  proposed_text?: string | null;
+  edited_text?: string | null;
+  status: 'pending' | 'accepted' | 'rejected';
+}
+
+export type ContextFieldChangeOperation = 'create_field' | 'update_field';
+
+export interface UpdateModeStateFieldChangeEntry {
+  op_index: number;
+  operation: ContextFieldChangeOperation;
+  key: string;
+  proposed_label?: string | null;
+  proposed_description?: string | null;
+  proposed_mode?: 'single' | 'list' | null;
+  proposed_enabled?: boolean | null;
+  proposed_display_order?: number | null;
+  previous_label?: string | null;
+  previous_description?: string | null;
+  previous_enabled?: boolean | null;
+  previous_display_order?: number | null;
+  status: 'pending' | 'accepted' | 'rejected';
 }
 
 export interface UpdateModeSessionResponse {
-  session_id: string;
   chat_id: UUID;
-  note: string;
-  file_changes: UpdateModeFileChange[];
-  state_ops: UpdateModeStateOp[];
-  review_state?: Record<string, unknown>;
+  campaign_id: string;
+  domain_id: string;
+  vault_ids: string[];
+  expires_at: string;
+  changes: ResolvedUpdateModeChange[];
+  warnings: string[];
+  state_field_snapshot: unknown[];
+  state_patch_operations: UpdateModeStatePatchEntry[];
+  state_field_change_operations: UpdateModeStateFieldChangeEntry[];
+  related_document_ids?: UUID[];
 }
 
 export interface UpdateModeReviewRequest {
@@ -694,6 +738,10 @@ export interface UpdateModeReviewRequest {
     accepted_op_indexes?: number[];
     rejected_op_indexes?: number[];
     edited?: Array<{ op_index: number; text: string }>;
+  };
+  field_change_decisions?: {
+    accepted_op_indexes?: number[];
+    rejected_op_indexes?: number[];
   };
 }
 

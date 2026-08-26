@@ -5,6 +5,7 @@ Lua evalsha results are also mocked to test the Python-side parsing.
 """
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
@@ -283,3 +284,160 @@ async def test_begin_apply_conflict() -> None:
 
 def test_module_singleton_is_store_instance() -> None:
     assert isinstance(update_mode_store, UpdateModeStore)
+
+
+# ---------------------------------------------------------------------------
+# Corrupted-session recovery: a stale payload from an older deploy schema
+# must be dropped instead of propagating a 500. These regressions caused
+# the chat-apply UI to white-screen because GET /session returned 500.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_returns_none_for_unreadable_session() -> None:
+    """A session whose inner payload is structurally invalid (e.g. a
+    state-patch operation without a field_key) must not crash the read
+    path. `get()` returns None so the API can answer 410 Gone instead
+    of 500.
+    """
+    store = UpdateModeStore()
+    redis = _redis_mock()
+    # `source_refs` is repaired to `[]` by the normalizer, but the
+    # enclosing patch entry is still missing `field_key` and `mode`,
+    # which are still required. Pydantic rejects and `get()` returns None.
+    redis.get = AsyncMock(
+        return_value=json.dumps(
+            {
+                "note": "Пользователь предлагает...",
+                "expires_at": "2026-08-25T18:19:21.817481Z",
+                "state_patch_operations": [
+                    {
+                        "operation": {
+                            "type": "replace_single",
+                            "field_key": "k",
+                            "text": "v",
+                            "reason": "r",
+                            "source_refs": {},
+                        },
+                    },
+                ],
+            }
+        )
+    )
+
+    result = await store.get(redis, "chat-bad")
+
+    assert result is None
+
+
+def test_normalize_session_lists_repairs_nested_source_refs_dict() -> None:
+    """Defence-in-depth: cjson turns empty arrays into {} on round-trip.
+    `_normalize_session_lists` must recursively fix `source_refs` inside
+    state_patch_operations so Pydantic accepts the payload.
+    """
+    from app.services.update_mode_store import _normalize_session_lists
+
+    data = {
+        "warnings": {},
+        "vault_ids": {},
+        "candidate_document_ids": {},
+        "changes": {},
+        "state_field_snapshot": {},
+        "state_field_change_operations": {},
+        "state_patch_operations": [
+            {
+                "operation": {
+                    "type": "replace_single",
+                    "source_refs": {},
+                },
+            },
+            {
+                "operation": {
+                    "type": "add_list_item",
+                    "source_refs": {},
+                },
+            },
+        ],
+    }
+
+    normalised = _normalize_session_lists(data)
+
+    assert normalised["warnings"] == []
+    assert normalised["vault_ids"] == []
+    assert normalised["candidate_document_ids"] == []
+    assert normalised["changes"] == []
+    for op in normalised["state_patch_operations"]:
+        assert op["operation"]["source_refs"] == []
+
+
+def test_normalize_session_lists_keeps_populated_lists_intact() -> None:
+    """Non-empty list values must NOT be touched by the normalizer."""
+    from app.services.update_mode_store import _normalize_session_lists
+
+    data = {
+        "warnings": ["a", "b"],
+        "state_patch_operations": [
+            {"operation": {"type": "replace_single", "source_refs": ["file:x:sha:y"]}},
+        ],
+    }
+
+    normalised = _normalize_session_lists(data)
+
+    assert normalised["warnings"] == ["a", "b"]
+    assert normalised["state_patch_operations"][0]["operation"]["source_refs"] == [
+        "file:x:sha:y"
+    ]
+
+
+def test_normalize_session_lists_inserts_missing_defaults() -> None:
+    """Old payloads may omit fields that the current DTO declares as
+    optional-with-default. The normalizer must fill them in so the
+    session loads without breaking the read path.
+    """
+    from app.services.update_mode_store import _normalize_session_lists
+
+    # No list/str fields at all — only the core identifying fields that
+    # are still required by the DTO.
+    data = {
+        "session_id": "sid",
+        "chat_id": "chat-x",
+        "campaign_id": "camp-1",
+        "domain_id": "domain-1",
+        "created_at": "2026-08-25T18:00:00Z",
+        "expires_at": "2026-08-25T21:00:00Z",
+    }
+
+    normalised = _normalize_session_lists(data)
+
+    assert normalised["warnings"] == []
+    assert normalised["vault_ids"] == []
+    assert normalised["candidate_document_ids"] == []
+    assert normalised["changes"] == []
+    assert normalised["state_patch_operations"] == []
+    assert normalised["state_field_snapshot"] == []
+    assert normalised["state_field_change_operations"] == []
+    assert normalised["note"] == ""
+    assert normalised["default_vault_id"] == ""
+
+
+@pytest.mark.asyncio
+async def test_begin_apply_raises_expired_for_unreadable_session() -> None:
+    """If the Lua round-trip returns a payload that no longer matches the
+    current DTO schema, `begin_apply` must raise `SessionExpiredError` so
+    the API can answer 410. The session itself is NOT deleted — the
+    caller decides what to do next.
+    """
+    store = UpdateModeStore()
+    UpdateModeStore._apply_sha = "faksha5678"
+
+    # Mimic a payload produced by older code: missing top-level required
+    # fields like `candidate_document_ids` and `changes`.
+    corrupted_payload = json.dumps(
+        {"note": "Фиксация из старой версии", "expires_at": "2026-08-25T18:31:44Z"}
+    )
+
+    redis = _redis_mock()
+    redis.evalsha = AsyncMock(return_value=corrupted_payload)
+
+    with pytest.raises(SessionExpiredError):
+        await store.begin_apply(redis, "chat-x", None)

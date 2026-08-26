@@ -110,6 +110,13 @@ router = APIRouter(
 
 
 def _session_to_response(session: UpdateModeSession) -> UpdateModeSessionResponse:
+    related: list[str] = []
+    seen: set[str] = set()
+    for change in session.changes:
+        doc_id = getattr(change, "document_id", None)
+        if isinstance(doc_id, str) and doc_id and doc_id not in seen:
+            seen.add(doc_id)
+            related.append(doc_id)
     return UpdateModeSessionResponse(
         chat_id=session.chat_id,
         campaign_id=session.campaign_id,
@@ -120,6 +127,7 @@ def _session_to_response(session: UpdateModeSession) -> UpdateModeSessionRespons
         warnings=session.warnings,
         state_field_snapshot=session.state_field_snapshot,
         state_patch_operations=session.state_patch_operations,
+        related_document_ids=related,
     )
 
 
@@ -489,6 +497,27 @@ async def apply_changes(
         raise HTTPException(status_code=410, detail=str(exc))
     except ApplyConflictError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
+    except Exception as exc:  # noqa: BLE001
+        # begin_apply itself validates the Lua-returned payload; if that
+        # fails (stale schema from an older deploy) drop the corrupted
+        # session so the user can iterate with a fresh proposal.
+        logger.warning(
+            "apply_changes: dropping corrupted session for chat_id=%s: %s",
+            chat_id,
+            exc,
+        )
+        try:
+            await update_mode_store.delete(redis, chat_id)
+        except Exception as cleanup_exc:  # noqa: BLE001
+            logger.warning(
+                "apply_changes: cleanup delete failed for chat_id=%s: %s",
+                chat_id,
+                cleanup_exc,
+            )
+        raise HTTPException(
+            status_code=410,
+            detail="session was corrupted; please start a new proposal",
+        )
 
     accepted_changes = [
         ch for ch in session.changes

@@ -217,7 +217,7 @@ class TestCompileModes:
         cfg = _cfg("focus", "Текущий фокус", mode="single")
         ver = _version([_fv_single("focus", "f-focus", "Дизайн MVP")])
         result = compile_campaign_state(ver, [cfg])
-        assert "Текущий фокус:" in result.text
+        assert "Текущий фокус (key=focus, mode=single):" in result.text
         assert "Дизайн MVP" in result.text
         assert result.fields[0].included is True
         assert result.fields[0].items_included == 1
@@ -228,7 +228,7 @@ class TestCompileModes:
             _fv_list("agreements", "f-agr", [("A1", False), ("A2", False)]),
         ])
         result = compile_campaign_state(ver, [cfg])
-        assert "Договорённости:" in result.text
+        assert "Договорённости (key=agreements, mode=list):" in result.text
         assert "- A1" in result.text
         assert "- A2" in result.text
 
@@ -299,9 +299,9 @@ class TestCompileSoftStop:
         assert result.fields[0].truncated is True
 
     def test_custom_token_counter_is_used(self):
-        # Кастомный счётчик: 1 символ = 1 токен. "Альфа: ABCDE" = 12 chars.
-        # budget=15 → поле должно попасть.
-        budget = 15
+        # Кастомный счётчик: 1 символ = 1 токен. "Альфа (key=alpha, mode=single): ABCDE" = 37 chars.
+        # budget=50 → поле должно попасть.
+        budget = 50
         cfgs = [_cfg("alpha", "Альфа")]
         ver = _version([_fv_single("alpha", "f-alpha", "ABCDE")])
         result = compile_campaign_state(

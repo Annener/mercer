@@ -1,6 +1,8 @@
 import { useEffect } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { clsx } from '@/components/ui';
 import { api } from '@/api/client';
+import { useSettingsStore } from '@/stores';
 import type {
   EmbeddingModel,
   GenerationModel,
@@ -45,6 +47,9 @@ function formatLatency(latencyMs: number): string {
 }
 
 export function ModelHealthIndicator({ kind }: ModelHealthIndicatorProps) {
+  const openSettings = useSettingsStore((s) => s.openSettings);
+  const queryClient = useQueryClient();
+
   const listKind: 'generation' | 'embedding' | 'rerank' | null =
     kind === 'sidecar' ? null : kind;
 
@@ -97,16 +102,84 @@ export function ModelHealthIndicator({ kind }: ModelHealthIndicatorProps) {
     healthPending: healthQuery.isLoading || healthQuery.isFetching,
   });
 
+  const sidecarStart = useMutation({
+    mutationFn: () => api.sidecarStart(),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['platform-status'] });
+      void queryClient.invalidateQueries({ queryKey: ['sidecar', 'status'] });
+    },
+  });
+
+  const sidecarStop = useMutation({
+    mutationFn: () => api.sidecarStop(),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['platform-status'] });
+      void queryClient.invalidateQueries({ queryKey: ['sidecar', 'status'] });
+    },
+  });
+
+  const isSidecar = kind === 'sidecar';
+  const sidecarPending = sidecarStart.isPending || sidecarStop.isPending;
+  const sidecarAvailable = statusQuery.data?.pdf_sidecar_available === true;
+  const sidecarAction = isSidecar && statusQuery.data != null ? (
+    sidecarAvailable ? sidecarStop : sidecarStart
+  ) : null;
+
+  const ariaLabel = (() => {
+    if (isSidecar) {
+      if (statusQuery.data == null) {
+        return `${KIND_LABELS[kind]}: состояние проверяется`;
+      }
+      return sidecarAvailable
+        ? `${KIND_LABELS[kind]} запущен — остановить`
+        : `${KIND_LABELS[kind]} остановлен — запустить`;
+    }
+    return `${KIND_LABELS[kind]}: открыть настройки моделей`;
+  })();
+
+  const actionTooltip = (() => {
+    if (isSidecar) {
+      if (statusQuery.data == null) return availability.tooltip;
+      return sidecarAvailable
+        ? 'Остановить PDF sidecar'
+        : 'Запустить PDF sidecar';
+    }
+    return availability.tooltip || 'Открыть настройки → Модели';
+  })();
+
+  const handleClick = () => {
+    if (sidecarPending) return;
+    if (sidecarAction) {
+      sidecarAction.mutate();
+      return;
+    }
+    openSettings('models');
+  };
+
+  const disabled = isSidecar && statusQuery.data == null;
+
   if (availability.hidden) return null;
 
   const color = COLOR_MAP[availability.statusKey];
-  const dotClass = `inline-block h-2 w-2 rounded-full ${color.dot}`;
+  const dotClass = clsx(
+    'inline-block h-2 w-2 rounded-full',
+    sidecarPending ? 'animate-pulse bg-text-muted' : color.dot,
+  );
 
   return (
-    <span
-      className="inline-flex items-center gap-1.5 rounded-full border border-border bg-surface px-2 py-0.5 text-xs text-text"
-      title={availability.tooltip}
-      aria-label={`${KIND_LABELS[kind]}: ${availability.tooltip}`}
+    <button
+      type="button"
+      onClick={handleClick}
+      disabled={disabled}
+      title={actionTooltip}
+      aria-label={ariaLabel}
+      aria-busy={sidecarPending || undefined}
+      className={clsx(
+        'inline-flex items-center gap-1.5 rounded-full border border-border bg-surface px-2 py-0.5 text-xs text-text transition',
+        'hover:bg-surface-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary',
+        'disabled:cursor-not-allowed disabled:opacity-60',
+        'cursor-pointer',
+      )}
       data-health-kind={kind}
       data-health-status={availability.statusKey}
     >
@@ -115,7 +188,13 @@ export function ModelHealthIndicator({ kind }: ModelHealthIndicatorProps) {
       {availability.latencyText && (
         <span className="text-text-muted">· {availability.latencyText}</span>
       )}
-    </span>
+      {sidecarPending && (
+        <span
+          aria-hidden="true"
+          className="inline-block h-2.5 w-2.5 animate-spin rounded-full border-2 border-text-muted border-t-transparent"
+        />
+      )}
+    </button>
   );
 }
 

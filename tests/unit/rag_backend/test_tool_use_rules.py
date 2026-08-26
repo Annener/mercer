@@ -33,12 +33,14 @@ def test_rules_handle_empty_system_prompt():
 
 
 def test_rules_call_out_must_use_triggers():
-    """The rules must explicitly enumerate the must-use triggers from §12.1."""
+    """The rules must call out when search_knowledge is actually useful."""
     out = append_tool_use_rules("")
+    # Examples given to the model must mention documents, NPCs/entities
+    # and other concrete facts from the campaign.
     triggers = [
-        "фактов кампании",
-        "именованных сущностей",
-        "точного содержания документов",
+        "Что было в документе",
+        "NPC",
+        "Аркагор",
     ]
     for t in triggers:
         assert t in out, f"Rule missing required trigger: {t!r}"
@@ -48,8 +50,10 @@ def test_rules_call_out_must_not_use_cases():
     """The rules must explicitly list when the model must NOT use the tool."""
     out = append_tool_use_rules("")
     must_not = [
-        "общий вопрос",
-        "приветствие",
+        "Обнови контекст",
+        "Запомни",
+        "Привет",
+        "Спасибо",
     ]
     for phrase in must_not:
         assert phrase in out, f"Rule missing must-not-use case: {phrase!r}"
