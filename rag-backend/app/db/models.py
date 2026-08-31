@@ -607,6 +607,15 @@ class Chat(Base):
     context_update_mode: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
     )
+    # --- conditional RAG prefetch (per-chat master switch) ---
+    # When True (legacy grounded behaviour): a single retrieval is performed
+    # up-front per chat turn and its evidence is injected into system_prompt,
+    # AND round 0 of the agent loop forces a tool call.
+    # When False (default; model-decides): no prefill; the model only sees
+    # the conversation, decides itself whether to invoke search_knowledge.
+    rag_prefill_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

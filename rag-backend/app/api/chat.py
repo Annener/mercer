@@ -96,21 +96,28 @@ class UpdateChatRequest(BaseModel):
       Поле обновляется ТОЛЬКО если явно присутствует в теле запроса (model_fields_set).
       Если поле не передано — campaign_id чата не изменяется.
     - full_document_mode_enabled: true/false для управления Full Document Mode.
-      Если поле не передано — флаг чата не изменяется.
+      Если поле не передано — флаг чата не изменяется. Нельзя включить, если
+      rag_prefill_enabled == false (422 full_document_requires_prefill).
     - context_update_mode: true/false для управления model-proposed context
       updates (Sprint 1 agent-assistant). Если поле не передано — флаг
       не изменяется.
+    - rag_prefill_enabled: true/false для управления per-turn RAG prefetch.
+      True — prefill evidence инжектируется в system_prompt и round 0
+      заставляет модель вызвать tool (режим grounded). False (default) —
+      модель сама решает, нужен ли search_knowledge.
 
     Примеры:
       { "full_document_mode_enabled": true }              — только тоглер, campaign_id не трогается
       { "campaign_id": "<uuid>" }                          — только кампания, флаг не трогается
       { "campaign_id": null }                              — сброс кампании, флаг не трогается
       { "campaign_id": "<uuid>", "full_document_mode_enabled": false } — оба поля
+      { "rag_prefill_enabled": true }                      — включить prefill для этого чата
     """
 
     campaign_id: str | None = None
     full_document_mode_enabled: bool | None = None
     context_update_mode: bool | None = None
+    rag_prefill_enabled: bool | None = None
 
 
 class RenameChatRequest(BaseModel):
@@ -328,6 +335,29 @@ async def update_chat(
             "context_update_mode=%s for chat_id=%s",
             req.context_update_mode,
             chat_id,
+        )
+
+    if req.rag_prefill_enabled is not None:
+        chat.rag_prefill_enabled = req.rag_prefill_enabled
+        logger.info(
+            "rag_prefill_enabled=%s for chat_id=%s",
+            req.rag_prefill_enabled,
+            chat_id,
+        )
+
+    # Guard: Full Document Mode требует активного prefill, т.к. пауза для выбора
+    # документов работает только после retrieval-шага. Если пользователь пытается
+    # оставить full_document_mode_enabled=True при отключённом prefill — отказ.
+    if chat.full_document_mode_enabled and not chat.rag_prefill_enabled:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "full_document_requires_prefill",
+                "message": (
+                    "Full Document Mode requires RAG prefill (rag_prefill_enabled) "
+                    "to be enabled for the same chat. Enable rag_prefill_enabled first."
+                ),
+            },
         )
 
     await db.commit()
@@ -843,6 +873,17 @@ async def send_message_stream(
             scene_state=_chat.metadata_json.get("scene_state"),
         )
 
+        # Per-chat: если per-chat rag_prefill_enabled=False — модель получит
+        # вопрос без префилл-выборки. Добавляем специальный hint-блок, чтобы
+        # модель знала что search_knowledge доступен и сама решает, когда звать.
+        if not _chat.rag_prefill_enabled:
+            from app.services.effective_context import _RAG_DECIDES_HINT
+            system_prompt = (
+                f"{system_prompt}{_RAG_DECIDES_HINT}"
+                if system_prompt
+                else _RAG_DECIDES_HINT.lstrip()
+            )
+
         # Stage 8.5: load retrieval tool settings and decide whether the
         # model gets the `search_knowledge` tool (conditional RAG) or
         # falls back to the unconditional single-shot retrieval path.
@@ -852,12 +893,13 @@ async def send_message_stream(
         use_tool = tool_settings.tool_enabled and bool(_provider)
 
         # ── 2b. Prefill RAG (Sprint 2) ──────────────────────────────────────────
-        # When policy==GROUNDED and we have a campaign, run a single retrieval
-        # up-front and inject the evidence into system_prompt. The model
-        # therefore starts the turn with concrete campaign context already
-        # visible, instead of having to call search_knowledge manually.
+        # Per-chat gated: only when rag_prefill_enabled is set on the chat itself.
+        # When a retrieval is performed up-front and its evidence is injected
+        # into system_prompt. The model therefore starts the turn with concrete
+        # campaign context already visible, instead of having to call
+        # search_knowledge manually.
         if (
-            tool_settings.policy.value == "grounded"
+            bool(_chat.rag_prefill_enabled)
             and context.campaign_id
             and vault_ids
         ):
@@ -917,6 +959,7 @@ async def send_message_stream(
                     max_rounds=tool_settings.max_rounds,
                     evidence_token_budget=tool_settings.evidence_token_budget,
                     policy=tool_settings.policy,
+                    effective_grounded=bool(_chat.rag_prefill_enabled),
                     db=db,
                     context_update_mode_enabled=bool(_chat.context_update_mode),
                     redis=_redis,

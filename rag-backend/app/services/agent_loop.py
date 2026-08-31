@@ -877,6 +877,7 @@ class AgentLoop:
         max_rounds: int,
         evidence_token_budget: int,
         policy: RetrievalPolicy,
+        effective_grounded: bool | None = None,
         db: Any,
         context_update_mode_enabled: bool = False,
         redis: Any | None = None,
@@ -895,6 +896,13 @@ class AgentLoop:
         `propose_context_update` tool is registered. Requires a campaign_id
         (proposals without an active campaign don't make sense) AND a
         `redis` client (the proposal is stored in Redis as a Review session).
+
+        `effective_grounded` is a per-call override for whether round 0
+        should force a tool call. When `None` (default), falls back to the
+        `policy` argument (i.e. global PlatformSetting `retrieval.policy`).
+        When set explicitly, controls the tool_choice for round 0 regardless
+        of the global policy. Subsequent rounds always use `tool_choice='auto'`
+        so the model may finish answering before exhausting all rounds.
         """
         if max_rounds <= 0:
             # Defensive: a misconfigured policy with zero rounds should not
@@ -938,14 +946,23 @@ class AgentLoop:
             if is_final_round:
                 # Final round — модель обязана дать текстовый ответ.
                 tool_choice = LLMToolChoice(mode="none")
-            elif policy == RetrievalPolicy.GROUNDED and round_idx == 0:
-                # Grounded mode, round 0 — модель ОБЯЗАНА вызвать хотя бы один
-                # tool перед тем, как писать ответ (см. §12.1 спецификации).
-                # Дальнейшие раунды остаются auto: модель может добрать
-                # evidence или начать отвечать.
-                tool_choice = LLMToolChoice(mode="required")
             else:
-                tool_choice = LLMToolChoice(mode="auto")
+                # Resolve effective "must-call-tool" predicate for round 0.
+                # Per-chat override (`effective_grounded`) takes precedence
+                # over the global PlatformSetting `policy`. When neither is
+                # supplied, default to grounded (legacy behaviour).
+                if effective_grounded is not None:
+                    force_tool_round_zero = effective_grounded
+                else:
+                    force_tool_round_zero = policy == RetrievalPolicy.GROUNDED
+                if round_idx == 0 and force_tool_round_zero:
+                    # Round 0, tool_choice=required — модель ОБЯЗАНА вызвать
+                    # хотя бы один tool перед тем, как писать ответ
+                    # (см. §12.1 спецификации). Дальнейшие раунды остаются
+                    # auto: модель может добрать evidence или начать отвечать.
+                    tool_choice = LLMToolChoice(mode="required")
+                else:
+                    tool_choice = LLMToolChoice(mode="auto")
 
             yield AgentEvent(
                 type="round_start",

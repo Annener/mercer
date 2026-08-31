@@ -39,6 +39,7 @@ export interface Chat {
   locked_pipeline_id?: PipelineId | null;
   full_document_mode_enabled?: boolean;
   context_update_mode?: boolean;
+  rag_prefill_enabled?: boolean;
 }
 
 export interface ChatDetail {

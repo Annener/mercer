@@ -64,6 +64,20 @@ export function ChatContextBar() {
     },
   });
 
+  const ragPrefillMutation = useMutation({
+    mutationFn: async (enabled: boolean) => {
+      if (!currentChatId) throw new Error('No chat selected');
+      return api.setRagPrefill(currentChatId, enabled, currentChat?.campaign_id ?? null);
+    },
+    onSuccess: async () => {
+      if (!currentChatId) return;
+      await reloadChat(currentChatId);
+    },
+    onError: () => {
+      setRagPrefillLocal((prev) => !prev);
+    },
+  });
+
   const [fullDocLocal, setFullDocLocal] = useState<boolean>(Boolean(currentChat?.full_document_mode_enabled));
 
   useEffect(() => {
@@ -77,6 +91,14 @@ export function ChatContextBar() {
   useEffect(() => {
     setContextUpdateLocal(Boolean(currentChat?.context_update_mode));
   }, [currentChat?.context_update_mode]);
+
+  const [ragPrefillLocal, setRagPrefillLocal] = useState<boolean>(
+    Boolean(currentChat?.rag_prefill_enabled),
+  );
+
+  useEffect(() => {
+    setRagPrefillLocal(Boolean(currentChat?.rag_prefill_enabled));
+  }, [currentChat?.rag_prefill_enabled]);
 
   // Не рендерим контекст-бар без активного чата
   if (!currentChatId || !currentChat) return null;
@@ -152,30 +174,64 @@ export function ChatContextBar() {
 
         <div className="h-4 w-px bg-border" />
 
-        {/* Full Document Mode toggle */}
+        {/* RAG prefill toggle (per-chat master switch). */}
+        {/* When ON, evidence is pre-pended to system_prompt and round 0 forces
+            a tool call (legacy grounded behaviour). When OFF, the model only
+            sees the conversation and decides itself whether to call
+            search_knowledge. Full Document Mode is only available when this
+            is enabled (it relies on the up-front retrieval to propose docs). */}
         <label
           className="flex cursor-pointer items-center gap-1.5 select-none"
-          title="Разрешить отправку полных документов"
+          title="Если включено — модель получит выборку из базы знаний сразу и обязана её использовать. Если выключено — модель сама решает, нужен ли поиск."
         >
           <input
             type="checkbox"
-            checked={fullDocLocal}
+            checked={ragPrefillLocal}
             onChange={(e) => {
               const v = e.target.checked;
-              setFullDocLocal(v);
-              fullDocMutation.mutate(v);
+              setRagPrefillLocal(v);
+              ragPrefillMutation.mutate(v);
             }}
-            disabled={fullDocMutation.isPending}
+            disabled={ragPrefillMutation.isPending}
             className="h-3.5 w-3.5 cursor-pointer accent-primary"
           />
           <span className="inline-flex items-center gap-1 text-text">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-              <polyline points="14 2 14 8 20 8" />
+              <circle cx="11" cy="11" r="8" />
+              <path d="m21 21-4.3-4.3" />
             </svg>
-            Полные документы
+            Подмешивать RAG
           </span>
         </label>
+
+        {/* Full Document Mode toggle — visible only when rag_prefill is on. */}
+        {ragPrefillLocal && (
+          <>
+            <label
+              className="flex cursor-pointer items-center gap-1.5 select-none"
+              title="Разрешить отправку полных документов (требует включённого Подмешивать RAG)"
+            >
+              <input
+                type="checkbox"
+                checked={fullDocLocal}
+                onChange={(e) => {
+                  const v = e.target.checked;
+                  setFullDocLocal(v);
+                  fullDocMutation.mutate(v);
+                }}
+                disabled={fullDocMutation.isPending}
+                className="h-3.5 w-3.5 cursor-pointer accent-primary"
+              />
+              <span className="inline-flex items-center gap-1 text-text">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                  <polyline points="14 2 14 8 20 8" />
+                </svg>
+                Полные документы
+              </span>
+            </label>
+          </>
+        )}
 
         {/* Context Update Mode toggle */}
         {hasCampaign && (
