@@ -62,6 +62,16 @@
   padding-left: 1.6em;
 }
 
+.markdown ul {
+  list-style: disc;
+  list-style-position: outside;
+}
+
+.markdown ol {
+  list-style: decimal;
+  list-style-position: outside;
+}
+
 .markdown li {
   margin: 0.25em 0;
 }
@@ -69,6 +79,10 @@
 .markdown li > ul,
 .markdown li > ol {
   margin: 0.2em 0;
+}
+
+.markdown li::marker {
+  color: var(--color-text-muted);
 }
 
 /* Inline code */
@@ -251,4 +265,8 @@
 
 .markdown-inverse strong {
   color: white;
+}
+
+.markdown-inverse li::marker {
+  color: rgba(255, 255, 255, 0.7);
 }
