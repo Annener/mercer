@@ -13,9 +13,11 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Chat
-from app.services.effective_context import (
-    compose_full_system_prompt,
-    compose_state_block_only,
+from app.services.context_engine.assembly import (
+    build_chat_context as compose_full_system_prompt,
+)
+from app.services.context_engine.assembly import (
+    build_state_block_only as compose_state_block_only,
 )
 from app.services.full_document_service import reconstruct_full_text
 from app.services.pipeline_dag import get_execution_levels

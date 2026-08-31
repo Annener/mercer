@@ -29,7 +29,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Chat, Message
 from app.db.session import get_db
-from app.services.effective_context import compose_full_system_prompt
+from app.services.context_engine.assembly import (
+    build_chat_context as compose_full_system_prompt,
+)
 from app.services.pipeline_executor import PipelineExecutor
 from app.services.settings_service import settings_service
 from app.services.source_utils import (

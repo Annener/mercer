@@ -1,31 +1,46 @@
-"""effective_context.py — Stage 6: общий runtime helper для prompt assembly.
+"""effective_context.py — фасад (re-export) для обратной совместимости.
 
-Содержит функции, которые используются и в chat runtime, и в debug-эндпойнте:
-  - `_compose_full_system_prompt_text` — собрать system_prompt + Campaign State
-    в единую строку (без RAG-context);
-  - `build_effective_context` — собрать полный effective-context для UI.
+Логика сборки контекста перенесена в `app.services.context_engine` (Фаза 1).
+Здесь остаются:
+  - re-export старых имён (`compose_full_system_prompt`,
+    `compose_full_system_prompt_with_state`, `compose_state_block_only`,
+    `compose_scene_block`, `_resolve_system_prompt_text`,
+    `_resolve_campaign_state_block_safe`) — для существующих импортов;
+  - `append_tool_use_rules` + `_TOOL_USE_RULES` — пост-обработка для
+    agent-loop пути, к сборке контекста не относится;
+  - `_RAG_DECIDES_HINT` — хинт для plain-RAG режима;
+  - `build_effective_context` — debug-endpoint helper, использует
+    `_resolve_system_prompt_text` / `_resolve_campaign_state_block_safe`
+    через re-export.
 
-Не зависит от FastAPI. Используется из `app.api.chat`, `app.api.pipeline_resume`,
-`app.services.pipeline_executor`, `app.api.settings.campaigns`.
+Используется из `app.api.chat`, `app.api.pipeline_resume`,
+`app.services.pipeline_executor`, `app.api.settings.campaigns`,
+плюс тесты в `tests/integration/test_iter6_smoke.py`,
+`tests/integration/test_iter7_e2e.py`,
+`tests/unit/rag_backend/test_tool_use_rules.py`,
+`tests/unit/rag_backend/test_effective_context_api.py`.
 """
 from __future__ import annotations
 
-import json
 import logging
-import uuid
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.services.campaign_state_compiler import (
-    compile_campaign_state,
     default_token_counter,
     get_campaign_state_token_budget,
 )
-from app.services.campaign_state_value_service import campaign_state_value_service
-from app.services.domain_service import domain_service
+from app.services.context_engine import (
+    build_chat_context,
+    build_chat_context_with_state,
+    build_state_block_only,
+)
+from app.services.context_engine.assembly import (
+    _resolve_campaign_state_block_safe,
+    _resolve_system_prompt_text,
+)
 from shared_contracts.models import (
-    CampaignStateCompiledBlock,
     EffectiveContextBlock,
     EffectiveContextRead,
 )
@@ -34,71 +49,7 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-async def _resolve_system_prompt_text(
-    campaign_id: str | None,
-    domain_id: str | None,
-    db: AsyncSession,
-) -> str:
-    if campaign_id:
-        from app.db.models import Campaign
-        try:
-            campaign = await db.get(Campaign, uuid.UUID(campaign_id))
-        except (ValueError, TypeError):
-            campaign = None
-        if campaign is not None and campaign.system_prompt:
-            return campaign.system_prompt
-    return await domain_service.get_prompt(domain_id or "default", "system", db)
-
-
-async def _resolve_campaign_state_block_safe(
-    campaign_id: str | None,
-    db: AsyncSession,
-) -> tuple[str, CampaignStateCompiledBlock | None]:
-    """Скомпилировать active Campaign State.
-
-    Возвращает `(text, block_or_none)`. Никогда не падает: ошибки логируются и
-    возвращается пустой блок — runtime чата не должен зависеть от Campaign State.
-    """
-    if not campaign_id:
-        return "", None
-    try:
-        version = await campaign_state_value_service.get_active_state(
-            db, uuid.UUID(campaign_id)
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "effective_context._resolve_campaign_state_block_safe: get_active_state failed: %s",
-            exc,
-        )
-        version = None
-
-    if version is None:
-        return "", CampaignStateCompiledBlock(
-            budget_tokens=await get_campaign_state_token_budget(db),
-            used_tokens=0,
-        )
-
-    try:
-        budget = await get_campaign_state_token_budget(db)
-        fields = await campaign_state_value_service.list_enabled_fields_ordered(
-            db, uuid.UUID(campaign_id)
-        )
-        block = compile_campaign_state(version, fields, budget_tokens=budget)
-        return block.text, block
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "effective_context._resolve_campaign_state_block_safe: compile failed: %s",
-            exc,
-        )
-        return "", None
-
-
-# ---------------------------------------------------------------------------
-# Public API
+# Re-export фасад: старые имена → новые реализации из context_engine
 # ---------------------------------------------------------------------------
 
 
@@ -108,63 +59,33 @@ async def compose_full_system_prompt(
     db: AsyncSession,
     scene_state: dict[str, Any] | None = None,
 ) -> str:
-    """Собрать `system_prompt + Campaign State block + Scene State block` через filter(None).
-
-    `scene_state` (если задан) рендерится отдельным блоком между campaign_state
-    и финальным system_prompt — модель видит активный контекст сцены
-    (location, active_npcs, current_act и т.п.) и помнит его между turn-ами.
-
-    Не подставляет RAG-context — это делает вызывающий код после retrieval.
-    """
-    system_prompt = await _resolve_system_prompt_text(campaign_id, domain_id, db)
-    state_text, _ = await _resolve_campaign_state_block_safe(campaign_id, db)
-    scene_text = compose_scene_block(scene_state)
-    parts = [p for p in (system_prompt, state_text, scene_text) if p]
-    return "\n\n".join(parts)
+    """Deprecated alias для `app.services.context_engine.build_chat_context`."""
+    return await build_chat_context(campaign_id, domain_id, db, scene_state)
 
 
-# Максимальный размер scene_state JSON (символов). Защищает prompt от раздувания,
-# если модель начнёт писать большие значения (например, длинные истории NPC).
-_SCENE_STATE_MAX_CHARS = 4 * 1024
+async def compose_full_system_prompt_with_state(
+    campaign_id: str | None,
+    domain_id: str | None,
+    db: AsyncSession,
+    scene_state: dict[str, Any] | None = None,
+) -> tuple[str, Any]:
+    """Deprecated alias для `app.services.context_engine.build_chat_context_with_state`."""
+    return await build_chat_context_with_state(
+        campaign_id, domain_id, db, scene_state
+    )
 
 
-def compose_scene_block(scene_state: dict[str, Any] | None) -> str:
-    """Рендерит блок «Текущая сцена» для system_prompt.
+async def compose_state_block_only(
+    campaign_id: str | None,
+    db: AsyncSession,
+) -> str:
+    """Deprecated alias для `app.services.context_engine.build_state_block_only`."""
+    return await build_state_block_only(campaign_id, db)
 
-    - Пустой / None / не-dict → пустая строка (блок пропускается).
-    - Слишком большой JSON (>_SCENE_STATE_MAX_CHARS) → обрезается с WARNING-меткой.
-      Полный текст при этом всё равно доступен модели через `chat.metadata.scene_state`
-      в read-only (host-controlled) режиме — мы просто не пихаем его целиком в prompt.
 
-    Структура выходного текста (plain text, не JSON-строка, чтобы модель
-    читала естественно):
-
-        ## Текущая сцена
-        - location: Забытые Королевства, подземелье
-        - active_npcs:
-          - Бехолдер
-          - Культисты Теней
-        - current_act: Глава 3 — Падение
-    """
-    if not scene_state:
-        return ""
-    if not isinstance(scene_state, dict):
-        return ""
-    try:
-        rendered = json.dumps(scene_state, ensure_ascii=False, indent=2)
-    except (TypeError, ValueError):
-        logger.warning(
-            "compose_scene_block: scene_state is not JSON-serialisable, skipping"
-        )
-        return ""
-    if len(rendered) > _SCENE_STATE_MAX_CHARS:
-        rendered = rendered[:_SCENE_STATE_MAX_CHARS] + "\n…(truncated)"
-        logger.warning(
-            "compose_scene_block: scene_state exceeded %d chars, truncated for prompt",
-            _SCENE_STATE_MAX_CHARS,
-        )
-    return f"## Текущая сцена\n{rendered}"
-
+# ---------------------------------------------------------------------------
+# Tool use rules (остаются здесь — пост-обработка agent-loop, не сборка контекста)
+# ---------------------------------------------------------------------------
 
 # Stage 8.6: правила использования `search_knowledge` tool. Согласно §12.1
 # спецификации, модель обязана вызвать tool при запросах о конкретных фактах
@@ -311,37 +232,6 @@ def append_tool_use_rules(system_prompt: str) -> str:
     if not system_prompt:
         return _TOOL_USE_RULES.lstrip()
     return system_prompt + _TOOL_USE_RULES
-
-
-async def compose_full_system_prompt_with_state(
-    campaign_id: str | None,
-    domain_id: str | None,
-    db: AsyncSession,
-    scene_state: dict[str, Any] | None = None,
-) -> tuple[str, CampaignStateCompiledBlock | None]:
-    """Вернуть (system_prompt_text, state_block).
-
-    Возвращает уже склеенный `system_prompt + state + scene_state` и сам
-    state_block для debug. `scene_state` рендерится после campaign_state.
-    """
-    system_prompt = await _resolve_system_prompt_text(campaign_id, domain_id, db)
-    state_text, block = await _resolve_campaign_state_block_safe(campaign_id, db)
-    scene_text = compose_scene_block(scene_state)
-    parts = [p for p in (system_prompt, state_text, scene_text) if p]
-    return "\n\n".join(parts), block
-
-
-async def compose_state_block_only(
-    campaign_id: str | None,
-    db: AsyncSession,
-) -> str:
-    """Вернуть только текст Campaign State block (без system_prompt и rag_context).
-
-    Используется в `_run_final_composition` для добавления блока после
-    pipeline-resolved prompt без вмешательства в шаблоны с {query}/{STEP_ID.*}.
-    """
-    state_text, _ = await _resolve_campaign_state_block_safe(campaign_id, db)
-    return state_text
 
 
 # ---------------------------------------------------------------------------

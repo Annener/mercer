@@ -18,10 +18,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import Campaign, Chat, ClarificationStateRow, Message, Vault
 from app.db.session import get_db
 from app.services import clarification_fsm
-from app.services.domain_service import domain_service
-from app.services.effective_context import (
-    compose_full_system_prompt,
+from app.services.context_engine.assembly import (
+    build_chat_context as compose_full_system_prompt,
 )
+from app.services.domain_service import domain_service
 from app.services.pipeline_executor import PipelineExecutor
 from app.services.pipeline_router import PipelineRouter
 from app.services.planner import Planner
@@ -1345,7 +1345,7 @@ async def _resolve_system_prompt(
     Stage 6: для runtime чата используйте `compose_full_system_prompt` из
     `app.services.effective_context` (включает Campaign State block).
     """
-    from app.services.effective_context import _resolve_system_prompt_text as _impl
+    from app.services.context_engine.assembly import _resolve_system_prompt_text as _impl
 
     return await _impl(campaign_id, domain_id, db)
 
