@@ -26,6 +26,7 @@ from app.api.watchdog_settings import router as watchdog_router
 from app.db.migrations import run_migrations
 from app.db.session import SessionLocal, dispose_engine
 from app.logging_config import setup_logging
+from app.services.context_engine.draft import CampaignStateDrafter
 from app.services.context_engine.drift import DriftDetector
 from app.services.context_engine.loop import DriftLoop
 from app.services.domain_service import domain_service
@@ -71,6 +72,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         db_factory=SessionLocal, redis_client=redis_client
     )
     drift_loop = DriftLoop(detector=drift_detector, redis=redis_client)
+
+    # Phase 3: CampaignStateDrafter — план auto-draft на основе drift hints.
+    # Сохраняется в Redis (TTL 3 часа). Использует активную generation-модель
+    # из settings_service (может быть None при старте без настроек).
+    drafter = CampaignStateDrafter(
+        db_factory=SessionLocal,
+        redis_client=redis_client,
+        generation_provider_factory=lambda: settings_service.get_active_provider(),
+    )
+    drift_loop.drafter = drafter
+    app.state.drafter = drafter
+
     app.state.drift_loop = drift_loop
     drift_loop._idle_task = asyncio.create_task(drift_loop.run_idle_scan())
     logger.info("Drift loop started")

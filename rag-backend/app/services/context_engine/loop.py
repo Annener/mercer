@@ -16,11 +16,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import redis.asyncio as aioredis
 
 from .drift import DriftDetector
+
+if TYPE_CHECKING:
+    from .draft import CampaignStateDrafter
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +54,11 @@ class DriftLoop:
         self.redis = redis
         self.cooldown_seconds = cooldown_seconds
         self.idle_scan_period_seconds = idle_scan_period_seconds
+        # Phase 3: drafter планирует draft на основе drift hints.
+        # Устанавливается через ``drift_loop.drafter = ...`` в lifespan
+        # (или напрямую в тестах). Если None — detect работает, но draft
+        # не создаётся (логируется INFO).
+        self.drafter: "CampaignStateDrafter | None" = None
         self._idle_task: asyncio.Task | None = None
         self._shutdown = asyncio.Event()
 
@@ -138,18 +146,31 @@ class DriftLoop:
                 pass
             return
 
-        # Phase 3 hook: CampaignStateDrafter будет запускаться здесь.
-        # Пока просто логируем и оставляем chat в dirty set (не страшно —
-        # hints уже записаны в scene_state.drift и будут видны в UI).
+        # Phase 3: запустить CampaignStateDrafter (если задан).
+        # Ошибка drafter-а не должна ломать loop — drift hints уже
+        # записаны в scene_state.drift и видны в UI; просто логируем.
+        if self.drafter is not None:
+            try:
+                await self.drafter.plan_draft(chat_id)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception(
+                    "drift_loop._run_detect: drafter failed chat_id=%s: %s",
+                    chat_id,
+                    exc,
+                )
+        else:
+            logger.info(
+                "drift_loop._run_detect: chat_id=%s produced %d hints "
+                "(drafter not configured, skip)",
+                chat_id,
+                len(hints),
+            )
+
+        # Убираем чат из dirty set — direct trigger его уже обработал.
         try:
             await self.redis.srem(_DIRTY_SET_KEY, chat_id)
         except Exception:  # noqa: BLE001
             pass
-        logger.info(
-            "drift_loop._run_detect: chat_id=%s produced %d hints (drafter TBD Phase 3)",
-            chat_id,
-            len(hints),
-        )
 
     async def run_idle_scan(self) -> None:
         """Каждые idle_scan_period_seconds сканирует drift:dirty и запускает detect."""
