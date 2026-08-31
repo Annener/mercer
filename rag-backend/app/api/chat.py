@@ -1126,6 +1126,20 @@ async def send_message_stream(
             if was_cancelled:
                 return
 
+            # Phase 2b: fire-and-forget drift-detection. Cooldown (30s)
+            # применяется внутри DriftLoop.trigger_for_chat. Любая ошибка
+            # логируется внутри loop'а — chat не должен ломаться.
+            try:
+                drift_loop = getattr(request.app.state, "drift_loop", None)
+                if drift_loop is not None:
+                    await drift_loop.trigger_for_chat(str(_chat.id))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "plain_stream: drift trigger failed chat_id=%s: %s",
+                    _chat.id,
+                    exc,
+                )
+
             # Эмитим финальный `sources` event для UI — даже если LLM не
             # сгенерировал токенов, источники должны быть видны.
             deduped_sources = dedup_sources(all_sources)

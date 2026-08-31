@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import sys
@@ -25,6 +26,8 @@ from app.api.watchdog_settings import router as watchdog_router
 from app.db.migrations import run_migrations
 from app.db.session import SessionLocal, dispose_engine
 from app.logging_config import setup_logging
+from app.services.context_engine.drift import DriftDetector
+from app.services.context_engine.loop import DriftLoop
 from app.services.domain_service import domain_service
 from app.services.settings_service import settings_service
 
@@ -60,10 +63,23 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             "No active generation model configured. "
             "Application will start but LLM features will be unavailable."
         )
+
+    # Phase 2b: DriftLoop — фоновый drift-detection после каждого turn-а.
+    # Drift провайдер может быть недоступен — loop стартует в любом случае,
+    # а detector.detect тихо возвращает None при ошибках.
+    drift_detector = DriftDetector(
+        db_factory=SessionLocal, redis_client=redis_client
+    )
+    drift_loop = DriftLoop(detector=drift_detector, redis=redis_client)
+    app.state.drift_loop = drift_loop
+    drift_loop._idle_task = asyncio.create_task(drift_loop.run_idle_scan())
+    logger.info("Drift loop started")
+
     logger.info("Service started. Database migrations applied.")
     try:
         yield
     finally:
+        drift_loop.shutdown()
         await redis_client.aclose()
         await dispose_engine()
         logger.info("Service stopped.")

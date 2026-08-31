@@ -562,7 +562,12 @@ async def _execute_update_scene_state(
     patch: dict[str, Any],
     db: Any,
 ) -> dict[str, Any]:
-    """Merge patch into Chat.metadata['scene_state']. Persist via db.commit().
+    """Merge patch into Chat.metadata['scene_state'].explicit.
+
+    Phase 2b: LLM-driven scene state lives under ``scene_state.explicit``;
+    the ``scene_state.drift`` sub-space is owned by DriftDetector and never
+    touched from here. Persistence is delegated to
+    ``context_engine.scene_memory.merge_explicit``.
 
     Returns a dict shaped like a SearchKnowledgeResult-style envelope so the
     rest of the loop can reuse `_format_tool_result_text`-style plumbing.
@@ -591,60 +596,55 @@ async def _execute_update_scene_state(
         }
 
     try:
-        import uuid as _uuid
-
-        from app.db.models import Chat
-
-        chat = await db.get(Chat, _uuid.UUID(chat_id))
+        from app.services.context_engine.scene_memory import merge_explicit
     except Exception as exc:  # noqa: BLE001
         logger.warning(
-            "agent_loop: failed to load chat_id=%s for scene_state update: %s",
-            chat_id,
-            exc,
+            "agent_loop: failed to import merge_explicit: %s", exc
         )
         return {
             "status": _SCENE_STATE_ERROR_STATUS,
-            "note": f"failed to load chat: {exc}",
-            "scene_state": {},
-            "applied_keys": [],
-            "removed_keys": [],
-        }
-    if chat is None:
-        return {
-            "status": _SCENE_STATE_ERROR_STATUS,
-            "note": f"chat {chat_id} not found",
+            "note": f"scene_state backend unavailable: {exc}",
             "scene_state": {},
             "applied_keys": [],
             "removed_keys": [],
         }
 
-    current: dict[str, Any] = dict(chat.metadata_json or {})
-    # scene_state is the only sub-namespace managed by update_scene_state.
-    # Other top-level keys (e.g. future fields) are not touched here.
-    scene: dict[str, Any] = dict(current.get("scene_state") or {})
+    # Compute applied/removed keys for the model-facing envelope BEFORE
+    # the merge so we can describe what changed. merge_explicit handles
+    # legacy migration (flat scene_state → {explicit, drift}) internally.
+    try:
+        from app.services.context_engine.scene_memory import read_scene_state
+
+        before = await read_scene_state(chat_id, db)
+        before_explicit = (before.get("explicit") or {}) if isinstance(before, dict) else {}
+        legacy_flat = (
+            isinstance(before, dict)
+            and before
+            and "explicit" not in before
+            and "drift" not in before
+        )
+    except Exception:
+        before_explicit = {}
+        legacy_flat = False
+
     applied: list[str] = []
     removed: list[str] = []
     for key, value in patch.items():
+        if not isinstance(key, str) or not key:
+            continue
         if value is None:
-            if key in scene:
-                scene.pop(key)
+            baseline = set(before_explicit.keys()) if not legacy_flat else set(before.keys())
+            if key in baseline:
                 removed.append(key)
         else:
-            scene[key] = value
             applied.append(key)
-    current["scene_state"] = scene
-    chat.metadata_json = current
 
     try:
-        await db.commit()
-        await db.refresh(chat)
+        merged_scene = await merge_explicit(chat_id, patch, db)
     except Exception as exc:  # noqa: BLE001
         logger.warning(
-            "agent_loop: failed to commit scene_state update chat_id=%s: %s",
-            chat_id,
-            exc,
+            "agent_loop: merge_explicit failed chat_id=%s: %s", chat_id, exc
         )
-        await db.rollback()
         return {
             "status": _SCENE_STATE_ERROR_STATUS,
             "note": f"failed to persist scene_state: {exc}",
@@ -654,7 +654,7 @@ async def _execute_update_scene_state(
         }
 
     logger.info(
-        "agent_loop: scene_state updated chat_id=%s applied=%s removed=%s",
+        "agent_loop: scene_state.explicit updated chat_id=%s applied=%s removed=%s",
         chat_id,
         applied,
         removed,
@@ -666,7 +666,7 @@ async def _execute_update_scene_state(
             if applied or removed
             else "no-op (patch was a no-op after merge)"
         ),
-        "scene_state": current,
+        "scene_state": merged_scene,
         "applied_keys": applied,
         "removed_keys": removed,
     }
