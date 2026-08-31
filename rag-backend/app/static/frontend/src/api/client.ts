@@ -1000,6 +1000,37 @@ export class MercerAPI extends HttpClient {
   async updateModeCancel(chatId: T.UUID): Promise<unknown> {
     return this.delete(`/api/chats/${chatId}/update-mode/session`);
   }
+
+  // ============================================================
+  // Context Draft (Phase 4)
+  // ============================================================
+
+  async getContextDraft(chatId: T.UUID): Promise<T.ContextDraftResponse> {
+    return this.get<T.ContextDraftResponse>(
+      `/api/chats/${chatId}/context-draft`,
+    );
+  }
+
+  async acceptContextDraft(chatId: T.UUID): Promise<T.ContextDraftAcceptResponse> {
+    return this.post<T.ContextDraftAcceptResponse>(
+      `/api/chats/${chatId}/context-draft/accept`,
+      {},
+    );
+  }
+
+  async rejectContextDraft(chatId: T.UUID): Promise<T.ContextDraftRejectResponse> {
+    return this.post<T.ContextDraftRejectResponse>(
+      `/api/chats/${chatId}/context-draft/reject`,
+      {},
+    );
+  }
+
+  async checkFilesFromContextDraft(chatId: T.UUID): Promise<{ session_id: string }> {
+    return this.post<{ session_id: string }>(
+      `/api/chats/${chatId}/context-draft/check-files`,
+      {},
+    );
+  }
 }
 
 export const api = new MercerAPI();

@@ -785,6 +785,50 @@ export interface UpdateModeApplyRequest {
   apply_id?: string;
 }
 
+// === Context Draft (Phase 4: auto-draft campaign state) ===
+
+export interface ContextDraftStatePatchOp {
+  type: string;
+  field_key: string;
+  item_key?: string;
+  text?: string;
+  reason?: string;
+  source_refs?: string[];
+  [k: string]: unknown;
+}
+
+export interface ContextDraftDriftHint {
+  fact: string;
+  contradicts_field?: string | null;
+  adds_field?: string | null;
+  msg_ref?: string | null;
+  confidence: number;
+}
+
+export interface ContextDraft {
+  chat_id: UUID;
+  campaign_id: string;
+  state_patch: ContextDraftStatePatchOp[];
+  summary: string;
+  drift_hash: string;
+  drift_hints: ContextDraftDriftHint[];
+  created_at: string;
+  expires_at: string;
+}
+
+export interface ContextDraftResponse {
+  draft: ContextDraft | null;
+}
+
+export interface ContextDraftAcceptResponse {
+  applied_state_version: number;
+  operations_count: number;
+}
+
+export interface ContextDraftRejectResponse {
+  status: 'rejected';
+}
+
 // === Settings ===
 
 export interface ParamGroup {

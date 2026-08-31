@@ -14,6 +14,7 @@ import {
 import { FullDocPanel, type FullDocCandidate } from '@/components/chat/cards/FullDocPanel';
 import { ToolCallCard, type ToolCallInfo, type ToolResultInfo } from '@/components/chat/cards/ToolCallCard';
 import { ProposalCard } from '@/components/chat/cards/ProposalCard';
+import { ContextDraftCard, useContextDraftQuery } from './ContextDraftCard';
 import {
   PipelineProgress,
   PipelineBadge,
@@ -44,6 +45,13 @@ export function ChatArea() {
   const setStreamingContent = useChatStore((s) => s.setStreamingContent);
   const showUpdateModePanel = useChatStore((s) => s.showUpdateModePanel);
   const setShowUpdateModePanel = useChatStore((s) => s.setShowUpdateModePanel);
+
+  const draftQuery = useContextDraftQuery(currentChatId);
+  const draft = draftQuery.data?.draft ?? null;
+  const [showContextDraftCard, setShowContextDraftCard] = useState(true);
+  useEffect(() => {
+    setShowContextDraftCard(true);
+  }, [draft?.drift_hash]);
 
   const currentDomainId = useDomainStore((s) => s.currentDomainId);
   const theme = useThemeStore((s) => s.theme);
@@ -707,6 +715,15 @@ export function ChatArea() {
                 <UpdateModePanel
                   chatId={currentChatId}
                   onClose={() => setShowUpdateModePanel(false)}
+                />
+              </div>
+            )}
+            {currentChat?.campaign_id && currentChatId && draft && showContextDraftCard && (
+              <div data-context-draft-card>
+                <ContextDraftCard
+                  chatId={currentChatId}
+                  draft={draft}
+                  onClose={() => setShowContextDraftCard(false)}
                 />
               </div>
             )}

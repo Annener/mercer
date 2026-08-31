@@ -4,6 +4,7 @@ import { useChatStore } from '@/stores';
 import { api } from '@/api/client';
 import { UpdateModeStartModal } from '@/components/wizard/UpdateModeStartModal';
 import { PendingIndexBanner } from './PendingIndexBanner';
+import { useContextDraftQuery } from './ContextDraftCard';
 import type { Pipeline, PipelineId } from '@/api/types';
 
 const PIPELINE_NONE_ID = '__none__';
@@ -281,10 +282,17 @@ export function ChatContextBar() {
           </button>
         )}
 
+        {/* Context-draft badge — индикатор фонового auto-draft. */}
+        <ContextDraftBadge chatId={currentChatId} />
+
+        {/* Context-draft badge — индикатор фонового auto-draft. */}
+        <ContextDraftBadge chatId={currentChatId} />
+
         {/* Pending files banner — справа в строке */}
-        <div className="ml-auto">
+        <div className="ml-auto flex items-center gap-2">
           <PendingIndexBanner domainId={currentChat.domain_id} />
         </div>
+
       </div>
 
       <UpdateModeStartModal
@@ -293,5 +301,38 @@ export function ChatContextBar() {
         chatId={currentChatId}
       />
     </>
+  );
+}
+
+/**
+ * Компактный badge для ChatContextBar: показывает, что в фоне появился draft,
+ * требующий review. По клику скроллит к [data-context-draft-card].
+ */
+function ContextDraftBadge({ chatId }: { chatId: string }) {
+  const draftQuery = useContextDraftQuery(chatId);
+  const draft = draftQuery.data?.draft ?? null;
+
+  if (!draft) return null;
+
+  const onJump = () => {
+    requestAnimationFrame(() => {
+      const el = document.querySelector('[data-context-draft-card]');
+      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
+  };
+
+  return (
+    <button
+      type="button"
+      onClick={onJump}
+      title="Открыть предложенные обновления"
+      className="inline-flex items-center gap-1.5 rounded-md border border-amber-300 bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-800 hover:bg-amber-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 dark:border-amber-700 dark:bg-amber-900/30 dark:text-amber-200 dark:hover:bg-amber-900/50"
+    >
+      <span
+        aria-hidden="true"
+        className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-amber-500"
+      />
+      Возможные обновления ({draft.state_patch.length})
+    </button>
   );
 }
