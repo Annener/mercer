@@ -8,7 +8,7 @@ import httpx
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Campaign, EmbeddingModel, Pipeline, RerankModel, Vault
+from app.db.models import Campaign, DriftModel, EmbeddingModel, Pipeline, RerankModel, Vault
 from app.services.settings_service import settings_service
 
 STORAGE_API_URL = os.getenv("STORAGE_API_URL", "http://db-api-server:8080")
@@ -195,4 +195,68 @@ async def _check_reranker_provider(model: RerankModel) -> dict:
     results = data.get("results") or data.get("data") or []
     if not isinstance(results, list):
         raise TypeError("Provider returned unexpected rerank response format")
+    return data
+
+
+async def _check_drift_provider(model: DriftModel) -> dict:
+    """Health-check for a drift model.
+
+    ``host_sidecar``     — POST {base_url}/drift с минимальным запросом,
+                           ожидаем ответ с ``hints`` (список).
+    ``openai_compatible`` — POST {base_url}/chat/completions с коротким
+                           system+user промптом; проверяем наличие
+                           ``choices[0].message.content``.
+
+    Returns the parsed JSON response on success; raises on transport /
+    parse failures so the caller can translate to ``{ok: False}``.
+    """
+    if model.provider == "host_sidecar":
+        base_url = (model.base_url or "").rstrip("/")
+        if not base_url:
+            raise ValueError("host_sidecar drift model requires base_url")
+        body = {
+            "model": model.model_name,
+            "messages": [{"role": "user", "content": "ping"}],
+            "current_state": "(empty)",
+            "schema_hint": None,
+        }
+        async with httpx.AsyncClient(timeout=model.timeout_seconds) as client:
+            response = await client.post(f"{base_url}/drift", json=body)
+        response.raise_for_status()
+        data = response.json()
+        if "hints" not in data or not isinstance(data["hints"], list):
+            raise ValueError("drift sidecar returned unexpected payload")
+        return data
+
+    # openai_compatible
+    api_key = (
+        settings_service.decrypt_api_key(model.encrypted_api_key)
+        if model.encrypted_api_key
+        else None
+    )
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    body = {
+        "model": model.model_name,
+        "messages": [
+            {"role": "system", "content": "Reply with JSON {\"hints\": []}."},
+            {"role": "user", "content": "ping"},
+        ],
+        "response_format": {"type": "json_object"},
+        "max_tokens": 32,
+        "temperature": 0.0,
+    }
+    async with httpx.AsyncClient(timeout=model.timeout_seconds, headers=headers) as client:
+        response = await client.post(
+            f"{model.base_url.rstrip('/')}/chat/completions", json=body
+        )
+    response.raise_for_status()
+    data = response.json()
+    try:
+        content = data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise ValueError(f"unexpected provider payload: {exc}") from exc
+    if not isinstance(content, str) or not content.strip():
+        raise ValueError("provider returned empty assistant content")
     return data

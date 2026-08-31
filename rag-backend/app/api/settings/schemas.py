@@ -166,3 +166,24 @@ class RerankModelUpdateRequest(BaseModel):
     api_key: str | None = None
     timeout_seconds: int | None = None
     enabled: bool | None = None
+
+
+class DriftModelCreateRequest(BaseModel):
+    model_id: str = Field(min_length=1, max_length=128)
+    provider: str = "host_sidecar"
+    base_url: str | None = None
+    model_name: str = Field(min_length=1, max_length=256)
+    display_name: str | None = None
+    api_key: str | None = None
+    timeout_seconds: int = 60
+    enabled: bool = True
+
+
+class DriftModelUpdateRequest(BaseModel):
+    provider: str | None = None
+    base_url: str | None = None
+    model_name: str | None = None
+    display_name: str | None = None
+    api_key: str | None = None
+    timeout_seconds: int | None = None
+    enabled: bool | None = None

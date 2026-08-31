@@ -16,26 +16,30 @@ import {
 } from '@/components/ui';
 import { api, HttpError } from '@/api/client';
 import type {
+  CreateDriftModelRequest,
   CreateEmbeddingModelRequest,
   CreateGenerationModelRequest,
   CreateRerankModelRequest,
+  DriftModel,
   EmbeddingModel,
   GenerationModel,
   ModelCheckResult,
   ModelKind,
   RerankModel,
+  UpdateDriftModelRequest,
   UpdateEmbeddingModelRequest,
   UpdateGenerationModelRequest,
   UpdateRerankModelRequest,
   Vault,
 } from '@/api/types';
 
-type ModelKindOption = 'generation' | 'embedding' | 'rerank';
+type ModelKindOption = 'generation' | 'embedding' | 'rerank' | 'drift';
 
 const MODEL_KIND_OPTIONS: Array<{ value: ModelKindOption; label: string }> = [
   { value: 'generation', label: 'Генеративная модель' },
   { value: 'embedding', label: 'Embedding-модель' },
   { value: 'rerank', label: 'Rerank-модель' },
+  { value: 'drift', label: 'Drift-модель' },
 ];
 
 const EMBEDDING_PROVIDERS: Array<{ value: string; label: string }> = [
@@ -50,6 +54,13 @@ const RERANK_PROVIDERS: Array<{ value: string; label: string }> = [
   { value: 'jina', label: 'Jina' },
   { value: 'ollama', label: 'Ollama' },
 ];
+
+const DRIFT_PROVIDERS: Array<{ value: string; label: string }> = [
+  { value: 'host_sidecar', label: 'PDF Sidecar (локальная)' },
+  { value: 'openai_compatible', label: 'OpenAI compatible' },
+];
+
+const DEFAULT_DRIFT_SIDECAR_URL = 'http://host.docker.internal:8765';
 
 export function ModelsTab() {
   const [kindToChoose, setKindToChoose] = useState(false);
@@ -88,6 +99,12 @@ export function ModelsTab() {
           onClose={() => setPendingKind(null)}
         />
       )}
+      {pendingKind === 'drift' && (
+        <CreateDriftModelInline
+          onCreated={() => setPendingKind(null)}
+          onClose={() => setPendingKind(null)}
+        />
+      )}
 
       <ModelSection title="Генеративные модели">
         <GenerationModelsBody />
@@ -99,6 +116,10 @@ export function ModelsTab() {
 
       <ModelSection title="Rerank-модели">
         <RerankModelsBody />
+      </ModelSection>
+
+      <ModelSection title="Drift-модели">
+        <DriftModelsBody />
       </ModelSection>
     </div>
   );
@@ -1343,6 +1364,467 @@ function CreateRerankModelModal({ open, onClose, onCreated }: CreateRerankModelM
           <Button
             type="submit"
             disabled={!modelId || createMutation.isPending}
+            loading={createMutation.isPending}
+          >
+            Создать
+          </Button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+// =============================================================================
+// Drift-модели (Phase 2a)
+// =============================================================================
+
+function DriftModelsBody() {
+  const queryClient = useQueryClient();
+  const modelsQuery = useQuery({
+    queryKey: ['models', 'drift'],
+    queryFn: () => api.getDriftModels(),
+  });
+
+  const invalidate = () => {
+    void queryClient.invalidateQueries({ queryKey: ['models', 'drift'] });
+    void queryClient.invalidateQueries({ queryKey: ['model-health'] });
+    void queryClient.invalidateQueries({ queryKey: ['platform-status'] });
+  };
+
+  if (modelsQuery.isLoading) {
+    return <p className="text-sm text-text-muted">Загрузка…</p>;
+  }
+  const models = modelsQuery.data ?? [];
+  if (models.length === 0) {
+    return (
+      <EmptyState
+        title="Нет drift-моделей"
+        description="Создайте первую модель через кнопку «Добавить» сверху"
+      />
+    );
+  }
+  return (
+    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-6">
+      {models.map((m) => (
+        <DriftModelCard key={m.model_id} model={m} onChanged={invalidate} />
+      ))}
+    </div>
+  );
+}
+
+interface DriftModelCardProps {
+  model: DriftModel;
+  onChanged: () => void;
+}
+
+function DriftModelCard({ model, onChanged }: DriftModelCardProps) {
+  const [editOpen, setEditOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [checkResult, setCheckResult] = useState<ModelCheckResult | null>(null);
+
+  const isActive = !!model.is_active;
+  const isEnabled = model.enabled !== false;
+
+  const activateMutation = useMutation({
+    mutationFn: () => api.setActiveDriftModel(model.model_id),
+    onSuccess: onChanged,
+  });
+  const deactivateMutation = useMutation({
+    mutationFn: () => api.deactivateDriftModel(model.model_id),
+    onSuccess: onChanged,
+  });
+  const checkMutation = useMutation({
+    mutationFn: () => api.checkDriftModel(model.model_id),
+    onSuccess: (res) => setCheckResult(res),
+    onError: (err) =>
+      setCheckResult({
+        ok: false,
+        error: err instanceof HttpError ? err.message : 'Не удалось выполнить проверку',
+      }),
+  });
+
+  const badges = <ModelStatusBadge isActive={isActive} isEnabled={isEnabled} />;
+
+  const menu: SettingsCardMenuItem[] = [
+    { key: 'edit', label: 'Изменить', onClick: () => setEditOpen(true) },
+    {
+      key: 'check',
+      label: checkMutation.isPending ? 'Проверка…' : 'Проверить',
+      disabled: checkMutation.isPending,
+      onClick: () => {
+        setCheckResult(null);
+        checkMutation.mutate();
+      },
+    },
+    ...(isActive
+      ? ([
+          {
+            key: 'deactivate',
+            label: deactivateMutation.isPending ? 'Деактивация…' : 'Деактивировать',
+            disabled: deactivateMutation.isPending,
+            onClick: () => deactivateMutation.mutate(),
+          },
+        ] as SettingsCardMenuItem[])
+      : isEnabled
+        ? ([
+            {
+              key: 'activate',
+              label: activateMutation.isPending ? 'Активация…' : 'Активировать',
+              disabled: activateMutation.isPending,
+              onClick: () => activateMutation.mutate(),
+            },
+          ] as SettingsCardMenuItem[])
+        : []),
+    ...(!isActive
+      ? ([
+          {
+            key: 'delete',
+            label: 'Удалить',
+            danger: true,
+            onClick: () => setDeleteOpen(true),
+          },
+        ] as SettingsCardMenuItem[])
+      : []),
+  ];
+
+  const providerLabel =
+    model.provider === 'host_sidecar'
+      ? 'Sidecar'
+      : model.provider === 'openai_compatible'
+        ? 'OpenAI compatible'
+        : model.provider ?? '—';
+
+  return (
+    <>
+      <SettingsCard
+        title={model.display_name || model.model_id}
+        subtitle={`${providerLabel} · ${model.model_name ?? '—'}`}
+        badges={badges}
+        menu={menu}
+      />
+      {editOpen && (
+        <EditDriftModelModal
+          model={model}
+          onClose={() => setEditOpen(false)}
+          onSaved={() => {
+            setEditOpen(false);
+            onChanged();
+          }}
+        />
+      )}
+      {deleteOpen && (
+        <DeleteModelModal
+          open
+          title="Удалить drift-модель"
+          name={model.display_name || model.model_id}
+          onClose={() => setDeleteOpen(false)}
+          onConfirm={() => api.deleteDriftModel(model.model_id)}
+          onDeleted={() => {
+            setDeleteOpen(false);
+            onChanged();
+          }}
+        />
+      )}
+      {checkResult !== null && (
+        <CheckResultModal
+          open
+          pending={checkMutation.isPending}
+          result={checkResult}
+          title={`Проверка: ${model.display_name || model.model_id}`}
+          onClose={() => setCheckResult(null)}
+        />
+      )}
+    </>
+  );
+}
+
+interface EditDriftModelModalProps {
+  model: DriftModel;
+  onClose: () => void;
+  onSaved: () => void;
+}
+
+function EditDriftModelModal({ model, onClose, onSaved }: EditDriftModelModalProps) {
+  const [provider, setProvider] = useState(model.provider ?? 'host_sidecar');
+  const [baseUrl, setBaseUrl] = useState(model.base_url ?? '');
+  const [modelName, setModelName] = useState(model.model_name ?? '');
+  const [displayName, setDisplayName] = useState(model.display_name ?? '');
+  const [apiKey, setApiKey] = useState('');
+  const [timeout, setTimeout] = useState(model.timeout_seconds ?? 60);
+  const [enabled, setEnabled] = useState(model.enabled !== false);
+  const [error, setError] = useState<string | null>(null);
+
+  const updateMutation = useMutation({
+    mutationFn: () => {
+      const payload: UpdateDriftModelRequest = {
+        provider,
+        base_url: baseUrl.trim() || null,
+        model_name: modelName.trim() || undefined,
+        display_name: displayName.trim() || null,
+        api_key: apiKey.trim() ? apiKey.trim() : null,
+        timeout_seconds: timeout,
+        enabled,
+      };
+      return api.updateDriftModel(model.model_id, payload);
+    },
+    onSuccess: () => {
+      setError(null);
+      onSaved();
+    },
+    onError: (err) => {
+      setError(err instanceof HttpError ? err.message : 'Не удалось обновить модель');
+    },
+  });
+
+  return (
+    <Modal open onClose={onClose} title={`Изменить drift-модель: ${model.model_id}`} size="md">
+      <form
+        className="space-y-3 p-4"
+        onSubmit={(e) => {
+          e.preventDefault();
+          setError(null);
+          updateMutation.mutate();
+        }}
+      >
+        <SelectWrapper label="Провайдер">
+          <Select
+            value={provider}
+            onChange={(e) => setProvider(e.target.value)}
+            options={DRIFT_PROVIDERS}
+          />
+        </SelectWrapper>
+
+        {provider === 'host_sidecar' && (
+          <Field label="Base URL (pdf-sidecar)">
+            <Input
+              value={baseUrl}
+              placeholder={DEFAULT_DRIFT_SIDECAR_URL}
+              onChange={(e) => setBaseUrl(e.target.value)}
+            />
+          </Field>
+        )}
+        {provider === 'openai_compatible' && (
+          <>
+            <Field label="Base URL">
+              <Input
+                value={baseUrl}
+                placeholder="https://api.example.com/v1"
+                onChange={(e) => setBaseUrl(e.target.value)}
+              />
+            </Field>
+            <Field label="API ключ (оставьте пустым чтобы не менять)">
+              <Input
+                type="password"
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+              />
+            </Field>
+          </>
+        )}
+
+        <Field label="Model name">
+          <Input value={modelName} onChange={(e) => setModelName(e.target.value)} className="font-mono" />
+        </Field>
+
+        <Field label="Отображаемое имя">
+          <Input value={displayName} onChange={(e) => setDisplayName(e.target.value)} />
+        </Field>
+
+        <Field label="Timeout (сек)">
+          <Input
+            type="number"
+            value={timeout}
+            min={1}
+            onChange={(e) => setTimeout(Number(e.target.value) || 0)}
+          />
+        </Field>
+
+        <Checkbox checked={enabled} onChange={(e) => setEnabled(e.target.checked)} label="Модель включена" />
+
+        {error && (
+          <div className="rounded border border-danger/30 bg-danger/10 px-3 py-2 text-sm text-danger">
+            {error}
+          </div>
+        )}
+
+        <div className="flex justify-end gap-2 border-t border-border pt-3">
+          <Button variant="ghost" type="button" onClick={onClose} disabled={updateMutation.isPending}>
+            Отмена
+          </Button>
+          <Button type="submit" loading={updateMutation.isPending}>
+            Сохранить
+          </Button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+interface CreateDriftModelInlineProps {
+  onCreated: () => void;
+  onClose: () => void;
+}
+
+function CreateDriftModelInline({ onCreated, onClose }: CreateDriftModelInlineProps) {
+  const queryClient = useQueryClient();
+  const invalidate = () => {
+    void queryClient.invalidateQueries({ queryKey: ['models', 'drift'] });
+    void queryClient.invalidateQueries({ queryKey: ['model-health'] });
+    void queryClient.invalidateQueries({ queryKey: ['platform-status'] });
+  };
+  return (
+    <CreateDriftModelModal
+      open
+      onClose={onClose}
+      onCreated={() => {
+        invalidate();
+        onCreated();
+      }}
+    />
+  );
+}
+
+interface CreateDriftModelModalProps {
+  open: boolean;
+  onClose: () => void;
+  onCreated: () => void;
+}
+
+function CreateDriftModelModal({ open, onClose, onCreated }: CreateDriftModelModalProps) {
+  const [modelId, setModelId] = useState('');
+  const [provider, setProvider] = useState('host_sidecar');
+  const [baseUrl, setBaseUrl] = useState(DEFAULT_DRIFT_SIDECAR_URL);
+  const [modelName, setModelName] = useState('qwen2.5-3b-instruct-q4_k_m');
+  const [displayName, setDisplayName] = useState('');
+  const [apiKey, setApiKey] = useState('');
+  const [timeout, setTimeout] = useState(60);
+  const [enabled, setEnabled] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    setModelId('');
+    setProvider('host_sidecar');
+    setBaseUrl(DEFAULT_DRIFT_SIDECAR_URL);
+    setModelName('qwen2.5-3b-instruct-q4_k_m');
+    setDisplayName('');
+    setApiKey('');
+    setTimeout(60);
+    setEnabled(true);
+    setError(null);
+  }, [open]);
+
+  const createMutation = useMutation({
+    mutationFn: () => {
+      const payload: CreateDriftModelRequest = {
+        model_id: modelId,
+        provider,
+        base_url: baseUrl.trim() || null,
+        model_name: modelName.trim(),
+        display_name: displayName.trim() || null,
+        api_key: apiKey.trim() || null,
+        timeout_seconds: timeout,
+        enabled,
+      };
+      return api.createDriftModel(payload);
+    },
+    onSuccess: () => {
+      setError(null);
+      onClose();
+      onCreated();
+    },
+    onError: (err) => {
+      setError(err instanceof HttpError ? err.message : 'Не удалось создать модель');
+    },
+  });
+
+  return (
+    <Modal open={open} onClose={onClose} title="Новая drift-модель" size="md">
+      <form
+        className="space-y-3 p-4"
+        onSubmit={(e) => {
+          e.preventDefault();
+          setError(null);
+          createMutation.mutate();
+        }}
+      >
+        <Field label="model_id">
+          <Input
+            value={modelId}
+            onChange={(e) => setModelId(e.target.value)}
+            className="font-mono"
+            placeholder="drift-local-default"
+          />
+        </Field>
+
+        <SelectWrapper label="Провайдер">
+          <Select
+            value={provider}
+            onChange={(e) => {
+              const next = e.target.value;
+              setProvider(next);
+              if (next === 'host_sidecar') setBaseUrl(DEFAULT_DRIFT_SIDECAR_URL);
+            }}
+            options={DRIFT_PROVIDERS}
+          />
+        </SelectWrapper>
+
+        {provider === 'host_sidecar' && (
+          <Field label="Base URL (pdf-sidecar)">
+            <Input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} />
+          </Field>
+        )}
+        {provider === 'openai_compatible' && (
+          <>
+            <Field label="Base URL">
+              <Input
+                value={baseUrl}
+                placeholder="https://api.example.com/v1"
+                onChange={(e) => setBaseUrl(e.target.value)}
+              />
+            </Field>
+            <Field label="API ключ">
+              <Input
+                type="password"
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+              />
+            </Field>
+          </>
+        )}
+
+        <Field label="Model name">
+          <Input value={modelName} onChange={(e) => setModelName(e.target.value)} className="font-mono" />
+        </Field>
+
+        <Field label="Отображаемое имя">
+          <Input value={displayName} onChange={(e) => setDisplayName(e.target.value)} />
+        </Field>
+
+        <Field label="Timeout (сек)">
+          <Input
+            type="number"
+            value={timeout}
+            min={1}
+            onChange={(e) => setTimeout(Number(e.target.value) || 0)}
+          />
+        </Field>
+
+        <Checkbox checked={enabled} onChange={(e) => setEnabled(e.target.checked)} label="Модель включена" />
+
+        {error && (
+          <div className="rounded border border-danger/30 bg-danger/10 px-3 py-2 text-sm text-danger">
+            {error}
+          </div>
+        )}
+
+        <div className="flex justify-end gap-2 border-t border-border pt-3">
+          <Button variant="ghost" type="button" onClick={onClose} disabled={createMutation.isPending}>
+            Отмена
+          </Button>
+          <Button
+            type="submit"
+            disabled={!modelId || !modelName.trim() || createMutation.isPending}
             loading={createMutation.isPending}
           >
             Создать

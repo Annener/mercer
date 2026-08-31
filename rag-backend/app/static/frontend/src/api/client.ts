@@ -680,6 +680,53 @@ export class MercerAPI extends HttpClient {
   }
 
   // ============================================================
+  // Models — Drift
+  // ============================================================
+
+  async getDriftModels(): Promise<T.DriftModel[]> {
+    return this.get<T.DriftModel[]>('/api/settings/models/drift');
+  }
+
+  async createDriftModel(data: T.CreateDriftModelRequest): Promise<T.DriftModel> {
+    return this.post<T.DriftModel>('/api/settings/models/drift', data);
+  }
+
+  async updateDriftModel(
+    modelId: string,
+    data: T.UpdateDriftModelRequest,
+  ): Promise<T.DriftModel> {
+    return this.put<T.DriftModel>(
+      `/api/settings/models/drift/${encodeURIComponent(modelId)}`,
+      data,
+    );
+  }
+
+  async deleteDriftModel(modelId: string): Promise<void> {
+    return this.delete(`/api/settings/models/drift/${encodeURIComponent(modelId)}`);
+  }
+
+  async checkDriftModel(modelId: string): Promise<T.ModelCheckResult> {
+    return this.post<T.ModelCheckResult>(
+      `/api/settings/models/drift/${encodeURIComponent(modelId)}/check`,
+    );
+  }
+
+  async setActiveDriftModel(modelId: string): Promise<unknown> {
+    return this.post(`/api/settings/models/drift/${encodeURIComponent(modelId)}/activate`);
+  }
+
+  async deactivateDriftModel(modelId: string): Promise<unknown> {
+    return this.post(`/api/settings/models/drift/${encodeURIComponent(modelId)}/deactivate`);
+  }
+
+  async toggleDriftModel(modelId: string): Promise<T.DriftModel> {
+    const current = await this.getDriftModels();
+    const model = current.find((m) => m.model_id === modelId);
+    if (!model) throw new Error('Drift model not found');
+    return this.updateDriftModel(modelId, { enabled: !(model.enabled !== false) });
+  }
+
+  // ============================================================
   // Documents & Indexer
   // ============================================================
 

@@ -9,6 +9,13 @@
 #                         По умолчанию: 1 на macOS (MPS даёт тихий fallback на CPU
 #                         для bge-reranker и вешает систему через Metal/UI конкуренцию).
 #                         Установите в 0 чтобы попробовать MPS вручную.
+#   DRIFT_MODEL_PATH    — абсолютный путь к .gguf файлу drift-модели
+#                         (по умолчанию: pdf-sidecar/models/<DRIFT_MODEL_NAME>.gguf).
+#   DRIFT_MODEL_NAME    — имя файла drift-модели без расширения
+#                         (по умолчанию: qwen2.5-3b-instruct-q4_k_m).
+#   DRIFT_MODEL_CTX     — размер контекста llama.cpp (по умолчанию: 4096).
+#   DRIFT_MODEL_THREADS — количество CPU-потоков llama.cpp (по умолчанию: cpu_count).
+#   DRIFT_FORCE_CPU     — принудительно использовать CPU (0 = GPU если доступен).
 
 set -euo pipefail
 
@@ -30,6 +37,13 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
         echo "[sidecar] macOS detected: reranker will use CPU (RERANKER_FORCE_CPU=1)"
         echo "[sidecar] To use MPS: RERANKER_FORCE_CPU=0 ./start.sh"
     fi
+fi
+
+# Drift-модель по умолчанию тоже форсируем в CPU на macOS — Metal под llama-cpp
+# часто ведёт себя непредсказуемо на M-серии, и drift-модель на 3B токенизируется
+# за миллисекунды даже на CPU. Переопределите DRIFT_FORCE_CPU=0 для экспериментов.
+if [[ "$(uname -s)" == "Darwin" ]]; then
+    export DRIFT_FORCE_CPU="${DRIFT_FORCE_CPU:-1}"
 fi
 
 # --- Проверки ---
@@ -85,3 +99,10 @@ fi
 echo "[sidecar] Started (PID ${SIDECAR_PID})"
 echo "[sidecar] Health: http://localhost:${PDF_SIDECAR_PORT}/health"
 echo "[sidecar] Logs:   tail -f ${LOGFILE}"
+
+DRIFT_MODEL_PATH="${DRIFT_MODEL_PATH:-${SCRIPT_DIR}/models/${DRIFT_MODEL_NAME:-qwen2.5-3b-instruct-q4_k_m}.gguf}"
+if [[ -f "${DRIFT_MODEL_PATH}" ]]; then
+    echo "[sidecar] Drift model: ${DRIFT_MODEL_PATH}"
+else
+    echo "[sidecar] Drift model not found at ${DRIFT_MODEL_PATH} — POST /drift will return 503 until model is installed"
+fi

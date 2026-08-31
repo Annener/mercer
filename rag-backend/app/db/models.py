@@ -781,5 +781,37 @@ class RerankModel(Base):
     )
 
 
+class DriftModel(Base):
+    __tablename__ = "drift_models"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    model_id: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
+    provider: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="host_sidecar"
+    )
+    base_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    model_name: Mapped[str] = mapped_column(String(256), nullable=False)
+    encrypted_api_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="true"
+    )
+    display_name: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    timeout_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=60)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
 # Alias for back-compat: chat.py imports ClarificationStateRow
 ClarificationStateRow = ClarificationState

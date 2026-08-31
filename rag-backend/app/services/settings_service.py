@@ -9,7 +9,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import EmbeddingModelConfig, GenerationModelConfig
-from app.db.models import EmbeddingModel, GenerationModel, PlatformSetting, RerankModel, Vault
+from app.db.models import EmbeddingModel, GenerationModel, DriftModel, PlatformSetting, RerankModel, Vault
 from app.db.utils import transactional
 from app.providers.generation.base import GenerationProvider
 from app.providers.generation.openai_compatible import OpenAICompatibleProvider
@@ -388,6 +388,88 @@ class SettingsService:
         return result.scalar_one_or_none()
 
     # ------------------------------------------------------------------
+    # DriftModel CRUD
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    async def _get_drift_model(model_id: str, db: AsyncSession) -> DriftModel | None:
+        result = await db.execute(
+            select(DriftModel).where(DriftModel.model_id == model_id)
+        )
+        return result.scalar_one_or_none()
+
+    async def list_drift_models(self, db: AsyncSession) -> list[dict[str, Any]]:
+        result = await db.execute(
+            select(DriftModel).order_by(DriftModel.created_at.desc())
+        )
+        return [self._drift_model_dict(model) for model in result.scalars().all()]
+
+    async def create_drift_model(self, data: dict[str, Any], db: AsyncSession) -> dict[str, Any]:
+        payload = dict(data)
+        api_key = payload.pop("api_key", None)
+        if api_key:
+            payload["encrypted_api_key"] = self.encrypt_api_key(str(api_key))
+        model = DriftModel(**payload)
+        async with transactional(db):
+            db.add(model)
+        await db.refresh(model)
+        return self._drift_model_dict(model)
+
+    async def update_drift_model(
+        self, model_id: str, data: dict[str, Any], db: AsyncSession
+    ) -> dict[str, Any]:
+        model = await self._get_drift_model(model_id, db)
+        if model is None:
+            raise KeyError(model_id)
+        payload = dict(data)
+        api_key_marker = object()
+        api_key = payload.pop("api_key", api_key_marker)
+        async with transactional(db):
+            for key, value in payload.items():
+                if value is not None and hasattr(model, key):
+                    setattr(model, key, value)
+            if api_key is not api_key_marker:
+                model.encrypted_api_key = (
+                    self.encrypt_api_key(str(api_key)) if api_key else None
+                )
+        await db.refresh(model)
+        return self._drift_model_dict(model)
+
+    async def delete_drift_model(self, model_id: str, db: AsyncSession) -> None:
+        model = await self._get_drift_model(model_id, db)
+        if model is None:
+            raise KeyError(model_id)
+        async with transactional(db):
+            await db.delete(model)
+
+    async def activate_drift_model(self, model_id: str, db: AsyncSession) -> dict[str, Any]:
+        model = await self._get_drift_model(model_id, db)
+        if model is None or not model.enabled:
+            raise KeyError(model_id)
+        async with transactional(db):
+            await db.execute(update(DriftModel).values(is_active=False))
+            model.is_active = True
+        await db.refresh(model)
+        return self._drift_model_dict(model)
+
+    async def deactivate_drift_model(self, model_id: str, db: AsyncSession) -> dict[str, Any]:
+        model = await self._get_drift_model(model_id, db)
+        if model is None:
+            raise KeyError(model_id)
+        async with transactional(db):
+            model.is_active = False
+        await db.refresh(model)
+        return self._drift_model_dict(model)
+
+    async def get_active_drift_model(self, db: AsyncSession) -> DriftModel | None:
+        result = await db.execute(
+            select(DriftModel).where(
+                DriftModel.is_active == True, DriftModel.enabled == True
+            )
+        )
+        return result.scalar_one_or_none()
+
+    # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
 
@@ -529,6 +611,21 @@ class SettingsService:
             "provider": model.provider,
             "display_name": model.display_name,
             "base_url": model.base_url,
+            "timeout_seconds": model.timeout_seconds,
+            "is_active": model.is_active,
+            "enabled": model.enabled,
+            "has_api_key": bool(model.encrypted_api_key),
+            "created_at": model.created_at,
+            "updated_at": model.updated_at,
+        }
+
+    def _drift_model_dict(self, model: DriftModel) -> dict[str, Any]:
+        return {
+            "model_id": model.model_id,
+            "provider": model.provider,
+            "base_url": model.base_url,
+            "model_name": model.model_name,
+            "display_name": model.display_name,
             "timeout_seconds": model.timeout_seconds,
             "is_active": model.is_active,
             "enabled": model.enabled,

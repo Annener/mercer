@@ -3,6 +3,7 @@ from fastapi import APIRouter
 from .campaigns import router as campaigns_router
 from .documents import router as documents_router
 from .domains import router as domains_router
+from .drift_models import router as drift_models_router
 from .emb_models import router as emb_models_router
 from .gen_models import router as gen_models_router
 from .params import router as params_router
@@ -21,6 +22,7 @@ router.include_router(domains_router)
 router.include_router(gen_models_router)
 router.include_router(emb_models_router)
 router.include_router(rerank_models_router)
+router.include_router(drift_models_router)
 router.include_router(vaults_router)
 router.include_router(pipelines_router)
 router.include_router(tags_router)

@@ -519,6 +519,41 @@ export interface UpdateRerankModelRequest {
   enabled?: boolean;
 }
 
+export interface DriftModel {
+  model_id: string;
+  provider?: string;
+  base_url?: string | null;
+  model_name?: string;
+  display_name?: string | null;
+  timeout_seconds?: number;
+  enabled?: boolean;
+  is_active?: boolean;
+  has_api_key?: boolean;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface CreateDriftModelRequest {
+  model_id: string;
+  provider?: string;
+  base_url?: string | null;
+  model_name: string;
+  display_name?: string | null;
+  api_key?: string | null;
+  timeout_seconds?: number;
+  enabled?: boolean;
+}
+
+export interface UpdateDriftModelRequest {
+  provider?: string;
+  base_url?: string | null;
+  model_name?: string;
+  display_name?: string | null;
+  api_key?: string | null;
+  timeout_seconds?: number;
+  enabled?: boolean;
+}
+
 export interface ModelCheckResult {
   ok: boolean;
   latency_ms?: number;

@@ -40,17 +40,28 @@ def mocks(monkeypatch):
     mock_preprocessor_mod = MagicMock()
     mock_preprocessor_mod.preprocess = MagicMock(side_effect=lambda text, hint="": f"PROCESSED:{text}")
 
+    # Phase 2a context-engine: мок drift router чтобы не тянуть llama-cpp.
+    # Используем настоящий APIRouter() вместо MagicMock — FastAPI
+    # include_router() рекурсивно обходит routes и для MagicMock
+    # получает AssertionError при повторном вызове.
+    from fastapi import APIRouter
+
+    mock_drift_mod = MagicMock()
+    mock_drift_mod.drift_router = APIRouter()
+
     import sys
     sys.modules["reranker"] = mock_reranker_mod
     sys.modules["embedder"] = mock_embedder_mod
     sys.modules["parser"] = mock_parser_mod
     sys.modules["shared_contracts.preprocessing"] = mock_preprocessor_mod
+    sys.modules["drift"] = mock_drift_mod
 
     yield {
         "reranker": mock_reranker_mod,
         "embedder": mock_embedder_mod,
         "parser": mock_parser_mod,
         "preprocessor": mock_preprocessor_mod,
+        "drift": mock_drift_mod,
         "sys": sys,
     }
 

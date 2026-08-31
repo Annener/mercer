@@ -36,6 +36,13 @@ v5.1:
   - preprocess() импортируется из shared_contracts.preprocessing
     (единый источник истины для rag-indexer и pdf-sidecar).
   - Шаг 4b (heading guard) теперь применяется и в sidecar-выводе.
+
+v6.0:
+  - Добавлен эндпоинт POST /drift (Phase 2a context-engine) — локальная
+    Qwen2.5-3B-Instruct (Q4_K_M, GGUF) через llama-cpp-python, ленивая
+    загрузка при первом запросе, настраивается через DRIFT_MODEL_PATH /
+    DRIFT_MODEL_NAME / DRIFT_MODEL_CTX / DRIFT_MODEL_THREADS /
+    DRIFT_FORCE_CPU. /health дополнен флагом drift_loaded.
 """
 from __future__ import annotations
 
@@ -61,6 +68,7 @@ from pydantic import BaseModel
 from reranker import is_loaded as reranker_is_loaded
 from reranker import load_reranker, rerank
 
+from drift import drift_router  # Phase 2a: context-engine drift
 from shared_contracts.preprocessing import preprocess
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -141,6 +149,12 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="PDF Sidecar", version="5.0.0", lifespan=lifespan)
+# ``drift_router`` уже включён через ``drift.include_router(drift_router)``
+# ниже — здесь включаем только если модуль был загружен с реальным
+# drift_router (не mock-ом из тестов). Идемпотентность важна для reload-ов
+# в unit-тестах.
+if not any(getattr(r, "path", "").startswith("/drift") for r in app.routes):
+    app.include_router(drift_router)
 
 
 # ---------------------------------------------------------------------------
@@ -149,11 +163,13 @@ app = FastAPI(title="PDF Sidecar", version="5.0.0", lifespan=lifespan)
 
 @app.get("/health")
 async def health() -> dict[str, str]:
+    from drift import _model_loaded  # local import — модуль подгружается лениво
     return {
         "status": "ok",
         "service": "pdf-sidecar",
         "reranker_loaded": str(reranker_is_loaded()),
         "embedder_loaded": str(embedder_is_loaded()),
+        "drift_loaded": str(_model_loaded()),
     }
 
 

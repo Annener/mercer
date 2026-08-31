@@ -27,10 +27,13 @@ for p in (SIDECAR, ROOT):
 
 
 # Защита от cross-test side-effects: test_app_*.py подменяют sys.modules
-# ['reranker'/'embedder'/'parser'/'preprocessor'] на MagicMock, чтобы изолировать
-# app.py. Без восстановления последующие test_reranker/test_embedder не смогут
-# импортировать реальные модули. autouse fixture сбрасывает эти подмены после
-# каждого теста.
+# ['reranker'/'embedder'/'parser'/'preprocessor'/'drift'] на MagicMock,
+# чтобы изолировать app.py. Без восстановления последующие test_reranker
+# /test_embedder не смогут импортировать реальные модули.
+#
+# ВАЖНО: модуль ``app`` НЕ сохраняем между тестами — он должен переимпортироваться
+# с нуля, иначе повторный ``app.include_router(drift_router)`` на тот же mock
+# бросит AssertionError.
 @pytest.fixture(autouse=True)
 def _restore_pdf_sidecar_modules():
     saved = {}
@@ -38,15 +41,18 @@ def _restore_pdf_sidecar_modules():
         "reranker", "embedder", "parser", "preprocessor",
         "shared_contracts", "shared_contracts.preprocessing",
         "shared_contracts.text", "shared_contracts.text.markers",
-        "app", "agent",
+        "agent", "drift",
     )
     for name in protected:
         if name in sys.modules:
             saved[name] = sys.modules[name]
             del sys.modules[name]
+    # Удаляем app чтобы он импортировался с нуля (drift_router mock будет свежим)
+    sys.modules.pop("app", None)
     try:
         yield
     finally:
         for name in protected:
             sys.modules.pop(name, None)
         sys.modules.update(saved)
+        sys.modules.pop("app", None)

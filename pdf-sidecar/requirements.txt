@@ -39,3 +39,10 @@ ghostscript>=0.7
 # sentence-transformers: обёртка над CrossEncoder (bge-reranker-v2-m3 и др.)
 torch>=2.2.0
 sentence-transformers>=3.0.0
+
+# Drift detector (Phase 2a context-engine) — локальная Qwen2.5-3B-Instruct
+# через llama.cpp. Бинарь llama-cpp-python ставит wheel-ы под основные
+# платформы (macOS arm64/x86_64, linux x86_64). На Linux без wheel-а
+# требуется сборка из исходников (нужен gcc + cmake):
+#   CMAKE_ARGS="-DGGML_METAL=OFF" pip install --force-reinstall --no-cache-dir llama-cpp-python
+llama-cpp-python>=0.3.0
