@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from types import SimpleNamespace
 from typing import Any
 
 from app.api.context_draft import router as context_draft_router
@@ -557,7 +558,7 @@ class TestRejectContextDraft:
 
 
 class TestCheckFilesEndpoint:
-    def test_check_files_returns_501_phase_5_pending(self, monkeypatch) -> None:
+    def test_check_files_returns_404_when_no_draft(self, monkeypatch) -> None:
         chat_id = str(uuid.uuid4())
         campaign_id = uuid.uuid4()
         chat = _FakeChat(uuid.UUID(chat_id), campaign_id)
@@ -573,8 +574,8 @@ class TestCheckFilesEndpoint:
         )
 
         resp = client.post(f"/api/chats/{chat_id}/context-draft/check-files")
-        assert resp.status_code == 501
-        assert resp.json()["detail"] == "check_files_pending_phase_5"
+        assert resp.status_code == 404
+        assert resp.json()["detail"] == "draft_not_found"
 
     def test_check_files_returns_422_when_no_campaign(self, monkeypatch) -> None:
         chat_id = str(uuid.uuid4())
@@ -591,6 +592,133 @@ class TestCheckFilesEndpoint:
         )
 
         resp = client.post(f"/api/chats/{chat_id}/context-draft/check-files")
-        # campaign_required проверяется до 501.
+        # campaign_required проверяется до draft lookup.
         assert resp.status_code == 422
         assert resp.json()["detail"] == "campaign_required"
+
+
+class TestCheckFilesHappyPath:
+    """Phase 5: /check-files создаёт Update Mode session через executor
+    с state_patch_context, очищает draft+drift, пишет audit log."""
+
+    def _patch_executor(self, monkeypatch, fake_session):
+        """Подменяет UpdateModeExecutor в app.services.update_mode_executor на фейк.
+        Имя импортируется в app.api.context_draft lazy, поэтому патчим источник.
+        """
+        from app.services import update_mode_executor as exec_module
+
+        class FakeExecutor:
+            def __init__(self, db, store, indexer_client):
+                self.init_calls = (db, store, indexer_client)
+
+            async def start_from_proposal(
+                self, *, chat_id, redis, proposal, state_patch_context=None
+            ):
+                fake_session["proposal"] = proposal
+                fake_session["state_patch_context"] = state_patch_context
+                fake_session["chat_id"] = chat_id
+                from datetime import datetime, timedelta, timezone
+
+                return SimpleNamespace(
+                    session_id="sess-xyz",
+                    chat_id=chat_id,
+                    created_at=datetime.now(timezone.utc),
+                    expires_at=datetime.now(timezone.utc) + timedelta(hours=3),
+                )
+
+        monkeypatch.setattr(exec_module, "UpdateModeExecutor", FakeExecutor)
+
+    def test_check_files_creates_session_clears_draft_writes_audit(
+        self, monkeypatch
+    ) -> None:
+        chat_id = str(uuid.uuid4())
+        campaign_id = uuid.uuid4()
+        chat = _FakeChat(uuid.UUID(chat_id), campaign_id)
+        campaign = _FakeCampaign(campaign_id, config_version=3)
+        fake_db = _FakeDBSession(chat=chat, campaign=campaign)
+        fake_redis = _FakeRedis()
+
+        key = f"draft:campaign:{campaign_id}:chat:{chat_id}"
+        fake_redis.store[key] = json.dumps(
+            _draft_payload(chat_id, str(campaign_id)),
+            ensure_ascii=False,
+        )
+
+        service = _FakeValueService()
+        clear_drift_rec = _install_clear_drift_recorder(monkeypatch)
+
+        captured: dict = {}
+        self._patch_executor(monkeypatch, captured)
+
+        client = _make_client(
+            fake_db=fake_db,
+            fake_redis=fake_redis,
+            fake_value_service=service,
+            monkeypatch=monkeypatch,
+        )
+
+        resp = client.post(f"/api/chats/{chat_id}/context-draft/check-files")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["session_id"] == "sess-xyz"
+        assert body["applied_state_patch_count"] == 1
+        assert "expires_at" in body
+
+        # executor получил state_patch_context с одной операцией
+        assert captured["chat_id"] == chat_id
+        assert len(captured["state_patch_context"]) == 1
+        assert captured["state_patch_context"][0]["type"] == "replace_single"
+        assert (
+            captured["state_patch_context"][0]["field_key"] == "current_location"
+        )
+        # proposal содержит пустые state_patch и field_changes
+        assert captured["proposal"].state_patch == []
+        assert captured["proposal"].field_changes == []
+        # note сформирован из summary
+        assert "Примени уже подтверждённые" in captured["proposal"].reason
+        assert "Персонажи вошли в таверну" in captured["proposal"].reason
+
+        # Redis-ключ удалён
+        assert fake_redis.deletes == [key]
+        assert key not in fake_redis.store
+
+        # clear_drift вызван
+        assert clear_drift_rec["calls"] == [chat_id]
+
+        # AuditLog записан
+        assert len(fake_db.added) == 1
+        audit = fake_db.added[0]
+        assert isinstance(audit, AuditLog)
+        assert audit.action == "context_draft_check_files"
+        assert audit.entity_id == chat_id
+        assert audit.payload["session_id"] == "sess-xyz"
+        assert audit.payload["applied_state_patch_count"] == 1
+        assert fake_db.commits == 1
+
+    def test_check_files_returns_404_when_draft_empty_state_patch(
+        self, monkeypatch
+    ) -> None:
+        chat_id = str(uuid.uuid4())
+        campaign_id = uuid.uuid4()
+        chat = _FakeChat(uuid.UUID(chat_id), campaign_id)
+        campaign = _FakeCampaign(campaign_id)
+        fake_db = _FakeDBSession(chat=chat, campaign=campaign)
+        fake_redis = _FakeRedis()
+        key = f"draft:campaign:{campaign_id}:chat:{chat_id}"
+        payload = _draft_payload(chat_id, str(campaign_id))
+        payload["state_patch"] = []
+        fake_redis.store[key] = json.dumps(payload)
+
+        service = _FakeValueService()
+        client = _make_client(
+            fake_db=fake_db,
+            fake_redis=fake_redis,
+            fake_value_service=service,
+            monkeypatch=monkeypatch,
+        )
+
+        resp = client.post(f"/api/chats/{chat_id}/context-draft/check-files")
+        assert resp.status_code == 422
+        assert resp.json()["detail"] == "empty_state_patch"
+        # draft НЕ удалён (чтобы пользователь мог повторить)
+        assert fake_redis.deletes == []

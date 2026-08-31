@@ -210,16 +210,122 @@ async def check_files_after_draft(
     request: Request,
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """Phase 5: запуск Update Mode с применённым state_patch как контекстом.
+    """Phase 5: запустить Update Mode с уже применённым state_patch как
+    обязательным контекстом. LLM генерирует ТОЛЬКО file_changes, отражающие
+    принятые изменения в .md документах кампании.
 
-    Не реализовано в Фазе 4 — будет добавлено в Фазе 5
-    (UpdateModeExecutor.start_from_proposal(state_patch_context=...)).
+    Используется потоком:
+    1. Фоновый drift-loop создаёт auto-draft (Phase 3).
+    2. Пользователь делает Accept — state_patch применяется.
+    3. Пользователь нажимает «Применить и проверить файлы» — этот endpoint.
+    4. Открывается UpdateModePanel с уже сгенерированными file_changes.
+
+    После успеха draft и drift очищаются (пользователь уже принял решения).
     """
     chat = await _load_chat_or_404(chat_id, db)
     if chat.campaign_id is None:
         raise HTTPException(status_code=422, detail="campaign_required")
 
-    raise HTTPException(
-        status_code=501,
-        detail="check_files_pending_phase_5",
+    redis = request.app.state.redis
+    if redis is None:
+        raise HTTPException(status_code=503, detail="redis_unavailable")
+
+    draft_key = _draft_key(str(chat.campaign_id), chat_id)
+    raw = await redis.get(draft_key)
+    if raw is None:
+        raise HTTPException(status_code=404, detail="draft_not_found")
+
+    draft = _parse_draft_raw(raw)
+    raw_patch = draft.get("state_patch") or []
+    if not isinstance(raw_patch, list):
+        raise HTTPException(status_code=400, detail="invalid_patch")
+    if not raw_patch:
+        raise HTTPException(status_code=422, detail="empty_state_patch")
+
+    # Validate the stored state_patch payload early — better to fail here
+    # than inside the executor (where errors are less obvious).
+    operations = _parse_state_patch(raw_patch)
+
+    # Build proposal: empty state_patch/field_changes — patch comes via context.
+    summary = str(draft.get("summary") or "")
+    note = f"Примени уже подтверждённые изменения контекста в файлы .md: {summary}".strip()
+    from shared_contracts.models import ContextUpdateProposal
+
+    proposal = ContextUpdateProposal(
+        state_patch=[],
+        field_changes=[],
+        file_changes=[],
+        confidence=1.0,
+        reason=note,
+        review_summary="from auto-draft",
     )
+
+    # Lazy import: executor pulls in heavy deps (pydantic, settings, etc.)
+    from app.services.indexer_client import indexer_client
+    from app.services.update_mode_executor import (
+        UpdateModeExecutor,
+        UpdateModeGenerationProviderUnavailableError,
+        UpdateModeIndexerInvalidResponseError,
+        UpdateModeIndexerUnavailableError,
+        UpdateModeInvalidGenerationOutputError,
+        UpdateModeNoIndexedMarkdownError,
+        UpdateModeNoRelevantContextError,
+        UpdateModeNoUsableContextError,
+    )
+    from app.services.update_mode_store import update_mode_store
+
+    executor = UpdateModeExecutor(
+        db=db,
+        store=update_mode_store,
+        indexer_client=indexer_client,
+    )
+
+    state_patch_context = [op.model_dump() for op in operations]
+
+    try:
+        session = await executor.start_from_proposal(
+            chat_id=chat_id,
+            redis=redis,
+            proposal=proposal,
+            state_patch_context=state_patch_context,
+        )
+    except UpdateModeNoIndexedMarkdownError:
+        raise HTTPException(status_code=422, detail="no_indexed_markdown")
+    except UpdateModeNoRelevantContextError:
+        raise HTTPException(status_code=422, detail="no_relevant_context")
+    except UpdateModeNoUsableContextError:
+        raise HTTPException(status_code=422, detail="no_usable_context")
+    except UpdateModeInvalidGenerationOutputError:
+        raise HTTPException(status_code=422, detail="invalid_generation_output")
+    except UpdateModeGenerationProviderUnavailableError:
+        raise HTTPException(status_code=503, detail="generation_provider_unavailable")
+    except UpdateModeIndexerUnavailableError:
+        raise HTTPException(status_code=503, detail="indexer_unavailable")
+    except UpdateModeIndexerInvalidResponseError:
+        raise HTTPException(status_code=502, detail="indexer_invalid_response")
+
+    # Очищаем draft и drift после успешного создания session.
+    await redis.delete(draft_key)
+
+    from app.services.context_engine.scene_memory import clear_drift
+
+    await clear_drift(chat_id, db)
+
+    audit = AuditLog(
+        action="context_draft_check_files",
+        entity_type="chat",
+        entity_id=chat_id,
+        payload={
+            "campaign_id": str(chat.campaign_id),
+            "session_id": session.session_id,
+            "applied_state_patch_count": len(operations),
+        },
+    )
+    db.add(audit)
+    await db.commit()
+
+    return {
+        "session_id": session.session_id,
+        "expires_at": session.expires_at.isoformat() if session.expires_at else None,
+        "applied_state_patch_count": len(operations),
+    }
