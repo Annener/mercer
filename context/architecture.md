@@ -56,10 +56,17 @@ Mercer — мультидоменная RAG-платформа для работ
 - **Campaign State**: CRUD полей через `api/settings/campaigns.py`, apply patch, Initial State flow, debug effective-context endpoint
 - **Conditional RAG в чате**: tool-call path в `plain_stream` через `AgentLoop.run_stream` + `SearchKnowledgeService`
 - **Agent-assistant mode** (Sprint 1-3):
-  - **Inline scene-state** — `update_scene_state` tool пишет в `chat.metadata` (JSONB) и сцена рендерится в system_prompt через `compose_scene_block`.
+  - **Inline scene-state** — `update_scene_state` tool пишет в `chat.metadata.scene_state.explicit` (JSONB) и сцена рендерится в system_prompt через `compose_scene_block`.
   - **Prefill RAG** (Sprint 2) — при `policy==grounded` и наличии кампании один retrieval выполняется ДО AgentLoop и evidence инжектится прямо в system_prompt. Дополнительно — cross-language query expansion (EN→RU) через `QueryRewriter.build_search_queries`.
   - **Tool_choice=required** (Sprint 1) — при grounded + round 0 модель обязана вызвать хотя бы один tool.
   - **Propose context update** (Sprint 3) — `propose_context_update` tool (опционален, включается флагом `chat.context_update_mode`) создаёт Update Mode session через `UpdateModeExecutor.start_from_proposal` для последующего review пользователем.
+- **Context Engine + Auto-Drift + Auto-Draft** (фазы 1-5 плана `context/context-engine.md`):
+  - **Сборка контекста** — `context_engine/assembly.py::build_chat_context` — единая точка сборки system_prompt (state + scene_state + prefill RAG). `effective_context.py` стал re-export фасадом.
+  - **Drift detection (фон)** — `context_engine/drift.py::DriftDetector` после каждого turn-а вызывает малую локальную модель (QVikhr-1.7B через `pdf-sidecar /drift`) и пишет hints в `chat.metadata.scene_state.drift._hints`.
+  - **Auto-draft (фон)** — `context_engine/draft.py::CampaignStateDrafter` берёт drift hints и формирует `state_patch` operations, сохраняет в Redis `draft:campaign:{cid}:chat:{chatid}` TTL 3ч.
+  - **DriftLoop + cooldown** — `context_engine/loop.py::DriftLoop` с Redis SETNX cooldown 30 сек. Idle scan каждые 60 сек для `drift:dirty` set.
+  - **ContextDraftCard (UI)** — карточка с кнопками Accept / Reject / Check-files; Accept применяет state_patch, Reject удаляет draft, Check-files запускает Update Mode с `state_patch_context` (Phase 5).
+  - **Auto-apply никогда** — только явный review пользователя.
 
 ### rag-indexer
 - **Роль**: асинхронный воркер индексации документов; единственный filesystem/git writer
@@ -146,14 +153,21 @@ mercer/
 │       │   ├── campaign_state_initial_store.py       # Redis-сессия initial proposal
 │       │   ├── campaign_state_stale_service.py       # Stage 7 — potentially_stale
 │       │   ├── campaign_state_compiler.py            # Stage 6 — prompt compiler
-│       │   ├── effective_context.py                   # Stage 6 — runtime helper
+│       │   ├── effective_context.py                   # Re-export фасад → context_engine
+│       │   ├── context_engine/                       # Phase 1-5 (см. context/context-engine.md)
+│       │   │   ├── assembly.py        # build_chat_context — единая точка сборки
+│       │   │   ├── scene_memory.py    # scene_state: explicit + drift под-пространства
+│       │   │   ├── drift.py           # DriftDetector (малая локальная модель)
+│       │   │   ├── draft.py           # CampaignStateDrafter (большая модель)
+│       │   │   └── loop.py            # DriftLoop + cooldown 30 сек
 │       │   ├── agent_loop.py                          # Stage 8.4 — bounded LLM ↔ tool cycle
 │       │   ├── search_knowledge_service.py            # Stage 8.3 — host-side search tool
 │       │   └── retrieval_tool_settings.py             # Stage 8.2 — typed accessor
 │       ├── providers/   # Провайдеры генерации (OpenAI-compatible)
+│       │   └── drift/    # DriftProvider: host_sidecar (default QVikhr) + openai_compatible
 │       ├── domains/     # Домены (dnd, work, default) + registry
 │       ├── pipelines/   # Pipeline registry
-│       └── static/      # SPA-фронтенд (ванильный JS, без фреймворков)
+│       └── static/      # SPA-фронтенд (React 18 + TypeScript, Vite)
 ├── rag-indexer/         # Индексатор + filesystem/git writer
 │   ├── app/             # FastAPI app + db_client
 │   ├── api/             # API роутеры индексатора
@@ -305,9 +319,65 @@ apply и содержит счётчики.
 - Budget ~800 токенов (ключ `chat.campaign_state_token_budget`).
 - Поля исключаются целиком, не обрезаются посередине.
 - Эвристика токенов: `math.ceil(len(text) / 4)` (согласована с retrieval/update_mode/pipeline_executor).
-- `effective_context.compose_full_system_prompt` инжектирует блок в system prompt plain-RAG-пути;
+- `context_engine/assembly.py::build_chat_context` — единая точка сборки system_prompt (state + scene_state + prefill RAG).
+- `effective_context.compose_full_system_prompt` — re-export фасад, инжектирует блок в system prompt plain-RAG-пути;
   `compose_state_block_only` подмешивает блок после `_resolve_prompt` в pipeline-пути.
 - `GET /api/settings/campaigns/{id}/effective-context?chat_id=...` — debug endpoint без retrieval/LLM.
+
+### Context Engine + Auto-Drift + Auto-Draft (фазы 1-5)
+
+Полная документация: `context/context-engine.md`.
+
+**Назначение.** Стабилизация сборки контекста + фоновое обновление Campaign State.
+
+**Слои system_prompt (снизу вверх, см. Campaign State diagram выше):**
+
+1. Domain system prompt (статика, не меняется)
+2. Active Campaign State (`compile_campaign_state`, budget ~800 tok)
+3. **scene_state** — два под-пространства в `chat.metadata.scene_state`:
+   - `explicit` — патчи от LLM через `update_scene_state` tool (host-controlled merge)
+   - `drift._hints` — hints от `DriftDetector` (малая модель, low-confidence)
+4. Recent chat history
+5. Prefill RAG evidence (только если `policy==grounded && campaign_id`)
+6. Текущее сообщение пользователя
+
+**Фоновый drift loop:**
+
+```
+chat.py plain_stream final event
+  └─ drift_loop.trigger_for_chat(chat_id)                  # chat.py:1130
+       ├─ Redis SETNX "drift:cooldown:{chat_id}" EX 30     # loop.py:33
+       ├─ SADD "drift:dirty" {chat_id}                      # loop.py:36
+       └─ asyncio.create_task(_run_detect)
+            └─ DriftDetector.detect                         # drift.py:51
+                 ├─ settings_service.get_active_drift_model(db)
+                 ├─ Message.last(10) + compile_campaign_state
+                 ├─ HostSidecarDriftProvider → POST pdf-sidecar:8765/drift
+                 │     (QVikhr-3-1.7B-Instruct-noreasoning, Metal GPU)
+                 │     ← {hints: [{fact, contradicts_field, adds_field, confidence, msg_ref}]}
+                 ├─ filter confidence >= 0.5
+                 └─ write_drift(chat_id, hints) → chat.metadata.scene_state.drift._hints
+                      └─ (если hints есть) CampaignStateDrafter.plan_draft
+                           ├─ hash_hints(hints) → drift_hash
+                           ├─ GET draft:campaign:{cid}:chat:{chatid}
+                           │   └─ если hash совпал → skip
+                           ├─ large model.generate_json(system+user)
+                           │   system: "только state_patch ops, NO schema, NO files"
+                           │   ← {"state_patch": [...], "summary": "..."}
+                           ├─ filter ops по whitelist (replace_single / clear_single /
+                           │     add_list_item / update_list_item /
+                           │     resolve_list_item / remove_list_item)
+                           └─ SETEX draft:campaign:{cid}:chat:{chatid} 10800
+```
+
+**UI карточка `ContextDraftCard`** (`frontend/src/components/chat/ContextDraftCard.tsx`):
+
+- Polling `GET /api/chats/{id}/context-draft` → если draft непустой, badge «Возможные обновления» в `ChatContextBar`.
+- Кнопка **Применить** → `POST .../context-draft/accept` → `campaign_state_value_service.apply_patch` + `clear_drift` + AuditLog `context_draft_accepted`.
+- Кнопка **Отклонить** → `POST .../context-draft/reject` → удаляет draft, очищает drift, AuditLog `context_draft_rejected`.
+- Кнопка **Применить и проверить файлы** → `POST .../context-draft/check-files` → создаёт Update Mode session через `UpdateModeExecutor.start_from_proposal(state_patch_context=draft["state_patch"])` (Phase 5).
+
+**Открытые вопросы** по этой подсистеме: `context/open-questions.md` — глобальная настройка вкл/выкл, визуализация фона для пользователя, ускорение pipeline, саммаризация контекста.
 
 ### Potentially Stale (Stage 7)
 

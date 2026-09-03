@@ -841,17 +841,20 @@ export class MercerAPI extends HttpClient {
   }
 
   async getModelHealth(
-    kind: 'generation' | 'embedding' | 'rerank',
+    kind: 'generation' | 'embedding' | 'rerank' | 'drift',
     modelId: string,
   ): Promise<T.ModelHealthState> {
     let res: T.ModelCheckResult;
     try {
-      res =
-        kind === 'generation'
-          ? await this.checkGenerationModel(modelId)
-          : kind === 'embedding'
-          ? await this.checkEmbeddingModel(modelId)
-          : await this.checkRerankModel(modelId);
+      if (kind === 'drift') {
+        res = await this.checkDriftModel(modelId);
+      } else if (kind === 'generation') {
+        res = await this.checkGenerationModel(modelId);
+      } else if (kind === 'embedding') {
+        res = await this.checkEmbeddingModel(modelId);
+      } else {
+        res = await this.checkRerankModel(modelId);
+      }
     } catch (err) {
       return {
         status: 'fail',

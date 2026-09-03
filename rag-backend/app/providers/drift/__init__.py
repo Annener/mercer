@@ -3,8 +3,8 @@
 A drift provider compares recent chat messages against the current
 campaign state and emits *drift hints* — facts that contradict or add to
 the state. The provider is intentionally small/fast: by default we use
-Qwen2.5-3B-Instruct (Q4_K_M) running inside pdf-sidecar, but the same
-interface supports an OpenAI-compatible external endpoint.
+QVikhr-3-1.7B-Instruct-noreasoning (Q4_K_M) running inside pdf-sidecar,
+but the same interface supports an OpenAI-compatible external endpoint.
 """
 from __future__ import annotations
 

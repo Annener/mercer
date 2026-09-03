@@ -20,6 +20,10 @@
 | `0010_message_sources` | `0009_retrieval_tool_settings` | `Message.sources` (JSONB) — persistent source citations для assistant messages |
 | `0011_chat_metadata` | `0010_message_sources` | `Chat.metadata` (JSONB) — inline scene-state; `Chat.context_update_mode` (BOOL) — флаг model-proposed context updates |
 | `0012_grounded_knobs` | `0011_chat_metadata` | Bump `retrieval.top_k` (10 → 20) и `retrieval.evidence_token_budget` (4000 → 6000) для grounded agent-assistant |
+| `0013_state_values_composite_pkey` | `0012_grounded_knobs` | Schema bug fix: PK `campaign_state_values` (был single-column `version_id`) → composite `(version_id, field_id)`. Семантика: одна строка на (version, field), корректно работает `apply_initial` с multi-row INSERT. |
+| `0014_chat_rag_prefill_enabled` | `0013_state_values_composite_pkey` | `Chat.rag_prefill_enabled` (Bool, default false) — per-chat toggle для Sprint 2 prefill RAG. True = legacy grounded (retrieval ДО agent loop + tool_choice=required). False = model-decides workflow. |
+| `0015_drift_models` | `0014_chat_rag_prefill_enabled` | Таблица `drift_models` (Phase 2a context-engine). UNIQUE `model_id`, partial UNIQUE `WHERE is_active = true` (`uq_drift_models_active`). Seed: `drift-local-default` (host_sidecar, QVikhr-3-1.7B-Instruct-noreasoning-q4_k_m, активна по умолчанию). |
+| `0016_drift_model_qvikhr` | `0015_drift_models` | Переключение seed drift-модели с Qwen2.5-3B-Instruct на QVikhr-3-1.7B-Instruct-noreasoning (меньше размер, лучше RU, быстрее на Metal GPU). WHERE-clause на `model_name` гарантирует идемпотентность. |
 
 > Имя файла миграции и `revision` могут расходиться (например, `0004_fix_sent_full_document_ids_jsonb.py` использует revision `0004_fulldoc_jsonb_fix`). Источник истины — `revision = "..."` внутри файла.
 
@@ -108,8 +112,18 @@ Chat (1) ──► (N) PipelineDecision
 | `retrieval.max_rounds_assistive` | retrieval | int | 0009 |
 | `retrieval.evidence_token_budget` | retrieval | int | 0009 (bumped 4000 → 6000 в 0012 для grounded agent-assistant) |
 | `retrieval.top_k` | retrieval | int | 0001 (bumped 10 → 20 в 0012 для grounded agent-assistant) |
+| `chat.campaign_state_token_budget` | chat | int | 0009 (Stage 6 — token budget для compiled Campaign State block; default 800) |
 
 > `retrieval.policy` хранится как строка `"grounded" | "assistive"` и преобразуется в `RetrievalPolicy` enum в `app/services/retrieval_tool_settings.py`.
+
+**Ключи, читаемые кодом, но без дефолта в сиде** (fallback в `app/services/context_engine/drift.py`):
+
+| key | Тип | Default в коде | Где читается |
+|---|---|---|---|
+| `drift.confidence_threshold` | float | 0.5 | `context_engine/drift.py:65` — порог для отсечения drift hints |
+| `drift.max_messages` | int | 10 | `context_engine/drift.py:66` — сколько последних сообщений читать |
+
+Cooldown (30 сек) и TTL draft (3 часа) **захардкожены** в `context_engine/loop.py:32` (`_COOLDOWN_SECONDS`) и `context_engine/draft.py:47` (`_DRAFT_TTL_SECONDS`) — не вынесены в `platform_settings`. См. `context/open-questions.md` п.1 (глобальная настройка drift loop вкл/выкл).
 
 ### `generation_models`
 - PK: `id` (UUID). `model_id` (String, UNIQUE) — идентификатор модели
@@ -128,6 +142,23 @@ Chat (1) ──► (N) PipelineDecision
 ### `rerank_models`
 - Аналогична `generation_models`, но для реранкинга
 - `is_active` — одна активная (UNIQUE-индекс `WHERE is_active = true`)
+
+### `drift_models` (Context Engine Phase 2a, миграция `0015`)
+- PK: `id` (UUID)
+- `model_id` (String 128, UNIQUE) — например `"drift-local-default"`
+- `provider` (String 64) — `"host_sidecar" | "openai_compatible"`
+- `base_url` (String 512, nullable) — URL провайдера (для `host_sidecar` дефолт `http://host.docker.internal:8765`)
+- `model_name` (String 256) — например `"qvikhr-3-1.7b-instruct-noreasoning-q4_k_m"`
+- `encrypted_api_key` (Text, nullable) — для внешних провайдеров
+- `is_active` (Bool) — одна активная (partial UNIQUE-индекс `uq_drift_models_active WHERE is_active = true`)
+- `enabled` (Bool, default true) — доступна ли для выбора
+- `display_name` (String 256, nullable) — `"QVikhr-3-1.7B (local)"` для UI
+- `timeout_seconds` (Integer, default 60)
+- `created_at`, `updated_at`
+- Seed: `drift-local-default` (`host_sidecar`, `qvikhr-3-1.7b-instruct-noreasoning-q4_k_m`, активна по умолчанию)
+- CRUD: встроен в `app/services/settings_service.py:395-470` (`list_drift_models`, `create_drift_model`, `update_drift_model`, `delete_drift_model`, `activate_drift_model`, `deactivate_drift_model`, `get_active_drift_model`). Не вынесен в отдельный `drift_model_service.py`.
+- Settings UI: `frontend/src/components/settings/tabs/ModelsTab.tsx` → секция «Drift-модели».
+- Миграция `0016_drift_model_qvikhr` переключила seed `Qwen2.5-3B → QVikhr-3-1.7B-Instruct-noreasoning` (идемпотентный UPDATE с WHERE-clause `model_name = 'qwen2.5-3b-instruct-q4_k_m'`, downgrade возвращает обратно).
 
 ### `vaults`
 - PK: `id` (UUID). `vault_id` (String(128), UNIQUE) — например `"dnd-vault"`
@@ -241,8 +272,22 @@ Chat (1) ──► (N) PipelineDecision
   - структура: `{pipeline_id, pipeline_name, reasoning, confirm_token, query, expires_at}`
 - `full_document_mode_enabled` (Bool, default false) — 0003
 - `sent_full_document_ids` (JSONB list, default `[]`) — 0003 (тип JSONB закреплён 0004)
-- `metadata` (JSONB, default `{}`) — 0011. Inline scene-state память чата, мутируется через `update_scene_state` tool. Структура: `{"scene_state": {...}}`. Доступ через `chat.metadata_json` в ORM (алиас для колонки `metadata`).
+- `metadata` (JSONB, default `{}`) — 0011. Inline scene-state память чата, мутируется через `update_scene_state` tool. Структура:
+  ```json
+  {
+    "scene_state": {
+      "explicit": {"current_location": "...", "active_npcs": [...]},
+      "drift": {
+        "_hints": [{"fact": "...", "contradicts_field": null, "adds_field": "current_allies", "msg_ref": "1", "confidence": 0.85}],
+        "_ts": "2026-09-01T18:00:00Z",
+        "_chat_id": "<uuid>"
+      }
+    }
+  }
+  ```
+  Под-пространство `explicit` пишется LLM через `update_scene_state` tool (host-controlled merge). Под-пространство `drift._hints` пишется `DriftDetector` (auto, low-confidence, max 8 hints в prompt). Доступ через `chat.metadata_json` в ORM (алиас для колонки `metadata`).
 - `context_update_mode` (Bool, default false) — 0011. Master switch для `propose_context_update` tool. Когда true, agent loop может генерировать proposal-ы на обновление Campaign State / vault files, которые пользователь подтверждает в UI.
+- `rag_prefill_enabled` (Bool, default false) — 0014. Per-chat toggle для Sprint 2 prefill RAG. True = legacy grounded (retrieval ДО agent loop + tool_choice=required в round 0). False = model-decides workflow (по умолчанию).
 - `created_at`, `updated_at`
 
 ### `messages`
@@ -292,6 +337,12 @@ Chat (1) ──► (N) PipelineDecision
 | `pipeline_router_failure` | Ошибка pipeline router |
 | `chat.agent_loop` | Каждый чат-турн с tool-циклом: `payload` содержит `rounds`, `tool_calls_made`, `policy` (Stage 8.7) |
 | `campaign_state_field_cascade_purged` | Каскадное удаление поля: `from_state_version`, `to_state_version`, `config_version`, `field_id`, `field_key`, `purged_values`, `purged_list_items` |
+| `campaign_state_initial_propose_fields_applied` | Stage 3.v2 apply с accepted suggested_fields: `existing_fields_count`, `suggested_fields_total`, `suggested_fields_accepted`, `suggested_fields_rejected`, `total_fields_after_apply` |
+| `update_mode.apply_schema` | Sprint 3 успех schema apply: `applied_op_indexes`, `failed_op_indexes`, `new_config_version`, `rolled_back` |
+| `update_mode.apply_aborted_schema` | Sprint 3 abort с rollback: `failed_field_op_indexes`, `failed_reasons` |
+| `context_draft_accepted` | ContextDraftCard Accept: `campaign_id`, `applied_state_version`, `operations_count` |
+| `context_draft_rejected` | ContextDraftCard Reject: `campaign_id` |
+| `context_draft_check_files` | ContextDraftCard Check-files: `session_id`, `campaign_id` (Phase 5) |
 
 ---
 
@@ -302,6 +353,7 @@ Chat (1) ──► (N) PipelineDecision
 | `generation_models` | `uq_generation_models_model_id`, partial `WHERE is_active` | гарантирует уникальность `model_id` и одну активную модель |
 | `embedding_models` | `uq_embedding_models_model_id` | уникальность `model_id` |
 | `rerank_models` | `uq_rerank_models_model_id`, partial `WHERE is_active` | аналогично generation |
+| `drift_models` | `uq_drift_models_model_id`, partial `WHERE is_active` | аналогично generation, миграция 0015 |
 | `vaults` | `uq_vaults_vault_id`, `idx_vaults_domain`, `idx_vaults_enabled` | по `domain_id`; по `enabled` |
 | `documents` | `idx_documents_vault`, `idx_documents_status` | по `vault_id`; по `(vault_id, status)` |
 | `tags` | `idx_tags_domain`, `idx_tags_campaign`, `uq_tag_name_domain` | по `domain_id`; по `campaign_id` |

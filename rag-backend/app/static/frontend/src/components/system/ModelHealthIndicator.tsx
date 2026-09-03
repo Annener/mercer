@@ -4,6 +4,7 @@ import { clsx } from '@/components/ui';
 import { api } from '@/api/client';
 import { useSettingsStore } from '@/stores';
 import type {
+  DriftModel,
   EmbeddingModel,
   GenerationModel,
   ModelHealthState,
@@ -11,13 +12,14 @@ import type {
   RerankModel,
 } from '@/api/types';
 
-export type HealthKind = 'generation' | 'embedding' | 'rerank' | 'sidecar';
+export type HealthKind = 'generation' | 'embedding' | 'rerank' | 'sidecar' | 'drift';
 
 const KIND_LABELS: Record<HealthKind, string> = {
   generation: 'Generation',
   embedding: 'Embedding',
   rerank: 'Reranker',
   sidecar: 'Sidecar',
+  drift: 'Drift',
 };
 
 const REFRESH_MS = 60_000;
@@ -50,7 +52,7 @@ export function ModelHealthIndicator({ kind }: ModelHealthIndicatorProps) {
   const openSettings = useSettingsStore((s) => s.openSettings);
   const queryClient = useQueryClient();
 
-  const listKind: 'generation' | 'embedding' | 'rerank' | null =
+  const listKind: 'generation' | 'embedding' | 'rerank' | 'drift' | null =
     kind === 'sidecar' ? null : kind;
 
   const statusQuery = useQuery<PlatformStatus>({
@@ -67,12 +69,15 @@ export function ModelHealthIndicator({ kind }: ModelHealthIndicatorProps) {
     }
   }, [statusQuery.data]);
 
-  const modelsQuery = useQuery<GenerationModel[] | EmbeddingModel[] | RerankModel[]>({
+  const modelsQuery = useQuery<
+    GenerationModel[] | EmbeddingModel[] | RerankModel[] | DriftModel[]
+  >({
     queryKey: ['models', listKind],
     queryFn: () => {
       if (listKind === 'generation') return api.getGenerationModels();
       if (listKind === 'embedding') return api.getEmbeddingModels();
       if (listKind === 'rerank') return api.getRerankModels();
+      if (listKind === 'drift') return api.getDriftModels();
       return Promise.resolve([] as GenerationModel[]);
     },
     enabled: listKind !== null,
@@ -200,11 +205,16 @@ export function ModelHealthIndicator({ kind }: ModelHealthIndicatorProps) {
 
 function pickTargetModelId(
   kind: HealthKind,
-  list: GenerationModel[] | EmbeddingModel[] | RerankModel[] | undefined,
+  list:
+    | GenerationModel[]
+    | EmbeddingModel[]
+    | RerankModel[]
+    | DriftModel[]
+    | undefined,
 ): string | null {
   if (!list || list.length === 0) return null;
 
-  if (kind === 'generation' || kind === 'rerank') {
+  if (kind === 'generation' || kind === 'rerank' || kind === 'drift') {
     const found = list.find((m) => 'is_active' in m && (m as { is_active?: boolean }).is_active);
     if (found) return (found as { model_id: string }).model_id;
     return list[0] ? (list[0] as { model_id: string }).model_id : null;
@@ -269,6 +279,8 @@ function resolveAvailability(input: ResolveInput): AvailabilityInfo {
           ? 'Активная генеративная модель не выбрана. Откройте Настройки → Модели.'
           : kind === 'embedding'
           ? 'Нет включённой embedding-модели. Откройте Настройки → Модели.'
+          : kind === 'drift'
+          ? 'Активная drift-модель не выбрана. Откройте Настройки → Модели.'
           : 'Активная rerank-модель не выбрана. Откройте Настройки → Модели.',
     };
   }

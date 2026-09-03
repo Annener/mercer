@@ -1694,7 +1694,7 @@ function CreateDriftModelModal({ open, onClose, onCreated }: CreateDriftModelMod
   const [modelId, setModelId] = useState('');
   const [provider, setProvider] = useState('host_sidecar');
   const [baseUrl, setBaseUrl] = useState(DEFAULT_DRIFT_SIDECAR_URL);
-  const [modelName, setModelName] = useState('qwen2.5-3b-instruct-q4_k_m');
+  const [modelName, setModelName] = useState('qvikhr-3-1.7b-instruct-noreasoning-q4_k_m');
   const [displayName, setDisplayName] = useState('');
   const [apiKey, setApiKey] = useState('');
   const [timeout, setTimeout] = useState(60);
@@ -1706,7 +1706,7 @@ function CreateDriftModelModal({ open, onClose, onCreated }: CreateDriftModelMod
     setModelId('');
     setProvider('host_sidecar');
     setBaseUrl(DEFAULT_DRIFT_SIDECAR_URL);
-    setModelName('qwen2.5-3b-instruct-q4_k_m');
+    setModelName('qvikhr-3-1.7b-instruct-noreasoning-q4_k_m');
     setDisplayName('');
     setApiKey('');
     setTimeout(60);

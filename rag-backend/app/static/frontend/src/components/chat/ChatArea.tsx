@@ -542,6 +542,7 @@ export function ChatArea() {
           <ModelHealthIndicator kind="generation" />
           <ModelHealthIndicator kind="embedding" />
           <ModelHealthIndicator kind="rerank" />
+          <ModelHealthIndicator kind="drift" />
           <ModelHealthIndicator kind="sidecar" />
         </div>
         <button

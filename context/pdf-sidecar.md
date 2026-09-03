@@ -134,6 +134,46 @@ Sortable by `relevance_score` desc. Параметр `batch_size=8` — опти
 
 Принимает как строку (`{"input": "text"}`), так и список строк (`{"input": ["t1", "t2"]}`) — совместимо с OpenAI `POST /embeddings`.
 
+### `POST /drift` *(добавлено в v6.0, v6.1: QVikhr default)*
+
+Endpoint для фонового drift detection (Context Engine Phase 2a). Малая локальная LLM сравнивает последние N сообщений чата с активным Campaign State и возвращает hints о расхождениях.
+
+**Request:**
+```json
+{
+  "model": "qvikhr-3-1.7b-instruct-noreasoning-q4_k_m",
+  "messages": [{"role": "user", "content": "..."}],
+  "current_state": "## Текущая локация\nПорт Соляных Врат\n...",
+  "schema_hint": null
+}
+```
+
+**Response:**
+```json
+{
+  "hints": [
+    {
+      "fact": "Дракон помирился с группой",
+      "contradicts_field": null,
+      "adds_field": "current_allies",
+      "msg_ref": "1",
+      "confidence": 0.85
+    }
+  ]
+}
+```
+
+**Параметры контекста:**
+- `temperature=0.3` (рекомендация model card QVikhr).
+- `response_format={"type":"json_object"}`.
+- `max_tokens=512`.
+- Ленивая загрузка GGUF модели при первом запросе.
+- Metal GPU на macOS (`DRIFT_FORCE_CPU=0` по умолчанию).
+
+**Health check:** `GET /health` возвращает `"drift_loaded": "True|False"`.
+
+Подробности: см. `context/context-engine.md` (Phase 2b).
+
 ---
 
 ## Переменные окружения
@@ -147,6 +187,11 @@ Sortable by `relevance_score` desc. Параметр `batch_size=8` — опти
 | `EMBEDDER_MODEL_ID` | `BAAI/bge-m3` | HuggingFace model id эмбеддера |
 | `EMBEDDER_FORCE_CPU` | `0` | `1` — принудительно CPU |
 | `EMBED_BATCH_SIZE` | `32` | Размер батча при эмбеддинге |
+| `DRIFT_MODEL_PATH` | — | Абсолютный путь к `.gguf` файлу drift-модели. Если не задан — `<sidecar_dir>/models/<DRIFT_MODEL_NAME>.gguf`. |
+| `DRIFT_MODEL_NAME` | `qvikhr-3-1.7b-instruct-noreasoning-q4_k_m` | Имя файла drift-модели без расширения |
+| `DRIFT_MODEL_CTX` | `4096` | Размер контекста llama.cpp |
+| `DRIFT_MODEL_THREADS` | `cpu_count` | Количество CPU-потоков llama.cpp |
+| `DRIFT_FORCE_CPU` | `0` | `1` — принудительно CPU (по умолчанию Metal GPU на macOS M-серии) |
 
 ---
 

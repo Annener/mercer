@@ -12,10 +12,13 @@
 #   DRIFT_MODEL_PATH    — абсолютный путь к .gguf файлу drift-модели
 #                         (по умолчанию: pdf-sidecar/models/<DRIFT_MODEL_NAME>.gguf).
 #   DRIFT_MODEL_NAME    — имя файла drift-модели без расширения
-#                         (по умолчанию: qwen2.5-3b-instruct-q4_k_m).
+#                         (по умолчанию: qvikhr-3-1.7b-instruct-noreasoning-q4_k_m).
 #   DRIFT_MODEL_CTX     — размер контекста llama.cpp (по умолчанию: 4096).
 #   DRIFT_MODEL_THREADS — количество CPU-потоков llama.cpp (по умолчанию: cpu_count).
 #   DRIFT_FORCE_CPU     — принудительно использовать CPU (0 = GPU если доступен).
+#                         По умолчанию: 0 на macOS (Metal GPU обязателен).
+#                         Установите в 1 для fallback на CPU, если Metal
+#                         подвешивает UI (kernel_task > 80%).
 
 set -euo pipefail
 
@@ -39,11 +42,17 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
     fi
 fi
 
-# Drift-модель по умолчанию тоже форсируем в CPU на macOS — Metal под llama-cpp
-# часто ведёт себя непредсказуемо на M-серии, и drift-модель на 3B токенизируется
-# за миллисекунды даже на CPU. Переопределите DRIFT_FORCE_CPU=0 для экспериментов.
+# Drift-модель по умолчанию работает на Metal GPU на macOS M-серии — модель
+# компактная (~1.1 GB Q4_K_M), llama-cpp-metal на M3 стабилен и inference
+# вызывается редко (cooldown 30s). Если Metal неожиданно вешает систему
+# (kernel_task > 80%) — выставьте DRIFT_FORCE_CPU=1 вручную для fallback на CPU.
 if [[ "$(uname -s)" == "Darwin" ]]; then
-    export DRIFT_FORCE_CPU="${DRIFT_FORCE_CPU:-1}"
+    export DRIFT_FORCE_CPU="${DRIFT_FORCE_CPU:-0}"
+    if [[ "${DRIFT_FORCE_CPU}" == "1" ]]; then
+        echo "[sidecar] macOS: drift model forced to CPU (DRIFT_FORCE_CPU=1)"
+    else
+        echo "[sidecar] macOS: drift model will use Metal GPU (DRIFT_FORCE_CPU=0)"
+    fi
 fi
 
 # --- Проверки ---
@@ -100,7 +109,7 @@ echo "[sidecar] Started (PID ${SIDECAR_PID})"
 echo "[sidecar] Health: http://localhost:${PDF_SIDECAR_PORT}/health"
 echo "[sidecar] Logs:   tail -f ${LOGFILE}"
 
-DRIFT_MODEL_PATH="${DRIFT_MODEL_PATH:-${SCRIPT_DIR}/models/${DRIFT_MODEL_NAME:-qwen2.5-3b-instruct-q4_k_m}.gguf}"
+DRIFT_MODEL_PATH="${DRIFT_MODEL_PATH:-${SCRIPT_DIR}/models/${DRIFT_MODEL_NAME:-qvikhr-3-1.7b-instruct-noreasoning-q4_k_m}.gguf}"
 if [[ -f "${DRIFT_MODEL_PATH}" ]]; then
     echo "[sidecar] Drift model: ${DRIFT_MODEL_PATH}"
 else

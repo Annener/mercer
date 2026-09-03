@@ -1,16 +1,17 @@
 """
 drift.py — POST /drift endpoint для pdf-sidecar (Phase 2a context-engine).
 
-Использует локальную Qwen2.5-3B-Instruct (Q4_K_M, GGUF) через
+Использует локальную QVikhr-3-1.7B-Instruct-noreasoning (Q4_K_M, GGUF) через
 ``llama-cpp-python``. Модель лениво загружается при первом запросе
 и кэшируется в глобальном ``_state``. При отсутствии ``.gguf`` файла
 эндпоинт возвращает ``503 Service Unavailable`` с подсказкой про
-``DRIFT_MODEL_PATH``.
+``DRIFT_MODEL_PATH``. На macOS M-серии по умолчанию используется Metal
+GPU (``DRIFT_FORCE_CPU=0``); fallback на CPU — через env-флаг.
 
 Контракт:
   POST /drift
   {
-    "model": "qwen2.5-3b-instruct-q4_k_m",
+    "model": "qvikhr-3-1.7b-instruct-noreasoning-q4_k_m",
     "messages": [{"role": "user"|"assistant", "content": "..."}],
     "current_state": "<compiled campaign state block>",
     "schema_hint": "<optional field description>"
@@ -34,6 +35,9 @@ from pydantic import BaseModel, Field
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+# Алиас для app.py — он импортирует ``drift_router`` по имени.
+# Тесты по-прежнему могут использовать ``drift.router``.
+drift_router = router
 
 
 _SYSTEM_PROMPT = (
@@ -52,7 +56,7 @@ _SYSTEM_PROMPT = (
 
 class DriftRequest(BaseModel):
     model: str = Field(default_factory=lambda: os.getenv(
-        "DRIFT_MODEL_NAME", "qwen2.5-3b-instruct-q4_k_m"
+        "DRIFT_MODEL_NAME", "qvikhr-3-1.7b-instruct-noreasoning-q4_k_m"
     ))
     messages: list[dict[str, str]]
     current_state: str
@@ -63,7 +67,9 @@ class DriftHint(BaseModel):
     fact: str
     contradicts_field: str | None = None
     adds_field: str | None = None
-    msg_ref: str | None = None
+    # QVikhr-3-1.7B отдаёт msg_ref как int (1, 2, …), Qwen2.5 — как str ("msg-1").
+    # Принимаем оба варианта — нормализуем в str ниже в detect_drift().
+    msg_ref: str | int | None = None
     confidence: float = 0.0
 
 
@@ -95,7 +101,7 @@ def _resolve_model_path() -> Path:
             "DRIFT_MODEL_PATH points to non-existent file: %s — falling back to default", p
         )
 
-    name = os.getenv("DRIFT_MODEL_NAME", "qwen2.5-3b-instruct-q4_k_m")
+    name = os.getenv("DRIFT_MODEL_NAME", "qvikhr-3-1.7b-instruct-noreasoning-q4_k_m")
     default = Path(__file__).parent / "models" / f"{name}.gguf"
     return default.resolve()
 
@@ -151,7 +157,12 @@ def _complete_sync(model, messages: list[dict[str, str]], max_tokens: int) -> st
     response = model.create_chat_completion(
         messages=messages,
         max_tokens=max_tokens,
-        temperature=0.0,
+        # 0.3 — рекомендация model card QVikhr-3-1.7B-Instruct-noreasoning
+        # (https://huggingface.co/Vikhrmodels/QVikhr-3-1.7B-Instruction-noreasoning).
+        # response_format={"type":"json_object"} стабилизирует структуру
+        # вывода; небольшая вариативность внутри JSON-полей для drift-хинтов
+        # приемлема (хинты не парсятся по regex).
+        temperature=0.3,
         response_format={"type": "json_object"},
     )
     return response["choices"][0]["message"]["content"] or ""
@@ -196,9 +207,16 @@ async def detect_drift(req: DriftRequest) -> DriftResponse:
         if not isinstance(h, dict):
             continue
         try:
-            hints.append(DriftHint(**h))
+            hint = DriftHint(**h)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Drift hint rejected: %s (%r)", exc, h)
+            continue
+        # Нормализация: msg_ref может быть int (QVikhr) или str (Qwen2.5).
+        # Downstream (rag-backend/drift.py:222) ожидает строковый role/content,
+        # поэтому приводим к str для единообразия в JSON-ответе.
+        if hint.msg_ref is not None and not isinstance(hint.msg_ref, str):
+            hint.msg_ref = str(hint.msg_ref)
+        hints.append(hint)
 
     logger.info("DRIFT hints=%d model=%s", len(hints), req.model)
     return DriftResponse(hints=hints)

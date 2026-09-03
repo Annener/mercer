@@ -43,6 +43,12 @@ v6.0:
     загрузка при первом запросе, настраивается через DRIFT_MODEL_PATH /
     DRIFT_MODEL_NAME / DRIFT_MODEL_CTX / DRIFT_MODEL_THREADS /
     DRIFT_FORCE_CPU. /health дополнен флагом drift_loaded.
+
+v6.1:
+  - Drift-модель по умолчанию заменена на QVikhr-3-1.7B-Instruct-noreasoning
+    (Q4_K_M, ~1.1 GB). На macOS M-серии используется Metal GPU
+    (DRIFT_FORCE_CPU=0 по умолчанию). Inference — при temperature=0.3
+    согласно рекомендации model card QVikhr.
 """
 from __future__ import annotations
 

@@ -70,10 +70,10 @@ def upgrade() -> None:
             gen_random_uuid(),
             'drift-local-default',
             'host_sidecar',
-            'qwen2.5-3b-instruct-q4_k_m',
+            'qvikhr-3-1.7b-instruct-noreasoning-q4_k_m',
             true,
             true,
-            'Qwen2.5-3B (local)'
+            'QVikhr-3-1.7B (local)'
         )
         """
     )

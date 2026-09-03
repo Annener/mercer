@@ -45,8 +45,13 @@ brew install poppler
 cd pdf-sidecar
 chmod +x install.sh start.sh stop.sh status.sh
 
-# Установит venv, requirements.txt и detectron2
+# Установит venv, requirements.txt, detectron2 и скачает модели (reranker, embedder, drift)
 ./install.sh
+
+# Опционально — пропустить ненужные модели:
+#   SKIP_RERANKER=1 ./install.sh
+#   SKIP_EMBEDDER=1 ./install.sh
+#   SKIP_DRIFT=1    ./install.sh
 ```
 
 > **Примечание по detectron2:**
@@ -81,12 +86,14 @@ chmod +x install.sh start.sh stop.sh status.sh
   "status": "ok",
   "service": "pdf-sidecar",
   "reranker_loaded": "True",
-  "embedder_loaded": "True"
+  "embedder_loaded": "True",
+  "drift_loaded": "True"
 }
 ```
 
-`reranker_loaded` / `embedder_loaded` — `"True"` / `"False"` строки (не bool).
+`reranker_loaded` / `embedder_loaded` / `drift_loaded` — `"True"` / `"False"` строки (не bool).
 Сервис может отвечать `/health` даже если модели ещё не загружены (lifespan в процессе warmup'а).
+`drift_loaded` поднимается до `True` лениво — при первом POST /drift.
 
 ### `POST /parse`
 Content-Type: `multipart/form-data`
@@ -181,12 +188,13 @@ base_url: http://host.docker.internal:8765
 
 ```
 pdf-sidecar/
-├── app.py            — FastAPI HTTP-сервер (/parse, /parse/stream, /rerank, /embeddings)
+├── app.py            — FastAPI HTTP-сервер (/parse, /parse/stream, /rerank, /embeddings, /drift)
 ├── parser.py         — парсер (unstructured → унифицированный формат, parallel batch)
 ├── reranker.py       — CrossEncoder BAAI/bge-reranker-v2-m3
 ├── embedder.py       — SentenceTransformer BAAI/bge-m3 (OpenAI-compatible)
+├── drift.py          — POST /drift (Phase 2a context-engine, QVikhr-3-1.7B через llama-cpp-python)
 ├── requirements.txt  — Python-зависимости
-├── install.sh        — скрипт установки venv + deps + прогрев моделей
+├── install.sh        — скрипт установки venv + deps + прогрев моделей + скачивание .gguf
 ├── start.sh          — запуск в фоне (nohup). Автоматически выставляет
 │                       PYTHONPATH=.. для shared_contracts.
 ├── stop.sh           — остановка
@@ -197,6 +205,8 @@ pdf-sidecar/
 │   ├── requirements.txt
 │   ├── .venv/
 │   └── logs/
+├── models/           — локальные модели (создаётся install.sh)
+│   └── qvikhr-3-1.7b-instruct-noreasoning-q4_k_m.gguf
 ├── README.md         — эта документация
 └── logs/             — логи (создаётся автоматически)
     └── sidecar.log

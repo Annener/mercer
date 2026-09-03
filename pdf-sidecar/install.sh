@@ -11,6 +11,7 @@
 #         PYTHON=/usr/local/bin/python3.13 ./install.sh  # указать явно если нужно
 #         SKIP_RERANKER=1 ./install.sh                   # пропустить загрузку reranker-модели
 #         SKIP_EMBEDDER=1 ./install.sh                   # пропустить загрузку embedder-модели
+#         SKIP_DRIFT=1 ./install.sh                      # пропустить загрузку drift-модели (QVikhr)
 
 set -euo pipefail
 
@@ -19,6 +20,7 @@ VENV_DIR="${SCRIPT_DIR}/.venv"
 PYTHON="${PYTHON:-python3.13}"
 SKIP_RERANKER="${SKIP_RERANKER:-0}"
 SKIP_EMBEDDER="${SKIP_EMBEDDER:-0}"
+SKIP_DRIFT="${SKIP_DRIFT:-0}"
 
 # ---------------------------------------------------------------------------
 # Статусы шагов для итоговой таблицы
@@ -32,6 +34,7 @@ STEP_SYSTEM="OK"
 STEP_GPU="OK"
 STEP_RERANKER="OK"
 STEP_EMBEDDER="OK"
+STEP_DRIFT="OK"
 
 STEP_PYTHON_NOTE=""
 STEP_VENV_NOTE=""
@@ -41,6 +44,7 @@ STEP_SYSTEM_NOTE=""
 STEP_GPU_NOTE=""
 STEP_RERANKER_NOTE=""
 STEP_EMBEDDER_NOTE=""
+STEP_DRIFT_NOTE=""
 
 # ---------------------------------------------------------------------------
 # Вспомогательные функции
@@ -63,14 +67,15 @@ print_summary() {
     echo "┌─────────────────────────────────────────────────────────────┐"
     echo "│  Итог установки pdf-sidecar                              │"
     echo "├─────────────────────────────────────────────────────────────┤"
-    printf "│  [1/8] Python          %s  %s\n" "$(step_icon "${STEP_PYTHON}")" "${STEP_PYTHON_NOTE}"
-    printf "│  [2/8] venv            %s  %s\n" "$(step_icon "${STEP_VENV}")" "${STEP_VENV_NOTE}"
-    printf "│  [3/8] requirements    %s  %s\n" "$(step_icon "${STEP_DEPS}")" "${STEP_DEPS_NOTE}"
-    printf "│  [4/8] detectron2      %s  %s\n" "$(step_icon "${STEP_DETECTRON}")" "${STEP_DETECTRON_NOTE}"
-    printf "│  [5/8] system deps     %s  %s\n" "$(step_icon "${STEP_SYSTEM}")" "${STEP_SYSTEM_NOTE}"
-    printf "│  [6/8] GPU/accel       %s  %s\n" "$(step_icon "${STEP_GPU}")" "${STEP_GPU_NOTE}"
-    printf "│  [7/8] reranker model  %s  %s\n" "$(step_icon "${STEP_RERANKER}")" "${STEP_RERANKER_NOTE}"
-    printf "│  [8/8] embedder model  %s  %s\n" "$(step_icon "${STEP_EMBEDDER}")" "${STEP_EMBEDDER_NOTE}"
+    printf "│  [1/9] Python          %s  %s\n" "$(step_icon "${STEP_PYTHON}")" "${STEP_PYTHON_NOTE}"
+    printf "│  [2/9] venv            %s  %s\n" "$(step_icon "${STEP_VENV}")" "${STEP_VENV_NOTE}"
+    printf "│  [3/9] requirements    %s  %s\n" "$(step_icon "${STEP_DEPS}")" "${STEP_DEPS_NOTE}"
+    printf "│  [4/9] detectron2      %s  %s\n" "$(step_icon "${STEP_DETECTRON}")" "${STEP_DETECTRON_NOTE}"
+    printf "│  [5/9] system deps     %s  %s\n" "$(step_icon "${STEP_SYSTEM}")" "${STEP_SYSTEM_NOTE}"
+    printf "│  [6/9] GPU/accel       %s  %s\n" "$(step_icon "${STEP_GPU}")" "${STEP_GPU_NOTE}"
+    printf "│  [7/9] reranker model  %s  %s\n" "$(step_icon "${STEP_RERANKER}")" "${STEP_RERANKER_NOTE}"
+    printf "│  [8/9] embedder model  %s  %s\n" "$(step_icon "${STEP_EMBEDDER}")" "${STEP_EMBEDDER_NOTE}"
+    printf "│  [9/9] drift model     %s  %s\n" "$(step_icon "${STEP_DRIFT}")" "${STEP_DRIFT_NOTE}"
     echo "└─────────────────────────────────────────────────────────────┘"
 }
 
@@ -107,7 +112,8 @@ if [[ "${PYTHON_MAJOR}" -eq 3 && "${PYTHON_MINOR}" -ge 14 ]]; then
     STEP_PYTHON="ERROR"
     STEP_PYTHON_NOTE="Python ${PYTHON_VERSION} не поддерживается (3.11–3.13 требуется)"
     STEP_VENV="SKIP" ; STEP_DEPS="SKIP" ; STEP_DETECTRON="SKIP"
-    STEP_SYSTEM="SKIP" ; STEP_GPU="SKIP" ; STEP_RERANKER="SKIP" ; STEP_EMBEDDER="SKIP"
+    STEP_SYSTEM="SKIP" ; STEP_GPU="SKIP"
+    STEP_RERANKER="SKIP" ; STEP_EMBEDDER="SKIP" ; STEP_DRIFT="SKIP"
     print_summary
     exit 1
 fi
@@ -423,6 +429,60 @@ PYEMBEDDER
 fi
 
 # ---------------------------------------------------------------------------
+# [9/9] drift-модель (QVikhr-3-1.7B-Instruct-noreasoning Q4_K_M GGUF)
+# ---------------------------------------------------------------------------
+if [[ "${SKIP_DRIFT}" == "1" ]]; then
+    echo "[9/9] Drift model download — пропущено (SKIP_DRIFT=1)"
+    STEP_DRIFT="SKIP"
+    STEP_DRIFT_NOTE="SKIP_DRIFT=1"
+else
+    DRIFT_REPO_ID="${DRIFT_REPO_ID:-Vikhrmodels/QVikhr-3-1.7B-Instruction-noreasoning-GGUF}"
+    DRIFT_GGUF_FILE="${DRIFT_GGUF_FILE:-QVikhr-3-1.7B-Instruction-noreasoning-Q4_K_M.gguf}"
+    DRIFT_MODEL_DIR="${SCRIPT_DIR}/models"
+    DRIFT_MODEL_NAME_DEFAULT="qvikhr-3-1.7b-instruct-noreasoning-q4_k_m"
+    DRIFT_MODEL_PATH="${DRIFT_MODEL_DIR}/${DRIFT_MODEL_NAME:-${DRIFT_MODEL_NAME_DEFAULT}}.gguf"
+    mkdir -p "${DRIFT_MODEL_DIR}"
+
+    # Явный export — Python-heredoc не получает переменные bash автоматически.
+    export DRIFT_REPO_ID DRIFT_GGUF_FILE DRIFT_MODEL_PATH
+
+    echo "[9/9] Pre-downloading drift model '${DRIFT_REPO_ID}/${DRIFT_GGUF_FILE}'…"
+    echo "      (~1.1 GB, последующие берутся из кэша HF)"
+    if python - << PYDRIFT
+import os
+from pathlib import Path
+from huggingface_hub import hf_hub_download
+
+repo_id = os.environ["DRIFT_REPO_ID"]
+filename = os.environ["DRIFT_GGUF_FILE"]
+target = Path(os.environ["DRIFT_MODEL_PATH"])
+target.parent.mkdir(parents=True, exist_ok=True)
+
+if target.is_file() and target.stat().st_size > 100_000_000:
+    print(f"  ✓ Drift model already present: {target} ({target.stat().st_size:,} bytes)")
+else:
+    cached = hf_hub_download(
+        repo_id=repo_id,
+        filename=filename,
+        local_dir=str(target.parent),
+    )
+    src = Path(cached)
+    if src != target:
+        src.rename(target)
+    print(f"  ✓ Drift model ready: {target} ({target.stat().st_size:,} bytes)")
+PYDRIFT
+    then
+        STEP_DRIFT_NOTE="qvikhr-3-1.7b-instruct-noreasoning-q4_k_m"
+    else
+        echo "      WARNING: не удалось скачать drift-модель."
+        echo "      Проверьте интернет и HuggingFace Hub."
+        echo "      POST /drift будет возвращать 503 пока модель не появится."
+        STEP_DRIFT="WARN"
+        STEP_DRIFT_NOTE="не загрузилась, /drift вернёт 503"
+    fi
+fi
+
+# ---------------------------------------------------------------------------
 # Итоговая таблица
 # ---------------------------------------------------------------------------
 print_summary
@@ -442,3 +502,8 @@ echo "Проверка embedder endpoint:"
 echo "  curl -X POST http://localhost:8765/embeddings \\"
 echo "    -H 'Content-Type: application/json' \\"
 echo "    -d '{\"model\": \"BAAI/bge-m3\", \"input\": \"тестовый текст\"}'"
+echo ""
+echo "Проверка drift endpoint:"
+echo "  curl -X POST http://localhost:8765/drift \\"
+echo "    -H 'Content-Type: application/json' \\"
+echo "    -d '{\"model\": \"qvikhr-3-1.7b-instruct-noreasoning-q4_k_m\", \"messages\": [{\"role\": \"user\", \"content\": \"тест\"}], \"current_state\": \"(empty)\"}'"

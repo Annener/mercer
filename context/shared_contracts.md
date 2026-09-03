@@ -213,7 +213,27 @@ ChatRecord(ORMModel):
 # 0011: Chat.metadata — JSONB колонка в БД названа `metadata`, в ORM атрибут — `metadata_json`
 # (алиас через Pydantic validation_alias), чтобы избежать конфликта с `Base.metadata`.
 # В коде используется `chat.metadata_json` напрямую или через property.
-# Структура: {"scene_state": {<произвольный dict>}}
+# Структура (Context Engine Phase 2b, два под-пространства):
+# {
+#   "scene_state": {
+#     "explicit": {<произвольный dict от update_scene_state tool>},
+#     "drift": {
+#       "_hints": [
+#         {
+#           "fact": "Дракон помирился с нами",
+#           "contradicts_field": null,
+#           "adds_field": "current_allies",
+#           "msg_ref": "1",                  # str после нормализации в pdf-sidecar/drift.py:217
+#           "confidence": 0.85
+#         }
+#       ],
+#       "_ts": "2026-09-01T18:00:00Z",
+#       "_chat_id": "<uuid>"
+#     }
+#   }
+# }
+# Ownership: `explicit` пишется большой LLM через update_scene_state tool (host merge),
+# `drift._hints` пишется DriftDetector (auto, low-confidence). Никогда не пересекаются.
 
 # 0011: Chat.context_update_mode — флаг, при True agent loop регистрирует
 # PROPOSE_CONTEXT_UPDATE_TOOL. Управляется через UpdateChatRequest (PATCH /api/chats/{id}).
@@ -767,6 +787,45 @@ UpdateModeStateFieldChangeApplyResult:    # /apply response (Stage A)
   # (audit log: update_mode.apply_aborted_schema, HTTP 422).
 ```
 
+### Context Engine — Auto-Draft DTO (Phase 3-4)
+
+```python
+# Файл: shared_contracts/models.py
+# Сериализуется в Redis как `draft:campaign:{cid}:chat:{chatid}` TTL 10800.
+
+ContextDraft:                 # возвращается GET /api/chats/{chat_id}/context-draft
+  chat_id: str
+  campaign_id: str
+  state_patch: list[CampaignStatePatchOperation]   # ТОЛЬКО state_patch ops
+                                                   # (НЕ field_changes, НЕ file_changes)
+  summary: str                                      # user-facing описание
+  drift_hash: str                                   # sha256[:16] от canonicalized hints
+  drift_hints: list[DriftHint]                      # снапшот hints на момент генерации
+  created_at: datetime
+  expires_at: datetime
+
+DriftHint:                    # контракт hints от DriftDetector
+  fact: str
+  contradicts_field: str | None = None      # field_key
+  adds_field: str | None = None             # field_key
+  msg_ref: str | int | None = None          # нормализуется к str в pdf-sidecar/drift.py:217
+  confidence: float = 0.0                   # ≥ 0.5 чтобы быть записанным
+
+# Допустимые типы state_patch operations (whitelist, см. context_engine/draft.py:57-66):
+#   single: replace_single, clear_single
+#   list:   add_list_item, update_list_item, resolve_list_item, remove_list_item
+# Запрещены в auto-draft: create_field, update_field (schema), все file_changes.
+
+# Lifecycle:
+#   1. DriftDetector.detect → write_drift(chat_id, hints) → scene_state.drift._hints
+#   2. CampaignStateDrafter.plan_draft(chat_id) → если hints изменились (hash mismatch) →
+#      generation provider.generate_json → ContextDraft → SETEX draft:... 10800
+#   3. Frontend polls GET /api/chats/{id}/context-draft → ContextDraftCard
+#   4. Accept → POST .../accept → apply_patch + clear_drift + DEL draft
+#      Reject → POST .../reject → DEL draft + clear_drift
+#      Check-files → POST .../check-files → UpdateMode session с state_patch_context
+```
+
 ---
 
 ## Indexer task API contracts (rag-indexer/app/main.py)
@@ -809,6 +868,9 @@ AuditLogRead(ORMModel):   id, action, entity_type?, entity_id?,
 # - "update_mode.reject_state_patch"    — отдельно логируются отклонённые state ops
 # - "campaign_state_field_cascade_purged" — Stage 1: каскадная очистка при удалении поля
 # - "campaign_state_patch_applied"       — Stage 2: применение state_patch
+# - "context_draft_accepted"    — Context Engine Phase 4: user принял draft
+# - "context_draft_rejected"    — Context Engine Phase 4: user отклонил draft
+# - "context_draft_check_files" — Context Engine Phase 5: user запросил Update Mode с state_patch_context
 ```
 
 ---

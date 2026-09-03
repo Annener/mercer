@@ -47,7 +47,7 @@ class TestHostSidecarDriftProvider:
         mock_client.post = AsyncMock(return_value=resp)
 
         provider = HostSidecarDriftProvider(
-            base_url="http://sidecar:8765", model_name="qwen2.5-3b-instruct-q4_k_m"
+            base_url="http://sidecar:8765", model_name="qvikhr-3-1.7b-instruct-noreasoning-q4_k_m"
         )
         with patch("app.providers.drift.host_sidecar.httpx.AsyncClient", return_value=mock_client):
             hints = await provider.detect_drift(
@@ -67,7 +67,7 @@ class TestHostSidecarDriftProvider:
         mock_client.post = AsyncMock(side_effect=ConnectionError("refused"))
 
         provider = HostSidecarDriftProvider(
-            base_url="http://sidecar:8765", model_name="qwen2.5-3b-instruct-q4_k_m"
+            base_url="http://sidecar:8765", model_name="qvikhr-3-1.7b-instruct-noreasoning-q4_k_m"
         )
         with patch("app.providers.drift.host_sidecar.httpx.AsyncClient", return_value=mock_client):
             with pytest.raises(DriftUnavailableError):
@@ -88,7 +88,7 @@ class TestHostSidecarDriftProvider:
         mock_client.post = AsyncMock(return_value=resp)
 
         provider = HostSidecarDriftProvider(
-            base_url="http://sidecar:8765", model_name="qwen2.5-3b-instruct-q4_k_m"
+            base_url="http://sidecar:8765", model_name="qvikhr-3-1.7b-instruct-noreasoning-q4_k_m"
         )
         with patch("app.providers.drift.host_sidecar.httpx.AsyncClient", return_value=mock_client):
             with pytest.raises(DriftInvalidResponseError):

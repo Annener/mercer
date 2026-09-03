@@ -495,11 +495,13 @@ block = compile_campaign_state(
 Эвристика токенов: `math.ceil(len(text) / 4)` — согласована с
 `update_mode_executor.py`, `pipeline_executor.py`, `full_document_service.py`.
 
-### effective_context.py — Runtime helper (Stage 6 + Sprint 1/2)
+### effective_context.py — Re-export фасад (Phase 1)
 
-Общие функции для runtime и debug:
+> **Важно:** фактическая сборка контекста выполняется в `app/services/context_engine/assembly.py`.
+> Этот модуль — re-export фасад для обратной совместимости с импортами до Phase 1.
 
 ```python
+# Re-export из context_engine.assembly:
 async def compose_full_system_prompt(
     campaign_id, domain_id, db,
     scene_state: dict | None = None,    # Sprint 1: inline scene-state
@@ -510,15 +512,20 @@ async def compose_full_system_prompt_with_state(
 ) -> tuple[str, CampaignStateCompiledBlock | None]
 async def compose_state_block_only(campaign_id, db) -> str
 async def build_effective_context(campaign_id, chat_id, domain_id, db, *, include_rag=False, rag_hits=None) -> EffectiveContextRead
+
+# Внутри модуля (не из context_engine):
 def append_tool_use_rules(prompt: str) -> str
-def compose_scene_block(scene_state: dict | None) -> str        # Sprint 1
+def compose_scene_block(scene_state: dict | None) -> str        # Sprint 1 (Phase 2b: explicit + drift)
 ```
 
-**Sprint 1**: `compose_scene_block` рендерит JSON-патчинг в блок `## Текущая сцена` для system_prompt.
-Лимит 4KB; превышение обрезается с WARNING-меткой. Используется в `compose_full_system_prompt`
-и `compose_full_system_prompt_with_state` через параметр `scene_state`.
+**Sprint 1 + Phase 2b**: `compose_scene_block` рендерит scene_state в два блока для system_prompt:
+- `## Текущая сцена` — под-пространство `explicit` (от `update_scene_state` tool).
+- `## Дрейф контекста (авто, может быть ошибочным)` — под-пространство `drift._hints` (от `DriftDetector`, max 8 hints в prompt).
 
-`compose_full_system_prompt` используется в:
+Лимит 4KB; превышение обрезается с WARNING-меткой. Используется в `compose_full_system_prompt`
+через параметр `scene_state`.
+
+**Точки интеграции** `compose_full_system_prompt`:
 
 - `app/api/chat.py::plain_stream` (SSE plain RAG fallback);
 - `app/api/chat.py::_plain_llm_reply`;
@@ -539,6 +546,166 @@ def compose_scene_block(scene_state: dict | None) -> str        # Sprint 1
 («используй evidence для фактов/лора, не выдумывай»). В Sprint 1 расширен секциями про
 `update_scene_state` и `propose_context_update` (Sprint 3). Используется только в agent-loop
 пути `plain_stream` (legacy single-shot retrieval не нуждается в этих правилах).
+
+### Context Engine — Phase 1-5 (`app/services/context_engine/`)
+
+Новый модуль, введённый в Phase 1. Ответственности: единая сборка контекста + фоновый drift detection + auto-draft campaign state.
+
+#### `assembly.py` — единая точка сборки
+
+```python
+async def build_chat_context(
+    campaign_id, domain_id, db,
+    scene_state: dict | None = None,
+    prefill_evidence: str | None = None,         # Phase 2b prefill RAG (опц.)
+) -> str
+
+async def build_chat_context_with_state(
+    campaign_id, domain_id, db,
+    scene_state: dict | None = None,
+    prefill_evidence: str | None = None,
+) -> tuple[str, CampaignStateCompiledBlock | None]
+
+async def build_state_block_only(campaign_id, db) -> str
+```
+
+Используется во всех путях чат-turn-а (см. effective_context.py — обёртка).
+
+#### `scene_memory.py` — два под-пространства scene_state
+
+```python
+def compose_scene_block(scene_state: dict | None) -> str
+    # Рендерит explicit + drift hints в system_prompt блок
+
+async def read_scene_state(chat_id, db) -> dict
+    # Читает Chat.metadata_json["scene_state"] (default {})
+
+async def merge_explicit(chat_id, patch: dict, db) -> dict
+    # Хост-merge patch от update_scene_state tool в scene_state.explicit
+    # value=None → удаляет ключ, иначе → присваивает
+
+async def write_drift(chat_id, hints: list[dict], db) -> None
+    # Записывает drift hints в scene_state.drift._hints
+    # Только DriftDetector имеет право писать в drift
+
+async def clear_drift(chat_id, db) -> None
+    # Удаляет scene_state.drift (вызывается из accept/reject draft)
+```
+
+Ownership: `agent_loop.py` пишет в `explicit` через `merge_explicit`. `DriftDetector` пишет в `drift` через `write_drift`. Эти под-пространства **никогда не пересекаются** (см. комментарий в `agent_loop.py:567-570`).
+
+#### `drift.py` — DriftDetector (малая локальная модель)
+
+```python
+class DriftDetector:
+    def __init__(self, db_factory, redis_client): ...
+
+    async def detect(self, chat_id: str) -> list[dict] | None
+        # None = пропуск (нет chat.campaign_id, нет active state, нет active model)
+        # [] = hints не найдены (или все ниже threshold)
+        # list = hints записаны в scene_state.drift._hints
+
+    # Читает:
+    #   settings_service.get_active_drift_model(db)
+    #   Message.last(N) для chat_id (N = platform_settings.drift.max_messages, default 10)
+    #   compile_campaign_state(active version)
+    # Провайдеры (по provider name):
+    #   host_sidecar → HostSidecarDriftProvider → POST pdf-sidecar:8765/drift
+    #   openai_compatible → OpenAICompatibleDriftProvider
+```
+
+#### `draft.py` — CampaignStateDrafter (большая модель)
+
+```python
+class CampaignStateDrafter:
+    def __init__(self, db_factory, redis_client, generation_provider_factory): ...
+
+    async def plan_draft(self, chat_id: str) -> dict | None
+        # None = пропуск (нет chat.campaign_id, нет hints, generation failed)
+        # dict = ContextDraft сохранён в Redis `draft:campaign:{cid}:chat:{chatid}` TTL 10800
+```
+
+Lifecycle:
+1. Прочитать drift hints из `scene_state.drift._hints`.
+2. `hash_hints(hints)` → `drift_hash` (sha256[:16]).
+3. Если Redis draft существует и `drift_hash` совпадает → skip (нет изменений).
+4. Получить active state + последние N сообщений.
+5. Вызвать `provider.generate_json(system+user)` с system prompt:
+   ```
+   You are a Campaign State drafter. Allowed operations:
+   - replace_single / clear_single
+   - add_list_item / update_list_item / resolve_list_item / remove_list_item
+   Output: {"state_patch": [...], "summary": "..."}.
+   NO schema changes (create_field / update_field). NO file_changes.
+   ```
+6. Фильтрация ops по whitelist `_ALLOWED_OP_TYPES`.
+7. `SETEX draft:campaign:{cid}:chat:{chatid} 10800 <json>`.
+
+#### `loop.py` — DriftLoop (cooldown + idle scan)
+
+```python
+class DriftLoop:
+    def __init__(self, detector: DriftDetector, redis: aioredis.Redis): ...
+
+    async def trigger_for_chat(chat_id: str) -> None
+        # Redis SETNX "drift:cooldown:{chat_id}" EX 30
+        # Если уже acquired → skip
+        # Иначе SADD "drift:dirty" {chat_id} + asyncio.create_task(_run_detect)
+
+    async def run_idle_scan(self) -> None
+        # Каждые 60 сек: SMEMBERS "drift:dirty" → trigger_for_chat для каждого
+```
+
+Trigger points (откуда вызывается `trigger_for_chat`):
+- `app/api/chat.py:1130-1135` — после финального SSE event в `plain_stream`.
+- `app/api/chat.py:1275-1290` — legacy single-shot путь.
+
+Wiring (lifespan, `app/main.py:72-89`):
+```python
+drift_detector = DriftDetector(db_factory=SessionLocal, redis_client=redis_client)
+drift_loop = DriftLoop(detector=drift_detector, redis=redis_client)
+drafter = CampaignStateDrafter(...)
+drift_loop.drafter = drafter
+app.state.drift_loop = drift_loop
+app.state.drafter = drafter
+drift_loop._idle_task = asyncio.create_task(drift_loop.run_idle_scan())
+```
+
+### api/context_draft.py — Public API для draft
+
+```python
+GET    /api/chats/{chat_id}/context-draft
+POST   /api/chats/{chat_id}/context-draft/accept
+POST   /api/chats/{chat_id}/context-draft/reject
+POST   /api/chats/{chat_id}/context-draft/check-files
+```
+
+Accept/reject/check-files пишут AuditLog и (для check-files) создают Update Mode session с `state_patch_context` (Phase 5).
+
+### providers/drift/ — DriftProvider интерфейс
+
+```python
+# base.py
+class DriftProvider(ABC):
+    async def detect_drift(
+        *, messages: list[dict], current_state: str, schema_hint: str | None
+    ) -> list[dict]: ...
+
+class DriftUnavailableError(Exception): ...
+class DriftInvalidResponseError(Exception): ...
+
+# host_sidecar.py (default)
+class HostSidecarDriftProvider(DriftProvider):
+    base_url: str       # http://host.docker.internal:8765
+    model_name: str     # qvikhr-3-1.7b-instruct-noreasoning-q4_k_m
+    timeout_seconds: int
+
+# openai_compatible.py
+class OpenAICompatibleDriftProvider(DriftProvider):
+    base_url, model_name, api_key, timeout_seconds
+```
+
+CRUD drift-моделей встроен в `app/services/settings_service.py:395-470`, **не вынесен** в отдельный `drift_model_service.py` (см. отклонение от первоначального плана в `context/context-engine.md`).
 
 ### campaign_state_initial_service.py — Initial State (Stage 3)
 

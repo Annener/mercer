@@ -1,32 +1,108 @@
-# Context Engine + Auto-Draft — план реализации
+# Context Engine + Auto-Drift + Auto-Draft
 
-## Назначение документа
+> **Статус: SHIPPED** (все 5 фаз реализованы и задеплоены).
+> Документ изначально был планом реализации, теперь — reference по фактической реализации.
+> Code-блоки с примерами кода ниже сохранены как исторические псевдокоды; для правды смотрите реальные файлы, пути к которым явно указаны в разделе «Быстрый reference по реализации».
 
-Этот документ описывает поэтапный план выноса работы с контекстом в отдельный внутренний модуль `ContextEngine` и добавления фонового drift-detection с auto-draft campaign state.
+## Назначение
 
-**Цели:**
+**ContextEngine** — внутренний модуль `rag-backend`, вынесенный из ad-hoc функций
+в `effective_context.py`. Делает три вещи:
 
-1. Стабилизировать обновление контекста (особенно list-полей)
-2. Упростить расширение (добавление новых слоёв контекста)
-3. Добавить фоновый drift-detection с auto-draft и явным review
+1. **Сборка контекста** для чат-turn-а: `build_chat_context()` — единая точка, через которую проходят все пути (`plain_stream`, `_plain_llm_reply`, pipeline resume/executor).
+2. **Drift detection** в фоне: малая локальная модель (QVikhr-1.7B через `pdf-sidecar /drift`) сравнивает последние N сообщений с активным `Campaign State` и возвращает hints о расхождениях.
+3. **Auto-draft** campaign state: большая модель берёт drift hints и формирует `state_patch` operations. Draft сохраняется в Redis, пользователь видит карточку и принимает/отклоняет. **Auto-apply никогда.**
 
-**Ключевые решения:**
+**Ключевые архитектурные решения:**
 
-- Без отдельного sidecar/HTTP-сервиса — internal модуль внутри `rag-backend`
-- Drift-модель — по аналогии с `rerank_models`: таблица БД, Settings UI, локальный или внешний провайдер
-- Локальная модель по умолчанию: **Qwen2.5-3B-Instruct (Q4_K_M)**, запускается в `pdf-sidecar` (расширяем существующий)
-- Drift cooldown: 30 сек
-- TTL draft: 3 часа
+- Без отдельного sidecar/HTTP-сервиса для контекста — internal модуль внутри `rag-backend`
+- Drift-модель по аналогии с `rerank_models`: таблица БД (`drift_models`), Settings UI (`Settings → Drift Models`), локальный или внешний провайдер
+- **CRUD drift-моделей встроен в `settings_service.py`** (а не вынесен в отдельный `drift_model_service.py`, как было в первоначальном плане)
+- Локальная модель по умолчанию: **QVikhr-3-1.7B-Instruct-noreasoning (Q4_K_M, ~1.1 GB)**, запускается в `pdf-sidecar` (расширяем существующий). На macOS M-серии загружается на Metal GPU (`DRIFT_FORCE_CPU=0`).
+- Drift cooldown: 30 сек (Redis SETNX на ключе `drift:cooldown:{chat_id}`)
+- TTL draft: 3 часа (Redis `draft:campaign:{campaign_id}:chat:{chat_id}`)
 - Auto-apply **никогда** — только draft + явный review пользователя
-- Draft пересоздаётся только если новый drift отличается от текущего draft (content hash)
+- Draft пересоздаётся только если новый drift отличается от текущего draft (content hash по `drift._hints`)
 
-**Не входит в план:**
+**Не входит (и НЕ должно входить):**
 
 - ❌ Sidecar/HTTP-сервис для контекста
 - ❌ Auto-apply без review
-- ❌ Schema changes (create_field / update_field) в auto-draft
-- ❌ file_changes в auto-draft — только по явной кнопке
+- ❌ Schema changes (create_field / update_field) в auto-draft — только state_patch
+- ❌ file_changes в auto-draft — только по явной кнопке «Применить и проверить файлы» в `ContextDraftCard`
 - ❌ Удаление полей — manual UI
+
+**Документы, которые стоит читать вместе с этим:**
+
+- `context/architecture.md` — общая архитектура, раздел «Agent-assistant mode (Sprint 1-3)».
+- `context/rag-backend-services.md` — карта сервисов с file:line.
+- `context/campaign-update-mode.md` — раздел Stage 5 (state_patch в proposal) и Phase 5 (`state_patch_context`).
+- `context/api_routes.md` — публичные endpoints (`/api/chats/{id}/context-draft/*`).
+- `context/db_schema.md` — таблицы `drift_models`, миграции `0015_drift_models`, `0016_drift_model_qvikhr`.
+- `context/open-questions.md` — открытые идеи (визуализация фона, саммаризация, ускорение).
+
+---
+
+## Быстрый reference по реализации (SHIPPED)
+
+Этот раздел — компактная карта «что-где». Подробности в коде.
+
+### Реальные файлы (вместо исторических имён из плана)
+
+| План | Реальность | Комментарий |
+|---|---|---|
+| `rag-backend/app/services/context_engine/` | `rag-backend/app/services/context_engine/` | ✅ Совпадает. Пакет создан в Фазе 1. |
+| `rag-backend/app/services/campaign_state_field_service.py` | `rag-backend/app/services/campaign_state_service.py` | Stage 1 CRUD полей. Класс `CampaignStateFieldService` живёт здесь. |
+| `rag-backend/app/services/drift_model_service.py` | `rag-backend/app/services/settings_service.py:395-470` | CRUD drift-моделей **встроен в settings_service**, не вынесен. Методы: `list_drift_models`, `create_drift_model`, `update_drift_model`, `delete_drift_model`, `activate_drift_model`, `deactivate_drift_model`, `get_active_drift_model`. |
+| `rag-backend/migrations/versions/0013_drift_models.py` | `rag-backend/migrations/versions/0015_drift_models.py` + `0016_drift_model_qvikhr.py` | Нумерация сдвинута из-за промежуточных миграций `0013_state_values_composite_pkey.py` и `0014_chat_rag_prefill_enabled.py`. |
+| `rag-backend/app/api/settings/drift_models.py` | `rag-backend/app/api/settings/drift_models.py` | ✅ Совпадает. |
+| `rag-backend/app/providers/drift/` | `rag-backend/app/providers/drift/` | ✅ Совпадает. `host_sidecar.py` (default) + `openai_compatible.py`. |
+| `pdf-sidecar/drift.py` | `pdf-sidecar/drift.py` | ✅ Совпадает. `POST /drift` + ленивая загрузка QVikhr GGUF. |
+| `rag-backend/app/api/context_draft.py` | `rag-backend/app/api/context_draft.py` | ✅ Совпадает. |
+| `rag-backend/app/static/frontend/src/components/chat/ContextDraftCard.tsx` | `rag-backend/app/static/frontend/src/components/chat/ContextDraftCard.tsx` | ✅ Совпадает. |
+
+### Ключевые точки входа (file:line)
+
+**Wiring (lifespan):**
+
+- `rag-backend/app/main.py:30-32` — импорт `DriftDetector`, `CampaignStateDrafter`, `DriftLoop`.
+- `rag-backend/app/main.py:72-89` — создание detector + loop + drafter, связывание `drift_loop.drafter = drafter`, запуск `run_idle_scan` через `asyncio.create_task`.
+
+**Chat integration:**
+
+- `rag-backend/app/api/chat.py:1130-1135` — вызов `drift_loop.trigger_for_chat(str(chat.id))` после финального SSE event в `plain_stream`.
+- `rag-backend/app/api/chat.py:1275-1290` — legacy single-shot путь, тоже триггерит drift.
+
+**Agent loop integration:**
+
+- `rag-backend/app/services/agent_loop.py:559-620` — `_execute_update_scene_state`, пишет в `scene_state.explicit` через `merge_explicit`.
+- `rag-backend/app/services/agent_loop.py:567-570` — комментарий: «scene_state.drift sub-space is owned by DriftDetector and never touched from here».
+
+**Sprint 3 (`propose_context_update`):**
+
+- `rag-backend/app/services/agent_loop.py:684` — `_extract_proposal`.
+- `rag-backend/app/services/agent_loop.py:734` — `_execute_propose_context_update`, валидирует через `ContextUpdateProposal`, вызывает `executor.start_from_proposal`.
+- `rag-backend/app/services/agent_loop.py:681` — `PROPOSAL_MIN_CONFIDENCE = 0.5`.
+
+**Redis ключи:**
+
+- `drift:cooldown:{chat_id}` EX 30 — `context_engine/loop.py:33`.
+- `drift:dirty` (set) — `context_engine/loop.py:36`.
+- `draft:campaign:{campaign_id}:chat:{chat_id}` EX 10800 — `context_engine/draft.py:46`.
+
+**Effective context фасад:**
+
+- `rag-backend/app/services/effective_context.py:1-46` — комментарий «Логика сборки контекста перенесена в `app.services.context_engine` (Фаза 1)». Все публичные имена (`compose_full_system_prompt`, `compose_state_block_only`, `_resolve_system_prompt_text`, `_resolve_campaign_state_block_safe`) теперь re-export, реальная сборка идёт через `context_engine.assembly`.
+
+### Audit log actions
+
+| Action | Где пишется |
+|---|---|
+| `context_draft_accepted` | `api/context_draft.py` — accept endpoint |
+| `context_draft_rejected` | `api/context_draft.py` — reject endpoint |
+| `context_draft_check_files` | `api/context_draft.py` — check-files endpoint |
+| `update_mode.apply_schema` | `api/update_mode.py` — Sprint 3, успех schema apply |
+| `update_mode.apply_aborted_schema` | `api/update_mode.py` — Sprint 3, abort с rollback |
 
 ---
 
@@ -72,7 +148,7 @@
    ┌──────────────────┐                 ┌──────────────────┐
    │  pdf-sidecar     │                 │  drift_models    │
    │  + POST /drift   │                 │  таблица БД      │
-   │  (Qwen2.5-3B)    │                 │  + Settings UI   │
+   │  (QVikhr-3-1.7B) │                 │  + Settings UI   │
    └──────────────────┘                 └──────────────────┘
 ```
 
@@ -228,7 +304,7 @@ __all__ = [
 
 ## Фаза 2а: Drift-модель инфраструктура
 
-**Цель:** drift-модель как полноценная сущность рядом с `generation_models`, `embedding_models`, `rerank_models`. Может быть локальной (по умолчанию — Qwen2.5-3B через pdf-sidecar) или внешней (openai_compatible).
+**Цель:** drift-модель как полноценная сущность рядом с `generation_models`, `embedding_models`, `rerank_models`. Может быть локальной (по умолчанию — QVikhr-3-1.7B-Instruct-noreasoning через pdf-sidecar, Metal GPU на M3) или внешней (openai_compatible).
 
 ### Задачи
 
@@ -317,7 +393,7 @@ def upgrade():
     # Seed: default local model
     op.execute("""
         INSERT INTO drift_models (id, model_id, provider, model_name, is_active, enabled, display_name)
-        VALUES (gen_random_uuid(), 'drift-local-default', 'host_sidecar', 'qwen2.5-3b-instruct-q4_k_m', true, true, 'Qwen2.5-3B (local)')
+        VALUES (gen_random_uuid(), 'drift-local-default', 'host_sidecar', 'qvikhr-3-1.7b-instruct-noreasoning-q4_k_m', true, true, 'QVikhr-3-1.7B (local)')
     """)
 ```
 

@@ -129,6 +129,15 @@ main#settings-page
 | `<InitialStateWizard>` | Initial State: select → review → result |
 | `<EffectiveContextDialog>` | Debug effective context |
 
+### Inline компоненты в `<ChatArea>`
+
+| Компонент | Файл | Назначение |
+|---|---|---|
+| `<UpdateModePanel>` | `src/components/wizard/UpdateModePanel.tsx` | Review/apply UI для Campaign Update Mode |
+| `<ContextDraftCard>` | `src/components/chat/ContextDraftCard.tsx` | **Context Engine Phase 4**: карточка auto-draft campaign state. Кнопки Accept / Reject / Check-files. Polling `GET /api/chats/{id}/context-draft`. |
+| `<ChatContextBar>` | `src/components/chat/ChatContextBar.tsx` | Контекстный бар чата (кампания, домен). Возможно место для badge draft. |
+| `<PendingIndexBanner>` | `src/components/chat/PendingIndexBanner.tsx` | Баннер о файлах, ожидающих индексации |
+
 ## Архитектура модулей
 
 ### `src/api/` — HTTP-клиент (типизированный)
@@ -140,60 +149,69 @@ main#settings-page
 // src/api/client.ts
 export const api = new MercerAPI();
 
-await api.listChats(domainId);                  // → Chat[]
-await api.createChat(domainId, campaignId);     // → Chat
-await api.previewInitialState(campaignId, ids); // → InitialProposalReadV2
-await api.updateModeReview(chatId, [...], [...], { accepted_op_indexes: [...] });
+// Чаты
+await api.listChats(domainId);
+await api.createChat(domainId, campaignId);
+await api.sendMessage(chatId, content, true, signal); // → ReadableStream SSE
+
+// Campaign State (Stage 1-7)
+await api.previewInitialState(campaignId, ids);       // → InitialProposalReadV2
+await api.applyInitialState(campaignId, req);
+await api.getEffectiveContext(campaignId, chatId?);
+await api.getStateStaleStatus(campaignId);
+
+// Campaign Update Mode (Sprint 3)
+await api.startUpdateMode(chatId, note);
+await api.getUpdateModeSession(chatId);
+await api.updateModeReview(chatId, decisions);        // { accepted_change_ids, ..., state_patch_decisions, field_change_decisions }
+await api.applyUpdateMode(chatId, applyId);
+await api.cancelUpdateMode(chatId);
+
+// Context Draft (Phase 4)
+await api.getContextDraft(chatId);
+await api.acceptContextDraft(chatId);
+await api.rejectContextDraft(chatId);
+await api.checkFilesFromContextDraft(chatId);
+
+// Drift Models (Phase 2a)
+await api.getDriftModels();
+await api.createDriftModel(payload);
+await api.updateDriftModel(modelId, payload);
+await api.setActiveDriftModel(modelId);
+await api.checkDriftModel(modelId);
+
+// Sidecar / Indexer / DB Browser / Теги / ...
 ```
 
 Поддерживается через `src/api/types.ts` — все типы доменных сущностей (Chat, Campaign,
-InitialProposal, EffectiveContextRead и т.д.) импортируются из этого файла.
-Стриминг `sendMessage(chatId, content, true, signal)` возвращает `ReadableStream`
-(как и раньше, fetch + ReadableStream).
+InitialProposal, EffectiveContextRead, ContextDraft, DriftModel и т.д.) импортируются из этого файла.
 
-`HttpError` (статус + detail) поддерживает `isCode('source_snapshot_stale')` для
-машинной обработки ошибок Initial State.
-  getStateStaleStatus(campaignId),
-  // Campaign Update Mode (api/update-mode.js) — отдельный модуль
-  startUpdateMode(chatId, note), getUpdateModeSession(chatId),
-  reviewUpdateMode(chatId, decisions), applyUpdateMode(chatId, applyId),
-  cancelUpdateMode(chatId),
+`HttpError` (статус + detail) поддерживает `isCode('source_snapshot_stale')` для машинной обработки ошибок Initial State.
 
-  // Теги (api/domains.js или отдельный модуль)
-  getTags(domainId?), createTag(), deleteTag(),
-
-  // Indexer (api/chat.js)
-  getIndexerState(vaultId), triggerWatchdog(),
-
-  // DB search (api/search.js)
-  searchDb(domainId, query, limit),
-
-  // Sidecar (api/sidecar.js)
-  getSidecarStatus(), startSidecar(), stopSidecar(), restartSidecar(), installSidecarStream(),
-}
-```
-
-Стриминг реализован через `fetch()` + `ReadableStream`, постепенное чтение SSE-подобных кусков.
+Стриминг `sendMessage(chatId, content, true, signal)` возвращает `ReadableStream` (fetch + ReadableStream, постепенное чтение SSE-подобных кусков).
 
 ---
 
-### `chat.js` — логика чата (45KB)
+### `<ChatPage>` — `src/components/chat/ChatPage.tsx`
 
-Главный модуль. Инициализирует всё приложение (`initApp()` в `DOMContentLoaded`).
+Главная страница приложения (после перехода с vanilla JS на React).
 
 **Ответственность:**
+- Управление активным чатом через `useChatStore`
 - Открытие/закрытие чата, лента сообщений
-- Отправка сообщения, обработка стримингового ответа
-- Рендеринг Markdown (через `marked` + `DOMPurify` + `highlight.js`)
-- Рендеринг сообщений ролей `user` / `assistant`
-- Управление `#pipeline-select` и `#lock-pipeline-btn`
-- Отображение clarification-вопросов как обычных сообщений
-- Глобальное состояние: `window.currentChatId`, `window.currentDomainId`
+- Отправка сообщения через `api.sendMessage()`, обработка SSE-стрима (token/tool_call/round_start/tool_result/sources/final)
+- Рендеринг Markdown через `<Markdown>` (`marked` + `DOMPurify` + `highlight.js`)
+- Рендеринг inline-компонентов: `<UpdateModePanel>`, `<ContextDraftCard>`, `<ChatContextBar>`, `<PendingIndexBanner>`
+- Кнопка Stop во время стрима через `AbortController`
 
-**Отображение сообщений:**
-- Markdown рендерится в реальном времени стрима (каждый `onChunk` обновляет DOM)
-- Код подсвечивается через `highlight.js` по завершении стрима
-- Сообщения пользователя и assistant отображаются различными CSS-классами
+**SSE-события** (типы в `src/api/types.ts`):
+- `step_status`, `token`, `sources`, `error` — базовые
+- `prefill_rag` — Sprint 2: после prefill retrieval
+- `round_start`, `tool_call`, `tool_result` — bounded agent loop
+- `context_update_proposal` — Sprint 3: модель предложила update
+- `full_document_selection_required` — выбор документов
+- `pipeline_confirm_required` — подтверждение пайплайна
+- `clarification` — уточняющий вопрос
 
 ---
 
@@ -307,25 +325,9 @@ TODO: бейдж «В источниках появились обновлени
 Кнопка в карточке кампании: пользователь вводит `note`, запускается
 `api.updateModeStart(chatId, note)`. UI review/apply — внутри `<UpdateModePanel>` в чате.
 
-### Update Mode UI — `update-mode.js`
+### Update Mode UI — `UpdateModePanel` + `api.updateModeReview`
 
-`api/update-mode.js` (новый модуль; старый метод в `api.js` помечен как legacy
-и фактически не загружается `index.html`) отправляет PATCH в правильной форме:
-
-```javascript
-// api/update-mode.js
-reviewUpdateMode(chatId, {
-  accepted_change_ids: [...],
-  rejected_change_ids: [...],
-  state_patch_decisions: {
-    accepted_op_indexes: [...],
-    rejected_op_indexes: [...],
-    edited: [{ op_index, text }],
-  },
-})
-```
-
-UI review-сессии в `js/update-mode.js` показывает:
+UI review-сессии в `<UpdateModePanel>` рендерит:
 
 - Список файловых change-ов с unified diff и кнопками «принять / отклонить».
 - Список state-patch операций с человеко-читаемой формулировкой:
@@ -338,12 +340,44 @@ UI review-сессии в `js/update-mode.js` показывает:
 - Операции удаления/закрытия (`clear_single`, `resolve_list_item`,
   `remove_list_item`) визуально выделены и по умолчанию НЕ выбраны.
 - Inline-редактор текста для replace_single / update_list_item / add_list_item.
+- Sprint 3: schema-change операции (create_field / update_field) рендерятся третьей секцией.
+
+API метод `api.updateModeReview(chatId, { accepted_change_ids, rejected_change_ids, state_patch_decisions: {...}, field_change_decisions: {...} })`.
+
+### Context Draft UI — `<ContextDraftCard>`
+
+UI для auto-draft campaign state (Context Engine Phase 4). Встраивается inline в `<ChatArea>` рядом с `<UpdateModePanel>`.
+
+- Polling `api.getContextDraft(chatId)` (через TanStack Query `['context-draft', chatId]`).
+- Когда `draft != null` → карточка с summary + операции state_patch (expandable).
+- Кнопки:
+  - **Применить** → `api.acceptContextDraft(chatId)` → `POST .../context-draft/accept`. После успеха `clear_drift` + `DEL draft`.
+  - **Отклонить** → `api.rejectContextDraft(chatId)` → `POST .../context-draft/reject`.
+  - **Применить и проверить файлы** → `api.checkFilesFromContextDraft(chatId)` → `POST .../context-draft/check-files` → создаёт Update Mode session с `state_patch_context`. После успеха UI открывает `<UpdateModePanel>` с готовыми file_changes.
+
+Стили: amber/brown палитра, чтобы отличать от Update Mode (синяя) и обычных сообщений.
 
 ### Conditional / cyclic RAG индикатор
 
 TODO: бейдж «поиск» во время tool-цикла — пока host выполняет
 `search_knowledge`, в сообщении ассистента показывается анимация и
 `queries_used`. Текущая версия обрабатывает только `token` и `progress`-события.
+
+### Drift-модели в `<ModelsTab>`
+
+Таб «Модели» содержит 4 секции (с подтабами или вертикальными секциями):
+
+- **Generation** — большая LLM для чата.
+- **Embedding** — для индексации (`bge-m3` через pdf-sidecar).
+- **Rerank** — `BAAI/bge-reranker-v2-m3` через pdf-sidecar.
+- **Drift-модели** — Phase 2a context-engine. Управление активной моделью для drift detection.
+  - Список моделей через `api.getDriftModels()`.
+  - Создание через `api.createDriftModel({provider, base_url, model_name, ...})`.
+  - Inline-edit через `<EditDriftModelModal>` (`api.updateDriftModel`).
+  - Активация через `api.setActiveDriftModel(modelId)`.
+  - Health-check через `api.checkDriftModel(modelId)`.
+
+Реализация: `src/components/settings/tabs/ModelsTab.tsx` → компонент `DriftModelsBody` (строки 1381+) + `DriftModelCard` (строки 1420+).
 
 ## Зависимости (npm)
 

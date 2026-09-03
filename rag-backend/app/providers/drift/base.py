@@ -3,8 +3,8 @@
 Drift detection compares recent chat messages against the current
 campaign state and emits hints describing contradictions / additions.
 Providers are pluggable: the default backend is ``host_sidecar``
-(Qwen2.5-3B-Instruct running inside pdf-sidecar), but external
-OpenAI-compatible endpoints can be used through
+(QVikhr-3-1.7B-Instruct-noreasoning running inside pdf-sidecar),
+but external OpenAI-compatible endpoints can be used through
 ``openai_compatible``.
 
 Provider implementations MUST raise ``DriftUnavailableError`` when the

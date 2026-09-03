@@ -41,6 +41,7 @@ export function SettingsPage() {
           <ModelHealthIndicator kind="generation" />
           <ModelHealthIndicator kind="embedding" />
           <ModelHealthIndicator kind="rerank" />
+          <ModelHealthIndicator kind="drift" />
           <ModelHealthIndicator kind="sidecar" />
           <Button variant="ghost" onClick={openChat}>
             ← Назад к чату

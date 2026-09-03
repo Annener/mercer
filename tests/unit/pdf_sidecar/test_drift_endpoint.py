@@ -74,7 +74,7 @@ def drift_client(monkeypatch):
     # Вместо настоящего файла — создаём временный .gguf (его существование
     # достаточно для прохождения FileNotFoundError-проверки в _load_model_sync)
     fake_model = tempfile.NamedTemporaryFile(
-        suffix=".gguf", delete=False, prefix="fake-qwen-"
+        suffix=".gguf", delete=False, prefix="fake-qvikhr-"
     )
     fake_model.write(b"FAKE GGUF MODEL FILE")
     fake_model.close()
@@ -100,7 +100,7 @@ class TestDriftEndpoint:
         response = client.post(
             "/drift",
             json={
-                "model": "qwen2.5-3b-instruct-q4_k_m",
+                "model": "qvikhr-3-1.7b-instruct-noreasoning-q4_k_m",
                 "messages": [{"role": "user", "content": "Дракон помирился с нами"}],
                 "current_state": "(empty)",
                 "schema_hint": None,
@@ -120,7 +120,7 @@ class TestDriftEndpoint:
         client.post(
             "/drift",
             json={
-                "model": "qwen2.5-3b-instruct-q4_k_m",
+                "model": "qvikhr-3-1.7b-instruct-noreasoning-q4_k_m",
                 "messages": [{"role": "user", "content": "ping"}],
                 "current_state": "(empty)",
             },
@@ -130,7 +130,7 @@ class TestDriftEndpoint:
         client.post(
             "/drift",
             json={
-                "model": "qwen2.5-3b-instruct-q4_k_m",
+                "model": "qvikhr-3-1.7b-instruct-noreasoning-q4_k_m",
                 "messages": [{"role": "user", "content": "ping"}],
                 "current_state": "(empty)",
             },
@@ -151,7 +151,7 @@ class TestDriftEndpoint:
         response = client.post(
             "/drift",
             json={
-                "model": "qwen2.5-3b-instruct-q4_k_m",
+                "model": "qvikhr-3-1.7b-instruct-noreasoning-q4_k_m",
                 "messages": [{"role": "user", "content": "ping"}],
                 "current_state": "(empty)",
             },
@@ -171,9 +171,80 @@ class TestDriftEndpoint:
         response = client.post(
             "/drift",
             json={
-                "model": "qwen2.5-3b-instruct-q4_k_m",
+                "model": "qvikhr-3-1.7b-instruct-noreasoning-q4_k_m",
                 "messages": [{"role": "user", "content": "ping"}],
                 "current_state": "(empty)",
             },
         )
         assert response.status_code == 502
+
+    def test_temperature_matches_qvikhr_recommendation(self, drift_client):
+        """QVikhr model card рекомендует temperature=0.3 для instruction-following.
+
+        Если кто-то сбросит обратно на 0.0 — тест поймает рассинхрон с model card.
+        """
+        client, _, _, mock_instance = drift_client
+        mock_instance.create_chat_completion.return_value = {
+            "choices": [{"message": {"content": json.dumps({"hints": []})}}]
+        }
+        import drift as drift_mod
+
+        drift_mod._state["model"] = None
+        drift_mod._state["path"] = None
+
+        response = client.post(
+            "/drift",
+            json={
+                "model": "qvikhr-3-1.7b-instruct-noreasoning-q4_k_m",
+                "messages": [{"role": "user", "content": "ping"}],
+                "current_state": "(empty)",
+            },
+        )
+        assert response.status_code == 200
+        call_kwargs = mock_instance.create_chat_completion.call_args.kwargs
+        assert call_kwargs["temperature"] == 0.3
+        assert call_kwargs["response_format"] == {"type": "json_object"}
+
+    def test_msg_ref_int_is_normalized_to_str(self, drift_client):
+        """QVikhr-3-1.7B отдаёт msg_ref как int (Qwen2.5 — str).
+        DriftHint принимает оба, но нормализует к str в JSON-ответе."""
+        client, _, _, mock_instance = drift_client
+        mock_instance.create_chat_completion.return_value = {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "hints": [
+                                    {
+                                        "fact": "Дракон стал союзником",
+                                        "contradicts_field": None,
+                                        "adds_field": "current_allies",
+                                        "msg_ref": 1,            # int от QVikhr
+                                        "confidence": 0.95,
+                                    },
+                                ]
+                            }
+                        )
+                    }
+                }
+            ]
+        }
+        import drift as drift_mod
+
+        drift_mod._state["model"] = None
+        drift_mod._state["path"] = None
+
+        response = client.post(
+            "/drift",
+            json={
+                "model": "qvikhr-3-1.7b-instruct-noreasoning-q4_k_m",
+                "messages": [{"role": "user", "content": "ping"}],
+                "current_state": "(empty)",
+            },
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert len(body["hints"]) == 1
+        assert body["hints"][0]["msg_ref"] == "1"  # int нормализован в str
+        assert body["hints"][0]["adds_field"] == "current_allies"

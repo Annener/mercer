@@ -1,8 +1,10 @@
 """Drift provider that delegates to pdf-sidecar ``POST /drift``.
 
-This is the default backend — Qwen2.5-3B-Instruct (Q4_K_M) running
-inside the pdf-sidecar container. See ``pdf-sidecar/drift.py`` for the
-handler implementation.
+This is the default backend — QVikhr-3-1.7B-Instruct-noreasoning
+(Q4_K_M, ~1.1 GB) running inside the pdf-sidecar process on the host.
+On macOS M-series the model is loaded onto Metal GPU by default
+(``DRIFT_FORCE_CPU=0``). See ``pdf-sidecar/drift.py`` for the handler
+implementation.
 """
 from __future__ import annotations
 

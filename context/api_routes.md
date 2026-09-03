@@ -27,6 +27,7 @@
 | `gen_models_router` | — | `settings/gen_models.py` |
 | `emb_models_router` | — | `settings/emb_models.py` |
 | `rerank_models_router` | — | `settings/rerank_models.py` |
+| `drift_models_router` | — | `settings/drift_models.py` |
 | `vaults_router` | — | `settings/vaults.py` |
 | `pipelines_router` | — | `settings/pipelines.py` |
 | `tags_router` | `/tags` | `settings/tags.py` |
@@ -140,6 +141,54 @@ POST   /api/chats/{chat_id}/update-mode/apply
 DELETE /api/chats/{chat_id}/update-mode/session
     — Отменить сессию, удалить из Redis
 ```
+
+---
+
+## Context Draft API (`api/context_draft.py`)
+
+Префикс `/api/chats/{chat_id}/context-draft`. Управление auto-draft campaign state (Context Engine Phase 3-4). Доступен только для campaign-чатов.
+
+```
+GET    /api/chats/{chat_id}/context-draft
+    — Получить текущий draft из Redis (`draft:campaign:{cid}:chat:{chatid}`).
+    — TTL 3 часа.
+    — Response: {"draft": ContextDraft | null}
+      ContextDraft: {
+        chat_id, campaign_id,
+        state_patch: [...],         # только state_patch ops (НЕ schema_changes, НЕ file_changes)
+        summary: str,
+        drift_hash: str,            # content hash drift hints; пересоздаётся только при изменении
+        drift_hints: [...],
+        created_at, expires_at
+      }
+
+POST   /api/chats/{chat_id}/context-draft/accept
+    — Применить state_patch операции через `campaign_state_value_service.apply_patch`.
+    — Очистить `chat.metadata.scene_state.drift` через `clear_drift`.
+    — Удалить draft из Redis.
+    — AuditLog: `context_draft_accepted` (campaign_id, applied_state_version, operations_count).
+    — Response: {"applied_state_version": int, "operations_count": int}
+    — 404 draft_not_found / chat_not_found
+    — 409 apply_failed (config_version conflict, source stale)
+
+POST   /api/chats/{chat_id}/context-draft/reject
+    — Удалить draft из Redis, очистить drift.
+    — AuditLog: `context_draft_rejected` (campaign_id).
+    — 404 chat_not_found
+    — 422 campaign_required
+
+POST   /api/chats/{chat_id}/context-draft/check-files
+    — Создать Update Mode session с уже принятым state_patch как обязательным контекстом (Phase 5).
+    — Proposal: `state_patch=draft["state_patch"]`, `field_changes=[]`, `file_changes=[]`, `confidence=1.0`.
+    — LLM в Update Mode получает инструкцию «state_patch уже применён» → генерирует ТОЛЬКО file_changes.
+    — AuditLog: `context_draft_check_files` (session_id, campaign_id).
+    — Response: {"session_id": "<uuid>"}
+    — 404 draft_not_found / chat_not_found
+```
+
+**Связь с Update Mode:** после `POST .../context-draft/check-files` клиент получает `session_id` и UI рендерит `UpdateModePanel` с готовыми `file_changes`. Пользователь проходит обычный review → apply flow (`PATCH .../update-mode/review` → `POST .../update-mode/apply`).
+
+---
 
 ### Коды ошибок (application-level)
 
@@ -294,6 +343,26 @@ POST   /api/settings/models/rerank/{model_id:path}/activate
 POST   /api/settings/models/rerank/{model_id:path}/deactivate
 POST   /api/settings/models/rerank/{model_id:path}/check
 ```
+
+### Drift Models (`settings/drift_models.py`)
+
+Используется Context Engine (Phase 2a) для drift detection — сравнения последних сообщений с активным Campaign State. CRUD встроен в `app/services/settings_service.py:395-470`.
+
+```
+GET    /api/settings/models/drift
+POST   /api/settings/models/drift                           (status 201)
+PUT    /api/settings/models/drift/{model_id:path}
+DELETE /api/settings/models/drift/{model_id:path}           (status 204)
+POST   /api/settings/models/drift/{model_id:path}/activate
+POST   /api/settings/models/drift/{model_id:path}/deactivate
+POST   /api/settings/models/drift/{model_id:path}/check
+```
+
+Провайдеры:
+- `host_sidecar` — вызывает `POST {base_url}/drift` на `pdf-sidecar` (дефолтный, host = `host.docker.internal:8765`).
+- `openai_compatible` — внешний OpenAI-compatible endpoint.
+
+Seed по умолчанию: `drift-local-default` → `qvikhr-3-1.7b-instruct-noreasoning-q4_k_m` через `host_sidecar` (миграции 0015, 0016).
 
 ### Кампании (`settings/campaigns.py`)
 
