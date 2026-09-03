@@ -2611,6 +2611,37 @@ class UpdateModeStateFieldChangeApplyResult(BaseModel):
     new_config_version: int = 0
 
 
+class DriftPhase(StrEnum):
+    """Фазы drift loop, которые фронтенд показывает в popup."""
+
+    IDLE = "idle"
+    DETECTING = "detecting"
+    DRAFTING = "drafting"
+    DRAFT_READY = "draft_ready"
+    ERROR = "error"
+
+
+class DriftStatus(BaseModel):
+    """Текущее состояние drift loop для одного чата.
+
+    Эмитится через SSE ``POST /api/chats/{id}/events`` и poll
+    ``GET /api/chats/{id}/drift-status``. ``published_at`` — серверное
+    время, фронт использует его для TTL-logic (status старше 60 сек
+    считается неактуальным).
+    """
+
+    chat_id: str
+    phase: DriftPhase = DriftPhase.IDLE
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    published_at: datetime
+    message: str | None = None
+    drift_hints_count: int | None = None
+    draft_ops_count: int | None = None
+    draft_summary: str | None = None
+    error: str | None = None
+
+
 # Resolve forward references for the model_validate() machinery.
 ContextUpdateProposal.model_rebuild()
 UpdateModeSession.model_rebuild()

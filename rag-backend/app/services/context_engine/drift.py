@@ -5,12 +5,18 @@
 подключаемый провайдер (host_sidecar / openai_compatible) через
 ``app.providers.drift``.
 
+Phase 3: история чата периодически сжимается через ``ChatSummarizer``
+(см. ``chat_summarizer.py``). DriftDetector получает
+``[running_summary] + [последние 4 сообщения]`` вместо сырых последних N —
+это адаптивно под n_ctx drift-модели и не теряет контекст длинных диалогов.
+
 Все ошибки (провайдер недоступен, БД, парсинг) логируются и тихо
 возвращают ``None`` — chat не должен ломаться из-за drift-detection.
 
 Settings читаются из PlatformSetting через ``settings_service.get``:
 - ``drift.confidence_threshold`` (default 0.5)
-- ``drift.max_messages`` (default 10)
+- ``drift.max_messages`` (default 10) — используется только когда
+  summarizer отключён (нет summary в БД или summary errored).
 """
 from __future__ import annotations
 
@@ -20,6 +26,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.db.models import ChatHistorySummary, Message
 from app.providers.drift.base import DriftProvider
 from app.providers.drift.host_sidecar import HostSidecarDriftProvider
 from app.providers.drift.openai_compatible import OpenAICompatibleDriftProvider
@@ -27,6 +34,7 @@ from app.services.campaign_state_compiler import compile_campaign_state
 from app.services.campaign_state_value_service import campaign_state_value_service
 from app.services.settings_service import settings_service
 
+from .chat_summarizer import KEEP_LAST_N, ChatSummarizer
 from .scene_memory import write_drift
 
 logger = logging.getLogger(__name__)
@@ -56,9 +64,15 @@ class DriftDetector:
         *,
         db_factory: async_sessionmaker[AsyncSession],
         redis_client: Any,
+        summarizer: ChatSummarizer | None = None,
     ) -> None:
         self.db_factory = db_factory
         self.redis = redis_client
+        # Summarizer опционален — если не передан, drift работает в legacy
+        # режиме (читает последние max_messages целиком, без сжатия).
+        # Но лучше всегда передавать — без него длинные чаты упираются
+        # в n_ctx drift-модели.
+        self.summarizer = summarizer
 
     async def detect(self, chat_id: str) -> list[dict[str, Any]] | None:
         """Запустить drift-detection для одного чата.
@@ -80,6 +94,12 @@ class DriftDetector:
     async def _detect_inner(
         self, chat_id: str, db: AsyncSession
     ) -> list[dict[str, Any]] | None:
+        # 0. Phase 3: summarizer (fire-and-forget) — обновит summary до
+        #    того, как мы прочитаем сообщения. Если summarizer упал —
+        #    просто продолжим со старым summary (или без него).
+        if self.summarizer is not None:
+            await self.summarizer.maybe_summarize(chat_id)
+
         # 1. Активная drift-модель
         drift_model = await settings_service.get_active_drift_model(db)
         if drift_model is None:
@@ -90,8 +110,11 @@ class DriftDetector:
         threshold = await self._get_confidence_threshold(db)
         max_messages = await self._get_max_messages(db)
 
-        # 3. Сообщения
-        messages = await self._read_last_messages(chat_id, db, n=max_messages)
+        # 3. Сообщения: summary + последние KEEP_LAST_N (если есть summary)
+        #    или последние max_messages (legacy fallback).
+        messages = await self._read_messages_for_drift(
+            chat_id, db, max_messages_legacy=max_messages
+        )
         if not messages:
             logger.debug("drift.detect: no messages, skip chat_id=%s", chat_id)
             return None
@@ -222,6 +245,85 @@ class DriftDetector:
         return [
             {"role": m.role, "content": m.content} for m in reversed(msgs)
         ]
+
+    async def _read_messages_for_drift(
+        self, chat_id: str, db: AsyncSession, *, max_messages_legacy: int
+    ) -> list[dict[str, str]]:
+        """Phase 3: читает историю чата для drift-детектора.
+
+        Возвращает:
+          - если есть ``ChatHistorySummary`` для чата:
+              ``[recap(role=user)] + последние KEEP_LAST_N сообщений``
+          - если summary нет:
+              последние ``max_messages_legacy`` сообщений (legacy fallback)
+
+        Гарантия: recap-блок и последние сообщения не пересекаются
+        (summarizer уплотняет только ``[0 … total - KEEP_LAST_N)``).
+        """
+        from sqlalchemy import select
+
+        try:
+            chat_uuid = _uuid.UUID(chat_id)
+        except (ValueError, TypeError):
+            return []
+
+        # 1. Пытаемся достать summary.
+        try:
+            summary_row = await db.get(ChatHistorySummary, chat_uuid)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "drift.detect: read summary failed chat_id=%s: %s",
+                chat_id, exc,
+            )
+            summary_row = None
+
+        # 2. Берём последние KEEP_LAST_N сообщений.
+        try:
+            stmt = (
+                select(Message)
+                .where(Message.chat_id == chat_uuid)
+                .order_by(Message.created_at.desc())
+                .limit(KEEP_LAST_N)
+            )
+            result = await db.execute(stmt)
+            recent = list(result.scalars().all())
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("drift.detect: read recent messages failed: %s", exc)
+            return []
+        # Хронологический порядок.
+        recent = list(reversed(recent))
+
+        # 3. Собираем выход.
+        out: list[dict[str, str]] = []
+        if (
+            summary_row is not None
+            and summary_row.summary_text
+            and summary_row.summarized_messages_count > 0
+        ):
+            recap = (
+                "[Conversation recap from earlier turns — characters, places, "
+                "items, ongoing goals and unresolved threads]:\n"
+                + summary_row.summary_text
+            )
+            # role=user: chatml-формат sidecar-а ожидает user/system чередование;
+            # "user" — нейтральный выбор для фактического контекста, который
+            # предшествует текущему диалогу.
+            out.append({"role": "user", "content": recap})
+            logger.debug(
+                "drift.detect: used summary chat_id=%s chars=%d recent=%d",
+                chat_id, len(summary_row.summary_text), len(recent),
+            )
+
+        if not recent and not out:
+            # Совсем нет истории — fallback на legacy, чтобы drift хотя бы
+            # попробовал обработать хоть что-то.
+            return await self._read_last_messages(
+                chat_id, db, n=max_messages_legacy
+            )
+
+        for m in recent:
+            out.append({"role": m.role, "content": m.content})
+        return out
 
     def _build_provider(self, model: Any) -> DriftProvider | None:
         provider_name = getattr(model, "provider", None)

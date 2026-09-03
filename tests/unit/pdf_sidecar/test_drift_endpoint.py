@@ -205,6 +205,54 @@ class TestDriftEndpoint:
         assert call_kwargs["temperature"] == 0.3
         assert call_kwargs["response_format"] == {"type": "json_object"}
 
+    def test_summarize_does_not_send_json_response_format(self, drift_client):
+        """Регрессия: /drift/summarize не должен пробрасывать response_format
+
+        в llama.cpp. Раньше ``_complete_once`` хардкодил
+        ``response_format={"type": "json_object"}`` — модель получала
+        конфликт (system prompt просит prose, JSON-mode требует JSON)
+        и отдавала ``{}``. ``chat_summarizer`` на стороне rag-backend
+        видел ``summary_chars=2`` и писал ``{}`` в БД.
+
+        После фикса: ``/drift`` всё ещё использует JSON-режим
+        (см. test_temperature_matches_qvikhr_recommendation), а
+        ``/drift/summarize`` идёт в free-text режиме.
+        """
+        client, _, _, mock_instance = drift_client
+        mock_instance.create_chat_completion.return_value = {
+            "choices": [
+                {
+                    "message": {
+                        "content": "Heroes met a dragon in the eastern caves."
+                    }
+                }
+            ]
+        }
+        import drift as drift_mod
+
+        drift_mod._state["model"] = None
+        drift_mod._state["path"] = None
+
+        response = client.post(
+            "/drift/summarize",
+            json={
+                "model": "qvikhr-3-1.7b-instruct-noreasoning-q4_k_m",
+                "previous_summary": "Earlier: heroes camped near the forest.",
+                "messages_to_compress": [
+                    {"role": "user", "content": "We entered the caves."},
+                    {"role": "assistant", "content": "A dragon appeared."},
+                ],
+            },
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["summary"] == "Heroes met a dragon in the eastern caves."
+        call_kwargs = mock_instance.create_chat_completion.call_args.kwargs
+        assert "response_format" not in call_kwargs, (
+            f"/drift/summarize must not pass response_format to llama.cpp, "
+            f"got: {call_kwargs.get('response_format')!r}"
+        )
+
     def test_msg_ref_int_is_normalized_to_str(self, drift_client):
         """QVikhr-3-1.7B отдаёт msg_ref как int (Qwen2.5 — str).
         DriftHint принимает оба, но нормализует к str в JSON-ответе."""

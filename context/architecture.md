@@ -379,6 +379,60 @@ chat.py plain_stream final event
 
 **Открытые вопросы** по этой подсистеме: `context/open-questions.md` — глобальная настройка вкл/выкл, визуализация фона для пользователя, ускорение pipeline, саммаризация контекста.
 
+### Drift loop: control flags + DriftStatusBus
+
+**Платформенные ключи** (`platform_settings`, миграция `0017_drift_loop_enabled`):
+
+| Ключ | Тип | Назначение |
+|---|---|---|
+| `drift.enabled` | bool | Master switch. Если false — ни trigger, ни idle scan не запускают detector и drafter. |
+| `drift.detect_enabled` | bool | Отдельный стоп-кран для detector. Если false — hints не пишутся в `scene_state.drift`. |
+| `drift.draft_enabled` | bool | Если false — detector работает, но `CampaignStateDrafter` не запускается. |
+
+Все три читаются `DriftLoop._get_flags()` с TTL-кешем 5 сек. Кеш сбрасывается
+через `drift_loop.invalidate_flags()` из `app/api/settings/params.py` —
+при `PUT /api/settings/params/{key}` и `POST /api/settings/reset` если
+ключ входит в `_DRIFT_FLAG_KEYS`. Fail-open: если ключ в БД не найден
+или `settings_service.get` упал, считается `True`.
+
+**`DriftStatusBus`** (`app/services/context_engine/status_bus.py`) —
+in-memory pub/sub для фаз drift loop + Redis fallback:
+
+- In-memory: `dict[chat_id, set[asyncio.Queue]]` — подписчики SSE-handler-а.
+- Redis: ключ `drift:status:{chat_id}`, TTL 60 сек. Используется poll-endpoint-ом
+  и для catch-up при переподключении SSE-клиента (первое значение из Redis
+  отдаётся сразу при подписке).
+- Подписчик: `@asynccontextmanager`-метод `bus.subscribe(chat_id) as queue`
+  автоматически регистрирует/снимает подписку и ставит последнее значение
+  из Redis в очередь при входе.
+- `publish(chat_id, DriftStatus)` — записывает в Redis + раздаёт всем
+  подписчикам через `queue.put_nowait`. При переполнении очереди событие
+  дропается (но уже зафиксировано в Redis).
+
+**Фазы** (`DriftPhase` в `shared_contracts/models.py`):
+`idle` / `detecting` / `drafting` / `draft_ready` / `error`.
+
+**SSE-эндпоинт** `GET /api/chats/{chat_id}/events` (`app/api/chat_events.py`):
+- `media_type=text/event-stream`, формат `data: <json>\n\n`.
+- Heartbeat `: heartbeat\n\n` каждые 15 секунд без активности — чтобы
+  reverse-proxy не отстреливал idle-стрим.
+- Catch-up: первое сообщение — последний статус из Redis.
+- `request.is_disconnected()` проверяется каждые 15 секунд.
+
+**Poll-fallback** `GET /api/chats/{chat_id}/drift-status` — последний статус
+из Redis (или `idle` если ключа нет). Полезен для клиентов за прокси,
+режущим EventSource.
+
+**Фронтенд** (`DriftStatusPopup.tsx`):
+- Стеклянный popup (`backdrop-blur-md bg-white/60 dark:bg-black/40`,
+  `rounded-2xl`, `fixed top-4 right-4 z-40`, ширина 320px).
+- При получении `draft_ready` раскрывается и показывает первые 1-2 операции;
+  кнопка «Открыть» скроллит к существующей `ContextDraftCard` и закрывает
+  popup.
+- Через 5 секунд после `idle`-фазы авто-сворачивается. На `error` не
+  сворачивается автоматически — пользователь должен увидеть.
+- Отображается только если у чата есть `campaign_id`.
+
 ### Potentially Stale (Stage 7)
 
 - `CampaignStateStaleService.compute_stale_status(campaign_id, db) -> CampaignStateStaleStatus` —

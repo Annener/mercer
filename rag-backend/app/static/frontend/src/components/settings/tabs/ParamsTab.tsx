@@ -23,6 +23,7 @@ interface ParamGroup {
   id: string;
   title: string;
   keys: string[];
+  description?: string;
 }
 
 const PARAM_GROUPS: ParamGroup[] = [
@@ -47,6 +48,16 @@ const PARAM_GROUPS: ParamGroup[] = [
       'pdf_sidecar.timeout_seconds',
       'pdf_sidecar.url',
     ],
+  },
+  {
+    id: 'drift',
+    title: 'Drift loop (фоновое обновление контекста)',
+    keys: ['drift.enabled', 'drift.detect_enabled', 'drift.draft_enabled'],
+    description:
+      'Локальная модель (QVikhr) анализирует последние сообщения чата и Campaign State. ' +
+      'При расхождениях формируется draft, который появляется в чате как «Возможные обновления». ' +
+      'Отключение останавливает фоновый анализ — карточка предложений перестанет появляться. ' +
+      'Сама модель при этом остаётся активной и доступной в её собственных настройках.',
   },
 ];
 
@@ -121,6 +132,7 @@ export function ParamsTab() {
         <ParamGroupCard
           key={group.id}
           title={group.title}
+          description={group.description}
           params={group.params}
           draft={draft}
           onChange={(key, value) => setDraft((d) => ({ ...d, [key]: value }))}
@@ -190,7 +202,12 @@ export function ParamsTab() {
 }
 
 function buildGroups(params: PlatformSetting[]): {
-  groups: Array<{ id: string; title: string; params: PlatformSetting[] }>;
+  groups: Array<{
+    id: string;
+    title: string;
+    description?: string;
+    params: PlatformSetting[];
+  }>;
   ungrouped: PlatformSetting[];
 } {
   const byKey = new Map<string, PlatformSetting>();
@@ -199,7 +216,12 @@ function buildGroups(params: PlatformSetting[]): {
     byKey.set(p.key, p);
   }
 
-  const groups: Array<{ id: string; title: string; params: PlatformSetting[] }> = [];
+  const groups: Array<{
+    id: string;
+    title: string;
+    description?: string;
+    params: PlatformSetting[];
+  }> = [];
   const usedKeys = new Set<string>();
 
   for (const g of PARAM_GROUPS) {
@@ -211,7 +233,14 @@ function buildGroups(params: PlatformSetting[]): {
         usedKeys.add(key);
       }
     }
-    if (items.length > 0) groups.push({ id: g.id, title: g.title, params: items });
+    if (items.length > 0) {
+      groups.push({
+        id: g.id,
+        title: g.title,
+        description: g.description,
+        params: items,
+      });
+    }
   }
 
   const ungrouped = [...byKey.values()]
@@ -223,14 +252,18 @@ function buildGroups(params: PlatformSetting[]): {
 
 interface ParamGroupCardProps {
   title: string;
+  description?: string;
   params: PlatformSetting[];
   draft: Record<string, string | number | boolean>;
   onChange: (key: string, value: string | number | boolean) => void;
 }
 
-function ParamGroupCard({ title, params, draft, onChange }: ParamGroupCardProps) {
+function ParamGroupCard({ title, description, params, draft, onChange }: ParamGroupCardProps) {
   return (
     <Card title={title}>
+      {description && (
+        <p className="mb-3 text-xs leading-relaxed text-text-muted">{description}</p>
+      )}
       <div className="max-w-[640px] space-y-3">
         {params.map((p) => (
           <ParamRow

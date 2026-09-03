@@ -47,6 +47,7 @@ from shared_contracts.models import (
     ClarificationAnswer,
     ClarificationResponse,
     CreateChatResponse,
+    MessageSource,
     PipelineExecutionContext,
     SearchHit,
     SendMessageRequest,
@@ -438,11 +439,31 @@ async def get_chat_history(
                 content=m.content,
                 created_at=m.created_at,
                 pipeline_id=m.pipeline_id,
+                sources=_parse_message_sources(m.sources),
             )
             for m in messages
         ],
         vault_enabled=await _vault_enabled(db, chat.vault_id),
     )
+
+
+def _parse_message_sources(raw: list[dict[str, Any]] | None) -> list[MessageSource]:
+    """Парсим persisted `Message.sources` в список `MessageSource`.
+
+    Мусорные записи (не dict, нет обязательных полей, битый JSON)
+    пропускаем — UI не должен ломаться из-за испорченной строки в БД.
+    """
+    if not raw:
+        return []
+    parsed: list[MessageSource] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        try:
+            parsed.append(MessageSource.model_validate(item))
+        except Exception:  # noqa: BLE001 — испорченные записи пропускаем
+            logger.warning("get_chat_history: skipped malformed source: %r", item)
+    return parsed
 
 
 @router.post("/{chat_id}/rename", response_model=CreateChatResponse)
@@ -788,9 +809,38 @@ async def send_message_stream(
             yield "data: [DONE]\n\n"
             return
 
+        # Stage 8.5: load retrieval tool settings up-front so we know whether
+        # the model will get the search_knowledge tool — this gates the
+        # query rewriter (which is only useful when a downstream consumer
+        # actually feeds the rewritten query into retrieval).
+        from app.services.retrieval_tool_settings import load_retrieval_tool_settings
+
+        tool_settings = await load_retrieval_tool_settings(db)
+        use_tool = tool_settings.tool_enabled and bool(_provider)
+
         # ── 1. Query rewriting ─────────────────────────────────────────────────
-        if bool(context.history):
-            yield _step("Переформулирую вопрос для поиска в базе знаний...")
+        # The rewriter is only useful when the rewritten query will actually
+        # be consumed by some downstream retrieval step. Otherwise it is a
+        # wasted LLM call (1–3s of extra latency) and produces a misleading
+        # «Переформулирую вопрос…» status. So we gate on three conditions,
+        # any one of which means retrieval will happen later in this turn:
+        #   • rag_prefill_enabled        → prefill RAG consumes rewritten query
+        #   • locked_pipeline_id (real)  → pipeline path will rerank step retrieval
+        #   • tool_enabled               → AgentLoop + search_knowledge
+        _pipeline_locked_real = bool(_locked_pipeline_id) and _locked_pipeline_id != PIPELINE_NONE_ID
+        need_rewrite = (
+            bool(_chat.rag_prefill_enabled)
+            or _pipeline_locked_real
+            or use_tool
+        )
+        if need_rewrite and bool(context.history):
+            if _chat.rag_prefill_enabled:
+                _rewrite_status = "Готовлю поисковый запрос для подмешивания базы знаний…"
+            elif _pipeline_locked_real:
+                _rewrite_status = "Готовлю запрос для пайплайна…"
+            else:
+                _rewrite_status = "Готовлю запрос для поиска в базе знаний…"
+            yield _step(_rewrite_status)
             from app.db.models import Domain as DomainModel
 
             domain_obj = (
@@ -884,13 +934,9 @@ async def send_message_stream(
                 else _RAG_DECIDES_HINT.lstrip()
             )
 
-        # Stage 8.5: load retrieval tool settings and decide whether the
-        # model gets the `search_knowledge` tool (conditional RAG) or
-        # falls back to the unconditional single-shot retrieval path.
-        from app.services.retrieval_tool_settings import load_retrieval_tool_settings
-
-        tool_settings = await load_retrieval_tool_settings(db)
-        use_tool = tool_settings.tool_enabled and bool(_provider)
+        # Stage 8.5: tool settings already loaded above. `use_tool` decides
+        # whether the model gets the `search_knowledge` tool (conditional RAG)
+        # or falls back to the unconditional single-shot retrieval path.
 
         # ── 2b. Prefill RAG (Sprint 2) ──────────────────────────────────────────
         # Per-chat gated: only when rag_prefill_enabled is set on the chat itself.
@@ -965,10 +1011,23 @@ async def send_message_stream(
                     redis=_redis,
                 ):
                     if event.type == "round_start":
-                        yield _step(
-                            f"Раунд {event.round + 1}/{event.payload.get('max_rounds', '?')} "
-                            f"({event.payload.get('policy', 'assistive')})"
+                        # Translate the agent-loop phase into a user-facing
+                        # status. Legacy «Round X/Y (grounded)» was jargon-y:
+                        # replaced with three clear messages.
+                        #   • initial + grounded → model is forced to fetch evidence
+                        #   • followup            → model may extend search or write
+                        #   • final               → model must write the answer
+                        _phase = event.payload.get("phase")
+                        _effective_grounded = bool(
+                            event.payload.get("effective_grounded", False)
                         )
+                        if _phase == "initial" and _effective_grounded:
+                            _round_status = "Ищу информацию в базе знаний…"
+                        elif _phase == "final":
+                            _round_status = "Готовлю финальный ответ…"
+                        else:  # "followup" (covers also non-grounded initial)
+                            _round_status = "Думаю над ответом…"
+                        yield _step(_round_status)
                     elif event.type == "tool_call":
                         tool_name = event.payload.get("tool")
                         queries = event.payload.get("queries") or []

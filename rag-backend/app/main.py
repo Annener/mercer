@@ -15,6 +15,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api.chat import router as chat_router
+from app.api.chat_events import router as chat_events_router
 from app.api.config_api import router as config_router
 from app.api.db_management import router as db_management_router
 from app.api.fulldoc_confirm import router as fulldoc_confirm_router
@@ -27,9 +28,11 @@ from app.api.watchdog_settings import router as watchdog_router
 from app.db.migrations import run_migrations
 from app.db.session import SessionLocal, dispose_engine
 from app.logging_config import setup_logging
+from app.services.context_engine.chat_summarizer import ChatSummarizer
 from app.services.context_engine.draft import CampaignStateDrafter
 from app.services.context_engine.drift import DriftDetector
 from app.services.context_engine.loop import DriftLoop
+from app.services.context_engine.status_bus import DriftStatusBus
 from app.services.domain_service import domain_service
 from app.services.settings_service import settings_service
 
@@ -69,10 +72,34 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Phase 2b: DriftLoop — фоновый drift-detection после каждого turn-а.
     # Drift провайдер может быть недоступен — loop стартует в любом случае,
     # а detector.detect тихо возвращает None при ошибках.
-    drift_detector = DriftDetector(
-        db_factory=SessionLocal, redis_client=redis_client
+    #
+    # Phase 3: ChatSummarizer — сжимает длинную историю чата через тот же
+    # QVikhr-3-1.7B (host_sidecar) блоками по 4 сообщения, чтобы drift-вызов
+    # не упирался в n_ctx модели. Подключается к DriftDetector — detector
+    # запускает ``maybe_summarize`` перед каждым drift-detect.
+    sidecar_url = os.getenv("PDF_SIDECAR_URL", "http://host.docker.internal:8765")
+    chat_summarizer = ChatSummarizer(
+        db_factory=SessionLocal,
+        sidecar_base_url=sidecar_url,
+        sidecar_model_name=os.getenv(
+            "DRIFT_MODEL_NAME", "qvikhr-3-1.7b-instruct-noreasoning-q4_k_m"
+        ),
+        timeout_seconds=int(os.getenv("DRIFT_SUMMARIZE_TIMEOUT", "120")),
     )
-    drift_loop = DriftLoop(detector=drift_detector, redis=redis_client)
+    drift_detector = DriftDetector(
+        db_factory=SessionLocal,
+        redis_client=redis_client,
+        summarizer=chat_summarizer,
+    )
+    # Phase 6: статусная шина для SSE/poll уведомлений о drift фазах.
+    drift_status_bus = DriftStatusBus(redis_client)
+    app.state.drift_status_bus = drift_status_bus
+
+    drift_loop = DriftLoop(
+        detector=drift_detector,
+        redis=redis_client,
+        status_bus=drift_status_bus,
+    )
 
     # Phase 3: CampaignStateDrafter — план auto-draft на основе drift hints.
     # Сохраняется в Redis (TTL 3 часа). Использует активную generation-модель
@@ -114,6 +141,8 @@ app.include_router(watchdog_router)
 app.include_router(update_mode_router)
 # Phase 4: Context Draft API (auto-draft campaign state)
 app.include_router(context_draft_router)
+# Phase 6: Chat events SSE/poll (drift statuses, draft ready)
+app.include_router(chat_events_router)
 
 # === Статика ===
 STATIC_DIR = Path(__file__).parent / "static"

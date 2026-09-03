@@ -899,6 +899,14 @@ class AgentLoop:
 `final` event содержит `rounds: list[AgentRoundResult]` где у каждого round
 есть поле `sources: list[MessageSource]` (для audit).
 
+`round_start` event payload: `{max_rounds, policy, phase, effective_grounded, tool_choice}`.
+`phase` ∈ `"initial" | "followup" | "final"`:
+- `initial` — round 0 + `tool_choice=required` (forced grounded: модель ОБЯЗАНА сначала позвать search_knowledge)
+- `followup` — все промежуточные раунды (tool_choice=auto)
+- `final` — последний раунд (tool_choice=none: модель должна дать ответ)
+Чат-слой (`chat.py::plain_stream`) транслирует `phase` в человеко-читаемый
+`step_status` («Ищу информацию в базе знаний…» / «Думаю над ответом…» / «Готовлю финальный ответ…»).
+
 ### Подключение в `chat.py` (Stage 8.5 + Sprint 2)
 
 `plain_stream` имеет три ветки (Sprint 2):

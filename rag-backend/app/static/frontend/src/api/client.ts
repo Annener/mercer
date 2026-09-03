@@ -1034,6 +1034,18 @@ export class MercerAPI extends HttpClient {
       {},
     );
   }
+
+  // ============================================================
+  // Chat events — drift status SSE/poll (Phase 6)
+  // ============================================================
+
+  getChatEventsStreamUrl(chatId: T.UUID): string {
+    return `/api/chats/${chatId}/events`;
+  }
+
+  async getDriftStatus(chatId: T.UUID): Promise<T.DriftStatus> {
+    return this.get<T.DriftStatus>(`/api/chats/${chatId}/drift-status`);
+  }
 }
 
 export const api = new MercerAPI();

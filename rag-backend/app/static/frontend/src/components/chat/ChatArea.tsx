@@ -1,4 +1,5 @@
 import { useEffect, useState, useRef, useCallback, type KeyboardEvent } from 'react';
+import { STATUS_DEBOUNCE_MS, useDebouncedStatus } from '@/hooks/useDebouncedStatus';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Button, Card } from '@/components/ui';
 import { useChatStore, useDomainStore, useThemeStore } from '@/stores';
@@ -15,6 +16,7 @@ import { FullDocPanel, type FullDocCandidate } from '@/components/chat/cards/Ful
 import { ToolCallCard, type ToolCallInfo, type ToolResultInfo } from '@/components/chat/cards/ToolCallCard';
 import { ProposalCard } from '@/components/chat/cards/ProposalCard';
 import { ContextDraftCard, useContextDraftQuery } from './ContextDraftCard';
+import { DriftStatusPopup } from './DriftStatusPopup';
 import {
   PipelineProgress,
   PipelineBadge,
@@ -74,7 +76,21 @@ export function ChatArea() {
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const userScrolledUpRef = useRef(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const [processingText, setProcessingText] = useState<string | null>(null);
+  const { displayed: debouncedProcessingText, push: pushStatus, clear: clearStatus } =
+    useDebouncedStatus(STATUS_DEBOUNCE_MS);
+  // `processingText` рендерится в <ProcessingStatus>.
+  const processingText: string | null = debouncedProcessingText;
+
+  // Back-compat обёртка: ВСЕ существующие callsites `setProcessingText(t)`
+  // роутятся через debouncer. `setProcessingText(null)` сбрасывает
+  // сразу (и pending, и displayed).
+  const setProcessingText = useCallback(
+    (next: string | null) => {
+      if (next === null) clearStatus();
+      else pushStatus(next);
+    },
+    [pushStatus, clearStatus],
+  );
   const [inlines, setInlines] = useState<InlineItem[]>([]);
   const [, setTools] = useState<ToolsState>({});
   const [toolsResults, setToolsResults] = useState<ToolsResultsState>({});
@@ -83,12 +99,27 @@ export function ChatArea() {
 
   // Тип для nested stream, возвращаемого confirm/resume/fulldoc — обрабатываем так же, как внешний стрим
   const handleNestedStream = useCallback(
-    async (stream: ReadableStream<Uint8Array> | unknown): Promise<{ streamedText: string } | undefined> => {
+    async (
+      stream: ReadableStream<Uint8Array> | unknown,
+    ): Promise<{ streamedText: string; sources: Source[] } | undefined> => {
       if (!(stream instanceof ReadableStream)) return undefined;
       const reader = stream.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
       let acc = '';
+      const sourcesAcc: Source[] = [];
+      const sourcesSeen = new Set<string>();
+      const addSources = (raw: unknown) => {
+        if (!Array.isArray(raw)) return;
+        for (const s of raw) {
+          if (!s || typeof s !== 'object') continue;
+          const src = s as Source;
+          const key = `${src.path ?? ''}#${src.page ?? ''}`;
+          if (sourcesSeen.has(key)) continue;
+          sourcesSeen.add(key);
+          sourcesAcc.push(src);
+        }
+      };
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -108,15 +139,19 @@ export function ChatArea() {
               setProcessingText(null);
             } else if (type === 'step_status' && typeof parsed.text === 'string') {
               setProcessingText(parsed.text);
+            } else if (type === 'sources') {
+              addSources(parsed.sources);
+            } else if (type === 'tool_result') {
+              addSources(parsed.sources);
             }
           } catch {
             /* ignore */
           }
         }
       }
-      return { streamedText: acc };
+      return { streamedText: acc, sources: sourcesAcc };
     },
-    [],
+    [setProcessingText],
   );
 
   const removeInline = (predicate: (item: InlineItem) => boolean) => {
@@ -164,13 +199,26 @@ export function ChatArea() {
       setLastProposalRound(null);
       const stream = await api.sendMessage(currentChatId, content, streamEnabled, signal);
       if (!(stream instanceof ReadableStream)) {
-        return stream;
+        return { streamedText: '', sources: [] as Source[] };
       }
       const reader = stream.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
       let acc = '';
       let progressDone: number[] = [];
+      const sourcesAcc: Source[] = [];
+      const sourcesSeen = new Set<string>();
+      const addSources = (raw: unknown) => {
+        if (!Array.isArray(raw)) return;
+        for (const s of raw) {
+          if (!s || typeof s !== 'object') continue;
+          const src = s as Source;
+          const key = `${src.path ?? ''}#${src.page ?? ''}`;
+          if (sourcesSeen.has(key)) continue;
+          sourcesSeen.add(key);
+          sourcesAcc.push(src);
+        }
+      };
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -317,6 +365,7 @@ export function ChatArea() {
                   note: parsed.note as string | undefined,
                 };
                 setToolsResults((prev) => ({ ...prev, [round]: result }));
+                addSources(parsed.sources);
                 break;
               }
               case 'progress': {
@@ -340,7 +389,7 @@ export function ChatArea() {
                 break;
               }
               case 'sources':
-                // sources отложенно — обработается после стрима
+                addSources(parsed.sources);
                 break;
               case 'clarification':
                 if (typeof parsed.question === 'string' || typeof parsed.content === 'string') {
@@ -360,14 +409,22 @@ export function ChatArea() {
         }
       }
       setProcessingText(null);
-      return { streamedText: acc };
+      return { streamedText: acc, sources: sourcesAcc };
     },
     onSuccess: (result) => {
       setStreaming(false);
       setStreamedText('');
       setProcessingText(null);
+      // Убираем инфо-плашки "Поиск в базе знаний" после полного завершения стрима.
+      // Proposal-карточки намеренно оставляем — это активная review-сессия.
+      setInlines((prev) => prev.filter((it) => it.kind !== 'tool_call'));
       if (result && 'streamedText' in result && result.streamedText) {
-        appendMessage({ role: 'assistant', content: result.streamedText });
+        const sources = 'sources' in result ? result.sources : undefined;
+        appendMessage({
+          role: 'assistant',
+          content: result.streamedText,
+          ...(sources && sources.length > 0 ? { sources } : {}),
+        });
       }
       // После завершения — обновим список чатов (мог появиться новый)
       void queryClient.invalidateQueries({ queryKey: ['chats'] });
@@ -447,7 +504,7 @@ export function ChatArea() {
     setToolsResults({});
     setStreamedText('');
     setProcessingText(null);
-  }, [currentChatId]);
+  }, [currentChatId, setProcessingText]);
 
   // Колбэки для карточек
   const onConfirmPipeline = useCallback(
@@ -457,7 +514,11 @@ export function ChatArea() {
       const result = await handleNestedStream(res);
       removeInline((it) => it.kind === 'confirm' && it.confirmToken === token);
       if (result?.streamedText) {
-        appendMessage({ role: 'assistant', content: result.streamedText });
+        appendMessage({
+          role: 'assistant',
+          content: result.streamedText,
+          ...(result.sources.length > 0 ? { sources: result.sources } : {}),
+        });
       }
     },
     [currentChatId, handleNestedStream, appendMessage],
@@ -483,7 +544,11 @@ export function ChatArea() {
       const result = await handleNestedStream(res);
       removeInline((it) => it.kind === 'validation' && it.resumeToken === token);
       if (result?.streamedText) {
-        appendMessage({ role: 'assistant', content: result.streamedText });
+        appendMessage({
+          role: 'assistant',
+          content: result.streamedText,
+          ...(result.sources.length > 0 ? { sources: result.sources } : {}),
+        });
       }
     },
     [currentChatId, handleNestedStream, appendMessage],
@@ -509,7 +574,11 @@ export function ChatArea() {
       const result = await handleNestedStream(res);
       removeInline((it) => it.kind === 'fulldoc');
       if (result?.streamedText) {
-        appendMessage({ role: 'assistant', content: result.streamedText });
+        appendMessage({
+          role: 'assistant',
+          content: result.streamedText,
+          ...(result.sources.length > 0 ? { sources: result.sources } : {}),
+        });
       }
     },
     [currentChatId, handleNestedStream, appendMessage],
@@ -521,7 +590,11 @@ export function ChatArea() {
     const result = await handleNestedStream(res);
     removeInline((it) => it.kind === 'fulldoc');
     if (result?.streamedText) {
-      appendMessage({ role: 'assistant', content: result.streamedText });
+      appendMessage({
+        role: 'assistant',
+        content: result.streamedText,
+        ...(result.sources.length > 0 ? { sources: result.sources } : {}),
+      });
     }
   }, [currentChatId, handleNestedStream, appendMessage]);
 
@@ -760,6 +833,10 @@ export function ChatArea() {
             )}
           </div>
         </footer>
+      )}
+
+      {currentChat?.campaign_id && currentChatId && (
+        <DriftStatusPopup chatId={currentChatId} />
       )}
     </main>
   );

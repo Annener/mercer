@@ -12,6 +12,10 @@ Phase 2b:
 - `write_drift` — записать drift hints в scene_state.drift (от DriftDetector)
 - `clear_drift` — очистить scene_state.drift
 
+Drift loop (Phase 2b/3):
+- `DriftLoop` — фоновая петля drift detection с cooldown и idle scan
+- `DriftStatusBus` — pub/sub для SSE/poll уведомлений о фазах drift
+
 Используется из `app.api.chat`, `app.api.pipeline_resume`,
 `app.services.pipeline_executor`, `app.services.agent_loop`.
 """
@@ -27,6 +31,7 @@ from .scene_memory import (
     read_scene_state,
     write_drift,
 )
+from .status_bus import DriftStatusBus
 
 __all__ = [
     "build_chat_context",
@@ -37,4 +42,5 @@ __all__ = [
     "merge_explicit",
     "write_drift",
     "clear_drift",
+    "DriftStatusBus",
 ]

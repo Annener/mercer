@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
@@ -12,6 +12,18 @@ from shared_contracts.models import PlatformSettingRead
 from .schemas import ParamUpdateRequest
 
 router = APIRouter()
+
+
+_DRIFT_FLAG_KEYS = {"drift.enabled", "drift.detect_enabled", "drift.draft_enabled"}
+
+
+def _invalidate_drift_loop_flags(request: Request, key: str) -> None:
+    """Сбросить кеш PlatformSetting-флагов в DriftLoop (best-effort)."""
+    if key not in _DRIFT_FLAG_KEYS:
+        return
+    loop = getattr(request.app.state, "drift_loop", None)
+    if loop is not None:
+        loop.invalidate_flags()
 
 
 @router.get("/params", response_model=list[PlatformSettingRead])
@@ -34,10 +46,16 @@ async def get_params(db: AsyncSession = Depends(get_db)) -> list[PlatformSetting
 
 
 @router.put("/params/{key:path}")
-async def update_param(key: str, req: ParamUpdateRequest, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+async def update_param(
+    key: str,
+    req: ParamUpdateRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
     try:
         await settings_service.set(key, req.value, db)
         settings_service.invalidate(key)
+        _invalidate_drift_loop_flags(request, key)
         value = await settings_service.get(key, db)
         return {"key": key, "value": value}
     except KeyError as exc:
@@ -47,6 +65,10 @@ async def update_param(key: str, req: ParamUpdateRequest, db: AsyncSession = Dep
 
 
 @router.post("/reset")
-async def reset_params(db: AsyncSession = Depends(get_db)) -> dict[str, str]:
+async def reset_params(request: Request, db: AsyncSession = Depends(get_db)) -> dict[str, str]:
     await settings_service.reset_all(db)
+    # Сброс может затронуть drift.* — инвалидируем кеш явно.
+    loop = getattr(request.app.state, "drift_loop", None)
+    if loop is not None:
+        loop.invalidate_flags()
     return {"status": "ok"}

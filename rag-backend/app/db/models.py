@@ -813,5 +813,54 @@ class DriftModel(Base):
     )
 
 
+class ChatHistorySummary(Base):
+    """Rolling summary of compressed chat history.
+
+    Хранит «сжатый фактаж» по чату: вместо того чтобы каждый раз скармливать
+    drift-модели все сообщения чата (которые могут не влезть в контекстное
+    окно), мы периодически сжимаем старые блоки сообщений через тот же
+    QVikhr-3-1.7B и кладём результат сюда.
+
+    Одна строка на чат (``unique(chat_id)``), перезаписывается при следующем
+    summarization. ``summarized_messages_count`` хранит сколько сообщений
+    уже сжато (накопительно) — drift-detector использует это чтобы знать,
+    какие сообщения из чата уже «в summary», а какие нужно отдать полным
+    текстом (последние N).
+    """
+
+    __tablename__ = "chat_history_summaries"
+
+    chat_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("chats.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    summary_text: Mapped[str] = mapped_column(Text, nullable=False)
+    # Количество сообщений чата, вошедших в summary_text (накопительно).
+    # Drift-detector берёт «последние N» от total - summarized_messages_count,
+    # чтобы гарантировать непересечение с полным текстом.
+    summarized_messages_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    # id последнего сообщения, вошедшего в summary. Полезно для отладки
+    # и для идемпотентности — если summarization запустится повторно с тем
+    # же состоянием, мы не будем пересжимать.
+    summarized_up_to_message_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    # Какая модель делала summary — для аудита и для будущего «досжатия»
+    # другой моделью (если пользователь сменил drift-модель).
+    model_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
 # Alias for back-compat: chat.py imports ClarificationStateRow
 ClarificationStateRow = ClarificationState

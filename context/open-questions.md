@@ -9,7 +9,7 @@
 
 ---
 
-## 1. Визуализация фонового поведения модели для пользователя + глобальная настройка drift/draft loop
+## 1. Визуализация фонового поведения модели для пользователя + глобальная настройка drift/draft loop ✅ реализовано
 
 **Контекст:** обсуждение платформы в чате. Текущий drift/draft loop работает всегда после каждого turn-а, если у чата есть `campaign_id`. Пользователь не знает, что происходит в фоне.
 
@@ -27,6 +27,19 @@
 - `rag-backend/app/static/frontend/src/components/chat/ContextDraftCard.tsx` — текущая карточка draft.
 
 **Связанные точки:** SSE-событие `drift_status` (пока не существует) может эмититься из `DriftLoop._run_detect` чтобы UI получил real-time сигнал.
+
+**Реализовано (см. PR):**
+
+| Что | Где |
+|---|---|
+| Миграция: 3 ключа `drift.enabled` / `drift.detect_enabled` / `drift.draft_enabled` | `rag-backend/migrations/versions/0017_drift_loop_enabled.py` |
+| `DriftStatus` + `DriftPhase` модели | `shared_contracts/models.py` |
+| In-memory pub/sub + Redis TTL=60с fallback | `rag-backend/app/services/context_engine/status_bus.py` |
+| Чтение флагов с TTL-кешем 5 сек и авто-инвалидация при изменении `platform_settings` | `rag-backend/app/services/context_engine/loop.py`, `rag-backend/app/api/settings/params.py` |
+| SSE endpoint `GET /api/chats/{id}/events` + poll fallback `GET /api/chats/{id}/drift-status` | `rag-backend/app/api/chat_events.py` |
+| Глобальная группа «Drift loop» во вкладке «Параметры» с пояснением | `rag-backend/app/static/frontend/src/components/settings/tabs/ParamsTab.tsx` |
+| Стеклянный popup сверху-справа чата (real-time фазы) | `rag-backend/app/static/frontend/src/components/chat/DriftStatusPopup.tsx` |
+| Тесты backend (16 шт) + frontend (6 шт) | `tests/unit/rag_backend/test_drift_status_bus.py`, `tests/unit/rag_backend/test_drift_loop_flags.py`, `__tests__/DriftStatusPopup.test.tsx` |
 
 ---
 
@@ -132,6 +145,6 @@
 **Приоритет (на момент создания документа):**
 1. Пункт 4 — trivial clean-up, 5 минут.
 2. Пункт 5 — research без правок, 1-2 часа на диагностику.
-3. Пункт 1 — UX-улучшение, требует дизайна badge/индикатора.
+3. ~~Пункт 1 — UX-улучшение, требует дизайна badge/индикатора.~~ ✅ реализовано
 4. Пункт 3 — feature, требует дизайна архитектуры саммаризации.
 5. Пункт 2 — research + multiple optimizations, может разбиваться на под-PR.

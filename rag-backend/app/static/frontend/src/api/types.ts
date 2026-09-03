@@ -829,6 +829,28 @@ export interface ContextDraftRejectResponse {
   status: 'rejected';
 }
 
+// === Drift loop status (Phase 6) ===
+
+export type DriftPhase =
+  | 'idle'
+  | 'detecting'
+  | 'drafting'
+  | 'draft_ready'
+  | 'error';
+
+export interface DriftStatus {
+  chat_id: string;
+  phase: DriftPhase;
+  started_at: string | null;
+  finished_at: string | null;
+  published_at: string;
+  message: string | null;
+  drift_hints_count: number | null;
+  draft_ops_count: number | null;
+  draft_summary: string | null;
+  error: string | null;
+}
+
 // === Settings ===
 
 export interface ParamGroup {

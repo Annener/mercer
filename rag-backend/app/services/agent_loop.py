@@ -964,12 +964,33 @@ class AgentLoop:
                 else:
                     tool_choice = LLMToolChoice(mode="auto")
 
+            # Phase classification for the UI: what is the model doing in this
+            # round? Replaces the legacy «Round X/Y (grounded)» status with
+            # three meaningful states.
+            #   • initial  — round 0 with `tool_choice=required`: model is
+            #                forced to fetch evidence first.
+            #   • final    — last round (`tool_choice=none`): model must write.
+            #   • followup — any other round (auto tool_choice).
+            if is_final_round:
+                _phase = "final"
+            elif round_idx == 0 and tool_choice.mode == "required":
+                _phase = "initial"
+            else:
+                _phase = "followup"
+            # What tool_choice is actually used here (string form, for UI).
+            _tool_choice_mode = tool_choice.mode
+
             yield AgentEvent(
                 type="round_start",
                 round=round_idx,
                 payload={
                     "max_rounds": max_rounds,
                     "policy": policy.value,
+                    "phase": _phase,
+                    "effective_grounded": bool(force_tool_round_zero)
+                    if not is_final_round
+                    else False,
+                    "tool_choice": _tool_choice_mode,
                 },
             )
 
