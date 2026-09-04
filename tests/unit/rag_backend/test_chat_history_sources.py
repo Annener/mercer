@@ -164,3 +164,91 @@ async def test_history_skips_invalid_source_dicts() -> None:
     sources = body["messages"][0]["sources"]
     assert len(sources) == 1
     assert sources[0]["path"] == "/vault/ok.md"
+
+
+@pytest.mark.asyncio
+async def test_history_dedups_repeated_sources() -> None:
+    """Дубли (одинаковый 6-ключ в `dedup_sources`) в `Message.sources`
+    схлопываются в одну запись.
+
+    Контракт: бэк дедуплицирует по (path, page, vault_id, chunk_id,
+    document_id, source_kind). Разные `chunk_id` — это разные источники,
+    они сохраняются раздельно. Агрегацию по `path` для UI делает фронт
+    (см. `aggregateSources`).
+
+    Этот тест проверяет, что `_parse_message_sources` применяет
+    `dedup_sources`: записи с одинаковым 6-ключом (включая `chunk_id`)
+    схлопываются.
+    """
+    chat_id = uuid.uuid4()
+    msg_id = uuid.uuid4()
+
+    chat = _make_chat(chat_id)
+    sources_payload = [
+        {"path": "/vault/dnd/welcome.md", "page": None, "chunk_id": "c1"},
+        # второй раз тот же chunk_id — должен схлопнуться
+        {"path": "/vault/dnd/welcome.md", "page": None, "chunk_id": "c1"},
+        {"path": "/vault/dnd/balancers.md", "page": None, "chunk_id": "c2"},
+    ]
+    msg = _make_message(msg_id, chat_id, sources_payload)
+    db_session = _build_db_session(chat, [msg])
+    app = _make_app(db_session)
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/chat/{chat_id}/history")
+
+    assert resp.status_code == 200, resp.text
+    sources = resp.json()["messages"][0]["sources"]
+    chunk_ids = [s["chunk_id"] for s in sources]
+    # Дубль c1 выкинут — уникальных chunk_id ровно 2.
+    assert sorted(chunk_ids) == ["c1", "c2"]
+
+
+@pytest.mark.asyncio
+async def test_history_expands_step_groups_records() -> None:
+    """`step_groups` (SourceGroup) исторически мог попасть в `Message.sources`
+    (после `full_document_confirm` со старой логикой). API должен раскрыть
+    такие записи в плоский список Source и применить dedup.
+    """
+    chat_id = uuid.uuid4()
+    msg_id = uuid.uuid4()
+
+    chat = _make_chat(chat_id)
+    sources_payload = [
+        {
+            "step_id": "step-1",
+            "step_name": "retrieve",
+            "sources": [
+                {"path": "/vault/a.md", "page": None},
+                {"path": "/vault/b.md", "page": 1},
+            ],
+        },
+        {
+            "step_id": "step-2",
+            "step_name": "rerank",
+            "sources": [
+                {"path": "/vault/a.md", "page": None},  # дубль после flatten
+                {"path": "/vault/c.pdf", "page": 5},
+            ],
+        },
+    ]
+    msg = _make_message(msg_id, chat_id, sources_payload)
+    db_session = _build_db_session(chat, [msg])
+    app = _make_app(db_session)
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/chat/{chat_id}/history")
+
+    assert resp.status_code == 200, resp.text
+    sources = resp.json()["messages"][0]["sources"]
+    paths = sorted(s["path"] for s in sources)
+    # a.md встретился в обоих шагах → одна запись после dedup.
+    assert paths == ["/vault/a.md", "/vault/b.md", "/vault/c.pdf"]
+    # step_id/step_name НЕ должны протечь в ответ — они служебные.
+    for s in sources:
+        assert "step_id" not in s
+        assert "step_name" not in s

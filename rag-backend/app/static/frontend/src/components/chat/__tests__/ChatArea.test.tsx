@@ -282,3 +282,105 @@ describe('ChatArea — sources и инфо-плашка поиска', () => {
     expect(assistantCall.sources).toBeUndefined();
   });
 });
+
+describe('SourcesBlock — рендер при reload (агрегация страниц PDF)', () => {
+  function setMessagesAndRender(sources: Source[], content: string) {
+    chatStoreState.messages = [
+      { role: 'assistant', content, sources },
+    ];
+    return renderWithQueryClient();
+  }
+
+  function citeAll(count: number): string {
+    return Array.from({ length: count }, (_, i) => `[${i + 1}]`).join(' ');
+  }
+
+  it('группирует страницы одного PDF в одну строку с диапазоном', () => {
+    setMessagesAndRender(
+      [
+        { path: '/m.pdf', page: 12 },
+        { path: '/m.pdf', page: 7 },
+        { path: '/m.pdf', page: 3 },
+      ],
+      '[1]',
+    );
+    expect(screen.getByText('Источники')).toBeDefined();
+    // Должна быть ровно одна строка с агрегированными страницами.
+    const items = screen.getAllByText(/^\[\d+\] \//);
+    expect(items).toHaveLength(1);
+    expect(screen.getByText(/^\[1\] \/m\.pdf, стр\. 3, 7, 12$/)).toBeDefined();
+  });
+
+  it('для MD (page=null) показывает просто имя файла без "стр."', () => {
+    setMessagesAndRender(
+      [
+        { path: '/a.md', page: null },
+        { path: '/a.md', page: null },
+      ],
+      '[1]',
+    );
+    const items = screen.getAllByText(/^\[\d+\] \//);
+    expect(items).toHaveLength(1);
+    expect(screen.getByText(/^\[1\] \/a\.md$/)).toBeDefined();
+    expect(screen.queryByText(/стр\./)).toBeNull();
+  });
+
+  it('для PDF с одной страницей — формат "стр. N"', () => {
+    setMessagesAndRender([{ path: '/m.pdf', page: 5 }], '[1]');
+    expect(screen.getByText(/^\[1\] \/m\.pdf, стр\. 5$/)).toBeDefined();
+  });
+
+  it('схлопывает много дублей одного (path, page) в одну строку', () => {
+    setMessagesAndRender(
+      [
+        { path: '/a.md', page: null },
+        { path: '/a.md', page: null },
+        { path: '/a.md', page: null },
+        { path: '/a.md', page: null },
+      ],
+      '[1]',
+    );
+    const items = screen.getAllByText(/^\[\d+\] \//);
+    expect(items).toHaveLength(1);
+    expect(screen.getByText(/^\[1\] \/a\.md$/)).toBeDefined();
+  });
+
+  it('фильтрует по [N]-ссылкам в тексте и сохраняет номера', () => {
+    setMessagesAndRender(
+      [
+        { path: '/a.md', page: null },
+        { path: '/b.md', page: null },
+        { path: '/c.md', page: null },
+      ],
+      'см. подробности в [2] и [3]',
+    );
+    expect(screen.queryByText(/^\[1\]/)).toBeNull();
+    expect(screen.getByText(/^\[2\] \/b\.md$/)).toBeDefined();
+    expect(screen.getByText(/^\[3\] \/c\.md$/)).toBeDefined();
+  });
+
+  it('если в тексте нет [N] — блок источников не отображается', () => {
+    setMessagesAndRender(
+      [
+        { path: '/a.md', page: null },
+        { path: '/b.md', page: null },
+      ],
+      'просто текст без цитат',
+    );
+    expect(screen.queryByText('Источники')).toBeNull();
+  });
+
+  it('несколько разных файлов с разными страницами', () => {
+    setMessagesAndRender(
+      [
+        { path: '/m1.pdf', page: 1 },
+        { path: '/m2.pdf', page: 5 },
+        { path: '/m1.pdf', page: 2 },
+      ],
+      citeAll(3),
+    );
+    expect(screen.getByText(/^\[1\] \/m1\.pdf, стр\. 1, 2$/)).toBeDefined();
+    expect(screen.getByText(/^\[2\] \/m2\.pdf, стр\. 5$/)).toBeDefined();
+    expect(screen.queryByText(/^\[3\]/)).toBeNull();
+  });
+});

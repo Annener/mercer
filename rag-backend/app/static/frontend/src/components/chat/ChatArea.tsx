@@ -17,6 +17,7 @@ import { ToolCallCard, type ToolCallInfo, type ToolResultInfo } from '@/componen
 import { ProposalCard } from '@/components/chat/cards/ProposalCard';
 import { ContextDraftCard, useContextDraftQuery } from './ContextDraftCard';
 import { DriftStatusPopup } from './DriftStatusPopup';
+import { aggregateSources, extractCitedIndices, sourceDedupKey, type AggregatedSource } from './sources';
 import {
   PipelineProgress,
   PipelineBadge,
@@ -114,7 +115,7 @@ export function ChatArea() {
         for (const s of raw) {
           if (!s || typeof s !== 'object') continue;
           const src = s as Source;
-          const key = `${src.path ?? ''}#${src.page ?? ''}`;
+          const key = sourceDedupKey(src);
           if (sourcesSeen.has(key)) continue;
           sourcesSeen.add(key);
           sourcesAcc.push(src);
@@ -213,7 +214,7 @@ export function ChatArea() {
         for (const s of raw) {
           if (!s || typeof s !== 'object') continue;
           const src = s as Source;
-          const key = `${src.path ?? ''}#${src.page ?? ''}`;
+          const key = sourceDedupKey(src);
           if (sourcesSeen.has(key)) continue;
           sourcesSeen.add(key);
           sourcesAcc.push(src);
@@ -931,25 +932,30 @@ function RetryButton({ onClick }: { onClick: () => void }) {
 }
 
 function SourcesBlock({ sources, text }: { sources: Source[]; text: string }) {
-  const cited = new Set<number>();
-  const re = /\[(\d+)\]/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(text)) !== null) {
-    cited.add(parseInt(m[1]!, 10));
-  }
-  const visible = cited.size > 0
-    ? sources.filter((_, i) => cited.has(i + 1))
-    : sources;
-  if (visible.length === 0) return null;
+  const aggregated = aggregateSources(sources);
+  const cited = extractCitedIndices(text);
+  // Если в тексте есть [N]-ссылки, фильтруем по индексу в исходном массиве
+  // aggregated (1-based), чтобы отображаемый номер совпадал с цитатой в тексте.
+  // Иначе — пусто (поведение согласовано с прежней логикой «нет цитат → блок скрыт»).
+  const items: Array<{ number: number; src: AggregatedSource }> = cited.size > 0
+    ? aggregated
+        .map((src, i) => ({ number: i + 1, src }))
+        .filter(({ number }) => cited.has(number))
+    : [];
+  if (items.length === 0) return null;
 
   return (
     <div className="mt-2 border-t border-border/40 pt-2 text-xs">
       <div className="font-semibold">Источники</div>
       <div className="mt-1 space-y-1">
-        {visible.map((src, i) => (
-          <div key={i} className="truncate text-text-muted">
-            [{i + 1}] {src.path}
-            {src.page != null && `, стр. ${src.page}`}
+        {items.map(({ number, src }) => (
+          <div key={src.key} className="truncate text-text-muted">
+            [{number}] {src.path}
+            {src.pages.length === 1
+              ? `, стр. ${src.pages[0]}`
+              : src.pages.length > 1
+                ? `, стр. ${src.pages.join(', ')}`
+                : ''}
           </div>
         ))}
       </div>

@@ -34,6 +34,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import Message
 from app.db.session import SessionLocal, get_db
 from app.services.pipeline_executor import PipelineExecutor
+from app.services.source_utils import normalize_persisted_sources
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -92,8 +93,11 @@ async def full_document_confirm(
                     full_answer += token_content
 
                 if chunk_type == "sources":
-                    # Сохраняем, чтобы записать в Message при pipeline_complete.
-                    captured_sources = chunk.get("sources") or chunk.get("step_groups")
+                    # Нормализуем перед записью: оба варианта payload'а
+                    # (`sources` плоский и `step_groups`) разворачиваем в плоский
+                    # список MessageSource с дедупом по (path, page, …).
+                    raw = chunk.get("sources") or chunk.get("step_groups")
+                    captured_sources = normalize_persisted_sources(raw)
 
                 if chunk_type == "pipeline_complete":  # noqa: SIM102
                     # Сохраняем ответ ассистента в БД перед отправкой pipeline_complete

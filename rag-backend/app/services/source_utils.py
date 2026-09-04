@@ -9,9 +9,13 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable
+from typing import Any
 
-from shared_contracts.models import MessageSource, SearchHit, Source
+from shared_contracts.models import MessageSource, SearchHit, Source, SourceGroup
+
+logger = logging.getLogger(__name__)
 
 # Hard cap для SSE payload tool_result — защита от раздувания трафика
 # при очень больших выдачах (search_knowledge truncation по evidence_token_budget
@@ -126,11 +130,46 @@ def merge_sources(*lists: Iterable[Source]) -> list[Source]:
     return dedup_sources(flat)
 
 
+def normalize_persisted_sources(
+    raw: list[Any] | None,
+) -> list[dict[str, Any]]:
+    """Нормализует «сырые» источники из SSE `sources` event перед записью в БД.
+
+    Принимает список, в котором могут встречаться как плоские `Source`-словари,
+    так и `SourceGroup`-словари (`{"step_id", "step_name", "sources": [...]}`)
+    — последние остались после старой логики `full_document_confirm`.
+
+    Возвращает плоский список dict-сериализованных `MessageSource` после
+    `dedup_sources` — то есть всегда в формате, который читает
+    `_parse_message_sources` / `GET /chat/{id}/history`.
+
+    Мусорные элементы пропускаются (best-effort, чтобы не падать на битых
+    payload'ах).
+    """
+    if not raw:
+        return []
+    collected: list[Source] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        try:
+            if "sources" in item and "step_id" in item:
+                group = SourceGroup.model_validate(item)
+                collected.extend(group.sources)
+            else:
+                collected.append(Source.model_validate(item))
+        except Exception:  # noqa: BLE001 — испорченные записи пропускаем
+            logger.warning("normalize_persisted_sources: skipped malformed: %r", item)
+    deduped = dedup_sources(collected)
+    return [s.model_dump(mode="json", exclude_none=True) for s in sources_to_message_sources(deduped)]
+
+
 __all__ = [
     "MAX_SOURCES_PER_TOOL_RESULT",
     "dedup_sources",
     "full_doc_hits_to_sources",
     "hits_to_sources",
     "merge_sources",
+    "normalize_persisted_sources",
     "sources_to_message_sources",
 ]

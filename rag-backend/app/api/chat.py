@@ -38,6 +38,7 @@ from app.services.settings_service import settings_service
 from app.services.source_utils import (
     dedup_sources,
     hits_to_sources,
+    normalize_persisted_sources,
     sources_to_message_sources,
 )
 from app.services.vault_config_service import VaultConfigService
@@ -448,22 +449,17 @@ async def get_chat_history(
 
 
 def _parse_message_sources(raw: list[dict[str, Any]] | None) -> list[MessageSource]:
-    """Парсим persisted `Message.sources` в список `MessageSource`.
+    """Парсим persisted `Message.sources` в плоский список `MessageSource`.
+
+    Обёртка над `normalize_persisted_sources` (общая логика для чтения и
+    записи, чтобы источники, пришедшие из разных pipeline-путей,
+    нормализовывались одинаково).
 
     Мусорные записи (не dict, нет обязательных полей, битый JSON)
     пропускаем — UI не должен ломаться из-за испорченной строки в БД.
     """
-    if not raw:
-        return []
-    parsed: list[MessageSource] = []
-    for item in raw:
-        if not isinstance(item, dict):
-            continue
-        try:
-            parsed.append(MessageSource.model_validate(item))
-        except Exception:  # noqa: BLE001 — испорченные записи пропускаем
-            logger.warning("get_chat_history: skipped malformed source: %r", item)
-    return parsed
+    normalized = normalize_persisted_sources(raw)
+    return [MessageSource.model_validate(item) for item in normalized]
 
 
 @router.post("/{chat_id}/rename", response_model=CreateChatResponse)
