@@ -240,7 +240,7 @@ export function ChatContextBar() {
             <div className="h-4 w-px bg-border" />
             <label
               className="flex cursor-pointer items-center gap-1.5 select-none"
-              title="Разрешить модели предлагать изменения Campaign State и файлов контекста"
+              title="Включает LLM-инструмент «предложить обновление контекста»: модель сможет сама инициировать Update Mode review с правками Campaign State и файлов. Суммаризация истории чата и авто-сбор контекста (drift-detection + draft) работают всегда, независимо от этой галочки."
             >
               <input
                 type="checkbox"

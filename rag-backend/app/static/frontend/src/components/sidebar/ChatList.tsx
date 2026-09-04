@@ -10,9 +10,10 @@ interface ChatListProps {
   chats: Chat[];
   loading: boolean;
   onRename: (chat: Chat) => void;
+  onViewContext: (chat: Chat) => void;
 }
 
-export function ChatList({ chats, loading, onRename }: ChatListProps) {
+export function ChatList({ chats, loading, onRename, onViewContext }: ChatListProps) {
   const currentChatId = useChatStore((s) => s.currentChatId);
   const loadChat = useChatStore((s) => s.loadChat);
   const currentDomainId = useDomainStore((s) => s.currentDomainId);
@@ -93,6 +94,18 @@ export function ChatList({ chats, loading, onRename }: ChatListProps) {
               >
                 Переименовать
               </button>
+              {chat.campaign_id && (
+                <button
+                  type="button"
+                  className="px-3 py-1.5 text-left text-sm hover:bg-surface-2"
+                  onClick={() => {
+                    setOpenMenu(null);
+                    onViewContext(chat);
+                  }}
+                >
+                  Контекст
+                </button>
+              )}
               <button
                 type="button"
                 className="px-3 py-1.5 text-left text-sm text-danger hover:bg-surface-2"

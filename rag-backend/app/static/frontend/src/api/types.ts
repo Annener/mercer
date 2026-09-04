@@ -40,6 +40,24 @@ export interface Chat {
   full_document_mode_enabled?: boolean;
   context_update_mode?: boolean;
   rag_prefill_enabled?: boolean;
+  metadata?: ChatMetadata;
+}
+
+export interface ChatMetadata {
+  scene_state?: {
+    explicit?: Record<string, unknown>;
+    drift?: {
+      _hints?: Array<{
+        fact?: string;
+        contradicts_field?: string | null;
+        adds_field?: string | null;
+        msg_ref?: string | null;
+        confidence?: number;
+      }>;
+      _ts?: string;
+      _chat_id?: string;
+    };
+  };
 }
 
 export interface ChatDetail {

@@ -137,6 +137,11 @@ class ChatListItem(BaseModel):
     title: str
     vault_id: str | None = None
     domain_id: str | None = None
+    campaign_id: str | None = None
+    locked_pipeline_id: str | None = None
+    full_document_mode_enabled: bool = False
+    context_update_mode: bool = False
+    rag_prefill_enabled: bool = False
     vault_enabled: bool = False
     created_at: datetime
     updated_at: datetime
@@ -411,6 +416,11 @@ async def list_chats(
                 title=c.title,
                 vault_id=c.vault_id,
                 domain_id=c.domain_id,
+                campaign_id=str(c.campaign_id) if c.campaign_id else None,
+                locked_pipeline_id=c.locked_pipeline_id,
+                full_document_mode_enabled=c.full_document_mode_enabled,
+                context_update_mode=c.context_update_mode,
+                rag_prefill_enabled=c.rag_prefill_enabled,
                 vault_enabled=vault_enabled_cache.get(c.vault_id, False),
                 created_at=c.created_at,
                 updated_at=c.updated_at,

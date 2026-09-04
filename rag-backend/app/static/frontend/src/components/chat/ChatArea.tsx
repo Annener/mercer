@@ -17,7 +17,7 @@ import { ToolCallCard, type ToolCallInfo, type ToolResultInfo } from '@/componen
 import { ProposalCard } from '@/components/chat/cards/ProposalCard';
 import { ContextDraftCard, useContextDraftQuery } from './ContextDraftCard';
 import { DriftStatusPopup } from './DriftStatusPopup';
-import { aggregateSources, extractCitedIndices, sourceDedupKey, type AggregatedSource } from './sources';
+import { aggregateSources, extractCitedIndices, sourceDedupKey } from './sources';
 import {
   PipelineProgress,
   PipelineBadge,
@@ -934,14 +934,13 @@ function RetryButton({ onClick }: { onClick: () => void }) {
 function SourcesBlock({ sources, text }: { sources: Source[]; text: string }) {
   const aggregated = aggregateSources(sources);
   const cited = extractCitedIndices(text);
-  // Если в тексте есть [N]-ссылки, фильтруем по индексу в исходном массиве
-  // aggregated (1-based), чтобы отображаемый номер совпадал с цитатой в тексте.
-  // Иначе — пусто (поведение согласовано с прежней логикой «нет цитат → блок скрыт»).
-  const items: Array<{ number: number; src: AggregatedSource }> = cited.size > 0
-    ? aggregated
-        .map((src, i) => ({ number: i + 1, src }))
-        .filter(({ number }) => cited.has(number))
-    : [];
+  const all = aggregated.map((src, i) => ({ number: i + 1, src }));
+  // Если в тексте есть [N]-цитаты — оставляем только их (1-based индексы
+  // по исходному aggregated), чтобы номер совпадал с цитатой.
+  // Иначе показываем все агрегированные источники: системный промпт
+  // запрещает модели добавлять «Источники» в конец ответа, но [N] в тексте
+  // модель вставляет не всегда — UI всё равно должен показать блок.
+  const items = cited.size > 0 ? all.filter(({ number }) => cited.has(number)) : all;
   if (items.length === 0) return null;
 
   return (

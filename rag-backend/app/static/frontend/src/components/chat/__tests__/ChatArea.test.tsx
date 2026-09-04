@@ -359,15 +359,23 @@ describe('SourcesBlock — рендер при reload (агрегация стр
     expect(screen.getByText(/^\[3\] \/c\.md$/)).toBeDefined();
   });
 
-  it('если в тексте нет [N] — блок источников не отображается', () => {
+  it('если в тексте нет [N] — показывает все источники агрегированно', () => {
     setMessagesAndRender(
       [
         { path: '/a.md', page: null },
+        { path: '/m.pdf', page: 5 },
+        { path: '/m.pdf', page: 7 },
         { path: '/b.md', page: null },
       ],
-      'просто текст без цитат',
+      'просто текст без цитат — модель не вставила [N]',
     );
-    expect(screen.queryByText('Источники')).toBeNull();
+    expect(screen.getByText('Источники')).toBeDefined();
+    // 3 агрегата: a.md (md), m.pdf (PDF с двумя страницами), b.md (md).
+    const items = screen.getAllByText(/^\[\d+\] \//);
+    expect(items).toHaveLength(3);
+    expect(screen.getByText(/^\[1\] \/a\.md$/)).toBeDefined();
+    expect(screen.getByText(/^\[2\] \/m\.pdf, стр\. 5, 7$/)).toBeDefined();
+    expect(screen.getByText(/^\[3\] \/b\.md$/)).toBeDefined();
   });
 
   it('несколько разных файлов с разными страницами', () => {

@@ -5,10 +5,11 @@ import { useChatStore, useDomainStore, useSettingsStore } from '@/stores';
 import { api } from '@/api/client';
 import { ChatList } from './ChatList';
 import { RenameModal } from './ChatList';
+import { ChatContextViewModal } from './ChatContextViewModal';
 import { SearchDbModal } from '@/components/search/SearchDbModal';
 import { CampaignContextModal } from '@/components/wizard/CampaignContextModal';
 import { DomainSelectorStrip } from './DomainSelectorStrip';
-import type { Chat, CampaignId, Campaign } from '@/api/types';
+import type { Chat, CampaignId, Campaign, UUID } from '@/api/types';
 
 export function Sidebar() {
   const openSettings = useSettingsStore((s) => s.openSettings);
@@ -31,6 +32,7 @@ export function Sidebar() {
   const [contextMenuCampaign, setContextMenuCampaign] = useState<Campaign | null>(null);
   const [contextMenuPos, setContextMenuPos] = useState<{ x: number; y: number } | null>(null);
   const [contextModalCampaignId, setContextModalCampaignId] = useState<CampaignId | null>(null);
+  const [chatContextModalId, setChatContextModalId] = useState<UUID | null>(null);
   const errorDismissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -170,9 +172,11 @@ export function Sidebar() {
       <ChatList
         chats={chatsQuery.data ?? []}
         loading={chatsQuery.isLoading}
-        onRename={(chat: Chat) =>
-          setRenameTarget({ id: chat.chat_id, title: chat.title })
-        }
+        onRename={(chat: Chat) => {
+          setRenameTarget({ id: chat.chat_id, title: chat.title });
+          setRenameOpen(true);
+        }}
+        onViewContext={(chat: Chat) => setChatContextModalId(chat.chat_id)}
       />
 
       <RenameModal
@@ -218,6 +222,11 @@ export function Sidebar() {
       <CampaignContextModal
         campaignId={contextModalCampaignId}
         onClose={() => setContextModalCampaignId(null)}
+      />
+
+      <ChatContextViewModal
+        chatId={chatContextModalId}
+        onClose={() => setChatContextModalId(null)}
       />
     </aside>
   );

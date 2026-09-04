@@ -56,6 +56,12 @@ const CHATS: Chat[] = [
     domain_id: 'dnd',
     campaign_id: null,
   },
+  {
+    chat_id: 'chat-3',
+    title: 'Тест 3 (в кампании)',
+    domain_id: 'dnd',
+    campaign_id: 'camp-1',
+  },
 ];
 
 describe('ChatList — подсветка активного чата', () => {
@@ -68,7 +74,7 @@ describe('ChatList — подсветка активного чата', () => {
 
   it('при currentChatId=null ни один чат не подсвечен', () => {
     renderWithQueryClient(
-      <ChatList chats={CHATS} loading={false} onRename={vi.fn()} />,
+      <ChatList chats={CHATS} loading={false} onRename={vi.fn()} onViewContext={vi.fn()} />,
     );
 
     CHATS.forEach((c) => {
@@ -83,7 +89,7 @@ describe('ChatList — подсветка активного чата', () => {
   it('активный чат получает border-l-primary, bg-primary/10, font-medium', () => {
     chatStoreState.currentChatId = 'chat-1';
     renderWithQueryClient(
-      <ChatList chats={CHATS} loading={false} onRename={vi.fn()} />,
+      <ChatList chats={CHATS} loading={false} onRename={vi.fn()} onViewContext={vi.fn()} />,
     );
 
     const active = screen.getByTestId('chat-item-chat-1');
@@ -102,7 +108,7 @@ describe('ChatList — подсветка активного чата', () => {
 
   it('клик по чату вызывает loadChat с правильным id', () => {
     renderWithQueryClient(
-      <ChatList chats={CHATS} loading={false} onRename={vi.fn()} />,
+      <ChatList chats={CHATS} loading={false} onRename={vi.fn()} onViewContext={vi.fn()} />,
     );
 
     fireEvent.click(screen.getByText('Тест 2'));
@@ -111,15 +117,63 @@ describe('ChatList — подсветка активного чата', () => {
 
   it('рендерит EmptyState при пустом списке', () => {
     renderWithQueryClient(
-      <ChatList chats={[]} loading={false} onRename={vi.fn()} />,
+      <ChatList chats={[]} loading={false} onRename={vi.fn()} onViewContext={vi.fn()} />,
     );
     expect(screen.getByText(/Нет бесед/i)).toBeInTheDocument();
   });
 
   it('рендерит индикатор загрузки', () => {
     renderWithQueryClient(
-      <ChatList chats={[]} loading={true} onRename={vi.fn()} />,
+      <ChatList chats={[]} loading={true} onRename={vi.fn()} onViewContext={vi.fn()} />,
     );
     expect(screen.getByText(/Загрузка/i)).toBeInTheDocument();
+  });
+});
+
+describe('ChatList — пункт меню «Контекст»', () => {
+  beforeEach(() => {
+    chatStoreState.currentChatId = null;
+    chatStoreState.loadChat = vi.fn();
+    chatStoreState.reset = vi.fn();
+    domainStoreState.currentDomainId = 'dnd';
+  });
+
+  function openMenuFor(chatId: string) {
+    const item = screen.getByTestId(`chat-item-${chatId}`);
+    const menuButton = item.querySelector('button') as HTMLButtonElement;
+    fireEvent.click(menuButton);
+  }
+
+  it('пункт «Контекст» отображается для чата с campaign_id', () => {
+    renderWithQueryClient(
+      <ChatList chats={CHATS} loading={false} onRename={vi.fn()} onViewContext={vi.fn()} />,
+    );
+
+    openMenuFor('chat-3');
+    expect(screen.getByText('Контекст')).toBeInTheDocument();
+  });
+
+  it('пункт «Контекст» НЕ отображается для чата без campaign_id', () => {
+    renderWithQueryClient(
+      <ChatList chats={CHATS} loading={false} onRename={vi.fn()} onViewContext={vi.fn()} />,
+    );
+
+    openMenuFor('chat-1');
+    expect(screen.queryByText('Контекст')).not.toBeInTheDocument();
+  });
+
+  it('клик по «Контекст» вызывает onViewContext с правильным chat', () => {
+    const onViewContext = vi.fn();
+    renderWithQueryClient(
+      <ChatList chats={CHATS} loading={false} onRename={vi.fn()} onViewContext={onViewContext} />,
+    );
+
+    openMenuFor('chat-3');
+    fireEvent.click(screen.getByText('Контекст'));
+
+    expect(onViewContext).toHaveBeenCalledTimes(1);
+    expect(onViewContext).toHaveBeenCalledWith(
+      expect.objectContaining({ chat_id: 'chat-3', campaign_id: 'camp-1' }),
+    );
   });
 });
